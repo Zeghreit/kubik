@@ -9,7 +9,7 @@ a model. It's to have something pleasant to turn over while you think.
 
 No install, no account, no project files. Open it and push a cube around.
 
-**[Try it →](https://YOURNAME.github.io/kubik/)**
+**[Try it →](https://zeghreit.github.io/kubik/)**
 
 ---
 
