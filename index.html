@@ -181,6 +181,19 @@
   }
   .drawer-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
   .drawer-row:last-child { margin-bottom: 0; }
+  .proj-row { display: flex; gap: 6px; margin-bottom: 6px; }
+  .proj-open {
+    flex: 1 1 auto; justify-content: flex-start; text-align: left;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .proj-del { width: 40px; padding: 0; justify-content: center; flex-shrink: 0; }
+  .proj-del:hover { border-color: var(--danger); color: var(--danger); }
+  #projName {
+    flex: 1 1 120px; min-width: 100px; background: var(--panel2);
+    border: 1px solid var(--line); color: var(--text); border-radius: 8px;
+    padding: 8px 10px; font-size: 16px; font-family: inherit;
+  }
+  #projName:focus { outline: none; border-color: var(--accent); }
   .drawer-note { font-size: 11px; color: var(--text-dim); line-height: 1.4; }
 
   button, .btn {
@@ -388,7 +401,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.38</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.39</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -557,6 +570,17 @@
           <span class="label">Color</span>
           <input type="color" id="colorPicker" value="#303338" />
         </div>
+      </div>
+
+      <div class="drawer-sec">
+        <div class="drawer-title">Models</div>
+        <div class="drawer-row">
+          <input type="text" id="projName" placeholder="Name this model" maxlength="40" />
+          <button id="btnProjSave">Save</button>
+        </div>
+        <div id="projList"></div>
+        <div class="drawer-note">Kept inside the app, no files involved. Your last
+          state is restored automatically when you come back.</div>
       </div>
 
       <div class="drawer-sec">
@@ -5081,6 +5105,7 @@ function restoreDoc(doc, opts = {}) {
 
 function pushHistory() {
   if (App.fillet) refreshFillets();
+  scheduleAutosave();
   const doc = serializeDoc();
   App.history = App.history.slice(0, App.historyIndex + 1);
   App.history.push(doc);
@@ -5104,6 +5129,147 @@ function redo() {
 
 document.getElementById('btnUndo').addEventListener('click', undo);
 document.getElementById('btnRedo').addEventListener('click', redo);
+
+
+/* ---------------- Saved models ----------------
+   Projects live in the browser's own storage, so saving and reopening never
+   involves the Files app. That round-trip is tolerable on a desktop and
+   genuinely breaks the flow on a phone.
+
+   Two caveats worth knowing, both handled below:
+   - iOS clears this storage if the app goes unopened for about a week, so
+     File > Save remains the durable backup.
+   - Storage is finite; a save that doesn't fit says so rather than failing
+     silently. */
+
+const PROJECT_PREFIX = 'kubik.project.';
+const AUTOSAVE_KEY = 'kubik.autosave';
+
+function storageAvailable() {
+  try {
+    localStorage.setItem('kubik.test', '1');
+    localStorage.removeItem('kubik.test');
+    return true;
+  } catch (err) { return false; }
+}
+
+function listProjects() {
+  if (!storageAvailable()) return [];
+  const out = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (!k || !k.startsWith(PROJECT_PREFIX)) continue;
+    try {
+      const rec = JSON.parse(localStorage.getItem(k));
+      out.push({ name: k.slice(PROJECT_PREFIX.length), savedAt: rec.savedAt || 0 });
+    } catch (err) { /* skip anything unreadable */ }
+  }
+  return out.sort((a, b) => b.savedAt - a.savedAt);
+}
+
+function saveProject(name) {
+  const clean = (name || '').trim().slice(0, 40);
+  if (!clean) { toast('Give the model a name first'); return false; }
+  if (!storageAvailable()) { toast('This browser is blocking storage'); return false; }
+  try {
+    localStorage.setItem(PROJECT_PREFIX + clean,
+      JSON.stringify({ savedAt: Date.now(), doc: serializeDoc() }));
+    refreshProjectList();
+    toast('Saved "' + clean + '"');
+    return true;
+  } catch (err) {
+    // Nearly always the quota, which is worth naming rather than shrugging at.
+    toast('Not enough room to save - delete an older model');
+    console.error(err);
+    return false;
+  }
+}
+
+function loadProject(name) {
+  try {
+    const rec = JSON.parse(localStorage.getItem(PROJECT_PREFIX + name));
+    if (!rec || !rec.doc) { toast('That model could not be read'); return; }
+    restoreDoc(rec.doc);
+    App.history = [rec.doc];
+    App.historyIndex = 0;
+    setDrawerOpen(false);
+    toast('Opened "' + name + '"');
+  } catch (err) {
+    toast('That model could not be read');
+    console.error(err);
+  }
+}
+
+function deleteProject(name) {
+  try { localStorage.removeItem(PROJECT_PREFIX + name); } catch (err) { /* nothing to do */ }
+  refreshProjectList();
+  toast('Deleted "' + name + '"');
+}
+
+// Keeps whatever you were last doing, so closing the tab isn't destructive.
+let autosaveTimer = null;
+function scheduleAutosave() {
+  if (!storageAvailable()) return;
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(() => {
+    try {
+      localStorage.setItem(AUTOSAVE_KEY,
+        JSON.stringify({ savedAt: Date.now(), doc: serializeDoc() }));
+    } catch (err) { /* quota - the named saves matter more, so stay quiet */ }
+  }, 900);
+}
+
+function restoreAutosave() {
+  if (!storageAvailable()) return false;
+  try {
+    const rec = JSON.parse(localStorage.getItem(AUTOSAVE_KEY));
+    if (!rec || !rec.doc || !rec.doc.objects || !rec.doc.objects.length) return false;
+    restoreDoc(rec.doc);
+    App.history = [rec.doc];
+    App.historyIndex = 0;
+    return true;
+  } catch (err) { return false; }
+}
+
+function refreshProjectList() {
+  const el = document.getElementById('projList');
+  if (!el) return;
+  const items = listProjects();
+  el.innerHTML = '';
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.className = 'drawer-note';
+    empty.textContent = 'Nothing saved yet.';
+    el.appendChild(empty);
+    return;
+  }
+  items.forEach(it => {
+    const row = document.createElement('div');
+    row.className = 'proj-row';
+    const open = document.createElement('button');
+    open.className = 'proj-open';
+    open.textContent = it.name;
+    open.title = 'Open "' + it.name + '"';
+    open.addEventListener('click', () => loadProject(it.name));
+    const del = document.createElement('button');
+    del.className = 'proj-del';
+    del.textContent = '\u2715';
+    del.title = 'Delete "' + it.name + '"';
+    del.addEventListener('click', () => deleteProject(it.name));
+    row.appendChild(open);
+    row.appendChild(del);
+    el.appendChild(row);
+  });
+}
+
+document.getElementById('btnProjSave').addEventListener('click', () => {
+  const input = document.getElementById('projName');
+  if (saveProject(input.value)) input.value = '';
+});
+document.getElementById('projName').addEventListener('keydown', (ev) => {
+  ev.stopPropagation();
+  if (ev.key === 'Enter') document.getElementById('btnProjSave').click();
+});
 
 document.getElementById('btnSave').addEventListener('click', () => {
   const doc = serializeDoc();
@@ -5772,8 +5938,13 @@ function init() {
   camBtn.textContent = 'Smart camera: ' + (App.smartCam ? 'On' : 'Off');
   document.getElementById('btnSymmetry').classList.toggle('active', App.symmetry);
   applySnapSettings();
-  const obj = createCubeObject('Cube 1', new THREE.Vector3(0, 0.5, 0));
-  App.selectedObjectIds = new Set([obj.id]);
+  // Pick up where you left off. Only fall back to a fresh cube when there's
+  // nothing to come back to.
+  if (!restoreAutosave()) {
+    const obj = createCubeObject('Cube 1', new THREE.Vector3(0, 0.5, 0));
+    App.selectedObjectIds = new Set([obj.id]);
+  }
+  refreshProjectList();
   refreshUI();
   refreshGizmoAttachment();
   pushHistory();
