@@ -11,6 +11,11 @@ No install, no account, no project files. Open it and push a cube around.
 
 **[Try it →](https://zeghreit.github.io/kubik/)**
 
+<img src="qr.png" alt="QR code linking to https://zeghreit.github.io/kubik/" width="200">
+
+Scan with a phone camera. It's built for a phone, so that's the way to see it
+properly — then **Share → Add to Home Screen** for fullscreen.
+
 ---
 
 ## What it does
