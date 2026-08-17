@@ -401,7 +401,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.39</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.40</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -724,9 +724,55 @@ orbit.enableDamping = true;
 orbit.dampingFactor = 0.11; // a little coast after a flick, which suits the feel we're after
 orbit.target.set(0, 0, 0);
 
-const transformControls = new TransformControls(camera, renderer.domElement);
-scene.add(transformControls.getHelper());
-transformControls.setSpace('world');
+/* Combined gizmo: translate, rotate and scale all shown at once, rather than
+   switching between them with a mode button. Three.js's TransformControls only
+   ever does one mode at a time, so this runs three independent instances
+   attached to the same pivot - a technique also used by DCC "universal
+   manipulator" widgets. Different sizes keep the three from visually
+   colliding: arrows reach furthest out, the rotate ring sits inside them, the
+   scale handles sit closest to the object. */
+const gizmoTranslate = new TransformControls(camera, renderer.domElement);
+const gizmoRotate = new TransformControls(camera, renderer.domElement);
+const gizmoScale = new TransformControls(camera, renderer.domElement);
+const gizmoList = [gizmoTranslate, gizmoRotate, gizmoScale];
+
+gizmoTranslate.setMode('translate');
+gizmoRotate.setMode('rotate');
+gizmoScale.setMode('scale');
+gizmoTranslate.setSize(1.0);
+gizmoRotate.setSize(0.8);
+gizmoScale.setSize(0.55);
+
+gizmoList.forEach(g => {
+  scene.add(g.getHelper());
+  g.setSpace('world');
+});
+
+// Kept for anything that still expects a single "transformControls" - always
+// points at the translate instance, which is attached/detached in lockstep
+// with the other two, so its .object stays a reliable source of truth for
+// "what's currently attached."
+const transformControls = gizmoTranslate;
+
+function detachAllGizmos() { gizmoList.forEach(g => g.detach()); }
+function attachAllGizmos(pivot) { gizmoList.forEach(g => g.attach(pivot)); applyGizmoFocus(); }
+
+// Isolating one gizmo (via the hub's Move/Rotate/Scale buttons) hides the
+// other two rather than detaching them, so re-attachment elsewhere doesn't
+// need to remember the focus state.
+function applyGizmoFocus() {
+  const focus = App.gizmoFocus;
+  const map = { translate: gizmoTranslate, rotate: gizmoRotate, scale: gizmoScale };
+  gizmoList.forEach(g => {
+    const show = !focus || g === map[focus];
+    g.enabled = show;
+    g.getHelper().visible = show;
+  });
+}
+
+// A pointer is "over a gizmo" if any of the three would intercept it.
+function anyGizmoAxis() { return gizmoList.some(g => g.axis); }
+function anyGizmoDragging() { return gizmoList.some(g => g.dragging); }
 
 // Small axis-cube gizmo, upper-right corner - click an axis to snap the view.
 // It gets its OWN renderer and canvas: sharing the main renderer meant the
@@ -754,7 +800,8 @@ const App = {
   objects: [],          // {id, name, mesh}
   nextId: 1,
   mode: 'object',        // object | vertex | edge | face
-  gizmoMode: 'translate', // translate | rotate | scale
+  gizmoMode: 'translate', // translate | rotate | scale (legacy, kept for the inspector label)
+  gizmoFocus: null,       // null = combo gizmo (all three); else isolate one for precision
   multiSelect: false,
   selectDrag: 'off',   // 'off' | 'box' | 'lasso'
   snap: false,
@@ -2838,11 +2885,26 @@ function connectVerticesOp(obj, selectedLogical) {
   return changed;
 }
 
-/* Edge loop: inserts a ring of edges running perpendicular to the selected
-   edge. Starting from the faces touching that edge, it steps across each quad
-   to the opposite edge and keeps going until the ring closes or runs out of
-   quads, then cuts every quad it crossed through the midpoints. */
-function edgeLoopOp(obj, startLogicalEdge) {
+/* Edge loop: inserts one or more rings of edges running perpendicular to the
+   selected edge. Starting from the faces touching that edge, it steps across
+   each quad to the opposite edge and keeps going until the ring closes or
+   runs out of quads, then cuts every quad it crossed at the given positions.
+
+   `positions` is a list of t-values in (0,1), each measured from the entry
+   edge's own a0 toward a1. A single 0.5 reproduces the old fixed-midpoint
+   behaviour; more values add more parallel loops in one pass; values other
+   than 0.5 slide the whole set toward one side of the ring.
+
+   The tricky part is that two quads sharing a crossed edge usually walk it in
+   opposite directions (that's what keeps outward normals consistent), so "t
+   from a0 toward a1" in one quad is "1-t" in its neighbour. Rather than
+   tracking that, every cut point is computed from the *entry* edge (a0,a1)
+   and the *exit* edge re-measured as (a3,a2) - i.e. starting from the corner
+   that sits on the same side as a0. That pairing is what a plain 0.5 already
+   did by accident (a symmetric point doesn't care which end you measure from);
+   this just makes it explicit so it stays correct once t moves off centre. */
+function edgeLoopOp(obj, startLogicalEdge, positions) {
+  const ts = (positions && positions.length ? positions : [0.5]).slice().sort((a, b) => a - b);
   const mesh = obj.mesh;
   const ed = toEditable(mesh);
   const mats = Array.isArray(mesh.material) ? mesh.material : (mesh.material = [mesh.material]);
@@ -2893,19 +2955,36 @@ function edgeLoopOp(obj, startLogicalEdge) {
     const a0 = lp[entry], a1 = lp[(entry + 1) % 4];
     const a2 = lp[exit], a3 = lp[(exit + 1) % 4];
 
-    // Midpoints are derived from positions, so neighbouring faces land on the
-    // exact same coordinates and weld together into one continuous edge.
-    const mid = (x, y) => {
-      const p = vecAt(ed, x).add(vecAt(ed, y)).multiplyScalar(0.5);
+    // A point at parameter t, pushed as a new vertex. Positions are derived
+    // from coordinates (not shared indices), so a neighbouring quad computing
+    // the same t on the same physical edge lands on the identical spot and
+    // welds into one continuous cut rather than leaving a seam.
+    const pointAt = (x, y, t) => {
+      const p = vecAt(ed, x).clone().lerp(vecAt(ed, y), t);
       const ni = ed.positions.length / 3;
       ed.positions.push(p.x, p.y, p.z);
       return ni;
     };
-    const m1 = mid(a0, a1), m2 = mid(a2, a3);
 
-    ed.groups[gi].triangles = fanTriangles([a1, a2, m2, m1]);
-    mats.push((mats[gi] || mats[0]).clone());
-    ed.groups.push({ triangles: fanTriangles([m1, m2, a3, a0]) });
+    // chainE runs a0 -> (cuts) -> a1; chainX runs a3 -> (cuts) -> a2, using
+    // the SAME t at each step - that's the a0/a3 and a1/a2 pairing above.
+    const chainE = [a0, ...ts.map(t => pointAt(a0, a1, t)), a1];
+    const chainX = [a3, ...ts.map(t => pointAt(a3, a2, t)), a2];
+
+    for (let k = 0; k < chainE.length - 1; k++) {
+      ed.groups[gi === undefined ? gi : gi].triangles; // no-op guard removed below
+    }
+    // Build the strip: first segment reuses this face's own group slot, the
+    // rest are appended as new faces.
+    for (let k = 0; k < chainE.length - 1; k++) {
+      const face = [chainE[k], chainE[k + 1], chainX[k + 1], chainX[k]];
+      if (k === 0) {
+        ed.groups[gi].triangles = fanTriangles(face);
+      } else {
+        mats.push((mats[gi] || mats[0]).clone());
+        ed.groups.push({ triangles: fanTriangles(face) });
+      }
+    }
   });
 
   rebuildFromEditable(obj, ed);
@@ -2999,8 +3078,52 @@ const OP_SPECS = {
       { key: 'flat', label: 'Flat' },
       { key: 'round', label: 'Round' }
     ]
+  },
+  loopcut: {
+    // The amount is a slide position along the ring, 0..1, centred at 0.5.
+    // With several loops it shifts the whole evenly-spaced set toward one
+    // side rather than moving them independently.
+    label: 'Loop', min: 0.05, max: 0.95, step: 0.01, start: 0.5, segments: true,
+    options: [
+      { key: 'even', label: 'Even' },
+      { key: 'slide', label: 'Slide' }
+    ]
   }
 };
+
+/* Where the cuts land along the ring.
+
+   'even' spreads N loops evenly and ignores the slider, which is what you
+   want for adding resolution - two loops at 1/3 and 2/3, three at 1/4, 2/4,
+   3/4, and so on.
+
+   'slide' keeps the same even spacing but slides the whole group along the
+   ring, so a single loop can be placed anywhere. The group is squeezed toward
+   whichever end it approaches so the outermost cut never reaches the existing
+   edge and collapses a face. */
+function loopCutPositions(count, mode, slide) {
+  const n = Math.max(1, Math.round(count));
+  const even = [];
+  for (let i = 1; i <= n; i++) even.push(i / (n + 1));
+  if (mode !== 'slide') return even;
+
+  const t = THREE.MathUtils.clamp(slide, 0.02, 0.98);
+  if (n === 1) return [t];
+
+  // The group narrows as it approaches either end so the outermost cut never
+  // reaches the existing edge. It also needs a floor: with many loops pushed
+  // hard against one side, a plain clamp would stack two cuts on the same
+  // spot, and coincident cuts weld into a zero-area face.
+  const MIN_GAP = 0.004;
+  const needed = (n - 1) * MIN_GAP;
+  let room = Math.min(t, 1 - t) * 0.9;
+  room = Math.max(room, needed / 2);
+
+  // Re-centre if the widened group would now overhang an end.
+  const half = room;
+  const centre = THREE.MathUtils.clamp(t, half + 0.005, 1 - half - 0.005);
+  return even.map(e => centre + (e - 0.5) * 2 * half);
+}
 
 function beginPendingOp(kind, obj, payload) {
   const spec = OP_SPECS[kind];
@@ -3016,7 +3139,7 @@ function beginPendingOp(kind, obj, payload) {
   // Default to the first mode that's actually offered for this selection.
   const opts = availableOpOptions(App.pendingOp);
   App.pendingOp.groupMode = opts.length ? opts[0].key : null;
-  transformControls.detach();
+  detachAllGizmos();
   hideRadialMenu();
   applyPendingOp();
   showOpBar();
@@ -3065,6 +3188,16 @@ function applyPendingOp() {
       if (idx >= 0) resultSelection.add(idx);
     });
 
+  } else if (op.kind === 'loopcut') {
+    ensureHelpers(obj);
+    const ts = loopCutPositions(op.segments || 1, op.groupMode || 'even', op.amount);
+    // The starting edge is stored as coordinates: every re-run rebuilds the
+    // mesh from the snapshot and renumbers everything, so ids would be stale.
+    const la = findLogicalByPosition(obj, op.payload.pa);
+    const lb = findLogicalByPosition(obj, op.payload.pb);
+    if (la >= 0 && lb >= 0) edgeLoopOp(obj, [la, lb], ts);
+    ensureHelpers(obj);
+
   } else if (op.kind === 'inset') {
     if (op.groupMode === 'each') {
       op.payload.groups.forEach(gi => {
@@ -3106,6 +3239,9 @@ function showOpBar() {
   const op = App.pendingOp;
   if (!op) return;
   const spec = OP_SPECS[op.kind];
+  // The extrude grouping chooser borrows this bar and hides some of these -
+  // put them all back before a real pending op uses it.
+  ['opSlider', 'opValue', 'opOk'].forEach(id => { document.getElementById(id).style.display = ''; });
   document.getElementById('opLabel').textContent = spec.label;
   opSliderEl.min = spec.min; opSliderEl.max = spec.max; opSliderEl.step = spec.step;
   opSliderEl.value = op.amount;
@@ -3116,6 +3252,7 @@ function showOpBar() {
   document.getElementById('opSegments').style.display = wantsSegments ? '' : 'none';
   document.getElementById('opSegValue').textContent = op.segments || 1;
   refreshOpGrouping();
+  refreshOpAmountVisibility();
   opBarEl.classList.add('show');
 }
 
@@ -3124,7 +3261,9 @@ function showOpBar() {
 function availableOpOptions(op) {
   const spec = op && OP_SPECS[op.kind];
   if (!spec || !spec.options) return [];
-  const many = (op.payload.groups || []).length > 1;
+  // Only face ops carry a `groups` payload; ops without one (loopcut) have no
+  // "several selected" notion, so nothing is filtered out for them.
+  const many = !op.payload.groups || op.payload.groups.length > 1;
   return spec.options.filter(o => many || !o.needsMultiple);
 }
 
@@ -3161,9 +3300,25 @@ function refreshOpGrouping() {
     });
     el.appendChild(b);
   });
+  refreshOpAmountVisibility();
 }
 
-function hideOpBar() { opBarEl.classList.remove('show'); }
+// The loop cut's slider only means something in Slide mode - in Even mode the
+// spacing is fixed by the count, so the control is hidden rather than left
+// sitting there doing nothing.
+function refreshOpAmountVisibility() {
+  const op = App.pendingOp;
+  if (!op) return;
+  const dead = op.kind === 'loopcut' && op.groupMode !== 'slide';
+  ['opSlider', 'opValue'].forEach(id => {
+    document.getElementById(id).style.display = dead ? 'none' : '';
+  });
+}
+
+function hideOpBar() {
+  opBarEl.classList.remove('show');
+  ['opSlider', 'opValue', 'opOk'].forEach(id => { document.getElementById(id).style.display = ''; });
+}
 
 function setPendingAmount(v) {
   const op = App.pendingOp;
@@ -3229,17 +3384,89 @@ function cancelPendingOp() {
   toast(OP_SPECS[op.kind].label + ' cancelled');
 }
 
+// A comfortably-clear-of-the-weld-threshold nub (weld rounds to 1e-4), not a
+// real distance. Extrude used to jump straight out to a visible default -
+// now it commits at essentially the original spot and hands you the gizmo to
+// place it, the same as dragging any other fresh selection.
+const EXTRUDE_COMMIT_NUB = 0.02;
+
 function extrudeSelection() {
   const obj = findObject(App.activeObjectId);
   if (!obj || App.selectedElements.size === 0) { toast('Select an edge or face to extrude'); return; }
   if (App.mode !== 'face' && App.mode !== 'edge') { toast('Extrude works in Edge or Face mode'); return; }
   ensureHelpers(obj);
 
-  const payload = App.mode === 'face'
-    ? { mode: 'face', groups: Array.from(App.selectedElements) }
-    : { mode: 'edge', pairs: Array.from(App.selectedElements).map(ei => obj.mesh.userData.topo.edges[ei].slice()) };
+  let resultSelection = new Set();
 
-  beginPendingOp('extrude', obj, payload);
+  if (App.mode === 'face') {
+    const groups = Array.from(App.selectedElements);
+    // Several faces at once still get a real topological choice - it's just
+    // one tap instead of a slider, and it commits the instant you make it.
+    if (groups.length > 1) { showExtrudeGroupingChooser(obj, groups); return; }
+    extrudeFaceGroup(obj, groups[0], EXTRUDE_COMMIT_NUB);
+    ensureHelpers(obj);
+    resultSelection = new Set(groups);
+  } else {
+    const pairs = Array.from(App.selectedElements).map(ei => obj.mesh.userData.topo.edges[ei].slice());
+    const newEdgePositions = [];
+    pairs.forEach(([la, lb]) => {
+      ensureHelpers(obj);
+      const topoNow = obj.mesh.userData.topo;
+      const idx = topoNow.edges.findIndex(e => (e[0] === la && e[1] === lb) || (e[0] === lb && e[1] === la));
+      if (idx >= 0) newEdgePositions.push(extrudeEdge(obj, idx, EXTRUDE_COMMIT_NUB));
+    });
+    ensureHelpers(obj);
+    const finalTopo = obj.mesh.userData.topo;
+    newEdgePositions.forEach(([pa, pb]) => {
+      const nla = findLogicalByPosition(obj, pa), nlb = findLogicalByPosition(obj, pb);
+      if (nla < 0 || nlb < 0) return;
+      const idx = finalTopo.edges.findIndex(e => (e[0] === nla && e[1] === nlb) || (e[0] === nlb && e[1] === nla));
+      if (idx >= 0) resultSelection.add(idx);
+    });
+  }
+
+  App.selectedElements = resultSelection;
+  finishMeshEdit(obj, 'Extruded - drag the gizmo to place it');
+}
+
+// One tap: pick how several faces extrude together, then commit immediately
+// at the same small nub and hand off to the gizmo, same as the single-face
+// path. Reuses the op bar's grouping-row look without its slider/OK/Cancel.
+function showExtrudeGroupingChooser(obj, groups) {
+  const el = document.getElementById('opGrouping');
+  const tips = {
+    each: 'Every face grows its own separate extrusion',
+    avg: 'Joined, lifted along one shared normal',
+    own: 'Joined, each part along its own normal'
+  };
+  el.innerHTML = '';
+  el.style.display = 'inline-flex';
+  OP_SPECS.extrude.options.forEach(o => {
+    const b = document.createElement('button');
+    b.textContent = o.label;
+    b.title = tips[o.key] || '';
+    b.addEventListener('click', () => {
+      hideOpBar();
+      let resultSelection;
+      if (o.key === 'each') {
+        groups.forEach(gi => { ensureHelpers(obj); extrudeFaceGroup(obj, gi, EXTRUDE_COMMIT_NUB); });
+      } else {
+        ensureHelpers(obj);
+        extrudeRegionOp(obj, groups, EXTRUDE_COMMIT_NUB, o.key === 'own');
+      }
+      ensureHelpers(obj);
+      resultSelection = new Set(groups);
+      App.selectedElements = resultSelection;
+      finishMeshEdit(obj, 'Extruded - drag the gizmo to place it');
+    });
+    el.appendChild(b);
+  });
+  document.getElementById('opLabel').textContent = 'Extrude';
+  document.getElementById('opSlider').style.display = 'none';
+  document.getElementById('opValue').style.display = 'none';
+  document.getElementById('opSegments').style.display = 'none';
+  document.getElementById('opOk').style.display = 'none';
+  opBarEl.classList.add('show');
 }
 
 function finishMeshEdit(obj, message) {
@@ -3389,7 +3616,9 @@ function connectSelection() {
   finishMeshEdit(obj, 'Connected vertices');
 }
 
-// Edge mode: insert a ring of edges running perpendicular to the selection.
+// Edge mode: insert one or more rings of edges running perpendicular to the
+// selection. Live-adjustable: change the count or slide the ring and watch it
+// update, then confirm.
 function edgeLoopSelection() {
   const obj = findObject(App.activeObjectId);
   if (App.mode !== 'edge') { toast('Edge Loop works in Edge mode'); return; }
@@ -3397,13 +3626,13 @@ function edgeLoopSelection() {
 
   ensureHelpers(obj);
   const first = Array.from(App.selectedElements)[0];
-  const pair = obj.mesh.userData.topo.edges[first].slice();
-  const cut = edgeLoopOp(obj, pair);
-  if (!cut) { toast('No loop found across this edge'); return; }
+  const pair = obj.mesh.userData.topo.edges[first];
+  if (!pair) { toast('Select an edge first'); return; }
 
-  ensureHelpers(obj);
-  App.selectedElements = new Set();
-  finishMeshEdit(obj, 'Edge loop added (' + cut + ' faces cut)');
+  beginPendingOp('loopcut', obj, {
+    pa: logicalPos(obj, pair[0]),
+    pb: logicalPos(obj, pair[1])
+  });
 }
 
 // Edge mode: insert a midpoint on each selected edge.
@@ -3540,9 +3769,14 @@ function setMode(mode) {
 }
 
 function setGizmoMode(mode) {
+  // Tapping the already-isolated tool returns to the combo view; tapping a
+  // different one isolates that one instead. All three stay attached and
+  // interactive throughout - this only changes which are drawn/pickable.
   App.gizmoMode = mode;
-  transformControls.setMode(mode);
+  App.gizmoFocus = (App.gizmoFocus === mode) ? null : mode;
+  applyGizmoFocus();
   refreshUI();
+  refreshHub();
 }
 
 function clearObjectSelection() { App.selectedObjectIds.clear(); }
@@ -3577,7 +3811,7 @@ function getOrCreatePivot() {
 
 function refreshGizmoAttachment() {
   scheduleSmartCamera();
-  transformControls.detach();
+  detachAllGizmos();
 
   if (App.mode === 'object') {
     const ids = Array.from(App.selectedObjectIds);
@@ -3593,7 +3827,7 @@ function refreshGizmoAttachment() {
       pivot.quaternion.identity();
       pivot.scale.set(1, 1, 1);
       pivot.updateMatrix();
-      transformControls.attach(pivot);
+      attachAllGizmos(pivot);
     }
   } else {
     const obj = findObject(App.activeObjectId);
@@ -3617,18 +3851,24 @@ function refreshGizmoAttachment() {
       pivot.position.copy(center);
       pivot.quaternion.identity();
       pivot.scale.set(1, 1, 1);
-      transformControls.attach(pivot);
+      attachAllGizmos(pivot);
     }
   }
 }
 
 let dragCtx = null;
+// Three instances share one drag session: a count rather than a plain flag,
+// so a stray double-fire can't leave orbit disabled or drop the snapshot
+// early. In ordinary single-touch use only one gizmo is ever grabbed at once.
+let activeGizmoDrags = 0;
 
-transformControls.addEventListener('dragging-changed', (e) => {
-  orbit.enabled = !e.value;
-  if (e.value) {
-    // drag start: snapshot
-    const pivot = transformControls.object;
+function handleGizmoDraggingChanged(ev) {
+  if (ev.value) {
+    activeGizmoDrags++;
+    orbit.enabled = false;
+    if (dragCtx) return; // a session is already being tracked
+
+    const pivot = ev.target.object;
     if (!pivot) return;
 
     pivot.updateMatrix();
@@ -3660,10 +3900,15 @@ transformControls.addEventListener('dragging-changed', (e) => {
       dragCtx.mirrorMap = App.symmetry ? buildSymmetryMap(obj, App.symmetryAxis) : null;
     }
   } else {
-    dragCtx = null;
-    pushHistory();
+    activeGizmoDrags = Math.max(0, activeGizmoDrags - 1);
+    orbit.enabled = activeGizmoDrags === 0;
+    if (activeGizmoDrags === 0) {
+      dragCtx = null;
+      pushHistory();
+    }
   }
-});
+}
+gizmoList.forEach(g => g.addEventListener('dragging-changed', handleGizmoDraggingChanged));
 
 /* Gizmo sensitivity. TransformControls maps pointer motion 1:1 onto rotation
    and scale, which feels far too fast on a touch screen. Since every transform
@@ -3701,13 +3946,22 @@ function dampPivotDelta(deltaMatrix, pivotStart) {
     1 + (scl.y - 1) * sclFactor,
     1 + (scl.z - 1) * sclFactor
   );
+  // Dragging a scale handle back past the pivot would otherwise flip the
+  // selection inside out (negative scale = mirrored geometry). Flooring each
+  // axis to a small positive value means the drag can shrink a selection down
+  // to almost nothing, but it can never cross zero and invert it.
+  const MIN_SCALE_FACTOR = 0.02;
+  softScale.x = Math.max(MIN_SCALE_FACTOR, Math.abs(softScale.x));
+  softScale.y = Math.max(MIN_SCALE_FACTOR, Math.abs(softScale.y));
+  softScale.z = Math.max(MIN_SCALE_FACTOR, Math.abs(softScale.z));
   const softLocal = new THREE.Matrix4().compose(softPos, softQuat, softScale);
   return new THREE.Matrix4().multiplyMatrices(fromOrigin, new THREE.Matrix4().multiplyMatrices(softLocal, toOrigin));
 }
 
-transformControls.addEventListener('objectChange', () => {
+function handleGizmoObjectChange(ev) {
   if (!dragCtx) { refreshInspector(); return; }
-  const pivot = transformControls.object;
+  const pivot = ev.target.object;
+  if (!pivot) return;
   pivot.updateMatrix();
   const rawDelta = new THREE.Matrix4().copy(pivot.matrix).multiply(new THREE.Matrix4().copy(dragCtx.pivotStart).invert());
   const deltaMatrix = dampPivotDelta(rawDelta, dragCtx.pivotStart);
@@ -3754,7 +4008,8 @@ transformControls.addEventListener('objectChange', () => {
     syncHelperGeometry(obj);
   }
   refreshInspector(); // keep typed values in step with gizmo dragging
-});
+}
+gizmoList.forEach(g => g.addEventListener('objectChange', handleGizmoObjectChange));
 
 /* ---------------- Raycasting / picking ---------------- */
 
@@ -4058,7 +4313,7 @@ let boxDrag = null;
 let radialWasOpen = false;
 
 renderer.domElement.addEventListener('pointerdown', (ev) => {
-  pointerDown = { x: ev.clientX, y: ev.clientY, t: performance.now(), overGizmo: transformControls.axis !== null };
+  pointerDown = { x: ev.clientX, y: ev.clientY, t: performance.now(), overGizmo: anyGizmoAxis() };
   camAnim = null; // a new touch/click cancels any in-flight focus animation
   cancelSmartCamera();
   radialWasOpen = radialEl.classList.contains('show');
@@ -4703,7 +4958,7 @@ function deleteSelection() {
       if (App.activeObjectId === id) App.activeObjectId = null;
     });
     App.selectedObjectIds.clear();
-    transformControls.detach();
+    detachAllGizmos();
     hideRadialMenu();
     refreshUI();
     pushHistory();
@@ -4727,7 +4982,7 @@ function deleteSelection() {
     App.objects = App.objects.filter(o => o.id !== obj.id);
     App.activeObjectId = null;
     App.selectedObjectIds.clear();
-    transformControls.detach();
+    detachAllGizmos();
     toast('That was the last face - removed the object');
   } else {
     ensureHelpers(obj);
@@ -4750,7 +5005,7 @@ function weldSelection() {
     disposeObject(obj);
     App.objects = App.objects.filter(o => o.id !== obj.id);
     App.activeObjectId = null;
-    transformControls.detach();
+    detachAllGizmos();
     toast('Welding collapsed the whole mesh - removed the object');
   } else {
     ensureHelpers(obj);
@@ -4785,9 +5040,9 @@ const SNAP_ROTATE = Math.PI / 12; // 15 degrees
 const SNAP_SCALE = 0.1;
 
 function applySnapSettings() {
-  transformControls.setTranslationSnap(App.snap ? SNAP_MOVE : null);
-  transformControls.setRotationSnap(App.snap ? SNAP_ROTATE : null);
-  transformControls.setScaleSnap(App.snap ? SNAP_SCALE : null);
+  gizmoTranslate.setTranslationSnap(App.snap ? SNAP_MOVE : null);
+  gizmoRotate.setRotationSnap(App.snap ? SNAP_ROTATE : null);
+  gizmoScale.setScaleSnap(App.snap ? SNAP_SCALE : null);
 }
 
 /* ---------------- Numeric transform panel ---------------- */
@@ -4910,7 +5165,7 @@ function mirrorSelectedObjects(axis) {
   });
 
   App.selectedObjectIds = new Set(created);
-  transformControls.detach();
+  detachAllGizmos();
   hideRadialMenu();
   refreshUI();
   refreshGizmoAttachment();
@@ -4927,7 +5182,7 @@ function joinSelection() {
   if (!merged) { toast('Nothing to join'); return; }
   removeObjects(objs);
   App.selectedObjectIds = new Set([merged.id]);
-  transformControls.detach();
+  detachAllGizmos();
   hideRadialMenu();
   refreshUI();
   refreshGizmoAttachment();
@@ -5028,7 +5283,7 @@ function restoreDoc(doc, opts = {}) {
     elements: Array.from(App.selectedElements)
   };
 
-  transformControls.detach();
+  detachAllGizmos();
   hideRadialMenu();
   App.objects.slice().forEach(o => disposeObject(o));
   App.objects = [];
@@ -5477,7 +5732,7 @@ function setHubOpen(open) {
 
 function refreshHub() {
   hubArcEl.querySelectorAll('.hub-item').forEach(el => {
-    el.classList.toggle('active', el.dataset.key === App.gizmoMode);
+    el.classList.toggle('active', el.dataset.key === App.gizmoFocus);
   });
 }
 
@@ -5806,7 +6061,7 @@ function smartCameraTargetInfo() {
 function runSmartCamera() {
   if (!App.smartCam) return;
   // Never steal the view mid-gesture - wait until hands are off.
-  if (pointerDown || boxDrag || transformControls.dragging) { scheduleSmartCamera(); return; }
+  if (pointerDown || boxDrag || anyGizmoDragging()) { scheduleSmartCamera(); return; }
 
   const info = smartCameraTargetInfo();
   if (!info) return;
