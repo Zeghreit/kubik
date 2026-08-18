@@ -395,7 +395,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.62</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.63</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -702,6 +702,53 @@ const GIZMO_AXES = [
   { key: 'y', dir: new THREE.Vector3(0, 1, 0), color: 0xE8C87A },
   { key: 'z', dir: new THREE.Vector3(0, 0, 1), color: 0x4A82B8 }
 ];
+
+const viewCubeEl = document.getElementById('viewCube');
+
+/* The view cube renders through its own renderer and canvas, kept separate
+   from the main viewport - sharing one caused blank frames on iPhone. */
+const cubeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+cubeRenderer.setPixelRatio(pixelRatio);
+cubeRenderer.setSize(96, 96);
+viewCubeEl.appendChild(cubeRenderer.domElement);
+
+const viewHelper = new ViewHelper(camera, viewCubeEl);
+viewHelper.location = { top: 0, right: 0, bottom: 0, left: 0 };
+viewHelper.center = orbit.target; // shares the same object, stays in sync automatically
+
+const raycaster = new THREE.Raycaster();
+
+const App = {
+  objects: [],          // {id, name, mesh}
+  nextId: 1,
+  mode: 'object',        // object | vertex | edge | face
+  multiSelect: true,  // permanently on: every tap adds, tap empty space to clear
+  transformTool: 'move',   // move | rotate | scale - cycled by two-finger tap
+  lastComponentMode: 'face', // resumed when the Object/Component toggle re-enters Component mode
+  selectDrag: 'off',   // 'off' | 'box' | 'lasso'
+  snap: false,
+  shadeSmooth: false,  // simple on/off toggle, not a readout of mixed per-face state - matches applyFinishToSelection's cycling approach
+  theme: 'dark',
+  fillet: false,
+  filletRadius: 0.04,
+  sensitivity: 0.7,   // transform speed multiplier, tunable in the drawer
+  smartCam: true,     // camera drifts to a useful angle after you select
+  pendingOp: null,
+  symmetry: false,
+  symmetryAxis: 'x',
+  showInspector: false,
+  selectedObjectIds: new Set(),
+  activeObjectId: null,   // used for vertex/edge/face editing
+  selectedElements: new Set(), // logical vertex ids / edge indices / face-group indices, for activeObjectId
+  edgeAnchor: null,      // edge selected by the previous single tap, for path selection
+  edgeAnchorTime: 0,     // when that tap happened - a stale anchor is ignored
+  history: [],
+  historyIndex: -1,
+  pivot: null,            // temp pivot object for multi/element transforms
+  dragStart: null,        // bookkeeping captured on drag start
+};
+
+
 /* ---------------- Themes ----------------
    Two complete looks, each covering the interface and the 3D scene together -
    lighting included, since a palette that ignores how the model is lit only
