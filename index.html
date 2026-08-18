@@ -399,7 +399,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.55</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.56</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -713,8 +713,71 @@ function makeGizmoMat(color) {
   });
 }
 
+/* ---------------- Ghost state ----------------
+   At rest the gizmo is just a small dot with three short neutral ticks - the
+   model stays the hero. Touching the dot blooms the handles out; they fade
+   back on their own once you stop using them.
+
+   The dot matters more than it looks: it's the one thing that stays visible,
+   so the control is never truly invisible. Hidden controls with no signifier
+   are the ones people never find.
+
+   Neutral at rest, coloured only once bloomed - quieter, and it keeps the
+   red/green axis pair from being the only thing distinguishing handles for
+   anyone who can't separate those two hues. */
+const GHOST_NEUTRAL = 0xbfc6d4;
+const BLOOM_IN = 0.18;      // seconds to open
+const BLOOM_OUT = 0.14;     // seconds to fade back
+const BLOOM_IDLE_MS = 3800; // fades back after this long untouched
+const PIVOT_TAP_PX = 46;    // thumb-sized catch radius around the dot
+
+let gizmoBloom = 0;         // 0 = ghost, 1 = fully open
+let gizmoBloomTarget = 0;
+let gizmoLastTouch = 0;
+let ghostShownOnce = false;
+
+const gizmoGhost = new THREE.Group();
+gizmoGhost.renderOrder = 1000;
+gizmoRoot.add(gizmoGhost);
+
+const pivotDot = new THREE.Mesh(
+  new THREE.SphereGeometry(1, 14, 10),
+  new THREE.MeshBasicMaterial({ color: GHOST_NEUTRAL, depthTest: false, transparent: true, opacity: 0.55 })
+);
+pivotDot.renderOrder = 1001;
+gizmoGhost.add(pivotDot);
+
+const ghostTicks = GIZMO_AXES.map(ax => {
+  const t = new THREE.Mesh(
+    new THREE.CylinderGeometry(1, 1, 1, 6),
+    new THREE.MeshBasicMaterial({ color: GHOST_NEUTRAL, depthTest: false, transparent: true, opacity: 0.28 })
+  );
+  t.userData.alignY = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), ax.dir);
+  t.userData.dir = ax.dir;
+  t.renderOrder = 1001;
+  gizmoGhost.add(t);
+  return t;
+});
+
+function openGizmoBloom() {
+  gizmoBloomTarget = 1;
+  gizmoLastTouch = performance.now();
+}
+function closeGizmoBloom() { gizmoBloomTarget = 0; }
+
+// Is this pointer on the resting dot? Measured in screen pixels so the catch
+// area is thumb-sized regardless of zoom.
+function pointerOnPivotDot(ev) {
+  if (!gizmoRoot.visible || !gizmoTarget) return false;
+  const sc = worldToScreen(gizmoTarget.position);
+  if (!sc) return false;
+  const rect = viewportEl.getBoundingClientRect();
+  return Math.hypot(ev.clientX - rect.left - sc.x, ev.clientY - rect.top - sc.y) <= PIVOT_TAP_PX;
+}
+
 function addGizmoPart(mesh, kind, axis, color) {
   mesh.userData.gizmo = { kind, axis, color };
+  mesh.userData.baseOpacity = 0.5;
   mesh.renderOrder = 999;
   gizmoParts.push(mesh);
   gizmoRoot.add(mesh);
@@ -778,12 +841,28 @@ function selectionRadius() {
   return Math.max(size.x, size.y, size.z) * 0.5;
 }
 
-function updateGizmoScale() {
+function updateGizmoScale(dt) {
   if (!gizmoRoot.visible || !gizmoTarget) return;
   const pivot = gizmoTarget.position;
   gizmoRoot.position.copy(pivot);
   gizmoRoot.quaternion.identity();   // world-aligned axes
   gizmoRoot.scale.setScalar(1);      // parts size themselves individually
+
+  // Bloom eases open faster than it fades shut - appearing should feel
+  // immediate, disappearing shouldn't snatch handles away mid-thought.
+  const now = performance.now();
+  if (gizmoBloomTarget === 1 && !gizmoDrag && now - gizmoLastTouch > BLOOM_IDLE_MS) gizmoBloomTarget = 0;
+  // Advance at a fixed rate rather than easing exponentially toward the
+  // target: an exponential approach never actually arrives, so BLOOM_IN
+  // would behave as a decay rate and the "180ms" bloom would really take
+  // about a second. Stepping linearly and easing the result afterwards
+  // gives the duration the constant actually promises.
+  const dur = (gizmoBloomTarget > gizmoBloom ? BLOOM_IN : BLOOM_OUT);
+  const step = (dt || 0.016) / dur;
+  if (gizmoBloomTarget > gizmoBloom) gizmoBloom = Math.min(gizmoBloomTarget, gizmoBloom + step);
+  else gizmoBloom = Math.max(gizmoBloomTarget, gizmoBloom - step);
+  // Ease-out so handles arrive gently rather than snapping to a stop.
+  const b = 1 - Math.pow(1 - gizmoBloom, 3);
 
   // Screen-constant reference: how big one unit is at this camera distance.
   const k = camera.position.distanceTo(pivot) * 0.13;
@@ -800,6 +879,18 @@ function updateGizmoScale() {
     Math.sign(camera.position.y - pivot.y) || 1,
     Math.sign(camera.position.z - pivot.z) || 1
   );
+
+  // Resting dot and ticks: always there, shrinking slightly as the handles
+  // take over so the two states don't compete for attention.
+  pivotDot.scale.setScalar(k * 0.05 * (1 - b * 0.25));
+  pivotDot.material.opacity = 0.55 - b * 0.2;
+  ghostTicks.forEach(t => {
+    t.quaternion.copy(t.userData.alignY);
+    t.scale.set(k * 0.012, k * 0.22, k * 0.012);
+    t.position.copy(t.userData.dir).multiplyScalar(k * 0.16);
+    t.material.opacity = 0.28 * (1 - b);
+    t.visible = b < 0.98;
+  });
 
   gizmoParts.forEach(pt => {
     const g = pt.userData.gizmo;
@@ -823,6 +914,13 @@ function updateGizmoScale() {
       pt.scale.setScalar(k * 0.3);
       pt.position.copy(ax.dir).multiplyScalar(rScl * sgnFor(ax.key, sgn));
     }
+
+    // The bloom itself: handles grow out from the pivot rather than simply
+    // fading in, so the motion reads as them coming from the dot you touched.
+    pt.position.multiplyScalar(0.35 + 0.65 * b);
+    pt.scale.multiplyScalar(0.45 + 0.55 * b);
+    pt.visible = b > 0.02 && (!App.gizmoFocus || pt.userData.gizmo.kind === App.gizmoFocus);
+    pt.material.opacity = pt.userData.baseOpacity * b;
   });
   gizmoRoot.updateMatrixWorld(true);
 }
@@ -844,9 +942,11 @@ function setGizmoHighlight(activeAxis, activeKind) {
   gizmoParts.forEach(pt => {
     const g = pt.userData.gizmo;
     pt.material.color.setHex(g.color);
-    if (!activeAxis) { pt.material.opacity = GIZMO_OPACITY_REST; return; }
+    // Recorded rather than applied directly: the bloom multiplies this every
+    // frame, so writing material.opacity here would just be overwritten.
+    if (!activeAxis) { pt.userData.baseOpacity = GIZMO_OPACITY_REST; return; }
     const on = g.axis === activeAxis && (!activeKind || g.kind === activeKind);
-    pt.material.opacity = on ? GIZMO_OPACITY_ACTIVE : GIZMO_OPACITY_BLOCKED;
+    pt.userData.baseOpacity = on ? GIZMO_OPACITY_ACTIVE : GIZMO_OPACITY_BLOCKED;
   });
 }
 
@@ -855,13 +955,24 @@ function setGizmoHighlight(activeAxis, activeKind) {
 function detachAllGizmos() {
   gizmoTarget = null;
   gizmoRoot.visible = false;
+  // Reset rather than ease - the gizmo is hidden anyway, and next time it
+  // appears it should start as a ghost, not mid-fade from last time.
+  gizmoBloom = 0;
+  gizmoBloomTarget = 0;
   setGizmoHighlight(null, null);
 }
 function attachAllGizmos(pivot) {
   gizmoTarget = pivot;
   gizmoRoot.visible = true;
   applyGizmoFocus();
-  updateGizmoScale();
+  // Show the handles once, unprompted, the very first time anything is
+  // selected. One silent demonstration beats a tutorial, and without it a
+  // newcomer has no reason to suspect the dot does anything.
+  if (!ghostShownOnce) {
+    ghostShownOnce = true;
+    openGizmoBloom();
+  }
+  updateGizmoScale(0.016);
 }
 // Isolating one tool hides the other two rather than detaching anything.
 function applyGizmoFocus() {
@@ -4152,6 +4263,7 @@ function beginGizmoDrag(ev, part) {
 
 function updateGizmoDrag(ev) {
   if (!gizmoDrag || !dragCtx) return;
+  gizmoLastTouch = performance.now();
   const s = App.sensitivity;
   const { dir, origin, kind } = gizmoDrag;
   const T = new THREE.Matrix4().makeTranslation(origin.x, origin.y, origin.z);
@@ -4213,6 +4325,7 @@ function pickGizmoPart(ev) {
   // a second handle being co-grabbed mid-drag and mixing two transforms.
   if (gizmoDrag) return null;
   if (!gizmoRoot.visible) return null;
+  if (gizmoBloom < 0.5) return null;   // still a ghost - nothing to grab yet
   raycaster.setFromCamera(ndcFromEvent(ev), camera);
   const hits = raycaster.intersectObjects(gizmoParts.filter(p => p.visible), false);
   return hits.length ? hits[0].object : null;
@@ -4591,6 +4704,17 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   // since move/rotate/scale now sit at different distances from the centre.
   const part = pickGizmoPart(ev);
   if (part && beginGizmoDrag(ev, part)) {
+    gizmoLastTouch = performance.now();
+    pointerDown = { x: ev.clientX, y: ev.clientY, t: performance.now(), overGizmo: true };
+    return;
+  }
+
+  // Touching the resting dot summons the handles. Deliberately its own small
+  // catch area rather than "anywhere near the object" - tapping the object
+  // already means select, and the two must not fight.
+  if (pointerOnPivotDot(ev)) {
+    if (gizmoBloomTarget === 1 && gizmoBloom > 0.5) closeGizmoBloom();
+    else openGizmoBloom();
     pointerDown = { x: ev.clientX, y: ev.clientY, t: performance.now(), overGizmo: true };
     return;
   }
@@ -6464,7 +6588,7 @@ function animate() {
   }
   if (viewHelper.animating) { viewHelper.update(delta); camAnim = null; }
   orbit.update();
-  updateGizmoScale();
+  updateGizmoScale(delta);
   updateSelGestureAnchor();
   renderer.render(scene, camera);
   // Separate renderer - cannot affect the main viewport above.
