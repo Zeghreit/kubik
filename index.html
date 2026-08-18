@@ -134,35 +134,18 @@
     font-size: 17px; border-radius: 12px; background: var(--panel2);
   }
 
-  /* Reads as one tool with the transform gizmo: JS re-projects the anchor's
-     screen position every frame and these three sit on a small arc through
-     its upper-left quarter - that range is deliberate, since the hub's own
-     tool arc only ever sweeps the 6-90 degree range and this stays above 90,
-     so the two can never overlap.
-
-     Starts hidden on purpose: until the first animation frame runs, the row
-     sits at 0,0 with no per-button transform yet, so all three would stack
-     in the viewport's top-left corner - you'd see the last one painted
-     (Lasso) sitting there. JS shows it only once it has a real gizmo
-     position to place it at. */
-  /* Which transform a drag will perform. Sits with the other persistent
-     readouts rather than in the thumb's way - it's something you glance at,
-     not something you press. */
-  #toolChip {
-    position: absolute; left: 50%; transform: translateX(-50%); bottom: 12px; z-index: 13;
-    display: flex; align-items: center; gap: 6px;
-    padding: 5px 11px; border-radius: 999px;
-    background: rgb(var(--hint-bg) / .8); border: 1px solid var(--line);
-    color: var(--text-dim); font-size: 11px; font-weight: 600;
-    letter-spacing: .04em; text-transform: uppercase; pointer-events: none;
+  /* A fixed column down the left edge. It used to chase the gizmo's screen
+     position, but with the gizmo gone there's nothing to follow - and a
+     control that stays put is easier to reach for anyway. Vertically centred
+     so it's within a thumb's arc without crowding the hub below it. */
+  #selGestureRow {
+    position: absolute; left: calc(10px + env(safe-area-inset-left));
+    top: 50%; transform: translateY(-50%);
+    display: flex; flex-direction: column; gap: 8px; z-index: 13;
   }
-  #toolChip .ic { display: flex; color: var(--accent); }
-
-  #selGestureRow { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 13; display: none; }
   #selGestureRow button {
-    position: absolute; left: 0; top: 0;
-    width: 36px; height: 36px; min-height: 36px; padding: 0; justify-content: center;
-    border-radius: 10px; background: var(--panel2);
+    width: 40px; height: 40px; min-height: 40px; padding: 0; justify-content: center;
+    border-radius: 12px; background: var(--panel2);
   }
 
   .ic-svg { display: block; }
@@ -412,7 +395,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.59</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.60</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -719,203 +702,10 @@ const GIZMO_AXES = [
   { key: 'y', dir: new THREE.Vector3(0, 1, 0), color: 0xE8C87A },
   { key: 'z', dir: new THREE.Vector3(0, 0, 1), color: 0x4A82B8 }
 ];
-const GIZMO_STROKE_PX = 2;   // drawn weight, shared by every handle
-const R_MOVE = 1.0;   // bars sit on the object
-const R_ROT  = 1.45;  // arcs just outside it
-const R_SCL  = 2.05;  // triangles furthest out
-
-const gizmoRoot = new THREE.Group();
-gizmoRoot.visible = false;
-gizmoRoot.renderOrder = 999;
-scene.add(gizmoRoot);
-
-const gizmoParts = [];   // every pickable handle
-let gizmoTarget = null;  // the pivot we're driving
-let gizmoHoverAxis = null;
-
-/* ---------------- Ghost state ----------------
-   At rest the gizmo is just a small dot with three short neutral ticks - the
-   model stays the hero. Touching the dot blooms the handles out; they fade
-   back on their own once you stop using them.
-
-   The dot matters more than it looks: it's the one thing that stays visible,
-   so the control is never truly invisible. Hidden controls with no signifier
-   are the ones people never find.
-
-   Neutral at rest, coloured only once bloomed - quieter, and it keeps the
-   red/green axis pair from being the only thing distinguishing handles for
-   anyone who can't separate those two hues. */
-const GHOST_NEUTRAL = 0xbfc6d4;
-const BLOOM_IN = 0.18;      // seconds to open
-const BLOOM_OUT = 0.14;     // seconds to fade back
-const BLOOM_IDLE_MS = 3800; // fades back after this long untouched
-const PIVOT_TAP_PX = 46;    // thumb-sized catch radius around the dot
-
-let gizmoBloom = 0;         // 0 = ghost, 1 = fully open
-let gizmoBloomTarget = 0;
-let gizmoLastTouch = 0;
-let ghostShownOnce = false;
-
-const gizmoGhost = new THREE.Group();
-gizmoGhost.renderOrder = 1000;
-gizmoRoot.add(gizmoGhost);
-
-const pivotDot = new THREE.Mesh(
-  new THREE.SphereGeometry(1, 14, 10),
-  new THREE.MeshBasicMaterial({ color: GHOST_NEUTRAL, depthTest: false, transparent: true, opacity: 0.55 })
-);
-pivotDot.renderOrder = 1001;
-gizmoGhost.add(pivotDot);
-
-const ghostTicks = GIZMO_AXES.map(ax => {
-  const t = new THREE.Mesh(
-    new THREE.CylinderGeometry(1, 1, 1, 6),
-    new THREE.MeshBasicMaterial({ color: GHOST_NEUTRAL, depthTest: false, transparent: true, opacity: 0.28 })
-  );
-  t.userData.alignY = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), ax.dir);
-  t.userData.dir = ax.dir;
-  t.renderOrder = 1001;
-  gizmoGhost.add(t);
-  return t;
-});
-
-function openGizmoBloom() {
-  gizmoBloomTarget = 1;
-  gizmoLastTouch = performance.now();
-}
-function closeGizmoBloom() { gizmoBloomTarget = 0; }
-
-// Is this pointer on the resting dot? Measured in screen pixels so the catch
-// area is thumb-sized regardless of zoom.
-function pointerOnPivotDot(ev) {
-  if (!gizmoRoot.visible || !gizmoTarget) return false;
-  const sc = worldToScreen(gizmoTarget.position);
-  if (!sc) return false;
-  const rect = viewportEl.getBoundingClientRect();
-  return Math.hypot(ev.clientX - rect.left - sc.x, ev.clientY - rect.top - sc.y) <= PIVOT_TAP_PX;
-}
-
-function addGizmoPart(mesh, kind, axis, color) {
-  mesh.userData.gizmo = { kind, axis, color };
-  mesh.userData.baseOpacity = 0.5;
-  mesh.renderOrder = 999;
-  gizmoParts.push(mesh);
-  gizmoRoot.add(mesh);
-}
-
-/* ---------------- Handle construction ----------------
-   Every handle is two objects: a thin stroke you see, and a fat invisible
-   proxy you actually hit. Keeping them separate is the whole trick - the
-   commonest complaint about thin gizmos is that they become impossible to
-   grab, and that only happens when the drawn weight and the hit area are
-   the same object. Here the stroke can go down to 2px while the proxy stays
-   exactly as chunky as a thumb needs.
-
-   The three handles are deliberately one family: same stroke weight, same
-   round caps, differing only in how they terminate. A bar with a dot means
-   move, an arc means rotate, a small open square means scale. Three
-   siblings, not three unrelated solids. */
-
-const gizmoStrokes = [];   // every drawn line, for resolution + opacity upkeep
-
-function makeStrokeMat(color) {
-  const m = new LineMaterial({
-    color,
-    linewidth: GIZMO_STROKE_PX,
-    worldUnits: false,      // width in screen pixels - constant at any zoom
-    alphaToCoverage: true,  // softens the stroke edges
-    transparent: true,
-    opacity: 0.9,
-    depthTest: false,
-    depthWrite: false
-  });
-  m.resolution.set(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
-  return m;
-}
-
-function makeStroke(points, color) {
-  const g = new LineGeometry();
-  g.setPositions(points);
-
-  /* A wider, dimmer stroke sits underneath as a halo. The axis colours are
-     muted by design, which reads beautifully on the dark theme but washes
-     out against pale paper - the halo restores the edge without needing a
-     second, brighter palette for Daylight. */
-  const halo = new Line2(g, makeStrokeMat(0x000000));
-  halo.material.linewidth = GIZMO_STROKE_PX + 2.5;
-  halo.material.opacity = 0;
-  halo.computeLineDistances();
-  halo.renderOrder = 999;
-  gizmoStrokes.push(halo);
-  gizmoRoot.add(halo);
-
-  const line = new Line2(g, makeStrokeMat(color));
-  line.computeLineDistances();
-  line.renderOrder = 1000;
-  line.userData.halo = halo;
-  gizmoStrokes.push(line);
-  gizmoRoot.add(line);
-  return line;
-}
-
-// Invisible, but still raycast against - this is what the thumb actually hits.
-function makeProxyMat() {
-  return new THREE.MeshBasicMaterial({
-    transparent: true, opacity: 0, depthTest: false, depthWrite: false, side: THREE.DoubleSide
-  });
-}
-
-function unitSegmentPoints() { return [0, -0.5, 0, 0, 0.5, 0]; }
-
-function unitArcPoints(sweep, steps) {
-  const pts = [];
-  for (let i = 0; i <= steps; i++) {
-    const t = (i / steps) * sweep;
-    pts.push(Math.cos(t), Math.sin(t), 0);
-  }
-  return pts;
-}
-
-// Open square outline - the conventional "scale" mark, drawn rather than solid.
-function unitSquarePoints() {
-  const h = 0.5;
-  return [-h, -h, 0,  h, -h, 0,  h, h, 0,  -h, h, 0,  -h, -h, 0];
-}
-
-function buildGizmo() {
-  GIZMO_AXES.forEach(ax => {
-    const alignY = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), ax.dir);
-    const alignZ = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), ax.dir);
-
-    // Move: a bar along the object's edge, with a small dot terminal.
-    const barProxy = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 1, 8), makeProxyMat());
-    barProxy.userData.alignY = alignY;
-    barProxy.userData.stroke = makeStroke(unitSegmentPoints(), ax.color);
-    barProxy.userData.cap = (() => {
-      const d = new THREE.Mesh(new THREE.SphereGeometry(1, 10, 8),
-        new THREE.MeshBasicMaterial({ color: ax.color, depthTest: false, depthWrite: false, transparent: true, opacity: 0.9 }));
-      d.renderOrder = 1001;
-      gizmoRoot.add(d);
-      return d;
-    })();
-    addGizmoPart(barProxy, 'move', ax.key, ax.color);
-
-    // Rotate: a quarter arc. Three arcs read as three handles; three full
-    // rings read as a tangle.
-    const arcProxy = new THREE.Mesh(new THREE.TorusGeometry(1, 0.12, 6, 32, Math.PI * 0.5), makeProxyMat());
-    arcProxy.userData.alignZ = alignZ;
-    arcProxy.userData.stroke = makeStroke(unitArcPoints(Math.PI * 0.5, 32), ax.color);
-    arcProxy.userData.strokeAlign = alignZ;
-    addGizmoPart(arcProxy, 'rotate', ax.key, ax.color);
-
-    // Scale: a small open square out along the axis.
-    const sqProxy = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), makeProxyMat());
-    sqProxy.userData.alignY = alignY;
-    sqProxy.userData.stroke = makeStroke(unitSquarePoints(), ax.color);
-    addGizmoPart(sqProxy, 'scale', ax.key, ax.color);
-  });
-}
-buildGizmo();
+// The pivot every transform happens about. There's no visible gizmo any
+// more - the selection itself is what you grab - but the pivot is still the
+// point that rotation and scale work around.
+let gizmoTarget = null;
 
 // LineMaterial needs the viewport size to work out a pixel width; without
 // this the strokes render at the wrong weight after any resize or rotation.
@@ -943,364 +733,21 @@ function selectionRadius() {
   return Math.max(size.x, size.y, size.z) * 0.5;
 }
 
-function updateGizmoScale(dt) {
-  if (!gizmoRoot.visible || !gizmoTarget) return;
-  const pivot = gizmoTarget.position;
-  gizmoRoot.position.copy(pivot);
-  gizmoRoot.quaternion.identity();   // world-aligned axes
-  gizmoRoot.scale.setScalar(1);      // parts size themselves individually
 
-  // Bloom eases open faster than it fades shut - appearing should feel
-  // immediate, disappearing shouldn't snatch handles away mid-thought.
-  const now = performance.now();
-  if (gizmoBloomTarget === 1 && !gizmoDrag && now - gizmoLastTouch > BLOOM_IDLE_MS) gizmoBloomTarget = 0;
-  // Advance at a fixed rate rather than easing exponentially toward the
-  // target: an exponential approach never actually arrives, so BLOOM_IN
-  // would behave as a decay rate and the "180ms" bloom would really take
-  // about a second. Stepping linearly and easing the result afterwards
-  // gives the duration the constant actually promises.
-  const dur = (gizmoBloomTarget > gizmoBloom ? BLOOM_IN : BLOOM_OUT);
-  const step = (dt || 0.016) / dur;
-  if (gizmoBloomTarget > gizmoBloom) gizmoBloom = Math.min(gizmoBloomTarget, gizmoBloom + step);
-  else gizmoBloom = Math.max(gizmoBloomTarget, gizmoBloom - step);
-  // Ease-out so handles arrive gently rather than snapping to a stop.
-  const b = 1 - Math.pow(1 - gizmoBloom, 3);
-
-  // Screen-constant reference: how big one unit is at this camera distance.
-  const k = camera.position.distanceTo(pivot) * 0.13;
-  const objR = Math.max(selectionRadius(), k * 0.45);
-  const thick = k * 0.05;
-  const rRot = Math.max(k * 1.15, objR * 1.3);
-  const rScl = rRot * 1.42;
-
-  // Which corner faces the camera - the three edges meeting there are the
-  // ones drawn, so the bars always sit on the silhouette rather than
-  // disappearing behind the object.
-  const sgn = new THREE.Vector3(
-    Math.sign(camera.position.x - pivot.x) || 1,
-    Math.sign(camera.position.y - pivot.y) || 1,
-    Math.sign(camera.position.z - pivot.z) || 1
-  );
-
-  // Resting dot and ticks: always there, shrinking slightly as the handles
-  // take over so the two states don't compete for attention.
-  pivotDot.scale.setScalar(k * 0.05 * (1 - b * 0.25));
-  pivotDot.material.opacity = 0.55 - b * 0.2;
-  ghostTicks.forEach(t => {
-    t.quaternion.copy(t.userData.alignY);
-    t.scale.set(k * 0.012, k * 0.22, k * 0.012);
-    t.position.copy(t.userData.dir).multiplyScalar(k * 0.16);
-    t.material.opacity = 0.28 * (1 - b);
-    t.visible = b < 0.98;
-  });
-
-  gizmoParts.forEach(pt => {
-    const g = pt.userData.gizmo;
-    const ax = GIZMO_AXES.find(a => a.key === g.axis);
-
-    if (g.kind === 'move') {
-      pt.quaternion.copy(pt.userData.alignY);
-      pt.scale.set(thick, objR * 2, thick);
-      // Offset onto the near corner's edge along the two other axes.
-      pt.position.set(
-        ax.key === 'x' ? 0 : sgn.x * objR,
-        ax.key === 'y' ? 0 : sgn.y * objR,
-        ax.key === 'z' ? 0 : sgn.z * objR
-      );
-    } else if (g.kind === 'rotate') {
-      pt.quaternion.copy(pt.userData.alignZ);
-      pt.scale.setScalar(rRot);
-      pt.position.set(0, 0, 0);
-    } else {
-      pt.quaternion.copy(pt.userData.alignY);
-      pt.scale.setScalar(k * 0.3);
-      pt.position.copy(ax.dir).multiplyScalar(rScl * sgnFor(ax.key, sgn));
-    }
-
-    // The bloom itself: handles grow out from the pivot rather than simply
-    // fading in, so the motion reads as them coming from the dot you touched.
-    pt.position.multiplyScalar(0.35 + 0.65 * b);
-    pt.scale.multiplyScalar(0.45 + 0.55 * b);
-    const shown = b > 0.02 && (!App.gizmoFocus || pt.userData.gizmo.kind === App.gizmoFocus);
-    pt.visible = shown;   // the proxy stays invisible but must be pickable
-
-    /* The drawn stroke follows its proxy exactly, so what you see and what
-       you hit never drift apart - only their thickness differs. Unit
-       geometries mean scaling the object is enough; LineMaterial keeps the
-       stroke at a constant pixel width whatever we do here. */
-    const stroke = pt.userData.stroke;
-    if (stroke) {
-      stroke.visible = shown;
-      stroke.position.copy(pt.position);
-      stroke.quaternion.copy(pt.userData.strokeAlign || pt.quaternion);
-      if (g.kind === 'move') {
-        stroke.scale.set(1, pt.scale.y, 1);
-      } else if (g.kind === 'rotate') {
-        stroke.scale.setScalar(pt.scale.x);
-      } else {
-        stroke.scale.setScalar(pt.scale.x * 1.15);
-      }
-      stroke.material.opacity = pt.userData.baseOpacity * b * 1.8;
-      stroke.material.linewidth = GIZMO_STROKE_PX * (pt.userData.baseOpacity > 0.6 ? 1.4 : 1);
-
-      // Halo only earns its keep on the light theme - on the dark one the
-      // muted colours already stand clear, and a dark outline would just
-      // muddy them.
-      const halo = stroke.userData.halo;
-      if (halo) {
-        halo.visible = shown && App.theme === 'light';
-        halo.position.copy(stroke.position);
-        halo.quaternion.copy(stroke.quaternion);
-        halo.scale.copy(stroke.scale);
-        halo.material.opacity = halo.visible ? pt.userData.baseOpacity * b * 0.5 : 0;
-        halo.material.linewidth = stroke.material.linewidth + 2.5;
-      }
-    }
-
-    // Small dot closing the move bar - the terminal that says "translate".
-    const cap = pt.userData.cap;
-    if (cap) {
-      cap.visible = shown;
-      cap.position.copy(ax.dir).multiplyScalar(pt.scale.y * 0.5).add(pt.position);
-      cap.scale.setScalar(k * 0.028 * (0.45 + 0.55 * b));
-      cap.material.opacity = pt.userData.baseOpacity * b * 1.8;
-    }
-  });
-  gizmoRoot.updateMatrixWorld(true);
-}
-
-function sgnFor(key, sgn) { return key === 'x' ? sgn.x : key === 'y' ? sgn.y : sgn.z; }
-
-/* Three visual states, matching the three interaction states:
-     0.50  resting  - everything available
-     0.90  engaged  - the handle you're actually holding
-     0.10  blocked  - locked out while another handle is held
-   The dimming isn't decoration: while a drag is live every other handle is
-   genuinely unpickable, so this shows that rather than leaving you to
-   discover it by pressing something that ignores you. */
-const GIZMO_OPACITY_REST = 0.5;
-const GIZMO_OPACITY_ACTIVE = 0.9;
-const GIZMO_OPACITY_BLOCKED = 0.1;
-
-function setGizmoHighlight(activeAxis, activeKind) {
-  gizmoParts.forEach(pt => {
-    const g = pt.userData.gizmo;
-    pt.material.color.setHex(g.color);
-    // Recorded rather than applied directly: the bloom multiplies this every
-    // frame, so writing material.opacity here would just be overwritten.
-    if (!activeAxis) { pt.userData.baseOpacity = GIZMO_OPACITY_REST; return; }
-    const on = g.axis === activeAxis && (!activeKind || g.kind === activeKind);
-    pt.userData.baseOpacity = on ? GIZMO_OPACITY_ACTIVE : GIZMO_OPACITY_BLOCKED;
-  });
-}
 
 /* The old TransformControls-era names are kept so the ~20 call sites around
    the file don't all need rewriting - they now drive this gizmo instead. */
+/* The visible gizmo is gone - dragging the selection is the gizmo now. What
+   remains is the pivot itself, which every transform still needs as the point
+   it happens about. These two names are kept because ~12 call sites around
+   the file already say "attach" and "detach" at exactly the right moments. */
 function detachAllGizmos() {
   gizmoTarget = null;
-  gizmoRoot.visible = false;
-  // Reset rather than ease - the gizmo is hidden anyway, and next time it
-  // appears it should start as a ghost, not mid-fade from last time.
-  gizmoBloom = 0;
-  gizmoBloomTarget = 0;
-  setGizmoHighlight(null, null);
 }
 function attachAllGizmos(pivot) {
   gizmoTarget = pivot;
-  gizmoRoot.visible = true;
-  applyGizmoFocus();
-  // Show the handles once, unprompted, the very first time anything is
-  // selected. One silent demonstration beats a tutorial, and without it a
-  // newcomer has no reason to suspect the dot does anything.
-  if (!ghostShownOnce) {
-    ghostShownOnce = true;
-    openGizmoBloom();
-  }
-  updateGizmoScale(0.016);
 }
 // Isolating one tool hides the other two rather than detaching anything.
-function applyGizmoFocus() {
-  const focus = App.gizmoFocus;
-  gizmoParts.forEach(pt => {
-    pt.visible = !focus || pt.userData.gizmo.kind === focus;
-  });
-}
-function anyGizmoAxis() { return !!gizmoHoverAxis; }
-function anyGizmoDragging() { return !!gizmoDrag; }
-
-// Small axis-cube gizmo, upper-right corner - click an axis to snap the view.
-// It gets its OWN renderer and canvas: sharing the main renderer meant the
-// helper had to swap the GL viewport every frame, and on some mobile drivers
-// that left the main viewport broken (whole scene rendered blank).
-const viewCubeEl = document.getElementById('viewCube');
-const cubeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-cubeRenderer.setPixelRatio(pixelRatio);
-cubeRenderer.setSize(96, 96);
-viewCubeEl.appendChild(cubeRenderer.domElement);
-
-const viewHelper = new ViewHelper(camera, viewCubeEl);
-viewHelper.location = { top: 0, right: 0, bottom: 0, left: 0 };
-viewHelper.center = orbit.target; // shares the same object, stays in sync automatically
-
-viewCubeEl.addEventListener('pointerdown', (ev) => ev.stopPropagation());
-viewCubeEl.addEventListener('click', (ev) => {
-  ev.stopPropagation();
-  viewHelper.handleClick(ev);
-});
-
-/* ---------------- App state ---------------- */
-
-const App = {
-  objects: [],          // {id, name, mesh}
-  nextId: 1,
-  mode: 'object',        // object | vertex | edge | face
-  gizmoMode: 'translate', // translate | rotate | scale (legacy, kept for the inspector label)
-  gizmoFocus: null,       // null = combo gizmo (all three); else isolate one for precision
-  multiSelect: true,  // permanently on: every tap adds, tap empty space to clear
-  transformTool: 'move',   // move | rotate | scale - cycled by two-finger tap
-  lastComponentMode: 'face', // resumed when the Object/Component toggle re-enters Component mode
-  selectDrag: 'off',   // 'off' | 'box' | 'lasso'
-  snap: false,
-  shadeSmooth: false,  // simple on/off toggle, not a readout of mixed per-face state - matches applyFinishToSelection's cycling approach
-  theme: 'dark',
-  fillet: false,
-  filletRadius: 0.04,
-  sensitivity: 0.7,   // gizmo speed multiplier, tunable in the drawer
-  smartCam: true,     // camera drifts to a useful angle after you select
-  pendingOp: null,
-  symmetry: false,
-  symmetryAxis: 'x',
-  showInspector: false,
-  selectedObjectIds: new Set(),
-  activeObjectId: null,   // used for vertex/edge/face editing
-  selectedElements: new Set(), // logical vertex ids / edge indices / face-group indices, for activeObjectId
-  edgeAnchor: null,      // edge selected by the previous single tap, for path selection
-  edgeAnchorTime: 0,     // when that tap happened - a stale anchor is ignored
-  history: [],
-  historyIndex: -1,
-  pivot: null,            // temp pivot object for multi/element transforms
-  dragStart: null,        // bookkeeping captured on drag start
-};
-
-const raycaster = new THREE.Raycaster();
-
-// Bright, warm accent used for anything selected (vertices/edges/faces) so it
-// reads clearly against the cool dark UI and the neutral unselected gray.
-// Warm birch object, cool blue highlight - the inverse of the usual dark-UI
-// convention, and the pairing IKEA uses everywhere.
-/* ---------------- Themes ----------------
-   Two complete looks, each covering the interface and the 3D scene together -
-   lighting included, since a palette that ignores how the model is lit only
-   does half the job. */
-const THEMES = {
-  light: {
-    label: 'Daylight',
-    bg: 0xE7E2D8,
-    hemi: { sky: 0xFFFDF8, ground: 0xC9BFAC, intensity: 1.5 },
-    key: { color: 0xFFF8EC, intensity: 0.85 },
-    fill: { color: 0xE4EAF0, intensity: 0.35 },
-    grid: [0xC4BAA6, 0xD6CDBC],
-    rim: { color: 0xFFFFFF, intensity: 0.35 },
-    fog: { near: 18, far: 52 },
-    shadow: 0.16,
-    exposure: 1.0,
-    vignette: '16 14 10',
-    select: 0x2F6F9F, vert: 0x6E6558, edge: 0x8A806F, crease: 0xC46A3A,
-    material: 0x514A3B, swatch: '#514a3b'
-  },
-  dark: {
-    label: 'Workshop',
-    bg: 0x101216,
-    hemi: { sky: 0xaeb8ff, ground: 0x14161a, intensity: 0.9 },
-    key: { color: 0xffffff, intensity: 1.4 },
-    fill: { color: 0x8899bb, intensity: 0.15 },
-    grid: [0x333947, 0x22262f],
-    rim: { color: 0x9FB4FF, intensity: 0.75 },
-    fog: { near: 15, far: 42 },
-    shadow: 0.42,
-    exposure: 1.1,
-    vignette: '0 0 0',
-    select: 0xffc21a, vert: 0x8b93a3, edge: 0x656d80, crease: 0xff7a45,
-    material: 0x303338, swatch: '#303338'
-  }
-};
-
-let SELECT_COLOR = THEMES.dark.select;
-let UNSELECT_VERT_COLOR = THEMES.dark.vert;
-let UNSELECT_EDGE_COLOR = THEMES.dark.edge;
-let CREASE_COLOR = THEMES.dark.crease;
-
-// Objects already in the scene keep whatever colour they were given - only the
-// default for new ones follows the theme.
-let DEFAULT_MATERIAL_COLOR = THEMES.dark.material;
-
-function applyTheme(name) {
-  const t = THEMES[name] || THEMES.light;
-  App.theme = name;
-  document.documentElement.dataset.theme = name;
-
-  scene.background = new THREE.Color(t.bg);
-  // Fog in the background's own colour: distant grid dissolves instead of
-  // ending in a hard line, which reads as space rather than a flat backdrop.
-  scene.fog = new THREE.Fog(t.bg, t.fog.near, t.fog.far);
-  renderer.toneMappingExposure = t.exposure;
-  rimLight.color.setHex(t.rim.color);
-  rimLight.intensity = t.rim.intensity;
-  shadowCatcher.material.opacity = t.shadow;
-  document.documentElement.style.setProperty('--vignette', t.vignette);
-  hemi.color.setHex(t.hemi.sky);
-  hemi.groundColor.setHex(t.hemi.ground);
-  hemi.intensity = t.hemi.intensity;
-  dir.color.setHex(t.key.color);
-  dir.intensity = t.key.intensity;
-  fill.color.setHex(t.fill.color);
-  fill.intensity = t.fill.intensity;
-  buildGrid(t.grid[0], t.grid[1]);
-
-  SELECT_COLOR = t.select;
-  UNSELECT_VERT_COLOR = t.vert;
-  UNSELECT_EDGE_COLOR = t.edge;
-  CREASE_COLOR = t.crease;
-  DEFAULT_MATERIAL_COLOR = t.material;
-
-  const themeMeta = document.querySelector('meta[name="theme-color"]');
-  if (themeMeta) themeMeta.setAttribute('content', name === 'dark' ? '#181b21' : '#F3F0EA');
-
-  // Face overlays bake the selection colour into their material, so retint
-  // them rather than waiting for the next rebuild.
-  App.objects.forEach(o => {
-    (Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material])
-      .forEach(m => { if (m.userData.themedDefault) m.color.setHex(t.material); });
-
-    const ov = o.mesh.userData.faceOverlays;
-    if (ov) ov.forEach(m => m.material.color.setHex(SELECT_COLOR));
-
-    // Repaint every helper, not just the one for the current mode - otherwise
-    // the vertex dots keep last theme's colour until you switch to Vertex mode.
-    const pts = o.mesh.userData.vertexPoints;
-    if (pts) {
-      const c = pts.geometry.attributes.color.array;
-      for (let i = 0; i < c.length / 3; i++) setCol(c, i, UNSELECT_VERT_COLOR);
-      pts.geometry.attributes.color.needsUpdate = true;
-    }
-    const lines = o.mesh.userData.edgeLines;
-    if (lines) {
-      const c = lines.geometry.attributes.color.array;
-      for (let i = 0; i < c.length / 3; i++) setCol(c, i, UNSELECT_EDGE_COLOR);
-      lines.geometry.attributes.color.needsUpdate = true;
-    }
-    refreshElementColors(o); // puts the selection colour back on top
-  });
-
-  const picker = document.getElementById('colorPicker');
-  if (picker) picker.value = t.swatch;
-
-  const btn = document.getElementById('btnTheme');
-  if (btn) {
-    btn.textContent = 'Theme: ' + t.label;
-    btn.title = 'Switch theme';
-  }
-}
 
 /* ---------------- Geometry helpers ---------------- */
 
@@ -4126,16 +3573,6 @@ function setMode(mode) {
   refreshGizmoAttachment();
 }
 
-function setGizmoMode(mode) {
-  // Tapping the already-isolated tool returns to the combo view; tapping a
-  // different one isolates that one instead. All three stay attached and
-  // interactive throughout - this only changes which are drawn/pickable.
-  App.gizmoMode = mode;
-  App.gizmoFocus = (App.gizmoFocus === mode) ? null : mode;
-  applyGizmoFocus();
-  refreshUI();
-  refreshHub();
-}
 
 function clearObjectSelection() { App.selectedObjectIds.clear(); }
 
@@ -4257,7 +3694,6 @@ function refreshGizmoAttachment() {
 }
 
 let dragCtx = null;
-let gizmoDrag = null;   // { kind, axis, dir, start... } while a handle is held
 
 /* Base damping factors, multiplied by App.sensitivity (the Gizmo speed
    slider). Rotation and scale feel violent at 1:1 on a touch screen, so
@@ -4381,88 +3817,8 @@ function angleAroundAxis(ev, origin, dir) {
   return Math.atan2(rel.dot(v), rel.dot(u));
 }
 
-function beginGizmoDrag(ev, part) {
-  const g = part.userData.gizmo;
-  const pivot = gizmoTarget;
-  if (!pivot) return false;
-  dragCtx = captureDragContext(pivot);
-  if (!dragCtx) return false;
 
-  const dir = GIZMO_AXES.find(a => a.key === g.axis).dir.clone();
-  const origin = pivot.position.clone();
-  gizmoDrag = { kind: g.kind, axis: g.axis, dir, origin };
 
-  if (g.kind === 'rotate') {
-    gizmoDrag.startAngle = angleAroundAxis(ev, origin, dir);
-    if (gizmoDrag.startAngle === null) { gizmoDrag = null; dragCtx = null; return false; }
-  } else {
-    gizmoDrag.startParam = axisParamFromPointer(ev, origin, dir);
-    if (gizmoDrag.startParam === null) { gizmoDrag = null; dragCtx = null; return false; }
-    // Scale needs a reference length so the factor is relative, not absolute.
-    gizmoDrag.refLen = Math.max(0.35, gizmoRoot.scale.x * R_SCL);
-  }
-  orbit.enabled = false;
-  setGizmoHighlight(g.axis, g.kind);
-  return true;
-}
-
-function updateGizmoDrag(ev) {
-  if (!gizmoDrag || !dragCtx) return;
-  gizmoLastTouch = performance.now();
-  const s = App.sensitivity;
-  const { dir, origin, kind } = gizmoDrag;
-  const T = new THREE.Matrix4().makeTranslation(origin.x, origin.y, origin.z);
-  const Tinv = new THREE.Matrix4().makeTranslation(-origin.x, -origin.y, -origin.z);
-  let local = null;
-
-  if (kind === 'move') {
-    const t = axisParamFromPointer(ev, origin, dir);
-    if (t === null) return;
-    let d = (t - gizmoDrag.startParam) * THREE.MathUtils.clamp(0.5 + 0.5 * s, 0.3, 1);
-    if (App.snap) d = Math.round(d / SNAP_MOVE) * SNAP_MOVE;
-    const off = dir.clone().multiplyScalar(d);
-    // Pure translation - no conjugation needed.
-    applyDeltaToSelection(new THREE.Matrix4().makeTranslation(off.x, off.y, off.z));
-    return;
-  }
-
-  if (kind === 'rotate') {
-    const a = angleAroundAxis(ev, origin, dir);
-    if (a === null) return;
-    let ang = (a - gizmoDrag.startAngle) * THREE.MathUtils.clamp(ROTATE_BASE * s, 0.02, 1);
-    if (App.snap) ang = Math.round(ang / SNAP_ROTATE) * SNAP_ROTATE;
-    local = new THREE.Matrix4().makeRotationAxis(dir, ang);
-  } else { // scale
-    const t = axisParamFromPointer(ev, origin, dir);
-    if (t === null) return;
-    const raw = (t - gizmoDrag.startParam) / gizmoDrag.refLen;
-    let f = 1 + raw * THREE.MathUtils.clamp(SCALE_BASE * s, 0.02, 1);
-    if (App.snap) f = Math.round(f / SNAP_SCALE) * SNAP_SCALE;
-    f = Math.max(MIN_SCALE_FACTOR, Math.abs(f)); // never cross zero and invert
-    const v = new THREE.Vector3(
-      dir.x ? f : 1,
-      dir.y ? f : 1,
-      dir.z ? f : 1
-    );
-    local = new THREE.Matrix4().makeScale(v.x, v.y, v.z);
-  }
-
-  // Rotation and scale act about the pivot, so conjugate them through it.
-  applyDeltaToSelection(new THREE.Matrix4().multiplyMatrices(T, new THREE.Matrix4().multiplyMatrices(local, Tinv)));
-}
-
-function endGizmoDrag() {
-  if (!gizmoDrag) return;
-  gizmoDrag = null;
-  dragCtx = null;
-  orbit.enabled = true;
-  setGizmoHighlight(null, null);
-  // Put the pivot back on the selection - damping means the geometry moved
-  // less than the handle did, so without this it drifts a little every drag.
-  recenterPivot();
-  updateGizmoScale();
-  pushHistory();
-}
 
 /* ---------------- Direct manipulation ----------------
    Grab what's selected and drag it. No handle to aim at, which is the point:
@@ -4515,6 +3871,12 @@ function refreshToolIndicator() {
   const label = { move: 'Move', rotate: 'Rotate', scale: 'Scale' }[App.transformTool];
   const glyph = { move: 'move', rotate: 'rotate', scale: 'scale' }[App.transformTool];
   el.innerHTML = '<span class="ic">' + icon(glyph, 15) + '</span><span>' + label + '</span>';
+}
+
+function setTransformTool(tool) {
+  App.transformTool = tool;
+  refreshToolIndicator();
+  toast({ move: 'Move', rotate: 'Rotate', scale: 'Scale' }[tool]);
 }
 
 function cycleTransformTool() {
@@ -4762,21 +4124,10 @@ function endDirectDrag() {
   axisGuide.visible = false;
   orbit.enabled = true;
   recenterPivot();
-  updateGizmoScale(0.016);
   pushHistory();
 }
 
 // Which handle, if any, is under this pointer.
-function pickGizmoPart(ev) {
-  // While one handle is held, every other is locked out - this is what stops
-  // a second handle being co-grabbed mid-drag and mixing two transforms.
-  if (gizmoDrag) return null;
-  if (!gizmoRoot.visible) return null;
-  if (gizmoBloom < 0.5) return null;   // still a ghost - nothing to grab yet
-  raycaster.setFromCamera(ndcFromEvent(ev), camera);
-  const hits = raycaster.intersectObjects(gizmoParts.filter(p => p.visible), false);
-  return hits.length ? hits[0].object : null;
-}
 
 /* ---------------- Raycasting / picking ---------------- */
 
@@ -4907,36 +4258,6 @@ function worldToScreen(worldPos) {
   return { x: (p.x * 0.5 + 0.5) * rect.width, y: (1 - (p.y * 0.5 + 0.5)) * rect.height };
 }
 
-// Free/Box/Lasso fan out around the selection's own transform gizmo, and
-// only exist while that gizmo does - they read as one object with it. Angles
-// stay above 90 degrees deliberately: the hub's own tool arc never uses that
-// range, so the two can't overlap even when the gizmo is near the corner.
-const SEL_FAN_RADIUS = 150;
-const SEL_FAN_ANGLES = [170, 135, 100]; // Free, Box, Lasso - degrees, upper-left
-
-function updateSelGestureAnchor() {
-  const row = document.getElementById('selGestureRow');
-  if (!row) return;
-  // Reads as one object with the gizmo: no gizmo, no selection buttons.
-  // They used to fall back to sitting near the hub so Box/Lasso stayed
-  // reachable before a first selection, but that put them under the tool
-  // fan - and an empty scene has nothing to region-select anyway.
-  const hasGizmo = !!(App.pivot && gizmoRoot.visible && gizmoTarget);
-  const anchor = hasGizmo ? worldToScreen(App.pivot.position) : null;
-  if (!anchor) { row.style.display = 'none'; return; }
-  // Explicit 'block', not '' - an empty string would fall back to the CSS
-  // default, which is now 'none', so the row would never appear at all.
-  row.style.display = 'block';
-
-  row.style.left = anchor.x + 'px';
-  row.style.top = anchor.y + 'px';
-  row.querySelectorAll('button').forEach((b, i) => {
-    const rad = SEL_FAN_ANGLES[i] * Math.PI / 180;
-    const dx = Math.cos(rad) * SEL_FAN_RADIUS;
-    const dy = -Math.sin(rad) * SEL_FAN_RADIUS; // screen Y grows downward
-    b.style.transform = 'translate(' + dx + 'px, ' + dy + 'px)';
-  });
-}
 
 function faceCentroidLocal(obj, gi) {
   const loop = groupLogicalLoop(obj, gi);
@@ -5157,25 +4478,6 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     return;
   }
 
-  // A gizmo handle wins over everything else. Only one can ever be hit,
-  // since move/rotate/scale now sit at different distances from the centre.
-  const part = pickGizmoPart(ev);
-  if (part && beginGizmoDrag(ev, part)) {
-    gizmoLastTouch = performance.now();
-    pointerDown = { x: ev.clientX, y: ev.clientY, t: performance.now(), overGizmo: true };
-    return;
-  }
-
-  // Touching the resting dot summons the handles. Deliberately its own small
-  // catch area rather than "anywhere near the object" - tapping the object
-  // already means select, and the two must not fight.
-  if (pointerOnPivotDot(ev)) {
-    if (gizmoBloomTarget === 1 && gizmoBloom > 0.5) closeGizmoBloom();
-    else openGizmoBloom();
-    pointerDown = { x: ev.clientX, y: ev.clientY, t: performance.now(), overGizmo: true };
-    return;
-  }
-
   pointerDown = { x: ev.clientX, y: ev.clientY, t: performance.now(), overGizmo: false };
 
   // Landing on something already selected might be the start of a drag, but
@@ -5195,7 +4497,6 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
 renderer.domElement.addEventListener('pointermove', (ev) => {
   trackPointerMove(ev);
   if (activePointers.size > 1) return;   // camera gesture - hands off
-  if (gizmoDrag) { updateGizmoDrag(ev); return; }
   if (directDrag) { updateDirectDrag(ev); return; }
 
   // A candidate becomes a real drag only once the finger has travelled far
@@ -5207,16 +4508,7 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
     }
   }
 
-  if (!boxDrag) {
-    // Hover feedback, and what anyGizmoAxis() reports to the tap handler.
-    const over = pickGizmoPart(ev);
-    const axis = over ? over.userData.gizmo.axis : null;
-    if (axis !== gizmoHoverAxis) {
-      gizmoHoverAxis = axis;
-      setGizmoHighlight(axis, over ? over.userData.gizmo.kind : null);
-    }
-    return;
-  }
+  if (!boxDrag) return;
   const rect = viewportEl.getBoundingClientRect();
   const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
 
@@ -5239,7 +4531,6 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
   // Judged on release, since two fingers going down is also how a pinch
   // starts - only a quick, still release could have been a tap.
   if (trackPointerUp(ev)) { cycleTransformTool(); pointerDown = null; return; }
-  if (gizmoDrag) { endGizmoDrag(); pointerDown = null; return; }
   // pointerDown is cleared so the release doesn't also register as a tap and
   // change the selection out from under the move that just happened.
   if (directDrag) { endDirectDrag(); pointerDown = null; return; }
@@ -6645,7 +5936,7 @@ function refreshHubToolset() {
 
 function refreshHub() {
   hubArcEl.querySelectorAll('.hub-item').forEach(el => {
-    el.classList.toggle('active', el.dataset.key === App.gizmoFocus);
+    el.classList.toggle('active', false);   // no persistent tool state in the arc any more
   });
 }
 
@@ -6842,9 +6133,9 @@ window.addEventListener('keydown', (ev) => {
     return; // leave other browser shortcuts alone
   } else if (ev.key === 'Delete' || ev.key === 'Backspace') {
     deleteSelection();
-  } else if (ev.key.toLowerCase() === 'g') setGizmoMode('translate');
-  else if (ev.key.toLowerCase() === 'r') setGizmoMode('rotate');
-  else if (ev.key.toLowerCase() === 's') setGizmoMode('scale');
+  } else if (ev.key.toLowerCase() === 'g') setTransformTool('move');
+  else if (ev.key.toLowerCase() === 'r') setTransformTool('rotate');
+  else if (ev.key.toLowerCase() === 's') setTransformTool('scale');
   else if (ev.key.toLowerCase() === 'e') extrudeSelection();
   else if (ev.key.toLowerCase() === 'x') splitSelection();
   else if (ev.key.toLowerCase() === 'c') connectSelection();
@@ -6977,7 +6268,7 @@ function smartCameraTargetInfo() {
 function runSmartCamera() {
   if (!App.smartCam) return;
   // Never steal the view mid-gesture - wait until hands are off.
-  if (pointerDown || boxDrag || anyGizmoDragging()) { scheduleSmartCamera(); return; }
+  if (pointerDown || boxDrag || directDrag) { scheduleSmartCamera(); return; }
 
   const info = smartCameraTargetInfo();
   if (!info) return;
@@ -7084,8 +6375,6 @@ function animate() {
   }
   if (viewHelper.animating) { viewHelper.update(delta); camAnim = null; }
   orbit.update();
-  updateGizmoScale(delta);
-  updateSelGestureAnchor();
   renderer.render(scene, camera);
   // Separate renderer - cannot affect the main viewport above.
   viewHelper.render(cubeRenderer);
