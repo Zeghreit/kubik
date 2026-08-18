@@ -154,24 +154,10 @@
   }
   #selGestureRow.gizmo-anchored button { position: absolute; left: 0; top: 0; }
 
-  #btnObjComponent {
-    position: absolute; left: 88px; bottom: 18px; z-index: 13;
-    width: 42px; min-height: 42px; padding: 0; border-radius: 10px;
-    background: var(--panel2); border: 1px solid var(--line); justify-content: center;
-  }
-  #btnObjComponent.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
   .ic-svg { display: block; }
   .hub-item .ic { display: flex; align-items: center; justify-content: center; }
 
-  /* The open arc sweeps across this space, so the quick controls step aside
-     rather than sitting underneath it. quickRow is a sibling of thumbZone
-     now (it needed the full viewport width to centre against), so it needs
-     the sibling combinator here rather than the descendant selector the
-     other two still use. */
-  #thumbZone.arc-open #selGestureRow,
-  #thumbZone.arc-open #btnObjComponent,
-  #thumbZone.arc-open ~ #quickRow { opacity: 0; pointer-events: none; }
-  #quickRow, #selGestureRow, #btnObjComponent { transition: opacity .15s ease; }
+  #quickRow, #selGestureRow { transition: opacity .15s ease; }
 
   /* ---- Drawer: rarely-touched settings, for the assisting finger ---- */
   #scrim {
@@ -245,9 +231,12 @@
   #viewport canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 
   #status {
-    position: absolute; right: 10px; top: 10px; font-size: 11px; color: var(--text-dim);
-    background: rgb(var(--hint-bg) / .82); padding: 6px 10px; border-radius: 8px; pointer-events: none;
-    text-align: right; line-height: 1.5;
+    /* A normal flex child of #topBar now, not pulled out with absolute
+       positioning - that's what had it floating lower than the title
+       instead of sitting level with it. */
+    font-size: 11px; color: var(--text-dim);
+    background: rgb(var(--hint-bg) / .82); padding: 6px 10px; border-radius: 8px;
+    text-align: right; line-height: 1.5; flex-shrink: 0;
   }
 
   input[type=color] {
@@ -427,7 +416,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.45</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.46</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -452,9 +441,11 @@
         <button id="btnSelBox" title="Drag a box to select"></button>
         <button id="btnSelLasso" title="Draw a lasso to select"></button>
       </div>
-      <button id="btnObjComponent" title="Object mode - tap to edit components"></button>
-      <div id="hubArc"></div>
-      <button id="hubBtn" title="Primary tools">✥</button>
+      <!-- Permanently open now - the hub button switches Object/Component
+           instead of showing or hiding this, so there's nothing left to
+           toggle the 'open' class for. -->
+      <div id="hubArc" class="open"></div>
+      <button id="hubBtn" title="Object/Component - tap to switch">✥</button>
     </div>
 
     <!-- A sibling of thumbZone, not a child of it - this needs the full
@@ -4166,6 +4157,36 @@ function worldToScreen(worldPos) {
   return { x: (p.x * 0.5 + 0.5) * rect.width, y: (1 - (p.y * 0.5 + 0.5)) * rect.height };
 }
 
+// Free/Box/Lasso track the transform gizmo's own screen position, sitting in
+// its upper-left quadrant - completing the CSS scaffolding above: when a
+// gizmo is attached (something selected), the row becomes a zero-size anchor
+// at the gizmo's projected screen point and each button gets its own
+// translate() offset from there. With nothing selected there's no gizmo to
+// follow, so it falls back to the fixed spot beside the hub instead.
+const _selGestureOffsets = [[-90, -110], [-90, -72], [-90, -34]];
+function updateSelGestureAnchor() {
+  const row = document.getElementById('selGestureRow');
+  if (!row) return;
+  const hasGizmo = !!(App.pivot && gizmoList.some(g => g.object));
+  const screen = hasGizmo ? worldToScreen(App.pivot.position) : null;
+
+  if (!screen) {
+    if (row.classList.contains('gizmo-anchored')) {
+      row.classList.remove('gizmo-anchored');
+      row.style.left = ''; row.style.top = '';
+      row.querySelectorAll('button').forEach(b => { b.style.transform = ''; });
+    }
+    return;
+  }
+  row.classList.add('gizmo-anchored');
+  row.style.left = screen.x + 'px';
+  row.style.top = screen.y + 'px';
+  row.querySelectorAll('button').forEach((b, i) => {
+    const [dx, dy] = _selGestureOffsets[i] || [0, 0];
+    b.style.transform = 'translate(' + dx + 'px, ' + dy + 'px)';
+  });
+}
+
 function faceCentroidLocal(obj, gi) {
   const loop = groupLogicalLoop(obj, gi);
   const c = new THREE.Vector3();
@@ -5706,6 +5727,9 @@ const ICON = {
   menu:    '<path d="M4 7h16M4 12h16M4 17h16"/>',
   sun:     '<circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/>',
   moon:    '<path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/>',
+  save:    '<path d="M5 3h11l3 3v15H5z"/><path d="M8 3v6h8V3"/><path d="M8 21v-7h8v7"/>',
+  load:    '<path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/>',
+  file_export: '<path d="M12 21V9"/><path d="M7 14l5-5 5 5"/><path d="M5 3h14"/>',
   snap:    '<circle cx="12" cy="12" r="6.5"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>',
   free:    '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/>',
   box:     '<rect x="4" y="6" width="16" height="12" rx="1" stroke-dasharray="3 2.5"/>',
@@ -5736,18 +5760,52 @@ function icon(name, size) {
 const hubBtnEl = document.getElementById('hubBtn');
 const hubArcEl = document.getElementById('hubArc');
 
-const HUB_TOOLS = [
-  // Near ring - the three you reach for constantly.
+// Three tool sets, one per state, swapped automatically rather than chosen
+// by opening/closing anything - the hub button itself is now the Object/
+// Component toggle, so tapping it changes which set applies here rather than
+// showing or hiding the arc. Every action here is the same function a drawer
+// button already calls - none of this is new logic, just a second way to
+// reach it, so there's nothing here that hasn't already been tested.
+const HUB_TOOLS_COMPONENT = [
   { key: 'translate', icon: 'move', label: 'Move', ring: 0, run: () => setGizmoMode('translate') },
   { key: 'rotate', icon: 'rotate', label: 'Rotate', ring: 0, run: () => setGizmoMode('rotate') },
   { key: 'scale', icon: 'scale', label: 'Scale', ring: 0, run: () => setGizmoMode('scale') },
-  // Far ring - still one sweep away, used less often.
   { key: 'extrude', icon: 'extrude', label: 'Extrude', ring: 1, run: extrudeSelection },
   { key: 'inset', icon: 'inset', label: 'Inset', ring: 1, run: insetSelection },
   { key: 'bevel', icon: 'bevel', label: 'Bevel', ring: 1, run: bevelSelection },
-  { key: 'loopcut', icon: 'loop', label: 'Loop', ring: 1, run: edgeLoopSelection },
-  { key: 'mirror', icon: 'mirror', label: 'Mirror', ring: 1, run: () => mirrorSelectedObjects(App.symmetryAxis) }
+  { key: 'loopcut', icon: 'loop', label: 'Loop', ring: 1, run: edgeLoopSelection }
 ];
+
+const HUB_TOOLS_OBJECT = [
+  { key: 'duplicate', icon: 'dupe', label: 'Duplicate', ring: 0, run: () => document.getElementById('btnDuplicate').click() },
+  { key: 'mirror', icon: 'mirror', label: 'Mirror', ring: 0, run: () => mirrorSelectedObjects(App.symmetryAxis) },
+  { key: 'delete', icon: 'del', label: 'Delete', ring: 0, run: () => document.getElementById('btnDelete').click() },
+  { key: 'subdivide', icon: 'subdiv', label: 'Subdivide', ring: 1, run: () => subdivideSelection('smooth') },
+  { key: 'material', icon: 'color', label: 'Material', ring: 1, run: cycleMaterialFinish },
+  { key: 'fillet', icon: 'bevel', label: 'Fillet', ring: 1, run: () => document.getElementById('btnFillet').click() }
+];
+
+const HUB_TOOLS_EMPTY = [
+  { key: 'addcube', icon: 'object', label: 'Add Cube', ring: 0, run: () => document.getElementById('btnAddCube').click() },
+  { key: 'save', icon: 'save', label: 'Save', ring: 0, run: () => document.getElementById('btnSave').click() },
+  { key: 'load', icon: 'load', label: 'Load', ring: 0, run: () => document.getElementById('fileLoad').click() },
+  { key: 'export', icon: 'file_export', label: 'Export', ring: 1, run: () => document.getElementById('btnExportGlb').click() }
+];
+
+// Cycles Standard -> Matte -> Metal on repeated taps, since the arc only
+// supports a single tap per item rather than a picker. The full three-way
+// choice with descriptions still lives in the drawer's Finish section.
+const FINISH_CYCLE = ['standard', 'plastic', 'metal'];
+let _finishCycleIdx = 0;
+function cycleMaterialFinish() {
+  _finishCycleIdx = (_finishCycleIdx + 1) % FINISH_CYCLE.length;
+  applyFinishToSelection(FINISH_CYCLE[_finishCycleIdx]);
+}
+
+function currentHubTools() {
+  if (App.mode === 'object') return App.selectedObjectIds.size > 0 ? HUB_TOOLS_OBJECT : HUB_TOOLS_EMPTY;
+  return HUB_TOOLS_COMPONENT;
+}
 
 // Six items on one arc would put 52px targets only ~29px apart, so they're
 // split across two rings. Radii and sweep are chosen so nothing overlaps and
@@ -5760,8 +5818,9 @@ const HUB_SWEEPS = [84, 90];
 
 function buildHubArc() {
   hubArcEl.innerHTML = '';
-  HUB_TOOLS.forEach(tool => {
-    const inRing = HUB_TOOLS.filter(t => t.ring === tool.ring);
+  const tools = currentHubTools();
+  tools.forEach(tool => {
+    const inRing = tools.filter(t => t.ring === tool.ring);
     const i = inRing.indexOf(tool);
     const f = inRing.length === 1 ? 0 : i / (inRing.length - 1);
     const angle = (90 - f * HUB_SWEEPS[tool.ring]) * Math.PI / 180;
@@ -5780,20 +5839,28 @@ function buildHubArc() {
     el.addEventListener('click', (ev) => {
       ev.stopPropagation();
       tool.run();
-      // Gizmo modes are a persistent choice, so the arc stays open for
-      // switching; one-shot actions close it.
-      if (!['translate', 'rotate', 'scale'].includes(tool.key)) setHubOpen(false);
+      // The arc no longer opens or closes - it's always here, so a tap just
+      // runs the tool and refreshes which item (if any) reads as active.
       refreshHub();
     });
     hubArcEl.appendChild(el);
   });
 }
 
-function setHubOpen(open) {
-  hubArcEl.classList.toggle('open', open);
-  hubBtnEl.classList.toggle('open', open);
-  document.getElementById('thumbZone').classList.toggle('arc-open', open);
-  hubBtnEl.innerHTML = icon(open ? 'close' : 'move', 26);
+// Rebuilds the arc only when the active tool SET actually changes (object vs
+// component vs nothing selected) - refreshUI() runs constantly, and most of
+// those calls have nothing to do with which set applies, so this guards
+// against rebuilding the arc's DOM on every one of them.
+let _lastHubSetKey = null;
+function hubSetKey() {
+  if (App.mode === 'object') return App.selectedObjectIds.size > 0 ? 'object' : 'empty';
+  return 'component';
+}
+function refreshHubToolset() {
+  const key = hubSetKey();
+  if (key === _lastHubSetKey) return;
+  _lastHubSetKey = key;
+  buildHubArc();
 }
 
 function refreshHub() {
@@ -5805,7 +5872,10 @@ function refreshHub() {
 hubBtnEl.addEventListener('pointerdown', (ev) => ev.stopPropagation());
 hubBtnEl.addEventListener('click', (ev) => {
   ev.stopPropagation();
-  setHubOpen(!hubArcEl.classList.contains('open'));
+  // The hub button is the Object/Component switch now, not an open/close
+  // toggle - the arc is permanently present, and this just changes which of
+  // the three tool sets it's showing.
+  toggleObjComponentMode();
   refreshHub();
 });
 
@@ -5821,8 +5891,8 @@ function setDrawerOpen(open) {
 document.getElementById('btnMenu').addEventListener('click', () => setDrawerOpen(true));
 document.getElementById('drawerClose').addEventListener('click', () => setDrawerOpen(false));
 scrimEl.addEventListener('click', () => setDrawerOpen(false));
-
-document.getElementById('btnObjComponent').addEventListener('click', toggleObjComponentMode);
+// btnObjComponent is gone - the hub button itself is the toggle now, wired
+// directly in its own click handler above.
 // Free / Box / Lasso choose the drag gesture, not whether taps add to the
 // selection - that's permanent now. Three explicit buttons rather than one
 // cycling through states, since they sit right next to the hub and can each
@@ -5913,6 +5983,7 @@ document.getElementById('btnInspector').addEventListener('click', (ev) => {
 
 function refreshUI() {
   refreshObjComponentBtn();
+  refreshHubToolset();
   document.getElementById('btnUndo').disabled = App.historyIndex <= 0;
   document.getElementById('btnRedo').disabled = App.historyIndex >= App.history.length - 1;
 
@@ -6217,6 +6288,7 @@ function animate() {
   }
   if (viewHelper.animating) { viewHelper.update(delta); camAnim = null; }
   orbit.update();
+  updateSelGestureAnchor();
   renderer.render(scene, camera);
   // Separate renderer - cannot affect the main viewport above.
   viewHelper.render(cubeRenderer);
@@ -6246,11 +6318,10 @@ function paintStaticIcons() {
 // communicates both which top-level mode you're in and, in Component mode,
 // which sub-type, without a second row of state to read.
 function refreshObjComponentBtn() {
-  const btn = document.getElementById('btnObjComponent');
+  const btn = document.getElementById('hubBtn');
   if (!btn) return;
   const iconName = App.mode === 'object' ? 'object' : App.mode;
-  btn.innerHTML = icon(iconName, 20);
-  btn.classList.toggle('active', App.mode !== 'object');
+  btn.innerHTML = icon(iconName, 26);
   btn.title = App.mode === 'object'
     ? 'Object mode - tap to edit components'
     : 'Component mode (' + App.mode + ') - tap to edit whole objects';
