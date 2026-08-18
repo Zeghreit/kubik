@@ -145,6 +145,19 @@
      in the viewport's top-left corner - you'd see the last one painted
      (Lasso) sitting there. JS shows it only once it has a real gizmo
      position to place it at. */
+  /* Which transform a drag will perform. Sits with the other persistent
+     readouts rather than in the thumb's way - it's something you glance at,
+     not something you press. */
+  #toolChip {
+    position: absolute; left: 50%; transform: translateX(-50%); bottom: 12px; z-index: 13;
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 11px; border-radius: 999px;
+    background: rgb(var(--hint-bg) / .8); border: 1px solid var(--line);
+    color: var(--text-dim); font-size: 11px; font-weight: 600;
+    letter-spacing: .04em; text-transform: uppercase; pointer-events: none;
+  }
+  #toolChip .ic { display: flex; color: var(--accent); }
+
   #selGestureRow { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 13; display: none; }
   #selGestureRow button {
     position: absolute; left: 0; top: 0;
@@ -399,7 +412,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.58</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.59</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -411,6 +424,7 @@
     <button id="btnGrid" title="Show or hide the floor grid"></button>
     <button id="btnSmartCam" title="Drift to a useful angle after selecting"></button>
     <button id="btnSnap" title="Snap moves to a grid and rotations to fixed angles"></button>
+    <div id="toolChip" title="Two-finger tap on empty space to switch"></div>
     <button id="btnShade" title="Shade smooth / flat - applies to the whole object or the current selection"></button>
     <div id="vignette"></div>
     <div id="selectBox"></div>
@@ -1143,6 +1157,7 @@ const App = {
   gizmoMode: 'translate', // translate | rotate | scale (legacy, kept for the inspector label)
   gizmoFocus: null,       // null = combo gizmo (all three); else isolate one for precision
   multiSelect: true,  // permanently on: every tap adds, tap empty space to clear
+  transformTool: 'move',   // move | rotate | scale - cycled by two-finger tap
   lastComponentMode: 'face', // resumed when the Object/Component toggle re-enters Component mode
   selectDrag: 'off',   // 'off' | 'box' | 'lasso'
   snap: false,
@@ -4478,6 +4493,70 @@ const AXIS_RELEASE_DEG = 23;
 let directCandidate = null;    // a touch that might become a drag
 let directDrag = null;
 
+/* ---------------- Active transform tool ----------------
+   One gesture does all three transforms; which one it does depends on the
+   active tool. Dragging the selection always means "transform this" - the
+   tool decides whether that's moving, turning or resizing.
+
+   Cycled by a two-finger tap on empty space. That has to be judged on
+   release, not on touch: two fingers going down is also how a pinch starts,
+   so the only thing that separates a tap is that it ends quickly without
+   the fingers travelling. */
+const TRANSFORM_TOOLS = ['move', 'rotate', 'scale'];
+const TWO_TAP_MAX_MS = 260;    // longer than this and it was a hold
+const TWO_TAP_MAX_PX = 14;     // further than this and it was a pinch
+
+const activePointers = new Map();   // pointerId -> { x, y, t, moved }
+let twoTapArmed = false;            // a two-finger gesture that still might be a tap
+
+function refreshToolIndicator() {
+  const el = document.getElementById('toolChip');
+  if (!el) return;
+  const label = { move: 'Move', rotate: 'Rotate', scale: 'Scale' }[App.transformTool];
+  const glyph = { move: 'move', rotate: 'rotate', scale: 'scale' }[App.transformTool];
+  el.innerHTML = '<span class="ic">' + icon(glyph, 15) + '</span><span>' + label + '</span>';
+}
+
+function cycleTransformTool() {
+  const i = TRANSFORM_TOOLS.indexOf(App.transformTool);
+  App.transformTool = TRANSFORM_TOOLS[(i + 1) % TRANSFORM_TOOLS.length];
+  refreshToolIndicator();
+  toast({ move: 'Move', rotate: 'Rotate', scale: 'Scale' }[App.transformTool]);
+}
+
+function trackPointerDown(ev) {
+  activePointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY, t: performance.now(), moved: 0 });
+  // Two down at once, neither having travelled yet: this could still be a tap.
+  if (activePointers.size === 2) twoTapArmed = true;
+  else if (activePointers.size > 2) twoTapArmed = false;
+}
+
+function trackPointerMove(ev) {
+  const p = activePointers.get(ev.pointerId);
+  if (!p) return;
+  p.moved = Math.max(p.moved, Math.hypot(ev.clientX - p.x, ev.clientY - p.y));
+  // Any real travel means the user is pinching or orbiting, not tapping.
+  if (p.moved > TWO_TAP_MAX_PX) twoTapArmed = false;
+}
+
+// Returns true if this release completed a clean two-finger tap.
+function trackPointerUp(ev) {
+  const p = activePointers.get(ev.pointerId);
+  activePointers.delete(ev.pointerId);
+  if (!p) return false;
+
+  const quick = performance.now() - p.t <= TWO_TAP_MAX_MS;
+  const still = p.moved <= TWO_TAP_MAX_PX;
+  // Fires on the first of the two fingers to lift, then disarms so the
+  // second release doesn't cycle the tool a second time.
+  if (twoTapArmed && quick && still && activePointers.size === 1) {
+    twoTapArmed = false;
+    return true;
+  }
+  if (activePointers.size === 0) twoTapArmed = false;
+  return false;
+}
+
 // One reusable guide line, drawn only while an axis is locked.
 const axisGuideMat = new LineMaterial({
   color: 0xffffff, linewidth: 1.5, worldUnits: false, transparent: true,
@@ -4533,6 +4612,10 @@ function beginDirectDrag(ev) {
     startY: ev.clientY - rect.top,
     axis: null,          // null = free across the camera plane
     startParam: 0,
+    startAngle: 0,
+    // Scale needs a reference length so the factor is relative to the
+    // selection's own size rather than to world units.
+    refLen: Math.max(0.35, selectionRadius() || 0.5),
     decided: false
   };
   orbit.enabled = false;
@@ -4565,7 +4648,11 @@ function resolveDirectAxis(ev) {
   const want = bestDeg <= limit ? best : null;
   if (want && (!d.axis || d.axis.key !== want.key)) {
     d.axis = want;
+    // Re-anchor at the moment of locking, for whichever tool is active -
+    // otherwise the first frame after a lock jumps by however far the drag
+    // had already travelled.
     d.startParam = axisParamFromPointer(ev, d.origin, want.dir) ?? 0;
+    d.startAngle = angleAroundAxis(ev, d.origin, want.dir) ?? 0;
     d.paramBase = d.startParam;
   } else if (!want && d.axis) {
     d.axis = null;
@@ -4582,26 +4669,76 @@ function updateDirectDrag(ev) {
   const d = directDrag;
   resolveDirectAxis(ev);
 
-  let offset = new THREE.Vector3();
-  if (d.axis) {
-    const t = axisParamFromPointer(ev, d.origin, d.axis.dir);
-    if (t === null) return;
-    let amount = t - d.startParam;
-    if (App.snap) amount = Math.round(amount / SNAP_MOVE) * SNAP_MOVE;
-    offset = d.axis.dir.clone().multiplyScalar(amount);
-  } else {
-    const hit = new THREE.Vector3();
-    raycaster.setFromCamera(ndcFromEvent(ev), camera);
-    if (!raycaster.ray.intersectPlane(d.plane, hit)) return;
-    offset.subVectors(hit, d.startHit);
-    if (App.snap) {
-      offset.x = Math.round(offset.x / SNAP_MOVE) * SNAP_MOVE;
-      offset.y = Math.round(offset.y / SNAP_MOVE) * SNAP_MOVE;
-      offset.z = Math.round(offset.z / SNAP_MOVE) * SNAP_MOVE;
+  const T = new THREE.Matrix4().makeTranslation(d.origin.x, d.origin.y, d.origin.z);
+  const Tinv = new THREE.Matrix4().makeTranslation(-d.origin.x, -d.origin.y, -d.origin.z);
+  const s = App.sensitivity;
+  const rect = viewportEl.getBoundingClientRect();
+  const px = (ev.clientX - rect.left) - d.startX;
+  const py = (ev.clientY - rect.top) - d.startY;
+
+  /* One gesture, three meanings. Move slides along the axis or the camera
+     plane; rotate turns about the axis, or about the camera's own view
+     direction when free; scale stretches one axis, or all three at once.
+     The axis question is answered the same way in every case, so the feel
+     carries across all three tools. */
+  if (App.transformTool === 'move') {
+    let offset = new THREE.Vector3();
+    if (d.axis) {
+      const t = axisParamFromPointer(ev, d.origin, d.axis.dir);
+      if (t === null) return;
+      let amount = t - d.startParam;
+      if (App.snap) amount = Math.round(amount / SNAP_MOVE) * SNAP_MOVE;
+      offset = d.axis.dir.clone().multiplyScalar(amount);
+    } else {
+      const hit = new THREE.Vector3();
+      raycaster.setFromCamera(ndcFromEvent(ev), camera);
+      if (!raycaster.ray.intersectPlane(d.plane, hit)) return;
+      offset.subVectors(hit, d.startHit);
+      if (App.snap) {
+        offset.x = Math.round(offset.x / SNAP_MOVE) * SNAP_MOVE;
+        offset.y = Math.round(offset.y / SNAP_MOVE) * SNAP_MOVE;
+        offset.z = Math.round(offset.z / SNAP_MOVE) * SNAP_MOVE;
+      }
     }
+    d.accum = offset.clone();
+    applyDeltaToSelection(new THREE.Matrix4().makeTranslation(offset.x, offset.y, offset.z));
+
+  } else if (App.transformTool === 'rotate') {
+    let axis, ang;
+    if (d.axis) {
+      const a = angleAroundAxis(ev, d.origin, d.axis.dir);
+      if (a === null) return;
+      axis = d.axis.dir.clone();
+      ang = (a - d.startAngle) * THREE.MathUtils.clamp(ROTATE_BASE * s, 0.02, 1);
+    } else {
+      // Free rotation spins about the way the camera is looking, so a
+      // sideways drag turns the selection the way it looks like it should.
+      axis = new THREE.Vector3();
+      camera.getWorldDirection(axis);
+      ang = (px / 160) * THREE.MathUtils.clamp(ROTATE_BASE * s * 4, 0.02, 2);
+    }
+    if (App.snap) ang = Math.round(ang / SNAP_ROTATE) * SNAP_ROTATE;
+    const local = new THREE.Matrix4().makeRotationAxis(axis.normalize(), ang);
+    applyDeltaToSelection(new THREE.Matrix4().multiplyMatrices(T, new THREE.Matrix4().multiplyMatrices(local, Tinv)));
+
+  } else {
+    // Scale: drag away from the pivot to grow, toward it to shrink.
+    let f;
+    if (d.axis) {
+      const t = axisParamFromPointer(ev, d.origin, d.axis.dir);
+      if (t === null) return;
+      f = 1 + ((t - d.startParam) / Math.max(0.35, d.refLen)) * THREE.MathUtils.clamp(SCALE_BASE * s, 0.02, 1);
+    } else {
+      f = 1 + (-py / 200) * THREE.MathUtils.clamp(SCALE_BASE * s * 3, 0.02, 2);
+    }
+    if (App.snap) f = Math.round(f / SNAP_SCALE) * SNAP_SCALE;
+    f = Math.max(MIN_SCALE_FACTOR, Math.abs(f));   // never cross zero and invert
+    const v = d.axis
+      ? new THREE.Vector3(d.axis.dir.x ? f : 1, d.axis.dir.y ? f : 1, d.axis.dir.z ? f : 1)
+      : new THREE.Vector3(f, f, f);
+    const local = new THREE.Matrix4().makeScale(v.x, v.y, v.z);
+    applyDeltaToSelection(new THREE.Matrix4().multiplyMatrices(T, new THREE.Matrix4().multiplyMatrices(local, Tinv)));
   }
-  d.accum = offset.clone();
-  applyDeltaToSelection(new THREE.Matrix4().makeTranslation(offset.x, offset.y, offset.z));
   updateAxisGuide();
 }
 
@@ -5009,6 +5146,16 @@ let boxDrag = null;
 renderer.domElement.addEventListener('pointerdown', (ev) => {
   camAnim = null; // a new touch/click cancels any in-flight focus animation
   cancelSmartCamera();
+  trackPointerDown(ev);
+
+  // A second finger means the camera is taking over - abandon any transform
+  // that was mid-flight rather than fighting the pinch.
+  if (activePointers.size > 1) {
+    if (directDrag) { directDrag = null; dragCtx = null; axisGuide.visible = false; }
+    directCandidate = null;
+    orbit.enabled = true;
+    return;
+  }
 
   // A gizmo handle wins over everything else. Only one can ever be hit,
   // since move/rotate/scale now sit at different distances from the centre.
@@ -5046,6 +5193,8 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
 });
 
 renderer.domElement.addEventListener('pointermove', (ev) => {
+  trackPointerMove(ev);
+  if (activePointers.size > 1) return;   // camera gesture - hands off
   if (gizmoDrag) { updateGizmoDrag(ev); return; }
   if (directDrag) { updateDirectDrag(ev); return; }
 
@@ -5087,6 +5236,9 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
 });
 
 renderer.domElement.addEventListener('pointerup', (ev) => {
+  // Judged on release, since two fingers going down is also how a pinch
+  // starts - only a quick, still release could have been a tap.
+  if (trackPointerUp(ev)) { cycleTransformTool(); pointerDown = null; return; }
   if (gizmoDrag) { endGizmoDrag(); pointerDown = null; return; }
   // pointerDown is cleared so the release doesn't also register as a tap and
   // change the selection out from under the move that just happened.
@@ -6903,8 +7055,19 @@ function onResize() {
   camera.updateProjectionMatrix();
   renderer.setSize(w, h);
   updateStrokeResolution();
+  refreshToolIndicator();
 }
 window.addEventListener('resize', onResize);
+
+// Losing a pointer (leaving the window, an interrupting call) must clear the
+// tracker, or activePointers stays non-empty and every later gesture is
+// mistaken for a two-finger one.
+['pointercancel', 'pointerleave'].forEach(name => {
+  renderer.domElement.addEventListener(name, (ev) => {
+    activePointers.delete(ev.pointerId);
+    if (activePointers.size === 0) twoTapArmed = false;
+  });
+});
 
 function animate() {
   requestAnimationFrame(animate);
