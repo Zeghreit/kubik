@@ -399,7 +399,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.57</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.58</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -4449,6 +4449,186 @@ function endGizmoDrag() {
   pushHistory();
 }
 
+/* ---------------- Direct manipulation ----------------
+   Grab what's selected and drag it. No handle to aim at, which is the point:
+   moving is the thing you do constantly, so it should cost nothing.
+
+   The axis question is settled by how you move rather than by what you
+   grabbed. Set off roughly along one of the object's axes and it locks to
+   that axis and draws it; set off in a direction that matches nothing and
+   you slide freely across the plane facing the camera. You never choose -
+   the first few pixels of the drag say what you meant. The same trick the
+   loop cut already uses to read direction from a drag.
+
+   Only already-selected geometry can be grabbed. Dragging unselected parts
+   of the model still orbits the camera, so the gesture people rely on most
+   isn't taken away from them. */
+
+const DIRECT_START_PX = 6;     // movement before a touch counts as a drag
+const DIRECT_DECIDE_PX = 15;   // ... and before the axis question is settled
+/* 12 degrees, not 20. At 20 the three cones cover 68% of every possible
+   drag direction, so free movement becomes the hard thing to reach - you'd
+   keep snapping to axes you never asked for. At 12 it's 42% axis, 58% free:
+   free is the default you fall into, and an axis is something you aim for.
+   Release is wider than catch so a locked axis holds through a wobbly thumb
+   instead of flickering in and out. */
+const AXIS_CATCH_DEG = 12;
+const AXIS_RELEASE_DEG = 23;
+
+let directCandidate = null;    // a touch that might become a drag
+let directDrag = null;
+
+// One reusable guide line, drawn only while an axis is locked.
+const axisGuideMat = new LineMaterial({
+  color: 0xffffff, linewidth: 1.5, worldUnits: false, transparent: true,
+  opacity: 0.55, depthTest: false, depthWrite: false
+});
+axisGuideMat.resolution.set(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
+const axisGuide = new Line2(new LineGeometry().setPositions([0, -1, 0, 0, 1, 0]), axisGuideMat);
+axisGuide.renderOrder = 998;
+axisGuide.visible = false;
+scene.add(axisGuide);
+gizmoStrokes.push(axisGuide);
+
+// Is the pointer over something that's already selected?
+function pointerOnSelection(ev) {
+  if (App.mode === 'object') {
+    const hit = pickObjectAt(ev);
+    return !!(hit && App.selectedObjectIds.has(hit.id));
+  }
+  const pick = pickComponentOnActive(ev);
+  return !!(pick && pick.type === App.mode && App.selectedElements.has(pick.index));
+}
+
+// Where an axis points on screen, as a unit 2D direction from the pivot.
+function axisScreenDir(pivotPos, dir) {
+  const a = worldToScreen(pivotPos);
+  const b = worldToScreen(pivotPos.clone().addScaledVector(dir, 0.5));
+  if (!a || !b) return null;
+  const v = new THREE.Vector2(b.x - a.x, b.y - a.y);
+  return v.lengthSq() < 1e-6 ? null : v.normalize();
+}
+
+function beginDirectDrag(ev) {
+  const pivot = gizmoTarget || getOrCreatePivot();
+  recenterPivot();
+  dragCtx = captureDragContext(pivot);
+  if (!dragCtx) return false;
+
+  const rect = viewportEl.getBoundingClientRect();
+  const plane = new THREE.Plane();
+  const camDir = new THREE.Vector3();
+  camera.getWorldDirection(camDir);
+  plane.setFromNormalAndCoplanarPoint(camDir, pivot.position.clone());
+
+  raycaster.setFromCamera(ndcFromEvent(ev), camera);
+  const startHit = new THREE.Vector3();
+  if (!raycaster.ray.intersectPlane(plane, startHit)) return false;
+
+  directDrag = {
+    origin: pivot.position.clone(),
+    plane,
+    startHit,
+    startX: ev.clientX - rect.left,
+    startY: ev.clientY - rect.top,
+    axis: null,          // null = free across the camera plane
+    startParam: 0,
+    decided: false
+  };
+  orbit.enabled = false;
+  return true;
+}
+
+// Compares the drag's screen direction against each axis and locks on if one
+// is close enough. Hysteresis keeps a locked axis from flickering: it takes a
+// wider stray to let go than it took to catch.
+function resolveDirectAxis(ev) {
+  const d = directDrag;
+  const rect = viewportEl.getBoundingClientRect();
+  const dx = (ev.clientX - rect.left) - d.startX;
+  const dy = (ev.clientY - rect.top) - d.startY;
+  const travel = Math.hypot(dx, dy);
+  if (travel < DIRECT_DECIDE_PX) return;
+
+  const dragDir = new THREE.Vector2(dx, dy).normalize();
+  let best = null, bestDeg = 1e9;
+  GIZMO_AXES.forEach(ax => {
+    const sd = axisScreenDir(d.origin, ax.dir);
+    if (!sd) return;
+    // Absolute dot: dragging either way along an axis counts as that axis.
+    const deg = THREE.MathUtils.radToDeg(Math.acos(THREE.MathUtils.clamp(Math.abs(dragDir.dot(sd)), -1, 1)));
+    if (deg < bestDeg) { bestDeg = deg; best = ax; }
+  });
+  if (!best) return;
+
+  const limit = d.axis ? AXIS_RELEASE_DEG : AXIS_CATCH_DEG;
+  const want = bestDeg <= limit ? best : null;
+  if (want && (!d.axis || d.axis.key !== want.key)) {
+    d.axis = want;
+    d.startParam = axisParamFromPointer(ev, d.origin, want.dir) ?? 0;
+    d.paramBase = d.startParam;
+  } else if (!want && d.axis) {
+    d.axis = null;
+    // Re-anchor the free plane so releasing an axis doesn't jump the selection.
+    const hit = new THREE.Vector3();
+    raycaster.setFromCamera(ndcFromEvent(ev), camera);
+    if (raycaster.ray.intersectPlane(d.plane, hit)) d.startHit.copy(hit).sub(d.accum || new THREE.Vector3());
+  }
+  d.decided = true;
+}
+
+function updateDirectDrag(ev) {
+  if (!directDrag || !dragCtx) return;
+  const d = directDrag;
+  resolveDirectAxis(ev);
+
+  let offset = new THREE.Vector3();
+  if (d.axis) {
+    const t = axisParamFromPointer(ev, d.origin, d.axis.dir);
+    if (t === null) return;
+    let amount = t - d.startParam;
+    if (App.snap) amount = Math.round(amount / SNAP_MOVE) * SNAP_MOVE;
+    offset = d.axis.dir.clone().multiplyScalar(amount);
+  } else {
+    const hit = new THREE.Vector3();
+    raycaster.setFromCamera(ndcFromEvent(ev), camera);
+    if (!raycaster.ray.intersectPlane(d.plane, hit)) return;
+    offset.subVectors(hit, d.startHit);
+    if (App.snap) {
+      offset.x = Math.round(offset.x / SNAP_MOVE) * SNAP_MOVE;
+      offset.y = Math.round(offset.y / SNAP_MOVE) * SNAP_MOVE;
+      offset.z = Math.round(offset.z / SNAP_MOVE) * SNAP_MOVE;
+    }
+  }
+  d.accum = offset.clone();
+  applyDeltaToSelection(new THREE.Matrix4().makeTranslation(offset.x, offset.y, offset.z));
+  updateAxisGuide();
+}
+
+// The locked axis draws itself through the selection - the only UI here, and
+// it only exists while it's telling you something.
+function updateAxisGuide() {
+  const d = directDrag;
+  if (!d || !d.axis) { axisGuide.visible = false; return; }
+  const len = camera.position.distanceTo(d.origin) * 1.4;
+  axisGuide.visible = true;
+  axisGuide.position.copy(d.origin);
+  axisGuide.quaternion.copy(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.axis.dir));
+  axisGuide.scale.set(1, len, 1);
+  axisGuide.material.color.setHex(d.axis.color);
+}
+
+function endDirectDrag() {
+  if (!directDrag) return;
+  directDrag = null;
+  directCandidate = null;
+  axisGuide.visible = false;
+  orbit.enabled = true;
+  recenterPivot();
+  updateGizmoScale(0.016);
+  pushHistory();
+}
+
 // Which handle, if any, is under this pointer.
 function pickGizmoPart(ev) {
   // While one handle is held, every other is locked out - this is what stops
@@ -4850,6 +5030,13 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   }
 
   pointerDown = { x: ev.clientX, y: ev.clientY, t: performance.now(), overGizmo: false };
+
+  // Landing on something already selected might be the start of a drag, but
+  // it might equally be a tap - so only remember it here and decide once the
+  // finger actually travels. Region-select drags take priority.
+  directCandidate = (App.selectDrag === 'off' && pointerOnSelection(ev))
+    ? { x: ev.clientX, y: ev.clientY } : null;
+
   if (App.selectDrag !== 'off' && !pointerDown.overGizmo) {
     const rect = viewportEl.getBoundingClientRect();
     const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
@@ -4860,6 +5047,17 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
 
 renderer.domElement.addEventListener('pointermove', (ev) => {
   if (gizmoDrag) { updateGizmoDrag(ev); return; }
+  if (directDrag) { updateDirectDrag(ev); return; }
+
+  // A candidate becomes a real drag only once the finger has travelled far
+  // enough that it clearly isn't a tap.
+  if (directCandidate && !boxDrag) {
+    if (Math.hypot(ev.clientX - directCandidate.x, ev.clientY - directCandidate.y) > DIRECT_START_PX) {
+      if (beginDirectDrag(ev)) { updateDirectDrag(ev); return; }
+      directCandidate = null;
+    }
+  }
+
   if (!boxDrag) {
     // Hover feedback, and what anyGizmoAxis() reports to the tap handler.
     const over = pickGizmoPart(ev);
@@ -4890,6 +5088,10 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
 
 renderer.domElement.addEventListener('pointerup', (ev) => {
   if (gizmoDrag) { endGizmoDrag(); pointerDown = null; return; }
+  // pointerDown is cleared so the release doesn't also register as a tap and
+  // change the selection out from under the move that just happened.
+  if (directDrag) { endDirectDrag(); pointerDown = null; return; }
+  directCandidate = null;
   if (boxDrag) {
     const rect = viewportEl.getBoundingClientRect();
     const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
