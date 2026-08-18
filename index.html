@@ -120,29 +120,25 @@
   .hub-item.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
   .hub-item.active .tx { color: var(--on-accent); opacity: .85; }
 
-  /* Only meaningful when components are selected, so it appears in Vertex,
-     Edge and Face modes and stays out of the way in Object mode. */
-  #selRow { position: absolute; left: 88px; bottom: 114px; display: none; gap: 6px; }
-  #selRow.show { display: flex; }
-  #selRow button {
-    width: auto; min-width: 62px; height: 40px; min-height: 40px; padding: 0 10px;
-    justify-content: center; font-size: 12px; font-weight: 600;
-    border-radius: 12px; background: var(--panel2);
+  /* Undo/redo, centred at the very bottom - out from under the thumb
+     entirely, since they're corrections rather than the main action loop. */
+  #quickRow {
+    position: absolute; left: 50%; transform: translateX(-50%); bottom: 14px;
+    display: flex; gap: 6px; z-index: 13;
   }
-
-  #quickRow { position: absolute; left: 88px; bottom: 66px; display: flex; gap: 6px; }
   #quickRow button {
     width: 44px; height: 44px; min-height: 44px; padding: 0; justify-content: center;
     font-size: 17px; border-radius: 12px; background: var(--panel2);
   }
 
-  /* Right beside the hub rather than buried in the drawer, since this is
-     chosen as often as the tools themselves. Free is the default: an
-     ordinary tap. Box and Lasso switch the drag gesture instead. */
-  #selGestureRow { position: absolute; left: 88px; bottom: 162px; display: flex; gap: 6px; }
+  /* One fixed side of the hub - directly above it - rather than sharing the
+     general control column, and it fades with the hub's own arc exactly like
+     the rest of that cluster. Free is the default: an ordinary tap. Box and
+     Lasso switch the drag gesture instead. */
+  #selGestureRow { position: absolute; left: 14px; bottom: 84px; display: flex; gap: 6px; }
   #selGestureRow button {
-    width: 40px; height: 40px; min-height: 40px; padding: 0; justify-content: center;
-    border-radius: 12px; background: var(--panel2);
+    width: 36px; height: 36px; min-height: 36px; padding: 0; justify-content: center;
+    border-radius: 10px; background: var(--panel2);
   }
 
   #btnObjComponent {
@@ -157,10 +153,9 @@
   /* The open arc sweeps across this space, so the quick controls step aside
      rather than sitting underneath it. */
   #thumbZone.arc-open #quickRow,
-  #thumbZone.arc-open #selRow,
   #thumbZone.arc-open #selGestureRow,
   #thumbZone.arc-open #btnObjComponent { opacity: 0; pointer-events: none; }
-  #quickRow, #selRow, #selGestureRow, #btnObjComponent { transition: opacity .15s ease; }
+  #quickRow, #selGestureRow, #btnObjComponent { transition: opacity .15s ease; }
 
   /* ---- Drawer: rarely-touched settings, for the assisting finger ---- */
   #scrim {
@@ -416,7 +411,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.43</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.44</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -436,10 +431,6 @@
     <!-- Thumb zone: everything here sits inside the natural sweep of a left
          thumb resting at the bottom-left corner. -->
     <div id="thumbZone">
-      <div id="selRow">
-        <button id="btnGrow" class="wide" title="Expand the selection to touching components">Grow</button>
-        <button id="btnShrink" class="wide" title="Pull the selection back from its edges">Shrink</button>
-      </div>
       <div id="quickRow">
         <button id="btnUndo" title="Undo (Ctrl+Z)">⤺</button>
         <button id="btnRedo" title="Redo (Ctrl+Shift+Z)">⤻</button>
@@ -556,8 +547,8 @@
 
       <div class="drawer-sec">
         <div class="drawer-title">Selection</div>
-        <div class="drawer-note">Grow and Shrink live on the thumb bar. Free/Box/Lasso sit next
-          to the hub, and every tap now adds to your selection - tap empty space to start fresh.</div>
+        <div class="drawer-note">Free/Box/Lasso sit right above the hub. Every tap adds to your
+          selection - tap empty space to start fresh.</div>
       </div>
 
       <div class="drawer-sec">
@@ -5828,7 +5819,7 @@ function setSelectGesture(mode) {
 document.getElementById('btnSelFree').addEventListener('click', () => setSelectGesture('off'));
 document.getElementById('btnSelBox').addEventListener('click', () => setSelectGesture('box'));
 document.getElementById('btnSelLasso').addEventListener('click', () => setSelectGesture('lasso'));
-document.getElementById('btnGrow').addEventListener('click', growSelection);
+// Grow/Shrink buttons removed for now - growSelection/shrinkSelection stay defined below, ready to wire back in.
 document.getElementById('btnSubdivSmooth').addEventListener('click', () => subdivideSelection('smooth'));
 document.getElementById('btnSubdivKeep').addEventListener('click', () => subdivideSelection('keep'));
 document.getElementById('btnClearCreases').addEventListener('click', clearAllCreases);
@@ -5899,7 +5890,6 @@ document.getElementById('btnInspector').addEventListener('click', (ev) => {
   ev.target.classList.toggle('active', App.showInspector);
   refreshInspector();
 });
-document.getElementById('btnShrink').addEventListener('click', shrinkSelection);
 
 function refreshUI() {
   refreshObjComponentBtn();
@@ -5911,9 +5901,6 @@ function refreshUI() {
   const mirrorDisabled = App.mode !== 'object' || App.selectedObjectIds.size === 0;
   ['btnMirrorX', 'btnMirrorY', 'btnMirrorZ'].forEach(id => { document.getElementById(id).disabled = mirrorDisabled; });
   document.getElementById('btnDuplicate').disabled = mirrorDisabled;
-  document.getElementById('selRow').classList.toggle('show', App.mode !== 'object');
-  document.getElementById('btnGrow').disabled = !hasSel;
-  document.getElementById('btnShrink').disabled = !hasSel;
   colorPicker.style.opacity = (App.mode === 'object' ? App.selectedObjectIds.size > 0 : (App.activeObjectId && App.selectedElements.size > 0)) ? '1' : '.4';
   refreshInspector();
   updateFrameVisibility();
