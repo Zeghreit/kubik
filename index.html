@@ -416,7 +416,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.42</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.43</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -6249,6 +6249,47 @@ function refreshObjComponentBtn() {
     : 'Component mode (' + App.mode + ') - tap to edit whole objects';
 }
 
+/* ---------------- Update detection ----------------
+   iOS Home Screen apps have no pull-to-refresh and no reload button - once
+   launched standalone, there's no gesture left to force a fresh fetch, and
+   iOS will sometimes hand back a cached snapshot on relaunch without even
+   checking the network. Without this, the only way to see a new version is
+   to delete the icon and re-add it. This fetches the live file bypassing any
+   cache, compares its version to what's actually running, and offers a
+   one-tap reload the moment they differ - on load, and again whenever the
+   app is resumed from the background, since that's a relaunch with no fresh
+   fetch of its own to catch it. */
+async function checkForUpdate() {
+  try {
+    const res = await fetch(location.pathname, { cache: 'no-store' });
+    const html = await res.text();
+    const m = html.match(/>v(\d+\.\d+)<\/span>/);
+    const mine = document.querySelector('.brand span');
+    if (m && mine && m[1] !== mine.textContent.replace('v', '')) showUpdateBanner(m[1]);
+  } catch (err) { /* offline, or the fetch was blocked - stay quiet either way */ }
+}
+
+function showUpdateBanner(newVersion) {
+  if (document.getElementById('updateBanner')) return; // already showing
+  const bar = document.createElement('div');
+  bar.id = 'updateBanner';
+  bar.style.cssText = 'position:fixed; left:0; right:0; top:0; z-index:9999; ' +
+    'background:var(--accent); color:var(--on-accent); font:600 13px system-ui,sans-serif; ' +
+    'padding:10px 14px; padding-top:calc(10px + env(safe-area-inset-top)); ' +
+    'text-align:center; cursor:pointer;';
+  bar.textContent = 'Update to v' + newVersion + ' available - tap to reload';
+  bar.addEventListener('click', () => {
+    // A cache-busted URL forces a real network fetch even where a plain
+    // reload might not.
+    location.href = location.pathname + '?v=' + Date.now();
+  });
+  document.body.appendChild(bar);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') checkForUpdate();
+});
+
 function init() {
   onResize();
   paintStaticIcons();
@@ -6271,6 +6312,7 @@ function init() {
   refreshGizmoAttachment();
   pushHistory();
   animate();
+  checkForUpdate();
 }
 init();
 </script>
