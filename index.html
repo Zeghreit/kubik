@@ -145,11 +145,12 @@
     border-radius: 12px; background: var(--panel2);
   }
 
-  #thumbZone #modeGroup {
-    position: absolute; left: 88px; bottom: 18px;
-    background: var(--panel2);
+  #btnObjComponent {
+    position: absolute; left: 88px; bottom: 18px; z-index: 13;
+    width: 42px; min-height: 42px; padding: 0; border-radius: 10px;
+    background: var(--panel2); border: 1px solid var(--line); justify-content: center;
   }
-  #thumbZone #modeGroup button { min-width: 42px; min-height: 42px; justify-content: center; padding: 0; }
+  #btnObjComponent.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
   .ic-svg { display: block; }
   .hub-item .ic { display: flex; align-items: center; justify-content: center; }
 
@@ -158,8 +159,8 @@
   #thumbZone.arc-open #quickRow,
   #thumbZone.arc-open #selRow,
   #thumbZone.arc-open #selGestureRow,
-  #thumbZone.arc-open #modeGroup { opacity: 0; pointer-events: none; }
-  #quickRow, #selRow, #thumbZone #modeGroup { transition: opacity .15s ease; }
+  #thumbZone.arc-open #btnObjComponent { opacity: 0; pointer-events: none; }
+  #quickRow, #selRow, #selGestureRow, #btnObjComponent { transition: opacity .15s ease; }
 
   /* ---- Drawer: rarely-touched settings, for the assisting finger ---- */
   #scrim {
@@ -415,7 +416,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.41</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.42</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -448,12 +449,7 @@
         <button id="btnSelBox" title="Drag a box to select"></button>
         <button id="btnSelLasso" title="Draw a lasso to select"></button>
       </div>
-      <div class="group" id="modeGroup">
-        <button data-mode="object" title="Object mode">Obj</button>
-        <button data-mode="vertex" title="Vertex mode">●</button>
-        <button data-mode="edge" title="Edge mode">╱</button>
-        <button data-mode="face" title="Face mode">◰</button>
-      </div>
+      <button id="btnObjComponent" title="Object mode - tap to edit components"></button>
       <div id="hubArc"></div>
       <button id="hubBtn" title="Primary tools">✥</button>
     </div>
@@ -820,6 +816,7 @@ const App = {
   gizmoMode: 'translate', // translate | rotate | scale (legacy, kept for the inspector label)
   gizmoFocus: null,       // null = combo gizmo (all three); else isolate one for precision
   multiSelect: true,  // permanently on: every tap adds, tap empty space to clear
+  lastComponentMode: 'face', // resumed when the Object/Component toggle re-enters Component mode
   selectDrag: 'off',   // 'off' | 'box' | 'lasso'
   snap: false,
   theme: 'dark',
@@ -3766,6 +3763,7 @@ function hideAllHelpers() {
 
 function setMode(mode) {
   App.mode = mode;
+  if (mode !== 'object') App.lastComponentMode = mode;
   App.selectedElements.clear();
   App.edgeAnchor = null;
   hideAllHelpers();
@@ -4088,6 +4086,41 @@ function pickEdgeOnActive(ev) {
     if (d < bestD) { bestD = d; best = i; }
   });
   return best;
+}
+
+/* Tries vertex, then edge, then face - the priority you'd expect when your
+   thumb is bigger than the thing you're aiming at. Vertex and edge share a
+   camera-scaled distance threshold; face falls back to an exact raycast
+   against the mesh, so it always catches a tap that missed both. */
+function pickComponentOnActive(ev) {
+  const v = pickVertexOnActive(ev);
+  if (v >= 0) return { type: 'vertex', index: v };
+  const e = pickEdgeOnActive(ev);
+  if (e >= 0) return { type: 'edge', index: e };
+  const f = pickFaceOnActive(ev);
+  if (f >= 0) return { type: 'face', index: f };
+  return null;
+}
+
+// A lighter version of setMode() for switching sub-type mid-tap: no radial
+// menu to hide (nothing's open mid-tap) and no double UI refresh, since the
+// caller adds the freshly-picked component right after this runs.
+function switchToComponentType(newType) {
+  App.mode = newType;
+  App.lastComponentMode = newType;
+  App.selectedElements.clear();
+  App.edgeAnchor = null;
+  hideAllHelpers();
+  const obj = findObject(App.activeObjectId);
+  if (obj) setActiveObjectHelpersVisible(obj, newType);
+}
+
+// The lower-left toggle: Object mode edits whole objects: Component mode
+// resumes whichever of vertex/edge/face you were last working in, and free
+// taps pick their own type from there.
+function toggleObjComponentMode() {
+  if (App.mode === 'object') setMode(App.lastComponentMode);
+  else setMode('object');
 }
 
 function pickFaceOnActive(ev) {
@@ -4762,23 +4795,24 @@ function handleTap(ev) {
     return;
   }
 
-  // sub-element modes
-  let elIdx = -1;
-  if (App.mode === 'vertex') elIdx = pickVertexOnActive(ev);
-  else if (App.mode === 'edge') elIdx = pickEdgeOnActive(ev);
-  else if (App.mode === 'face') elIdx = pickFaceOnActive(ev);
+  // Component mode: tap anything and it decides what you're picking. Vertex
+  // wins over edge wins over face, and landing on a different type than
+  // you're currently in switches you into it rather than being ignored.
+  const pick = pickComponentOnActive(ev);
 
-  if (elIdx >= 0) {
+  if (pick) {
+    if (pick.type !== App.mode) switchToComponentType(pick.type);
+
     // Remember a lone previously-selected edge: if the user now double-taps a
     // different edge, we join the two together into a continuous run.
-    if (App.mode === 'edge') {
+    if (pick.type === 'edge') {
       const prev = Array.from(App.selectedElements);
-      App.edgeAnchor = (prev.length === 1 && prev[0] !== elIdx) ? prev[0] : null;
+      App.edgeAnchor = (prev.length === 1 && prev[0] !== pick.index) ? prev[0] : null;
       App.edgeAnchorTime = performance.now();
     } else {
       App.edgeAnchor = null;
     }
-    toggleElement(elIdx, additive);
+    toggleElement(pick.index, additive);
     return;
   }
 
@@ -5777,9 +5811,7 @@ document.getElementById('btnMenu').addEventListener('click', () => setDrawerOpen
 document.getElementById('drawerClose').addEventListener('click', () => setDrawerOpen(false));
 scrimEl.addEventListener('click', () => setDrawerOpen(false));
 
-document.querySelectorAll('#modeGroup button').forEach(btn => {
-  btn.addEventListener('click', () => setMode(btn.dataset.mode));
-});
+document.getElementById('btnObjComponent').addEventListener('click', toggleObjComponentMode);
 // Free / Box / Lasso choose the drag gesture, not whether taps add to the
 // selection - that's permanent now. Three explicit buttons rather than one
 // cycling through states, since they sit right next to the hub and can each
@@ -5870,7 +5902,7 @@ document.getElementById('btnInspector').addEventListener('click', (ev) => {
 document.getElementById('btnShrink').addEventListener('click', shrinkSelection);
 
 function refreshUI() {
-  document.querySelectorAll('#modeGroup button').forEach(b => b.classList.toggle('active', b.dataset.mode === App.mode));
+  refreshObjComponentBtn();
   document.getElementById('btnUndo').disabled = App.historyIndex <= 0;
   document.getElementById('btnRedo').disabled = App.historyIndex >= App.history.length - 1;
 
@@ -6199,9 +6231,22 @@ function paintStaticIcons() {
     const el = document.getElementById(id);
     if (el) el.innerHTML = icon(name, size);
   });
-  document.querySelectorAll('#modeGroup button').forEach(b => {
-    b.innerHTML = icon(b.dataset.mode, 19);
-  });
+  refreshObjComponentBtn();
+}
+
+// The toggle shows the 'object' pictogram in Object mode, or whichever
+// component icon (vertex/edge/face) you're currently working in - one button
+// communicates both which top-level mode you're in and, in Component mode,
+// which sub-type, without a second row of state to read.
+function refreshObjComponentBtn() {
+  const btn = document.getElementById('btnObjComponent');
+  if (!btn) return;
+  const iconName = App.mode === 'object' ? 'object' : App.mode;
+  btn.innerHTML = icon(iconName, 20);
+  btn.classList.toggle('active', App.mode !== 'object');
+  btn.title = App.mode === 'object'
+    ? 'Object mode - tap to edit components'
+    : 'Component mode (' + App.mode + ') - tap to edit whole objects';
 }
 
 function init() {
