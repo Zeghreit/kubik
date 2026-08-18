@@ -395,7 +395,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.61</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.62</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -815,6 +815,12 @@ function applyTheme(name) {
     btn.title = 'Switch theme';
   }
 }
+
+// Every Line2 stroke in the scene. LineMaterial needs the viewport size to
+// compute a pixel width, so they're collected here and refreshed on resize.
+// Only the axis guide lives here now that the handles are gone, but the list
+// stays because that's what the resize hook walks.
+const gizmoStrokes = [];
 
 // The pivot every transform happens about. There's no visible gizmo any
 // more - the selection itself is what you grab - but the pivot is still the
@@ -6575,6 +6581,7 @@ function init() {
   onResize();
   updateStrokeResolution();
   paintStaticIcons();
+  refreshToolIndicator();
   applyTheme(App.theme);
   buildHubArc();
   document.getElementById('btnGrid').classList.toggle('active', grid.visible);
