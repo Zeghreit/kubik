@@ -138,10 +138,14 @@
      screen position every frame and these three sit on a small arc through
      its upper-left quarter - that range is deliberate, since the hub's own
      tool arc only ever sweeps the 6-90 degree range and this stays above 90,
-     so the two can never overlap. The anchor is the gizmo's own position when
-     something's selected, or the hub itself when nothing is - so there's
-     always somewhere to reach Box/Lasso from, even before a first selection. */
-  #selGestureRow { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 13; }
+     so the two can never overlap.
+
+     Starts hidden on purpose: until the first animation frame runs, the row
+     sits at 0,0 with no per-button transform yet, so all three would stack
+     in the viewport's top-left corner - you'd see the last one painted
+     (Lasso) sitting there. JS shows it only once it has a real gizmo
+     position to place it at. */
+  #selGestureRow { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 13; display: none; }
   #selGestureRow button {
     position: absolute; left: 0; top: 0;
     width: 36px; height: 36px; min-height: 36px; padding: 0; justify-content: center;
@@ -395,7 +399,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.51</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.52</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -4106,7 +4110,9 @@ function updateSelGestureAnchor() {
   const hasGizmo = !!(App.pivot && gizmoList.some(g => g.object));
   const anchor = hasGizmo ? worldToScreen(App.pivot.position) : null;
   if (!anchor) { row.style.display = 'none'; return; }
-  row.style.display = '';
+  // Explicit 'block', not '' - an empty string would fall back to the CSS
+  // default, which is now 'none', so the row would never appear at all.
+  row.style.display = 'block';
 
   row.style.left = anchor.x + 'px';
   row.style.top = anchor.y + 'px';
