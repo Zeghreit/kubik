@@ -399,7 +399,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.52</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.53</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -3762,6 +3762,48 @@ function getOrCreatePivot() {
   return App.pivot;
 }
 
+// Puts the pivot back at the centre of whatever's selected, with no leftover
+// rotation or scale. Sensitivity damping means the geometry moves less than
+// the gizmo was dragged, so without this the pivot keeps the full raw drag
+// and drifts off the selection - a bit further with every drag. Rotate and
+// scale then work around a point that isn't the centre any more, which is
+// what made them feel wrong.
+function recenterPivot() {
+  const pivot = App.pivot;
+  if (!pivot) return;
+  const center = new THREE.Vector3();
+
+  if (App.mode === 'object') {
+    const ids = Array.from(App.selectedObjectIds);
+    if (!ids.length) return;
+    ids.forEach(id => center.add(findObject(id).mesh.position));
+    center.divideScalar(ids.length);
+  } else {
+    const obj = findObject(App.activeObjectId);
+    if (!obj || App.selectedElements.size === 0) return;
+    const topo = obj.mesh.userData.topo;
+    const pa = obj.mesh.geometry.attributes.position;
+    const logicalIds = new Set();
+    if (App.mode === 'vertex') App.selectedElements.forEach(l => logicalIds.add(l));
+    if (App.mode === 'edge') App.selectedElements.forEach(ei => { if (topo.edges[ei]) topo.edges[ei].forEach(l => logicalIds.add(l)); });
+    if (App.mode === 'face') App.selectedElements.forEach(gi => { if (topo.faceGroups[gi]) topo.faceGroups[gi].logicalVerts.forEach(l => logicalIds.add(l)); });
+    if (!logicalIds.size) return;
+    logicalIds.forEach(l => {
+      const ai = topo.logicalGroups[l][0];
+      const q = new THREE.Vector3(pa.getX(ai), pa.getY(ai), pa.getZ(ai));
+      obj.mesh.localToWorld(q);
+      center.add(q);
+    });
+    center.divideScalar(logicalIds.size);
+  }
+
+  pivot.position.copy(center);
+  pivot.quaternion.identity();
+  pivot.scale.set(1, 1, 1);
+  pivot.updateMatrix();
+  pivot.updateMatrixWorld(true);
+}
+
 function refreshGizmoAttachment() {
   scheduleSmartCamera();
   detachAllGizmos();
@@ -3857,6 +3899,10 @@ function handleGizmoDraggingChanged(ev) {
     orbit.enabled = activeGizmoDrags === 0;
     if (activeGizmoDrags === 0) {
       dragCtx = null;
+      // Put the pivot back on the selection before anything else reads it -
+      // otherwise it keeps the full undamped drag and every later rotate or
+      // scale works around a point that has drifted off centre.
+      recenterPivot();
       pushHistory();
     }
   }
@@ -4097,7 +4143,7 @@ function worldToScreen(worldPos) {
 // only exist while that gizmo does - they read as one object with it. Angles
 // stay above 90 degrees deliberately: the hub's own tool arc never uses that
 // range, so the two can't overlap even when the gizmo is near the corner.
-const SEL_FAN_RADIUS = 90;
+const SEL_FAN_RADIUS = 150;
 const SEL_FAN_ANGLES = [170, 135, 100]; // Free, Box, Lasso - degrees, upper-left
 
 function updateSelGestureAnchor() {
@@ -5632,10 +5678,13 @@ const HUB_TOOLS_VERTEX = [
 ];
 
 const HUB_TOOLS_EDGE = [
+  // Three in the near ring, five in the far one - four inside the near
+  // ring's shorter sweep crowded the icons together. Loop moves out to sit
+  // with the other edge-flow tools.
   { key: 'extrude', icon: 'extrude', label: 'Extrude', ring: 0, run: extrudeSelection },
   { key: 'bevel', icon: 'bevel', label: 'Bevel', ring: 0, run: bevelSelection },
   { key: 'bridge', icon: 'bridge', label: 'Bridge', ring: 0, run: bridgeSelection },
-  { key: 'loopcut', icon: 'loop', label: 'Loop', ring: 0, run: edgeLoopSelection },
+  { key: 'loopcut', icon: 'loop', label: 'Loop', ring: 1, run: edgeLoopSelection },
   { key: 'split', icon: 'split', label: 'Split', ring: 1, run: splitSelection },
   { key: 'crease', icon: 'crease', label: 'Crease', ring: 1, run: () => creaseSelection(true) },
   { key: 'uncrease', icon: 'uncrease', label: 'Uncrease', ring: 1, run: () => creaseSelection(false) },
