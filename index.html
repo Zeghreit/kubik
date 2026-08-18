@@ -266,7 +266,7 @@
   /* Under the view cube: everything you'd otherwise dig into the drawer for
      mid-model. Assisting-finger territory, not thumb territory, so these are
      settings you glance at and tap - not the primary action loop. */
-  #btnSymmetry, #btnGrid, #btnSmartCam, #btnSnap {
+  #btnSymmetry, #btnGrid, #btnSmartCam, #btnSnap, #btnShade {
     position: absolute; right: calc(20px + env(safe-area-inset-right)); z-index: 13;
     width: 42px; min-height: 42px; padding: 0; border-radius: 10px;
     background: var(--panel2); border: 1px solid var(--line);
@@ -276,7 +276,8 @@
   #btnGrid { top: 154px; }
   #btnSmartCam { top: 202px; }
   #btnSnap { top: 250px; }
-  #btnSymmetry.active, #btnGrid.active, #btnSmartCam.active, #btnSnap.active {
+  #btnShade { top: 298px; }
+  #btnSymmetry.active, #btnGrid.active, #btnSmartCam.active, #btnSnap.active, #btnShade.active {
     background: var(--accent-dim); border-color: var(--accent); color: var(--accent);
   }
 
@@ -395,7 +396,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.47</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.48</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -407,6 +408,7 @@
     <button id="btnGrid" title="Show or hide the floor grid"></button>
     <button id="btnSmartCam" title="Drift to a useful angle after selecting"></button>
     <button id="btnSnap" title="Snap moves to a grid and rotations to fixed angles"></button>
+    <button id="btnShade" title="Shade smooth / flat - applies to the whole object or the current selection"></button>
     <div id="vignette"></div>
     <div id="selectBox"></div>
     <svg id="lassoSvg"><polyline id="lassoPath" /></svg>
@@ -800,6 +802,7 @@ const App = {
   lastComponentMode: 'face', // resumed when the Object/Component toggle re-enters Component mode
   selectDrag: 'off',   // 'off' | 'box' | 'lasso'
   snap: false,
+  shadeSmooth: false,  // simple on/off toggle, not a readout of mixed per-face state - matches applyFinishToSelection's cycling approach
   theme: 'dark',
   fillet: false,
   filletRadius: 0.04,
@@ -5666,14 +5669,27 @@ const HUB_TOOLS_COMPONENT = [
   // Move/Rotate/Scale dropped - the always-present multi-gizmo already
   // handles those directly on the selection, so a duplicate control here
   // would just be two ways to do the same thing.
+  // Ring 0: the constructive operations - building new geometry.
   { key: 'extrude', icon: 'extrude', label: 'Extrude', ring: 0, run: extrudeSelection },
   { key: 'inset', icon: 'inset', label: 'Inset', ring: 0, run: insetSelection },
   { key: 'bevel', icon: 'bevel', label: 'Bevel', ring: 0, run: bevelSelection },
-  { key: 'loopcut', icon: 'loop', label: 'Loop', ring: 1, run: edgeLoopSelection },
+  { key: 'bridge', icon: 'bridge', label: 'Bridge', ring: 0, run: bridgeSelection },
+  { key: 'loopcut', icon: 'loop', label: 'Loop', ring: 0, run: edgeLoopSelection },
+  // Ring 1: connecting and cleaning up existing geometry. Every one of these
+  // already self-guards with a toast if run in the wrong sub-mode (Weld only
+  // makes sense for vertices, Crease only for edges, etc.), the same way
+  // Inset already tolerates being shown outside Face mode - so there's no
+  // risk in offering all of them together rather than trying to filter by
+  // vertex/edge/face specifically.
+  { key: 'connect', icon: 'connect', label: 'Connect', ring: 1, run: connectSelection },
+  { key: 'weld', icon: 'weld', label: 'Weld', ring: 1, run: weldSelection },
+  { key: 'split', icon: 'split', label: 'Split', ring: 1, run: splitSelection },
+  { key: 'crease', icon: 'crease', label: 'Crease', ring: 1, run: () => creaseSelection(true) },
+  { key: 'uncrease', icon: 'uncrease', label: 'Uncrease', ring: 1, run: () => creaseSelection(false) },
   { key: 'delete', icon: 'del', label: 'Delete', ring: 1, run: () => document.getElementById('btnDelete').click() }
 ];
 
-const HUB_TOOLS_OBJECT = [
+const HUB_TOOLS_OBJECT_BASE = [
   { key: 'duplicate', icon: 'dupe', label: 'Duplicate', ring: 0, run: () => document.getElementById('btnDuplicate').click() },
   { key: 'mirror', icon: 'mirror', label: 'Mirror', ring: 0, run: () => mirrorSelectedObjects(App.symmetryAxis) },
   { key: 'delete', icon: 'del', label: 'Delete', ring: 0, run: () => document.getElementById('btnDelete').click() },
@@ -5683,6 +5699,10 @@ const HUB_TOOLS_OBJECT = [
   { key: 'material', icon: 'color', label: 'Material', ring: 1, run: cycleMaterialFinish },
   { key: 'fillet', icon: 'bevel', label: 'Fillet', ring: 1, run: () => document.getElementById('btnFillet').click() }
 ];
+// Join only means something with more than one object selected, matching
+// the old radial menu's own condition for showing it - appended live rather
+// than baked into the base array.
+const HUB_TOOL_JOIN = { key: 'join', icon: 'join', label: 'Join', ring: 1, run: joinSelection };
 
 const HUB_TOOLS_EMPTY = [
   { key: 'addcube', icon: 'object', label: 'Add Cube', ring: 0, run: () => document.getElementById('btnAddCube').click() },
@@ -5702,7 +5722,10 @@ function cycleMaterialFinish() {
 }
 
 function currentHubTools() {
-  if (App.mode === 'object') return App.selectedObjectIds.size > 0 ? HUB_TOOLS_OBJECT : HUB_TOOLS_EMPTY;
+  if (App.mode === 'object') {
+    if (App.selectedObjectIds.size === 0) return HUB_TOOLS_EMPTY;
+    return App.selectedObjectIds.size > 1 ? HUB_TOOLS_OBJECT_BASE.concat(HUB_TOOL_JOIN) : HUB_TOOLS_OBJECT_BASE;
+  }
   return HUB_TOOLS_COMPONENT;
 }
 
@@ -5752,7 +5775,13 @@ function buildHubArc() {
 // against rebuilding the arc's DOM on every one of them.
 let _lastHubSetKey = null;
 function hubSetKey() {
-  if (App.mode === 'object') return App.selectedObjectIds.size > 0 ? 'object' : 'empty';
+  if (App.mode === 'object') {
+    // 'object-multi' is its own key, not just 'object' - Join only appears
+    // once a second object joins the selection, so crossing that boundary
+    // has to trigger a rebuild too, not just 0-vs-1.
+    if (App.selectedObjectIds.size === 0) return 'empty';
+    return App.selectedObjectIds.size > 1 ? 'object-multi' : 'object';
+  }
   return 'component';
 }
 function refreshHubToolset() {
@@ -5860,6 +5889,16 @@ document.getElementById('btnSnap').addEventListener('click', (ev) => {
   applySnapSettings();
   ev.currentTarget.classList.toggle('active', App.snap);
   toast(App.snap ? 'Snapping to 0.25 units / 15°' : 'Snapping off');
+});
+// A plain flip-flop: 0/I, not a readout of the actual mixed shading state
+// across faces - it just toggles and applies, same pattern as the Material
+// cycler. Works on the whole object in Object mode or the current selection
+// in Component mode, since shadeSelection() already handles both.
+document.getElementById('btnShade').addEventListener('click', (ev) => {
+  App.shadeSmooth = !App.shadeSmooth;
+  ev.currentTarget.classList.toggle('active', App.shadeSmooth);
+  ev.currentTarget.innerHTML = icon(App.shadeSmooth ? 'smooth' : 'flat', 19);
+  shadeSelection(App.shadeSmooth);
 });
 document.getElementById('btnSymmetry').addEventListener('click', (ev) => {
   App.symmetry = !App.symmetry;
@@ -6209,6 +6248,9 @@ function paintStaticIcons() {
     const el = document.getElementById(id);
     if (el) el.innerHTML = icon(name, size);
   });
+  // Reflects App.shadeSmooth's actual value, not a fixed default - matters if
+  // this ever runs after state's been restored from a saved session.
+  document.getElementById('btnShade').innerHTML = icon(App.shadeSmooth ? 'smooth' : 'flat', 19);
   refreshObjComponentBtn();
 }
 
