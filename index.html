@@ -395,7 +395,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.50</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.51</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -5884,11 +5884,9 @@ function refreshUI() {
   document.getElementById('btnRedo').disabled = App.historyIndex >= App.history.length - 1;
 
   const hasSel = App.mode === 'object' ? App.selectedObjectIds.size > 0 : App.selectedElements.size > 0;
-  // btnDelete/btnDuplicate's disabled-state upkeep is gone with the buttons -
-  // the fan items they used to gate now just self-guard with a toast instead,
-  // same as every other fan action.
-  const mirrorDisabled = App.mode !== 'object' || App.selectedObjectIds.size === 0;
-  ['btnMirrorX', 'btnMirrorY', 'btnMirrorZ'].forEach(id => { document.getElementById(id).disabled = mirrorDisabled; });
+  // Delete/Duplicate/Mirror no longer have drawer buttons to enable or
+  // disable - the fan items that replaced them self-guard with a toast
+  // instead, same as every other fan action.
   colorPicker.style.opacity = (App.mode === 'object' ? App.selectedObjectIds.size > 0 : (App.activeObjectId && App.selectedElements.size > 0)) ? '1' : '.4';
   refreshInspector();
   updateFrameVisibility();
