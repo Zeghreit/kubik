@@ -121,9 +121,13 @@
   .hub-item.active .tx { color: var(--on-accent); opacity: .85; }
 
   /* Undo/redo, centred at the very bottom - out from under the thumb
-     entirely, since they're corrections rather than the main action loop. */
+     entirely, since they're corrections rather than the main action loop.
+     #thumbZone has no explicit width (every child is absolutely positioned,
+     so it collapses to fit nothing), so "50%" here would centre against that
+     collapsed box, not the screen - 50vw sidesteps it by measuring against
+     the viewport directly. */
   #quickRow {
-    position: absolute; left: 50%; transform: translateX(-50%); bottom: 14px;
+    position: absolute; left: 50vw; transform: translateX(-50%); bottom: 14px;
     display: flex; gap: 6px; z-index: 13;
   }
   #quickRow button {
@@ -131,15 +135,24 @@
     font-size: 17px; border-radius: 12px; background: var(--panel2);
   }
 
-  /* One fixed side of the hub - directly above it - rather than sharing the
-     general control column, and it fades with the hub's own arc exactly like
-     the rest of that cluster. Free is the default: an ordinary tap. Box and
-     Lasso switch the drag gesture instead. */
+  /* Reads as one tool with the transform gizmo: when something's selected,
+     JS re-projects the gizmo's own screen position every frame and these
+     three sit on a small arc through its upper-left quarter, following it as
+     the camera moves. With nothing selected there's no gizmo to attach to,
+     so it falls back to this fixed spot beside the hub - otherwise there'd
+     be no way to reach Box/Lasso to make a first selection at all. */
   #selGestureRow { position: absolute; left: 14px; bottom: 84px; display: flex; gap: 6px; }
   #selGestureRow button {
     width: 36px; height: 36px; min-height: 36px; padding: 0; justify-content: center;
     border-radius: 10px; background: var(--panel2);
   }
+  /* Anchored mode: JS drives left/top in real pixels and each button gets its
+     own translate() offset from that point, so the row itself becomes a
+     zero-size anchor rather than a flex container. */
+  #selGestureRow.gizmo-anchored {
+    display: block; bottom: auto; gap: 0; width: 0; height: 0; transition: none;
+  }
+  #selGestureRow.gizmo-anchored button { position: absolute; left: 0; top: 0; }
 
   #btnObjComponent {
     position: absolute; left: 88px; bottom: 18px; z-index: 13;
@@ -151,10 +164,13 @@
   .hub-item .ic { display: flex; align-items: center; justify-content: center; }
 
   /* The open arc sweeps across this space, so the quick controls step aside
-     rather than sitting underneath it. */
-  #thumbZone.arc-open #quickRow,
+     rather than sitting underneath it. quickRow is a sibling of thumbZone
+     now (it needed the full viewport width to centre against), so it needs
+     the sibling combinator here rather than the descendant selector the
+     other two still use. */
   #thumbZone.arc-open #selGestureRow,
-  #thumbZone.arc-open #btnObjComponent { opacity: 0; pointer-events: none; }
+  #thumbZone.arc-open #btnObjComponent,
+  #thumbZone.arc-open ~ #quickRow { opacity: 0; pointer-events: none; }
   #quickRow, #selGestureRow, #btnObjComponent { transition: opacity .15s ease; }
 
   /* ---- Drawer: rarely-touched settings, for the assisting finger ---- */
@@ -411,7 +427,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.44</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.45</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -431,10 +447,6 @@
     <!-- Thumb zone: everything here sits inside the natural sweep of a left
          thumb resting at the bottom-left corner. -->
     <div id="thumbZone">
-      <div id="quickRow">
-        <button id="btnUndo" title="Undo (Ctrl+Z)">⤺</button>
-        <button id="btnRedo" title="Redo (Ctrl+Shift+Z)">⤻</button>
-      </div>
       <div id="selGestureRow">
         <button id="btnSelFree" title="Tap to select"></button>
         <button id="btnSelBox" title="Drag a box to select"></button>
@@ -443,6 +455,14 @@
       <button id="btnObjComponent" title="Object mode - tap to edit components"></button>
       <div id="hubArc"></div>
       <button id="hubBtn" title="Primary tools">✥</button>
+    </div>
+
+    <!-- A sibling of thumbZone, not a child of it - this needs the full
+         viewport width to centre against, and thumbZone itself is sized only
+         by its own corner, not the screen. -->
+    <div id="quickRow">
+      <button id="btnUndo" title="Undo (Ctrl+Z)">⤺</button>
+      <button id="btnRedo" title="Redo (Ctrl+Shift+Z)">⤻</button>
     </div>
 
     <div id="opBar">
