@@ -395,7 +395,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.49</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.50</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -486,52 +486,11 @@
       </div>
 
       <div class="drawer-sec">
-        <div class="drawer-title">Mirror</div>
-        <div class="drawer-row">
-          <button id="btnMirrorX" title="Duplicate, mirrored across X=0">Mirror X</button>
-          <button id="btnMirrorY" title="Duplicate, mirrored across Y=0">Mirror Y</button>
-          <button id="btnMirrorZ" title="Duplicate, mirrored across Z=0">Mirror Z</button>
-        </div>
-      </div>
-
-      <div class="drawer-sec">
         <div class="drawer-title">View</div>
         <div class="drawer-row">
           <button id="btnTheme" title="Switch theme">Theme</button>
         </div>
         <div class="drawer-note">Grid, Smart camera and Snap moved under the axis cube.</div>
-      </div>
-
-      <div class="drawer-sec">
-        <div class="drawer-title">Subdivide</div>
-        <div class="drawer-row">
-          <button id="btnSubdivSmooth" title="Split every face and round the surface">Smooth</button>
-          <button id="btnSubdivKeep" title="Split every face without moving anything">Keep shape</button>
-        </div>
-        <div class="drawer-row">
-          <button id="btnClearCreases" title="Remove every crease on this object">Clear all creases</button>
-        </div>
-        <div class="drawer-note">Crease edges in Edge mode to hold them sharp when smoothing.</div>
-      </div>
-
-      <div class="drawer-sec">
-        <div class="drawer-title">Rounded edges</div>
-        <div class="drawer-row">
-          <button id="btnFillet" title="Round every sharp edge for display, without changing the mesh">Off</button>
-          <input type="range" id="filletSlider" min="0.005" max="0.12" step="0.005" value="0.04" />
-          <span class="label" id="filletValue">0.040</span>
-        </div>
-        <div class="drawer-note">Preview only - the mesh you edit stays sharp. Exports use what you see.</div>
-      </div>
-
-      <div class="drawer-sec">
-        <div class="drawer-title">Finish</div>
-        <div class="drawer-row">
-          <button data-finish="standard">Standard</button>
-          <button data-finish="plastic">Matte</button>
-          <button data-finish="metal">Metal</button>
-        </div>
-        <div class="drawer-note">Applies to selected faces in Face mode, whole objects otherwise.</div>
       </div>
 
       <div class="drawer-sec">
@@ -4130,30 +4089,24 @@ function worldToScreen(worldPos) {
   return { x: (p.x * 0.5 + 0.5) * rect.width, y: (1 - (p.y * 0.5 + 0.5)) * rect.height };
 }
 
-// Free/Box/Lasso fan out around whatever anchor currently applies: the
-// selection's own gizmo when something's selected, or the hub itself when
-// nothing is - so there's always a way to reach them, and the completed CSS
-// scaffolding above just needs real screen coordinates fed into it each
-// frame. Angles stay above 90 degrees deliberately - the hub's own tool arc
-// never uses that range, so the two can never overlap regardless of anchor.
+// Free/Box/Lasso fan out around the selection's own transform gizmo, and
+// only exist while that gizmo does - they read as one object with it. Angles
+// stay above 90 degrees deliberately: the hub's own tool arc never uses that
+// range, so the two can't overlap even when the gizmo is near the corner.
 const SEL_FAN_RADIUS = 90;
 const SEL_FAN_ANGLES = [170, 135, 100]; // Free, Box, Lasso - degrees, upper-left
-
-function hubScreenCenter() {
-  const hubRect = hubBtnEl.getBoundingClientRect();
-  const vpRect = viewportEl.getBoundingClientRect();
-  return {
-    x: hubRect.left - vpRect.left + hubRect.width / 2,
-    y: hubRect.top - vpRect.top + hubRect.height / 2
-  };
-}
 
 function updateSelGestureAnchor() {
   const row = document.getElementById('selGestureRow');
   if (!row) return;
+  // Reads as one object with the gizmo: no gizmo, no selection buttons.
+  // They used to fall back to sitting near the hub so Box/Lasso stayed
+  // reachable before a first selection, but that put them under the tool
+  // fan - and an empty scene has nothing to region-select anyway.
   const hasGizmo = !!(App.pivot && gizmoList.some(g => g.object));
-  const anchor = hasGizmo ? worldToScreen(App.pivot.position) : hubScreenCenter();
-  if (!anchor) return; // behind the camera this frame - leave the row where it was
+  const anchor = hasGizmo ? worldToScreen(App.pivot.position) : null;
+  if (!anchor) { row.style.display = 'none'; return; }
+  row.style.display = '';
 
   row.style.left = anchor.x + 'px';
   row.style.top = anchor.y + 'px';
@@ -5178,9 +5131,9 @@ function addCubeAction() {
 // btnAddCube/btnDuplicate/btnDelete no longer exist as drawer buttons - the
 // fan menu calls addCubeAction/duplicateSelection/deleteSelection directly,
 // and the Ctrl+D and Delete/Backspace keyboard shortcuts already did too.
-document.getElementById('btnMirrorX').addEventListener('click', () => mirrorSelectedObjects('x'));
-document.getElementById('btnMirrorY').addEventListener('click', () => mirrorSelectedObjects('y'));
-document.getElementById('btnMirrorZ').addEventListener('click', () => mirrorSelectedObjects('z'));
+// Mirror X/Y/Z drawer buttons removed - the fan's Mirror item calls
+// mirrorSelectedObjects(App.symmetryAxis) directly, using whichever axis is
+// set. mirrorSelectedObjects itself is untouched and still takes an axis.
 
 /* ---------------- Serialize / Undo / Save / Load ---------------- */
 
@@ -5788,7 +5741,11 @@ function hubSetKey() {
     if (App.selectedObjectIds.size === 0) return 'empty';
     return App.selectedObjectIds.size > 1 ? 'object-multi' : 'object';
   }
-  return 'component';
+  // Each sub-type is its own key now that they have their own tool sets -
+  // a flat 'component' here meant switching vertex->edge produced no key
+  // change, so the cache guard below skipped the rebuild and the arc kept
+  // showing the previous type's tools until something else forced it.
+  return App.mode;
 }
 function refreshHubToolset() {
   const key = hubSetKey();
@@ -5844,32 +5801,22 @@ document.getElementById('btnSelFree').addEventListener('click', () => setSelectG
 document.getElementById('btnSelBox').addEventListener('click', () => setSelectGesture('box'));
 document.getElementById('btnSelLasso').addEventListener('click', () => setSelectGesture('lasso'));
 // Grow/Shrink buttons removed for now - growSelection/shrinkSelection stay defined below, ready to wire back in.
-document.getElementById('btnSubdivSmooth').addEventListener('click', () => subdivideSelection('smooth'));
-document.getElementById('btnSubdivKeep').addEventListener('click', () => subdivideSelection('keep'));
-document.getElementById('btnClearCreases').addEventListener('click', clearAllCreases);
+// Subdivide drawer buttons removed - the fan's Subdivide item calls
+// subdivideSelection('smooth'). subdivideSelection('keep') and
+// clearAllCreases stay defined and working, just without UI right now.
 
-const filletSliderEl = document.getElementById('filletSlider');
-const filletValueEl = document.getElementById('filletValue');
-// Named so the fan's Fillet item can trigger the exact same behaviour as
-// clicking the drawer button, including refreshing that button's own label
-// and highlight - not just the underlying App.fillet flag.
+// The Rounded-edges drawer section is gone, so there's no button label to
+// keep in step anymore - just the flag and the rebuild. App.filletRadius
+// keeps its default (0.04) since the slider that tuned it went with the
+// section; the fan's Fillet item is now the only way to switch this on.
 function toggleFilletPreview() {
   App.fillet = !App.fillet;
-  const btn = document.getElementById('btnFillet');
-  btn.textContent = App.fillet ? 'On' : 'Off';
-  btn.classList.toggle('active', App.fillet);
   refreshFillets();
   toast(App.fillet ? 'Rounded edges on' : 'Rounded edges off');
 }
-document.getElementById('btnFillet').addEventListener('click', toggleFilletPreview);
-filletSliderEl.addEventListener('input', () => {
-  App.filletRadius = parseFloat(filletSliderEl.value) || 0.04;
-  filletValueEl.textContent = App.filletRadius.toFixed(3);
-  if (App.fillet) refreshFillets();
-});
-document.querySelectorAll('[data-finish]').forEach(b => {
-  b.addEventListener('click', () => applyFinishToSelection(b.dataset.finish));
-});
+// The Finish drawer buttons are gone too - the fan's Material item cycles
+// through the same three finishes via applyFinishToSelection.
+
 const sensSliderEl = document.getElementById('sensSlider');
 const sensValueEl = document.getElementById('sensValue');
 sensSliderEl.addEventListener('input', () => {
