@@ -120,14 +120,13 @@
   .hub-item.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
   .hub-item.active .tx { color: var(--on-accent); opacity: .85; }
 
-  /* Undo/redo, centred at the very bottom - out from under the thumb
-     entirely, since they're corrections rather than the main action loop.
-     #thumbZone has no explicit width (every child is absolutely positioned,
-     so it collapses to fit nothing), so "50%" here would centre against that
-     collapsed box, not the screen - 50vw sidesteps it by measuring against
-     the viewport directly. */
+  /* Under the drawer button, top-left - out from under the thumb entirely,
+     since they're corrections rather than the main action loop. Only left
+     needs the safe-area inset here - top doesn't, since #viewport already
+     starts below #topBar, which accounted for the top inset in its own
+     padding; adding it again here would just push these down twice. */
   #quickRow {
-    position: absolute; left: 50vw; transform: translateX(-50%); bottom: 14px;
+    position: absolute; left: calc(20px + env(safe-area-inset-left)); top: 8px;
     display: flex; gap: 6px; z-index: 13;
   }
   #quickRow button {
@@ -396,7 +395,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.48</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.49</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -480,11 +479,9 @@
 
       <div class="drawer-sec">
         <div class="drawer-title">Scene</div>
-        <div class="drawer-row">
-          <button id="btnAddCube">+ Cube</button>
-          <button id="btnDuplicate" title="Duplicate selection (Ctrl+D)">⧉ Duplicate</button>
-          <button id="btnDelete" class="danger">Delete</button>
-        </div>
+        <!-- Add Cube / Duplicate / Delete removed - all three now sit in the
+             fan menu and call the exact same functions. This list of objects
+             is the one thing here that isn't duplicated elsewhere. -->
         <div class="drawer-row" id="objList"></div>
       </div>
 
@@ -535,12 +532,6 @@
           <button data-finish="metal">Metal</button>
         </div>
         <div class="drawer-note">Applies to selected faces in Face mode, whole objects otherwise.</div>
-      </div>
-
-      <div class="drawer-sec">
-        <div class="drawer-title">Selection</div>
-        <div class="drawer-note">Free/Box/Lasso sit right above the hub. Every tap adds to your
-          selection - tap empty space to start fresh.</div>
       </div>
 
       <div class="drawer-sec">
@@ -5172,7 +5163,9 @@ function joinSelection() {
   toast('Joined ' + ids.length + ' objects');
 }
 
-document.getElementById('btnAddCube').addEventListener('click', () => {
+// Named so the Empty-state fan item can call it directly rather than
+// clicking a drawer button that's about to stop existing as visible UI.
+function addCubeAction() {
   const n = App.objects.length;
   const pos = new THREE.Vector3((n % 5) * 1.6 - 3.2, 0.5, Math.floor(n / 5) * 1.6);
   const obj = createCubeObject('Cube ' + (App.nextId), pos);
@@ -5181,13 +5174,13 @@ document.getElementById('btnAddCube').addEventListener('click', () => {
   refreshUI();
   refreshGizmoAttachment();
   pushHistory();
-});
-
-document.getElementById('btnDelete').addEventListener('click', deleteSelection);
+}
+// btnAddCube/btnDuplicate/btnDelete no longer exist as drawer buttons - the
+// fan menu calls addCubeAction/duplicateSelection/deleteSelection directly,
+// and the Ctrl+D and Delete/Backspace keyboard shortcuts already did too.
 document.getElementById('btnMirrorX').addEventListener('click', () => mirrorSelectedObjects('x'));
 document.getElementById('btnMirrorY').addEventListener('click', () => mirrorSelectedObjects('y'));
 document.getElementById('btnMirrorZ').addEventListener('click', () => mirrorSelectedObjects('z'));
-document.getElementById('btnDuplicate').addEventListener('click', duplicateSelection);
 
 /* ---------------- Serialize / Undo / Save / Load ---------------- */
 
@@ -5508,11 +5501,12 @@ document.getElementById('projName').addEventListener('keydown', (ev) => {
   if (ev.key === 'Enter') document.getElementById('btnProjSave').click();
 });
 
-document.getElementById('btnSave').addEventListener('click', () => {
+function saveProjectFile() {
   const doc = serializeDoc();
   downloadBlob([JSON.stringify(doc)], 'kubik-project.json', 'application/json');
   toast('Project saved');
-});
+}
+document.getElementById('btnSave').addEventListener('click', saveProjectFile);
 
 document.getElementById('fileLoad').addEventListener('change', (ev) => {
   const file = ev.target.files[0];
@@ -5561,7 +5555,7 @@ function buildExportGroup() {
   return group;
 }
 
-document.getElementById('btnExportGlb').addEventListener('click', async () => {
+async function exportGlbAction() {
   if (!App.objects.length) { toast('Nothing to export'); return; }
   const group = buildExportGroup();
   const exporter = new GLTFExporter();
@@ -5573,7 +5567,8 @@ document.getElementById('btnExportGlb').addEventListener('click', async () => {
     console.error(err);
     toast('glTF export failed');
   }
-});
+}
+document.getElementById('btnExportGlb').addEventListener('click', exportGlbAction);
 
 document.getElementById('btnExportObj').addEventListener('click', () => {
   if (!App.objects.length) { toast('Nothing to export'); return; }
@@ -5665,39 +5660,45 @@ const hubArcEl = document.getElementById('hubArc');
 // showing or hiding the arc. Every action here is the same function a drawer
 // button already calls - none of this is new logic, just a second way to
 // reach it, so there's nothing here that hasn't already been tested.
-const HUB_TOOLS_COMPONENT = [
-  // Move/Rotate/Scale dropped - the always-present multi-gizmo already
-  // handles those directly on the selection, so a duplicate control here
-  // would just be two ways to do the same thing.
-  // Ring 0: the constructive operations - building new geometry.
+// Component tools are split by the actual sub-type selected, verified
+// against each function's own mode guard rather than assumed - Extrude and
+// Bridge genuinely work in both Edge and Face mode, but Inset is Face-only,
+// Bevel/Loop/Split/Crease are Edge-only, and Connect/Weld are Vertex-only.
+// Showing only what applies is what actually fixes "overpopulated" - a
+// shared list was showing Face-only tools while editing vertices and so on.
+const HUB_TOOLS_VERTEX = [
+  { key: 'connect', icon: 'connect', label: 'Connect', ring: 0, run: connectSelection },
+  { key: 'weld', icon: 'weld', label: 'Weld', ring: 0, run: weldSelection },
+  { key: 'delete', icon: 'del', label: 'Delete', ring: 0, run: deleteSelection }
+];
+
+const HUB_TOOLS_EDGE = [
   { key: 'extrude', icon: 'extrude', label: 'Extrude', ring: 0, run: extrudeSelection },
-  { key: 'inset', icon: 'inset', label: 'Inset', ring: 0, run: insetSelection },
   { key: 'bevel', icon: 'bevel', label: 'Bevel', ring: 0, run: bevelSelection },
   { key: 'bridge', icon: 'bridge', label: 'Bridge', ring: 0, run: bridgeSelection },
   { key: 'loopcut', icon: 'loop', label: 'Loop', ring: 0, run: edgeLoopSelection },
-  // Ring 1: connecting and cleaning up existing geometry. Every one of these
-  // already self-guards with a toast if run in the wrong sub-mode (Weld only
-  // makes sense for vertices, Crease only for edges, etc.), the same way
-  // Inset already tolerates being shown outside Face mode - so there's no
-  // risk in offering all of them together rather than trying to filter by
-  // vertex/edge/face specifically.
-  { key: 'connect', icon: 'connect', label: 'Connect', ring: 1, run: connectSelection },
-  { key: 'weld', icon: 'weld', label: 'Weld', ring: 1, run: weldSelection },
   { key: 'split', icon: 'split', label: 'Split', ring: 1, run: splitSelection },
   { key: 'crease', icon: 'crease', label: 'Crease', ring: 1, run: () => creaseSelection(true) },
   { key: 'uncrease', icon: 'uncrease', label: 'Uncrease', ring: 1, run: () => creaseSelection(false) },
-  { key: 'delete', icon: 'del', label: 'Delete', ring: 1, run: () => document.getElementById('btnDelete').click() }
+  { key: 'delete', icon: 'del', label: 'Delete', ring: 1, run: deleteSelection }
+];
+
+const HUB_TOOLS_FACE = [
+  { key: 'extrude', icon: 'extrude', label: 'Extrude', ring: 0, run: extrudeSelection },
+  { key: 'inset', icon: 'inset', label: 'Inset', ring: 0, run: insetSelection },
+  { key: 'bridge', icon: 'bridge', label: 'Bridge', ring: 0, run: bridgeSelection },
+  { key: 'delete', icon: 'del', label: 'Delete', ring: 1, run: deleteSelection }
 ];
 
 const HUB_TOOLS_OBJECT_BASE = [
-  { key: 'duplicate', icon: 'dupe', label: 'Duplicate', ring: 0, run: () => document.getElementById('btnDuplicate').click() },
+  { key: 'duplicate', icon: 'dupe', label: 'Duplicate', ring: 0, run: duplicateSelection },
   { key: 'mirror', icon: 'mirror', label: 'Mirror', ring: 0, run: () => mirrorSelectedObjects(App.symmetryAxis) },
-  { key: 'delete', icon: 'del', label: 'Delete', ring: 0, run: () => document.getElementById('btnDelete').click() },
+  { key: 'delete', icon: 'del', label: 'Delete', ring: 0, run: deleteSelection },
   // Kept together as a group, in this order, since they're the three most
   // related to how the object actually looks.
   { key: 'subdivide', icon: 'subdiv', label: 'Subdivide', ring: 1, run: () => subdivideSelection('smooth') },
   { key: 'material', icon: 'color', label: 'Material', ring: 1, run: cycleMaterialFinish },
-  { key: 'fillet', icon: 'bevel', label: 'Fillet', ring: 1, run: () => document.getElementById('btnFillet').click() }
+  { key: 'fillet', icon: 'bevel', label: 'Fillet', ring: 1, run: toggleFilletPreview }
 ];
 // Join only means something with more than one object selected, matching
 // the old radial menu's own condition for showing it - appended live rather
@@ -5705,10 +5706,12 @@ const HUB_TOOLS_OBJECT_BASE = [
 const HUB_TOOL_JOIN = { key: 'join', icon: 'join', label: 'Join', ring: 1, run: joinSelection };
 
 const HUB_TOOLS_EMPTY = [
-  { key: 'addcube', icon: 'object', label: 'Add Cube', ring: 0, run: () => document.getElementById('btnAddCube').click() },
-  { key: 'save', icon: 'save', label: 'Save', ring: 0, run: () => document.getElementById('btnSave').click() },
+  { key: 'addcube', icon: 'object', label: 'Add Cube', ring: 0, run: addCubeAction },
+  { key: 'save', icon: 'save', label: 'Save', ring: 0, run: saveProjectFile },
+  // Load has to stay a real click on the file input - it's the only way to
+  // trigger the OS file picker, there's no equivalent function to call.
   { key: 'load', icon: 'load', label: 'Load', ring: 0, run: () => document.getElementById('fileLoad').click() },
-  { key: 'export', icon: 'file_export', label: 'Export', ring: 1, run: () => document.getElementById('btnExportGlb').click() }
+  { key: 'export', icon: 'file_export', label: 'Export', ring: 1, run: exportGlbAction }
 ];
 
 // Cycles Standard -> Matte -> Metal on repeated taps, since the arc only
@@ -5726,7 +5729,10 @@ function currentHubTools() {
     if (App.selectedObjectIds.size === 0) return HUB_TOOLS_EMPTY;
     return App.selectedObjectIds.size > 1 ? HUB_TOOLS_OBJECT_BASE.concat(HUB_TOOL_JOIN) : HUB_TOOLS_OBJECT_BASE;
   }
-  return HUB_TOOLS_COMPONENT;
+  if (App.mode === 'vertex') return HUB_TOOLS_VERTEX;
+  if (App.mode === 'edge') return HUB_TOOLS_EDGE;
+  if (App.mode === 'face') return HUB_TOOLS_FACE;
+  return [];
 }
 
 // Six items on one arc would put 52px targets only ~29px apart, so they're
@@ -5844,13 +5850,18 @@ document.getElementById('btnClearCreases').addEventListener('click', clearAllCre
 
 const filletSliderEl = document.getElementById('filletSlider');
 const filletValueEl = document.getElementById('filletValue');
-document.getElementById('btnFillet').addEventListener('click', (ev) => {
+// Named so the fan's Fillet item can trigger the exact same behaviour as
+// clicking the drawer button, including refreshing that button's own label
+// and highlight - not just the underlying App.fillet flag.
+function toggleFilletPreview() {
   App.fillet = !App.fillet;
-  ev.currentTarget.textContent = App.fillet ? 'On' : 'Off';
-  ev.currentTarget.classList.toggle('active', App.fillet);
+  const btn = document.getElementById('btnFillet');
+  btn.textContent = App.fillet ? 'On' : 'Off';
+  btn.classList.toggle('active', App.fillet);
   refreshFillets();
   toast(App.fillet ? 'Rounded edges on' : 'Rounded edges off');
-});
+}
+document.getElementById('btnFillet').addEventListener('click', toggleFilletPreview);
 filletSliderEl.addEventListener('input', () => {
   App.filletRadius = parseFloat(filletSliderEl.value) || 0.04;
   filletValueEl.textContent = App.filletRadius.toFixed(3);
@@ -5926,10 +5937,11 @@ function refreshUI() {
   document.getElementById('btnRedo').disabled = App.historyIndex >= App.history.length - 1;
 
   const hasSel = App.mode === 'object' ? App.selectedObjectIds.size > 0 : App.selectedElements.size > 0;
-  document.getElementById('btnDelete').disabled = App.mode === 'object' ? App.selectedObjectIds.size === 0 : App.selectedElements.size === 0;
+  // btnDelete/btnDuplicate's disabled-state upkeep is gone with the buttons -
+  // the fan items they used to gate now just self-guard with a toast instead,
+  // same as every other fan action.
   const mirrorDisabled = App.mode !== 'object' || App.selectedObjectIds.size === 0;
   ['btnMirrorX', 'btnMirrorY', 'btnMirrorZ'].forEach(id => { document.getElementById(id).disabled = mirrorDisabled; });
-  document.getElementById('btnDuplicate').disabled = mirrorDisabled;
   colorPicker.style.opacity = (App.mode === 'object' ? App.selectedObjectIds.size > 0 : (App.activeObjectId && App.selectedElements.size > 0)) ? '1' : '.4';
   refreshInspector();
   updateFrameVisibility();
@@ -5995,7 +6007,7 @@ window.addEventListener('keydown', (ev) => {
   } else if (ev.ctrlKey || ev.metaKey) {
     return; // leave other browser shortcuts alone
   } else if (ev.key === 'Delete' || ev.key === 'Backspace') {
-    document.getElementById('btnDelete').click();
+    deleteSelection();
   } else if (ev.key.toLowerCase() === 'g') setGizmoMode('translate');
   else if (ev.key.toLowerCase() === 'r') setGizmoMode('rotate');
   else if (ev.key.toLowerCase() === 's') setGizmoMode('scale');
