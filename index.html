@@ -399,7 +399,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.56</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.57</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -559,6 +559,12 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+// Plain lines are stuck at 1px in WebGL - linewidth is ignored on every
+// modern browser. Line2 draws strokes as triangle strips instead, which is
+// the only way to get a controllable hairline that stays crisp at any zoom.
+import { Line2 } from 'three/addons/lines/Line2.js';
+import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 
 /* ----------------------------------------------------------------------
    Kubik
@@ -688,11 +694,18 @@ orbit.target.set(0, 0, 0);
    Deltas are also built directly per axis instead of being decomposed out of
    a matrix, which removes the rotate/scale cross-talk entirely. */
 
+/* Coral, amber, dusty blue rather than pure red/green/blue. Two reasons,
+   and they happen to be the same fix: saturated primaries are what make a
+   gizmo read as a technical instrument next to this app's muted palette,
+   and red-vs-green is exactly the pair that collapses for the most common
+   kind of colour blindness. Dropping green solves both at once - the axes
+   now separate by warmth and lightness, not just hue. */
 const GIZMO_AXES = [
-  { key: 'x', dir: new THREE.Vector3(1, 0, 0), color: 0xff4d4d },
-  { key: 'y', dir: new THREE.Vector3(0, 1, 0), color: 0x2fbf87 },
-  { key: 'z', dir: new THREE.Vector3(0, 0, 1), color: 0x4d7dff }
+  { key: 'x', dir: new THREE.Vector3(1, 0, 0), color: 0xC85A47 },
+  { key: 'y', dir: new THREE.Vector3(0, 1, 0), color: 0xE8C87A },
+  { key: 'z', dir: new THREE.Vector3(0, 0, 1), color: 0x4A82B8 }
 ];
+const GIZMO_STROKE_PX = 2;   // drawn weight, shared by every handle
 const R_MOVE = 1.0;   // bars sit on the object
 const R_ROT  = 1.45;  // arcs just outside it
 const R_SCL  = 2.05;  // triangles furthest out
@@ -705,13 +718,6 @@ scene.add(gizmoRoot);
 const gizmoParts = [];   // every pickable handle
 let gizmoTarget = null;  // the pivot we're driving
 let gizmoHoverAxis = null;
-
-function makeGizmoMat(color) {
-  // depthTest off so handles stay reachable even inside the mesh.
-  return new THREE.MeshBasicMaterial({
-    color, depthTest: false, transparent: true, opacity: 0.5, side: THREE.DoubleSide
-  });
-}
 
 /* ---------------- Ghost state ----------------
    At rest the gizmo is just a small dot with three short neutral ticks - the
@@ -783,44 +789,126 @@ function addGizmoPart(mesh, kind, axis, color) {
   gizmoRoot.add(mesh);
 }
 
-// A flat triangle pointing along +Y, built once and reoriented per axis -
-// the sketch's scale handles are flat plates, not arrowheads.
-function flatTriangleGeometry() {
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute([
-    0, 1, 0, -0.62, -0.5, 0, 0.62, -0.5, 0
-  ], 3));
-  g.setIndex([0, 1, 2]);
-  g.computeVertexNormals();
-  return g;
+/* ---------------- Handle construction ----------------
+   Every handle is two objects: a thin stroke you see, and a fat invisible
+   proxy you actually hit. Keeping them separate is the whole trick - the
+   commonest complaint about thin gizmos is that they become impossible to
+   grab, and that only happens when the drawn weight and the hit area are
+   the same object. Here the stroke can go down to 2px while the proxy stays
+   exactly as chunky as a thumb needs.
+
+   The three handles are deliberately one family: same stroke weight, same
+   round caps, differing only in how they terminate. A bar with a dot means
+   move, an arc means rotate, a small open square means scale. Three
+   siblings, not three unrelated solids. */
+
+const gizmoStrokes = [];   // every drawn line, for resolution + opacity upkeep
+
+function makeStrokeMat(color) {
+  const m = new LineMaterial({
+    color,
+    linewidth: GIZMO_STROKE_PX,
+    worldUnits: false,      // width in screen pixels - constant at any zoom
+    alphaToCoverage: true,  // softens the stroke edges
+    transparent: true,
+    opacity: 0.9,
+    depthTest: false,
+    depthWrite: false
+  });
+  m.resolution.set(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
+  return m;
 }
 
-/* Every part is built as a unit shape and given its real position and size
-   each frame by updateGizmoScale, because the three groups follow different
-   rules: move bars have to sit on the object's own edges (so they track its
-   size), while the arcs and triangles stay a constant size on screen (so
-   they stay thumb-sized at any zoom). That split is what makes the gizmo
-   usable while zooming, which a single uniform scale could never do. */
+function makeStroke(points, color) {
+  const g = new LineGeometry();
+  g.setPositions(points);
+
+  /* A wider, dimmer stroke sits underneath as a halo. The axis colours are
+     muted by design, which reads beautifully on the dark theme but washes
+     out against pale paper - the halo restores the edge without needing a
+     second, brighter palette for Daylight. */
+  const halo = new Line2(g, makeStrokeMat(0x000000));
+  halo.material.linewidth = GIZMO_STROKE_PX + 2.5;
+  halo.material.opacity = 0;
+  halo.computeLineDistances();
+  halo.renderOrder = 999;
+  gizmoStrokes.push(halo);
+  gizmoRoot.add(halo);
+
+  const line = new Line2(g, makeStrokeMat(color));
+  line.computeLineDistances();
+  line.renderOrder = 1000;
+  line.userData.halo = halo;
+  gizmoStrokes.push(line);
+  gizmoRoot.add(line);
+  return line;
+}
+
+// Invisible, but still raycast against - this is what the thumb actually hits.
+function makeProxyMat() {
+  return new THREE.MeshBasicMaterial({
+    transparent: true, opacity: 0, depthTest: false, depthWrite: false, side: THREE.DoubleSide
+  });
+}
+
+function unitSegmentPoints() { return [0, -0.5, 0, 0, 0.5, 0]; }
+
+function unitArcPoints(sweep, steps) {
+  const pts = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = (i / steps) * sweep;
+    pts.push(Math.cos(t), Math.sin(t), 0);
+  }
+  return pts;
+}
+
+// Open square outline - the conventional "scale" mark, drawn rather than solid.
+function unitSquarePoints() {
+  const h = 0.5;
+  return [-h, -h, 0,  h, -h, 0,  h, h, 0,  -h, h, 0,  -h, -h, 0];
+}
+
 function buildGizmo() {
   GIZMO_AXES.forEach(ax => {
     const alignY = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), ax.dir);
+    const alignZ = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), ax.dir);
 
-    const bar = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 1, 8), makeGizmoMat(ax.color));
-    bar.userData.alignY = alignY;
-    addGizmoPart(bar, 'move', ax.key, ax.color);
+    // Move: a bar along the object's edge, with a small dot terminal.
+    const barProxy = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 1, 8), makeProxyMat());
+    barProxy.userData.alignY = alignY;
+    barProxy.userData.stroke = makeStroke(unitSegmentPoints(), ax.color);
+    barProxy.userData.cap = (() => {
+      const d = new THREE.Mesh(new THREE.SphereGeometry(1, 10, 8),
+        new THREE.MeshBasicMaterial({ color: ax.color, depthTest: false, depthWrite: false, transparent: true, opacity: 0.9 }));
+      d.renderOrder = 1001;
+      gizmoRoot.add(d);
+      return d;
+    })();
+    addGizmoPart(barProxy, 'move', ax.key, ax.color);
 
-    // Quarter arc, so three of them read as three separate turning handles
-    // rather than a tangled ball of rings.
-    const arc = new THREE.Mesh(new THREE.TorusGeometry(1, 0.045, 8, 40, Math.PI * 0.5), makeGizmoMat(ax.color));
-    arc.userData.alignZ = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), ax.dir);
-    addGizmoPart(arc, 'rotate', ax.key, ax.color);
+    // Rotate: a quarter arc. Three arcs read as three handles; three full
+    // rings read as a tangle.
+    const arcProxy = new THREE.Mesh(new THREE.TorusGeometry(1, 0.12, 6, 32, Math.PI * 0.5), makeProxyMat());
+    arcProxy.userData.alignZ = alignZ;
+    arcProxy.userData.stroke = makeStroke(unitArcPoints(Math.PI * 0.5, 32), ax.color);
+    arcProxy.userData.strokeAlign = alignZ;
+    addGizmoPart(arcProxy, 'rotate', ax.key, ax.color);
 
-    const tri = new THREE.Mesh(flatTriangleGeometry(), makeGizmoMat(ax.color));
-    tri.userData.alignY = alignY;
-    addGizmoPart(tri, 'scale', ax.key, ax.color);
+    // Scale: a small open square out along the axis.
+    const sqProxy = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), makeProxyMat());
+    sqProxy.userData.alignY = alignY;
+    sqProxy.userData.stroke = makeStroke(unitSquarePoints(), ax.color);
+    addGizmoPart(sqProxy, 'scale', ax.key, ax.color);
   });
 }
 buildGizmo();
+
+// LineMaterial needs the viewport size to work out a pixel width; without
+// this the strokes render at the wrong weight after any resize or rotation.
+function updateStrokeResolution() {
+  const w = viewportEl.clientWidth || 1, h = viewportEl.clientHeight || 1;
+  gizmoStrokes.forEach(l => l.material.resolution.set(w, h));
+}
 
 // World-space radius of whatever's selected, so the move bars can lie on its
 // edges instead of floating at some arbitrary distance.
@@ -919,8 +1007,50 @@ function updateGizmoScale(dt) {
     // fading in, so the motion reads as them coming from the dot you touched.
     pt.position.multiplyScalar(0.35 + 0.65 * b);
     pt.scale.multiplyScalar(0.45 + 0.55 * b);
-    pt.visible = b > 0.02 && (!App.gizmoFocus || pt.userData.gizmo.kind === App.gizmoFocus);
-    pt.material.opacity = pt.userData.baseOpacity * b;
+    const shown = b > 0.02 && (!App.gizmoFocus || pt.userData.gizmo.kind === App.gizmoFocus);
+    pt.visible = shown;   // the proxy stays invisible but must be pickable
+
+    /* The drawn stroke follows its proxy exactly, so what you see and what
+       you hit never drift apart - only their thickness differs. Unit
+       geometries mean scaling the object is enough; LineMaterial keeps the
+       stroke at a constant pixel width whatever we do here. */
+    const stroke = pt.userData.stroke;
+    if (stroke) {
+      stroke.visible = shown;
+      stroke.position.copy(pt.position);
+      stroke.quaternion.copy(pt.userData.strokeAlign || pt.quaternion);
+      if (g.kind === 'move') {
+        stroke.scale.set(1, pt.scale.y, 1);
+      } else if (g.kind === 'rotate') {
+        stroke.scale.setScalar(pt.scale.x);
+      } else {
+        stroke.scale.setScalar(pt.scale.x * 1.15);
+      }
+      stroke.material.opacity = pt.userData.baseOpacity * b * 1.8;
+      stroke.material.linewidth = GIZMO_STROKE_PX * (pt.userData.baseOpacity > 0.6 ? 1.4 : 1);
+
+      // Halo only earns its keep on the light theme - on the dark one the
+      // muted colours already stand clear, and a dark outline would just
+      // muddy them.
+      const halo = stroke.userData.halo;
+      if (halo) {
+        halo.visible = shown && App.theme === 'light';
+        halo.position.copy(stroke.position);
+        halo.quaternion.copy(stroke.quaternion);
+        halo.scale.copy(stroke.scale);
+        halo.material.opacity = halo.visible ? pt.userData.baseOpacity * b * 0.5 : 0;
+        halo.material.linewidth = stroke.material.linewidth + 2.5;
+      }
+    }
+
+    // Small dot closing the move bar - the terminal that says "translate".
+    const cap = pt.userData.cap;
+    if (cap) {
+      cap.visible = shown;
+      cap.position.copy(ax.dir).multiplyScalar(pt.scale.y * 0.5).add(pt.position);
+      cap.scale.setScalar(k * 0.028 * (0.45 + 0.55 * b));
+      cap.material.opacity = pt.userData.baseOpacity * b * 1.8;
+    }
   });
   gizmoRoot.updateMatrixWorld(true);
 }
@@ -6570,6 +6700,7 @@ function onResize() {
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h);
+  updateStrokeResolution();
 }
 window.addEventListener('resize', onResize);
 
@@ -6674,6 +6805,7 @@ document.addEventListener('visibilitychange', () => {
 
 function init() {
   onResize();
+  updateStrokeResolution();
   paintStaticIcons();
   applyTheme(App.theme);
   buildHubArc();
