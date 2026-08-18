@@ -135,24 +135,19 @@
     font-size: 17px; border-radius: 12px; background: var(--panel2);
   }
 
-  /* Reads as one tool with the transform gizmo: when something's selected,
-     JS re-projects the gizmo's own screen position every frame and these
-     three sit on a small arc through its upper-left quarter, following it as
-     the camera moves. With nothing selected there's no gizmo to attach to,
-     so it falls back to this fixed spot beside the hub - otherwise there'd
-     be no way to reach Box/Lasso to make a first selection at all. */
-  #selGestureRow { position: absolute; left: 14px; bottom: 84px; display: flex; gap: 6px; }
+  /* Reads as one tool with the transform gizmo: JS re-projects the anchor's
+     screen position every frame and these three sit on a small arc through
+     its upper-left quarter - that range is deliberate, since the hub's own
+     tool arc only ever sweeps the 6-90 degree range and this stays above 90,
+     so the two can never overlap. The anchor is the gizmo's own position when
+     something's selected, or the hub itself when nothing is - so there's
+     always somewhere to reach Box/Lasso from, even before a first selection. */
+  #selGestureRow { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 13; }
   #selGestureRow button {
+    position: absolute; left: 0; top: 0;
     width: 36px; height: 36px; min-height: 36px; padding: 0; justify-content: center;
     border-radius: 10px; background: var(--panel2);
   }
-  /* Anchored mode: JS drives left/top in real pixels and each button gets its
-     own translate() offset from that point, so the row itself becomes a
-     zero-size anchor rather than a flex container. */
-  #selGestureRow.gizmo-anchored {
-    display: block; bottom: auto; gap: 0; width: 0; height: 0; transition: none;
-  }
-  #selGestureRow.gizmo-anchored button { position: absolute; left: 0; top: 0; }
 
   .ic-svg { display: block; }
   .hub-item .ic { display: flex; align-items: center; justify-content: center; }
@@ -259,24 +254,8 @@
   }
   #toast.show { opacity: 1; transform: translateX(-50%) translateY(4px); }
 
-  .radial-menu {
-    position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 15;
-    display: none; pointer-events: none;
-  }
-  .radial-menu.show { display: block; }
-  .radial-center {
-    position: absolute; width: 8px; height: 8px; margin-left: -4px; margin-top: -4px;
-    border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px rgb(var(--accent-rgb) / .18);
-  }
-  .radial-btn {
-    position: absolute; width: 44px; height: 44px; margin-left: -22px; margin-top: -22px;
-    border-radius: 50%; background: var(--panel2); border: 1px solid var(--accent);
-    color: var(--text); display: flex; align-items: center; justify-content: center;
-    font-size: 17px; cursor: pointer; pointer-events: auto; user-select: none;
-    box-shadow: 0 3px 10px rgb(var(--shadow) / .14);
-    animation: radial-pop .14s ease-out;
-  }
-  .radial-btn:active { background: var(--accent); color: var(--on-accent); }
+  /* Still used by .hub-item's pop-in when the arc rebuilds - the radial menu
+     that originally defined it is gone, but the animation earned its keep. */
   @keyframes radial-pop {
     from { transform: scale(0.4); opacity: 0; }
     to { transform: scale(1); opacity: 1; }
@@ -416,7 +395,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.46</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.47</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -431,21 +410,21 @@
     <div id="vignette"></div>
     <div id="selectBox"></div>
     <svg id="lassoSvg"><polyline id="lassoPath" /></svg>
-    <div id="radialMenu" class="radial-menu"></div>
-
-    <!-- Thumb zone: everything here sits inside the natural sweep of a left
-         thumb resting at the bottom-left corner. -->
     <div id="thumbZone">
-      <div id="selGestureRow">
-        <button id="btnSelFree" title="Tap to select"></button>
-        <button id="btnSelBox" title="Drag a box to select"></button>
-        <button id="btnSelLasso" title="Draw a lasso to select"></button>
-      </div>
       <!-- Permanently open now - the hub button switches Object/Component
            instead of showing or hiding this, so there's nothing left to
            toggle the 'open' class for. -->
       <div id="hubArc" class="open"></div>
       <button id="hubBtn" title="Object/Component - tap to switch">✥</button>
+    </div>
+
+    <!-- A sibling of thumbZone, not a child of it - same reason as quickRow
+         below: this needs real viewport coordinates to position itself
+         against the gizmo, and thumbZone's own corner isn't that. -->
+    <div id="selGestureRow">
+      <button id="btnSelFree" title="Tap to select"></button>
+      <button id="btnSelBox" title="Drag a box to select"></button>
+      <button id="btnSelLasso" title="Draw a lasso to select"></button>
     </div>
 
     <!-- A sibling of thumbZone, not a child of it - this needs the full
@@ -4157,32 +4136,37 @@ function worldToScreen(worldPos) {
   return { x: (p.x * 0.5 + 0.5) * rect.width, y: (1 - (p.y * 0.5 + 0.5)) * rect.height };
 }
 
-// Free/Box/Lasso track the transform gizmo's own screen position, sitting in
-// its upper-left quadrant - completing the CSS scaffolding above: when a
-// gizmo is attached (something selected), the row becomes a zero-size anchor
-// at the gizmo's projected screen point and each button gets its own
-// translate() offset from there. With nothing selected there's no gizmo to
-// follow, so it falls back to the fixed spot beside the hub instead.
-const _selGestureOffsets = [[-90, -110], [-90, -72], [-90, -34]];
+// Free/Box/Lasso fan out around whatever anchor currently applies: the
+// selection's own gizmo when something's selected, or the hub itself when
+// nothing is - so there's always a way to reach them, and the completed CSS
+// scaffolding above just needs real screen coordinates fed into it each
+// frame. Angles stay above 90 degrees deliberately - the hub's own tool arc
+// never uses that range, so the two can never overlap regardless of anchor.
+const SEL_FAN_RADIUS = 90;
+const SEL_FAN_ANGLES = [170, 135, 100]; // Free, Box, Lasso - degrees, upper-left
+
+function hubScreenCenter() {
+  const hubRect = hubBtnEl.getBoundingClientRect();
+  const vpRect = viewportEl.getBoundingClientRect();
+  return {
+    x: hubRect.left - vpRect.left + hubRect.width / 2,
+    y: hubRect.top - vpRect.top + hubRect.height / 2
+  };
+}
+
 function updateSelGestureAnchor() {
   const row = document.getElementById('selGestureRow');
   if (!row) return;
   const hasGizmo = !!(App.pivot && gizmoList.some(g => g.object));
-  const screen = hasGizmo ? worldToScreen(App.pivot.position) : null;
+  const anchor = hasGizmo ? worldToScreen(App.pivot.position) : hubScreenCenter();
+  if (!anchor) return; // behind the camera this frame - leave the row where it was
 
-  if (!screen) {
-    if (row.classList.contains('gizmo-anchored')) {
-      row.classList.remove('gizmo-anchored');
-      row.style.left = ''; row.style.top = '';
-      row.querySelectorAll('button').forEach(b => { b.style.transform = ''; });
-    }
-    return;
-  }
-  row.classList.add('gizmo-anchored');
-  row.style.left = screen.x + 'px';
-  row.style.top = screen.y + 'px';
+  row.style.left = anchor.x + 'px';
+  row.style.top = anchor.y + 'px';
   row.querySelectorAll('button').forEach((b, i) => {
-    const [dx, dy] = _selGestureOffsets[i] || [0, 0];
+    const rad = SEL_FAN_ANGLES[i] * Math.PI / 180;
+    const dx = Math.cos(rad) * SEL_FAN_RADIUS;
+    const dy = -Math.sin(rad) * SEL_FAN_RADIUS; // screen Y grows downward
     b.style.transform = 'translate(' + dx + 'px, ' + dy + 'px)';
   });
 }
@@ -4392,14 +4376,10 @@ document.addEventListener('dblclick', (ev) => { if (ev.cancelable) ev.preventDef
 let pointerDown = null;
 let lastTap = null;
 let boxDrag = null;
-let radialWasOpen = false;
-
 renderer.domElement.addEventListener('pointerdown', (ev) => {
   pointerDown = { x: ev.clientX, y: ev.clientY, t: performance.now(), overGizmo: anyGizmoAxis() };
   camAnim = null; // a new touch/click cancels any in-flight focus animation
   cancelSmartCamera();
-  radialWasOpen = radialEl.classList.contains('show');
-  hideRadialMenu();
   if (App.selectDrag !== 'off' && !pointerDown.overGizmo) {
     const rect = viewportEl.getBoundingClientRect();
     const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
@@ -4791,26 +4771,23 @@ function handleDoubleTap(ev) {
   }
 }
 
-// Called when a tap lands on empty space - selecting things stays quiet, but
-// tapping empty space is now the deliberate gesture that brings the radial
-// menu up next to whatever's selected. Tapping empty space again (with the
-// menu already open) dismisses it and clears the selection.
+// Tapping empty space clears whatever's selected - simpler than the old
+// two-tap dance this used to do (show a menu, then a second tap to dismiss
+// it), since there's no menu here to dismiss anymore. The permanent hub arc
+// already covers what that menu used to be for.
 function onEmptySpaceTap(ev) {
   const hasSelection = App.mode === 'object' ? App.selectedObjectIds.size > 0 : App.selectedElements.size > 0;
+  if (!hasSelection) return;
 
-  if (radialWasOpen) {
-    if (App.mode === 'object') {
-      clearObjectSelection();
-    } else {
-      App.selectedElements.clear();
-      const obj = findObject(App.activeObjectId);
-      if (obj) refreshElementColors(obj);
-    }
-    refreshUI();
-    refreshGizmoAttachment();
-  } else if (hasSelection) {
-    showRadialMenuAt(ev.clientX, ev.clientY);
+  if (App.mode === 'object') {
+    clearObjectSelection();
+  } else {
+    App.selectedElements.clear();
+    const obj = findObject(App.activeObjectId);
+    if (obj) refreshElementColors(obj);
   }
+  refreshUI();
+  refreshGizmoAttachment();
 }
 
 function handleTap(ev) {
@@ -4933,99 +4910,18 @@ function applyFinishToSelection(name) {
    that apply to the current mode - replaces the old always-on toolbar
    buttons for gizmo mode, split and extrude. */
 
-const radialEl = document.getElementById('radialMenu');
-
-function radialActionsForMode() {
-  const move = { icon: 'move', title: 'Move', run: () => setGizmoMode('translate') };
-  const rotate = { icon: 'rotate', title: 'Rotate', run: () => setGizmoMode('rotate') };
-  const scale = { icon: 'scale', title: 'Scale', run: () => setGizmoMode('scale') };
-  const split = { icon: 'split', title: 'Split Edge', run: splitSelection };
-  const loop = { icon: 'loop', title: 'Edge Loop', run: edgeLoopSelection };
-  const connect = { icon: 'connect', title: 'Connect', run: connectSelection };
-  const weld = { icon: 'weld', title: 'Weld', run: weldSelection };
-  const del = { icon: 'del', title: 'Delete', run: deleteSelection };
-  const extrude = { icon: 'extrude', title: 'Extrude', run: extrudeSelection };
-  const smooth = { icon: 'smooth', title: 'Shade Smooth', run: () => shadeSelection(true) };
-  const flat = { icon: 'flat', title: 'Shade Flat', run: () => shadeSelection(false) };
-  const color = { icon: 'color', title: 'Color', run: () => colorPicker.click() };
-  const focus = {
-    icon: 'focus', title: 'Focus', run: () => {
-      const id = Array.from(App.selectedObjectIds)[0];
-      const o = findObject(id);
-      if (o) focusOnObject(o);
-    }
-  };
-
-  const dupe = { icon: 'dupe', title: 'Duplicate', run: duplicateSelection };
-  const join = { icon: 'join', title: 'Join into one', run: joinSelection };
-  const bevel = { icon: 'bevel', title: 'Bevel', run: bevelSelection };
-  const bridge = { icon: 'bridge', title: 'Bridge', run: bridgeSelection };
-  const crease = { icon: 'crease', title: 'Crease', run: () => creaseSelection(true) };
-  const uncrease = { icon: 'uncrease', title: 'Clear crease', run: () => creaseSelection(false) };
-  const subdiv = { icon: 'subdiv', title: 'Subdivide', run: () => subdivideSelection('smooth') };
-  const inset = { icon: 'inset', title: 'Inset', run: insetSelection };
-
-  if (App.mode === 'object') {
-    const base = [move, rotate, scale, focus, dupe, subdiv, del, color];
-    // Joining only means something with more than one object selected.
-    return App.selectedObjectIds.size > 1 ? base.concat(join) : base;
-  }
-  if (App.mode === 'face') {
-    // Each/Together is chosen in the operation bar once inset or extrude starts.
-    return [move, rotate, scale, extrude, inset, bridge, del, smooth, flat, color];
-  }
-  if (App.mode === 'edge') return [move, rotate, scale, extrude, bevel, bridge, loop, crease, uncrease, del];
-  if (App.mode === 'vertex') return [move, rotate, scale, connect, weld, del, smooth, flat];
-  return [];
-}
-
-function showRadialMenuAt(clientX, clientY) {
-  const rect = viewportEl.getBoundingClientRect();
-  showRadialMenu(clientX - rect.left, clientY - rect.top);
-}
-
-function showRadialMenu(x, y) {
-  const actions = radialActionsForMode();
-  if (!actions.length) { hideRadialMenu(); return; }
-
-  // Grow the ring with the number of tools so 44px targets keep clear of each
-  // other, and keep the whole thing on-screen at whatever size it lands.
-  const radius = actions.length > 8 ? 98 : actions.length > 6 ? 78 : 64;
-  const margin = radius + 26;
-  const cx = Math.min(Math.max(x, margin), viewportEl.clientWidth - margin);
-  const cy = Math.min(Math.max(y, margin), viewportEl.clientHeight - margin);
-
-  radialEl.innerHTML = '';
-  radialEl.style.left = cx + 'px';
-  radialEl.style.top = cy + 'px';
-
-  const center = document.createElement('div');
-  center.className = 'radial-center';
-  radialEl.appendChild(center);
-
-  actions.forEach((a, i) => {
-    const angle = (i / actions.length) * Math.PI * 2 - Math.PI / 2;
-    const btn = document.createElement('div');
-    btn.className = 'radial-btn';
-    btn.style.left = Math.cos(angle) * radius + 'px';
-    btn.style.top = Math.sin(angle) * radius + 'px';
-    btn.innerHTML = icon(a.icon, 21);
-    btn.title = a.title;
-    btn.addEventListener('pointerdown', (ev) => ev.stopPropagation());
-    btn.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      a.run();
-      hideRadialMenu();
-    });
-    radialEl.appendChild(btn);
-  });
-
-  radialEl.classList.add('show');
-}
-
-function hideRadialMenu() {
-  radialEl.classList.remove('show');
-}
+// The old tap-to-summon radial menu is gone - the permanently-open hub arc
+// replaced its job. hideRadialMenu() stays as a no-op rather than being
+// chased down at its ~18 call sites throughout the file; every one of those
+// was a defensive "make sure nothing stray is showing" call, and calling a
+// no-op is harmless.
+//
+// Retired along with it: Connect, Weld, Split Edge, Join, Bridge, Crease/
+// Uncrease and Shade Smooth/Flat had no other home outside this menu, so
+// they're not reachable from the main UI right now. Flagging that plainly
+// rather than letting it go unnoticed - say if any of these should move into
+// the component tool set above.
+function hideRadialMenu() {}
 
 /* ---------------- Add / Delete ---------------- */
 
@@ -5767,19 +5663,22 @@ const hubArcEl = document.getElementById('hubArc');
 // button already calls - none of this is new logic, just a second way to
 // reach it, so there's nothing here that hasn't already been tested.
 const HUB_TOOLS_COMPONENT = [
-  { key: 'translate', icon: 'move', label: 'Move', ring: 0, run: () => setGizmoMode('translate') },
-  { key: 'rotate', icon: 'rotate', label: 'Rotate', ring: 0, run: () => setGizmoMode('rotate') },
-  { key: 'scale', icon: 'scale', label: 'Scale', ring: 0, run: () => setGizmoMode('scale') },
-  { key: 'extrude', icon: 'extrude', label: 'Extrude', ring: 1, run: extrudeSelection },
-  { key: 'inset', icon: 'inset', label: 'Inset', ring: 1, run: insetSelection },
-  { key: 'bevel', icon: 'bevel', label: 'Bevel', ring: 1, run: bevelSelection },
-  { key: 'loopcut', icon: 'loop', label: 'Loop', ring: 1, run: edgeLoopSelection }
+  // Move/Rotate/Scale dropped - the always-present multi-gizmo already
+  // handles those directly on the selection, so a duplicate control here
+  // would just be two ways to do the same thing.
+  { key: 'extrude', icon: 'extrude', label: 'Extrude', ring: 0, run: extrudeSelection },
+  { key: 'inset', icon: 'inset', label: 'Inset', ring: 0, run: insetSelection },
+  { key: 'bevel', icon: 'bevel', label: 'Bevel', ring: 0, run: bevelSelection },
+  { key: 'loopcut', icon: 'loop', label: 'Loop', ring: 1, run: edgeLoopSelection },
+  { key: 'delete', icon: 'del', label: 'Delete', ring: 1, run: () => document.getElementById('btnDelete').click() }
 ];
 
 const HUB_TOOLS_OBJECT = [
   { key: 'duplicate', icon: 'dupe', label: 'Duplicate', ring: 0, run: () => document.getElementById('btnDuplicate').click() },
   { key: 'mirror', icon: 'mirror', label: 'Mirror', ring: 0, run: () => mirrorSelectedObjects(App.symmetryAxis) },
   { key: 'delete', icon: 'del', label: 'Delete', ring: 0, run: () => document.getElementById('btnDelete').click() },
+  // Kept together as a group, in this order, since they're the three most
+  // related to how the object actually looks.
   { key: 'subdivide', icon: 'subdiv', label: 'Subdivide', ring: 1, run: () => subdivideSelection('smooth') },
   { key: 'material', icon: 'color', label: 'Material', ring: 1, run: cycleMaterialFinish },
   { key: 'fillet', icon: 'bevel', label: 'Fillet', ring: 1, run: () => document.getElementById('btnFillet').click() }
