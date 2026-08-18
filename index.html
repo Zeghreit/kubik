@@ -395,7 +395,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.60</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.61</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -702,6 +702,120 @@ const GIZMO_AXES = [
   { key: 'y', dir: new THREE.Vector3(0, 1, 0), color: 0xE8C87A },
   { key: 'z', dir: new THREE.Vector3(0, 0, 1), color: 0x4A82B8 }
 ];
+/* ---------------- Themes ----------------
+   Two complete looks, each covering the interface and the 3D scene together -
+   lighting included, since a palette that ignores how the model is lit only
+   does half the job. */
+const THEMES = {
+  light: {
+    label: 'Daylight',
+    bg: 0xE7E2D8,
+    hemi: { sky: 0xFFFDF8, ground: 0xC9BFAC, intensity: 1.5 },
+    key: { color: 0xFFF8EC, intensity: 0.85 },
+    fill: { color: 0xE4EAF0, intensity: 0.35 },
+    grid: [0xC4BAA6, 0xD6CDBC],
+    rim: { color: 0xFFFFFF, intensity: 0.35 },
+    fog: { near: 18, far: 52 },
+    shadow: 0.16,
+    exposure: 1.0,
+    vignette: '16 14 10',
+    select: 0x2F6F9F, vert: 0x6E6558, edge: 0x8A806F, crease: 0xC46A3A,
+    material: 0x514A3B, swatch: '#514a3b'
+  },
+  dark: {
+    label: 'Workshop',
+    bg: 0x101216,
+    hemi: { sky: 0xaeb8ff, ground: 0x14161a, intensity: 0.9 },
+    key: { color: 0xffffff, intensity: 1.4 },
+    fill: { color: 0x8899bb, intensity: 0.15 },
+    grid: [0x333947, 0x22262f],
+    rim: { color: 0x9FB4FF, intensity: 0.75 },
+    fog: { near: 15, far: 42 },
+    shadow: 0.42,
+    exposure: 1.1,
+    vignette: '0 0 0',
+    select: 0xffc21a, vert: 0x8b93a3, edge: 0x656d80, crease: 0xff7a45,
+    material: 0x303338, swatch: '#303338'
+  }
+};
+
+let SELECT_COLOR = THEMES.dark.select;
+let UNSELECT_VERT_COLOR = THEMES.dark.vert;
+let UNSELECT_EDGE_COLOR = THEMES.dark.edge;
+let CREASE_COLOR = THEMES.dark.crease;
+
+// Objects already in the scene keep whatever colour they were given - only the
+// default for new ones follows the theme.
+let DEFAULT_MATERIAL_COLOR = THEMES.dark.material;
+
+function applyTheme(name) {
+  const t = THEMES[name] || THEMES.light;
+  App.theme = name;
+  document.documentElement.dataset.theme = name;
+
+  scene.background = new THREE.Color(t.bg);
+  // Fog in the background's own colour: distant grid dissolves instead of
+  // ending in a hard line, which reads as space rather than a flat backdrop.
+  scene.fog = new THREE.Fog(t.bg, t.fog.near, t.fog.far);
+  renderer.toneMappingExposure = t.exposure;
+  rimLight.color.setHex(t.rim.color);
+  rimLight.intensity = t.rim.intensity;
+  shadowCatcher.material.opacity = t.shadow;
+  document.documentElement.style.setProperty('--vignette', t.vignette);
+  hemi.color.setHex(t.hemi.sky);
+  hemi.groundColor.setHex(t.hemi.ground);
+  hemi.intensity = t.hemi.intensity;
+  dir.color.setHex(t.key.color);
+  dir.intensity = t.key.intensity;
+  fill.color.setHex(t.fill.color);
+  fill.intensity = t.fill.intensity;
+  buildGrid(t.grid[0], t.grid[1]);
+
+  SELECT_COLOR = t.select;
+  UNSELECT_VERT_COLOR = t.vert;
+  UNSELECT_EDGE_COLOR = t.edge;
+  CREASE_COLOR = t.crease;
+  DEFAULT_MATERIAL_COLOR = t.material;
+
+  const themeMeta = document.querySelector('meta[name="theme-color"]');
+  if (themeMeta) themeMeta.setAttribute('content', name === 'dark' ? '#181b21' : '#F3F0EA');
+
+  // Face overlays bake the selection colour into their material, so retint
+  // them rather than waiting for the next rebuild.
+  App.objects.forEach(o => {
+    (Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material])
+      .forEach(m => { if (m.userData.themedDefault) m.color.setHex(t.material); });
+
+    const ov = o.mesh.userData.faceOverlays;
+    if (ov) ov.forEach(m => m.material.color.setHex(SELECT_COLOR));
+
+    // Repaint every helper, not just the one for the current mode - otherwise
+    // the vertex dots keep last theme's colour until you switch to Vertex mode.
+    const pts = o.mesh.userData.vertexPoints;
+    if (pts) {
+      const c = pts.geometry.attributes.color.array;
+      for (let i = 0; i < c.length / 3; i++) setCol(c, i, UNSELECT_VERT_COLOR);
+      pts.geometry.attributes.color.needsUpdate = true;
+    }
+    const lines = o.mesh.userData.edgeLines;
+    if (lines) {
+      const c = lines.geometry.attributes.color.array;
+      for (let i = 0; i < c.length / 3; i++) setCol(c, i, UNSELECT_EDGE_COLOR);
+      lines.geometry.attributes.color.needsUpdate = true;
+    }
+    refreshElementColors(o); // puts the selection colour back on top
+  });
+
+  const picker = document.getElementById('colorPicker');
+  if (picker) picker.value = t.swatch;
+
+  const btn = document.getElementById('btnTheme');
+  if (btn) {
+    btn.textContent = 'Theme: ' + t.label;
+    btn.title = 'Switch theme';
+  }
+}
+
 // The pivot every transform happens about. There's no visible gizmo any
 // more - the selection itself is what you grab - but the pivot is still the
 // point that rotation and scale work around.
