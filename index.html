@@ -399,7 +399,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.53</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.54</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -554,7 +554,6 @@
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
@@ -674,55 +673,129 @@ orbit.enableDamping = true;
 orbit.dampingFactor = 0.11; // a little coast after a flick, which suits the feel we're after
 orbit.target.set(0, 0, 0);
 
-/* Combined gizmo: translate, rotate and scale all shown at once, rather than
-   switching between them with a mode button. Three.js's TransformControls only
-   ever does one mode at a time, so this runs three independent instances
-   attached to the same pivot - a technique also used by DCC "universal
-   manipulator" widgets. Different sizes keep the three from visually
-   colliding: arrows reach furthest out, the rotate ring sits inside them, the
-   scale handles sit closest to the object. */
-const gizmoTranslate = new TransformControls(camera, renderer.domElement);
-const gizmoRotate = new TransformControls(camera, renderer.domElement);
-const gizmoScale = new TransformControls(camera, renderer.domElement);
-const gizmoList = [gizmoTranslate, gizmoRotate, gizmoScale];
+/* ---------------- Transform gizmo ----------------
+   Purpose-built rather than three.js's TransformControls, because running
+   three of those at once meant three independent sets of pointer handlers
+   raycasting against overlapping handles - one press near the centre could
+   grab a move arrow AND a rotate ring, and both would drive the same pivot.
+   That's what made move also rotate, and scale behave strangely.
 
-gizmoTranslate.setMode('translate');
-gizmoRotate.setMode('rotate');
-gizmoScale.setMode('scale');
-gizmoTranslate.setSize(1.0);
-gizmoRotate.setSize(0.8);
-gizmoScale.setSize(0.55);
+   Here every handle lives at its own distance from the centre, so they can
+   never overlap and only one can ever be grabbed:
+     move   - bars lying along the selection's own axes, at the object
+     rotate - arcs standing just outside it
+     scale  - triangles further out again
+   Deltas are also built directly per axis instead of being decomposed out of
+   a matrix, which removes the rotate/scale cross-talk entirely. */
 
-gizmoList.forEach(g => {
-  scene.add(g.getHelper());
-  g.setSpace('world');
-});
+const GIZMO_AXES = [
+  { key: 'x', dir: new THREE.Vector3(1, 0, 0), color: 0xff4d4d },
+  { key: 'y', dir: new THREE.Vector3(0, 1, 0), color: 0x2fbf87 },
+  { key: 'z', dir: new THREE.Vector3(0, 0, 1), color: 0x4d7dff }
+];
+const R_MOVE = 1.0;   // bars sit on the object
+const R_ROT  = 1.45;  // arcs just outside it
+const R_SCL  = 2.05;  // triangles furthest out
 
-// Kept for anything that still expects a single "transformControls" - always
-// points at the translate instance, which is attached/detached in lockstep
-// with the other two, so its .object stays a reliable source of truth for
-// "what's currently attached."
-const transformControls = gizmoTranslate;
+const gizmoRoot = new THREE.Group();
+gizmoRoot.visible = false;
+gizmoRoot.renderOrder = 999;
+scene.add(gizmoRoot);
 
-function detachAllGizmos() { gizmoList.forEach(g => g.detach()); }
-function attachAllGizmos(pivot) { gizmoList.forEach(g => g.attach(pivot)); applyGizmoFocus(); }
+const gizmoParts = [];   // every pickable handle
+let gizmoTarget = null;  // the pivot we're driving
+let gizmoHoverAxis = null;
 
-// Isolating one gizmo (via the hub's Move/Rotate/Scale buttons) hides the
-// other two rather than detaching them, so re-attachment elsewhere doesn't
-// need to remember the focus state.
-function applyGizmoFocus() {
-  const focus = App.gizmoFocus;
-  const map = { translate: gizmoTranslate, rotate: gizmoRotate, scale: gizmoScale };
-  gizmoList.forEach(g => {
-    const show = !focus || g === map[focus];
-    g.enabled = show;
-    g.getHelper().visible = show;
+function makeGizmoMat(color) {
+  // depthTest off so handles stay reachable even inside the mesh.
+  return new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.95 });
+}
+
+function addGizmoPart(mesh, kind, axis, color) {
+  mesh.userData.gizmo = { kind, axis, color };
+  mesh.renderOrder = 999;
+  gizmoParts.push(mesh);
+  gizmoRoot.add(mesh);
+}
+
+function buildGizmo() {
+  GIZMO_AXES.forEach(ax => {
+    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), ax.dir);
+
+    // Move: a bar through the centre along this axis. Thick enough to be a
+    // comfortable thumb target, and long enough to read as the object's edge.
+    const bar = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.055, 0.055, R_MOVE * 2, 8),
+      makeGizmoMat(ax.color)
+    );
+    bar.quaternion.copy(q);
+    addGizmoPart(bar, 'move', ax.key, ax.color);
+
+    // Rotate: an arc in the plane perpendicular to this axis.
+    const arc = new THREE.Mesh(
+      new THREE.TorusGeometry(R_ROT, 0.05, 8, 48, Math.PI * 0.55),
+      makeGizmoMat(ax.color)
+    );
+    // Torus lies in XY; align its normal to this axis.
+    arc.quaternion.copy(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), ax.dir));
+    addGizmoPart(arc, 'rotate', ax.key, ax.color);
+
+    // Scale: a triangle further out along the axis.
+    const tri = new THREE.Mesh(
+      new THREE.ConeGeometry(0.13, 0.26, 4),
+      makeGizmoMat(ax.color)
+    );
+    tri.quaternion.copy(q);
+    tri.position.copy(ax.dir).multiplyScalar(R_SCL);
+    addGizmoPart(tri, 'scale', ax.key, ax.color);
+  });
+}
+buildGizmo();
+
+// Keeps the gizmo a roughly constant size on screen, so handles stay
+// thumb-sized however far the camera is - the same trick TransformControls
+// used internally.
+function updateGizmoScale() {
+  if (!gizmoRoot.visible || !gizmoTarget) return;
+  const d = camera.position.distanceTo(gizmoTarget.position);
+  const k = d * 0.13;
+  gizmoRoot.scale.setScalar(k);
+  gizmoRoot.position.copy(gizmoTarget.position);
+  gizmoRoot.quaternion.identity(); // world-aligned axes
+  gizmoRoot.updateMatrixWorld(true);
+}
+
+function setGizmoHighlight(activeAxis, activeKind) {
+  gizmoParts.forEach(pt => {
+    const g = pt.userData.gizmo;
+    const on = activeAxis && g.axis === activeAxis && (!activeKind || g.kind === activeKind);
+    pt.material.color.setHex(g.color);
+    pt.material.opacity = activeAxis ? (on ? 1.0 : 0.25) : 0.95;
   });
 }
 
-// A pointer is "over a gizmo" if any of the three would intercept it.
-function anyGizmoAxis() { return gizmoList.some(g => g.axis); }
-function anyGizmoDragging() { return gizmoList.some(g => g.dragging); }
+/* The old TransformControls-era names are kept so the ~20 call sites around
+   the file don't all need rewriting - they now drive this gizmo instead. */
+function detachAllGizmos() {
+  gizmoTarget = null;
+  gizmoRoot.visible = false;
+  setGizmoHighlight(null, null);
+}
+function attachAllGizmos(pivot) {
+  gizmoTarget = pivot;
+  gizmoRoot.visible = true;
+  applyGizmoFocus();
+  updateGizmoScale();
+}
+// Isolating one tool hides the other two rather than detaching anything.
+function applyGizmoFocus() {
+  const focus = App.gizmoFocus;
+  gizmoParts.forEach(pt => {
+    pt.visible = !focus || pt.userData.gizmo.kind === focus;
+  });
+}
+function anyGizmoAxis() { return !!gizmoHoverAxis; }
+function anyGizmoDragging() { return !!gizmoDrag; }
 
 // Small axis-cube gizmo, upper-right corner - click an axis to snap the view.
 // It gets its OWN renderer and canvas: sharing the main renderer meant the
@@ -3852,144 +3925,77 @@ function refreshGizmoAttachment() {
 }
 
 let dragCtx = null;
-// Three instances share one drag session: a count rather than a plain flag,
-// so a stray double-fire can't leave orbit disabled or drop the snapshot
-// early. In ordinary single-touch use only one gizmo is ever grabbed at once.
-let activeGizmoDrags = 0;
+let gizmoDrag = null;   // { kind, axis, dir, start... } while a handle is held
 
-function handleGizmoDraggingChanged(ev) {
-  if (ev.value) {
-    activeGizmoDrags++;
-    orbit.enabled = false;
-    if (dragCtx) return; // a session is already being tracked
-
-    const pivot = ev.target.object;
-    if (!pivot) return;
-
-    pivot.updateMatrix();
-    dragCtx = { pivotStart: pivot.matrix.clone(), entries: [] };
-    if (App.mode === 'object') {
-      const ids = Array.from(App.selectedObjectIds);
-      dragCtx.type = 'objects';
-      dragCtx.entries = ids.map(id => {
-        const m = findObject(id).mesh;
-        m.updateMatrix();
-        return { id, matrix: m.matrix.clone() };
-      });
-    } else {
-      const obj = findObject(App.activeObjectId);
-      const topo = obj.mesh.userData.topo;
-      const pa = obj.mesh.geometry.attributes.position;
-      const logicalIds = new Set();
-      if (App.mode === 'vertex') App.selectedElements.forEach(l => logicalIds.add(l));
-      if (App.mode === 'edge') App.selectedElements.forEach(ei => topo.edges[ei].forEach(l => logicalIds.add(l)));
-      if (App.mode === 'face') App.selectedElements.forEach(gi => topo.faceGroups[gi].logicalVerts.forEach(l => logicalIds.add(l)));
-      dragCtx.type = 'elements';
-      dragCtx.objId = obj.id;
-      dragCtx.entries = Array.from(logicalIds).map(l => {
-        const ai = topo.logicalGroups[l][0];
-        const p = new THREE.Vector3(pa.getX(ai), pa.getY(ai), pa.getZ(ai));
-        obj.mesh.localToWorld(p);
-        return { logical: l, world: p };
-      });
-      dragCtx.mirrorMap = App.symmetry ? buildSymmetryMap(obj, App.symmetryAxis) : null;
-    }
-  } else {
-    activeGizmoDrags = Math.max(0, activeGizmoDrags - 1);
-    orbit.enabled = activeGizmoDrags === 0;
-    if (activeGizmoDrags === 0) {
-      dragCtx = null;
-      // Put the pivot back on the selection before anything else reads it -
-      // otherwise it keeps the full undamped drag and every later rotate or
-      // scale works around a point that has drifted off centre.
-      recenterPivot();
-      pushHistory();
-    }
-  }
-}
-gizmoList.forEach(g => g.addEventListener('dragging-changed', handleGizmoDraggingChanged));
-
-/* Gizmo sensitivity. TransformControls maps pointer motion 1:1 onto rotation
-   and scale, which feels far too fast on a touch screen. Since every transform
-   now arrives as a delta relative to the pivot, we can simply scale that delta
-   down before applying it. Translation is left at 1:1. */
-/* Base damping factors, multiplied by App.sensitivity (the Gizmo speed slider).
-   Rotation and scale are the ones that feel violent on a touch screen, so
-   they're damped hardest. Translation stays closest to 1:1 - dragging should
-   still feel like the object is under your finger - but it gets a little
-   softening at low settings for fine placement. */
+/* Base damping factors, multiplied by App.sensitivity (the Gizmo speed
+   slider). Rotation and scale feel violent at 1:1 on a touch screen, so
+   they're damped hardest. Translation stays close to 1:1 - dragging should
+   feel like the object is under your finger. */
 const ROTATE_BASE = 0.26;
 const SCALE_BASE = 0.30;
+const MIN_SCALE_FACTOR = 0.02;
 
-// Damps a pivot delta. The delta is first rebased so the pivot sits at the
-// origin, otherwise damping the rotation while keeping the full translation
-// would slide the selection sideways instead of just turning it more slowly.
-function dampPivotDelta(deltaMatrix, pivotStart) {
-  const s = App.sensitivity;
-  const rotFactor = THREE.MathUtils.clamp(ROTATE_BASE * s, 0.02, 1);
-  const sclFactor = THREE.MathUtils.clamp(SCALE_BASE * s, 0.02, 1);
-  const posFactor = THREE.MathUtils.clamp(0.5 + 0.5 * s, 0.3, 1);
-
-  const ps = new THREE.Vector3().setFromMatrixPosition(pivotStart);
-  const toOrigin = new THREE.Matrix4().makeTranslation(-ps.x, -ps.y, -ps.z);
-  const fromOrigin = new THREE.Matrix4().makeTranslation(ps.x, ps.y, ps.z);
-
-  const local = new THREE.Matrix4().multiplyMatrices(toOrigin, new THREE.Matrix4().multiplyMatrices(deltaMatrix, fromOrigin));
-  const pos = new THREE.Vector3(), quat = new THREE.Quaternion(), scl = new THREE.Vector3();
-  local.decompose(pos, quat, scl);
-
-  const softPos = pos.multiplyScalar(posFactor);
-  const softQuat = new THREE.Quaternion().slerp(quat, rotFactor);
-  const softScale = new THREE.Vector3(
-    1 + (scl.x - 1) * sclFactor,
-    1 + (scl.y - 1) * sclFactor,
-    1 + (scl.z - 1) * sclFactor
-  );
-  // Dragging a scale handle back past the pivot would otherwise flip the
-  // selection inside out (negative scale = mirrored geometry). Flooring each
-  // axis to a small positive value means the drag can shrink a selection down
-  // to almost nothing, but it can never cross zero and invert it.
-  const MIN_SCALE_FACTOR = 0.02;
-  softScale.x = Math.max(MIN_SCALE_FACTOR, Math.abs(softScale.x));
-  softScale.y = Math.max(MIN_SCALE_FACTOR, Math.abs(softScale.y));
-  softScale.z = Math.max(MIN_SCALE_FACTOR, Math.abs(softScale.z));
-  const softLocal = new THREE.Matrix4().compose(softPos, softQuat, softScale);
-  return new THREE.Matrix4().multiplyMatrices(fromOrigin, new THREE.Matrix4().multiplyMatrices(softLocal, toOrigin));
+// Snapshots what's selected so every frame of a drag is applied to the
+// original state rather than compounding on the previous frame.
+function captureDragContext(pivot) {
+  pivot.updateMatrix();
+  const ctx = { pivotStart: pivot.matrix.clone(), pivotPos: pivot.position.clone(), entries: [] };
+  if (App.mode === 'object') {
+    ctx.type = 'objects';
+    ctx.entries = Array.from(App.selectedObjectIds).map(id => {
+      const m = findObject(id).mesh;
+      m.updateMatrix();
+      return { id, matrix: m.matrix.clone() };
+    });
+  } else {
+    const obj = findObject(App.activeObjectId);
+    if (!obj) return null;
+    const topo = obj.mesh.userData.topo;
+    const pa = obj.mesh.geometry.attributes.position;
+    const logicalIds = new Set();
+    if (App.mode === 'vertex') App.selectedElements.forEach(l => logicalIds.add(l));
+    if (App.mode === 'edge') App.selectedElements.forEach(ei => { if (topo.edges[ei]) topo.edges[ei].forEach(l => logicalIds.add(l)); });
+    if (App.mode === 'face') App.selectedElements.forEach(gi => { if (topo.faceGroups[gi]) topo.faceGroups[gi].logicalVerts.forEach(l => logicalIds.add(l)); });
+    ctx.type = 'elements';
+    ctx.objId = obj.id;
+    ctx.entries = Array.from(logicalIds).map(l => {
+      const ai = topo.logicalGroups[l][0];
+      const q = new THREE.Vector3(pa.getX(ai), pa.getY(ai), pa.getZ(ai));
+      obj.mesh.localToWorld(q);
+      return { logical: l, world: q };
+    });
+    ctx.mirrorMap = App.symmetry ? buildSymmetryMap(obj, App.symmetryAxis) : null;
+  }
+  return ctx;
 }
 
-function handleGizmoObjectChange(ev) {
-  if (!dragCtx) { refreshInspector(); return; }
-  const pivot = ev.target.object;
-  if (!pivot) return;
-  pivot.updateMatrix();
-  const rawDelta = new THREE.Matrix4().copy(pivot.matrix).multiply(new THREE.Matrix4().copy(dragCtx.pivotStart).invert());
-  const deltaMatrix = dampPivotDelta(rawDelta, dragCtx.pivotStart);
-
+// Applies a world-space delta to the snapshot. Unchanged from the previous
+// gizmo - this part was never the problem.
+function applyDeltaToSelection(deltaMatrix) {
+  if (!dragCtx) return;
   if (dragCtx.type === 'objects') {
     dragCtx.entries.forEach(entry => {
       const obj = findObject(entry.id);
+      if (!obj) return;
       const m = new THREE.Matrix4().multiplyMatrices(deltaMatrix, entry.matrix);
       m.decompose(obj.mesh.position, obj.mesh.quaternion, obj.mesh.scale);
     });
   } else if (dragCtx.type === 'elements') {
     const obj = findObject(dragCtx.objId);
+    if (!obj) return;
     const topo = obj.mesh.userData.topo;
     const pa = obj.mesh.geometry.attributes.position;
     const axis = App.symmetryAxis;
     const setLocal = (logical, v) => {
       topo.logicalGroups[logical].forEach(ai => pa.setXYZ(ai, v.x, v.y, v.z));
     };
-
     dragCtx.entries.forEach(entry => {
       const newWorld = entry.world.clone().applyMatrix4(deltaMatrix);
       const local = obj.mesh.worldToLocal(newWorld);
       setLocal(entry.logical, local);
-
       if (dragCtx.mirrorMap) {
         const partner = dragCtx.mirrorMap.get(entry.logical);
         if (partner === entry.logical) {
-          // A vertex sitting on the symmetry plane must stay on it, otherwise
-          // it would be pulled in two opposite directions at once.
           const clamped = local.clone();
           clamped[axis] = 0;
           setLocal(entry.logical, clamped);
@@ -4006,9 +4012,130 @@ function handleGizmoObjectChange(ev) {
     obj.mesh.geometry.computeBoundingBox();
     syncHelperGeometry(obj);
   }
-  refreshInspector(); // keep typed values in step with gizmo dragging
+  refreshInspector();
 }
-gizmoList.forEach(g => g.addEventListener('objectChange', handleGizmoObjectChange));
+
+/* ---- Per-axis drag maths ----
+   Each handle produces one number - a distance, an angle, or a factor - and
+   that single value becomes the delta. Nothing is ever decomposed out of a
+   matrix, so rotation can't leak into translation the way it did before. */
+
+// Closest point along an infinite axis line to the pointer ray.
+function axisParamFromPointer(ev, origin, dir) {
+  const ndc = ndcFromEvent(ev);
+  raycaster.setFromCamera(ndc, camera);
+  const ro = raycaster.ray.origin, rd = raycaster.ray.direction;
+  const w0 = new THREE.Vector3().subVectors(origin, ro);
+  const a = dir.dot(dir), b = dir.dot(rd), c = rd.dot(rd);
+  const d = dir.dot(w0), e = rd.dot(w0);
+  const denom = a * c - b * b;
+  if (Math.abs(denom) < 1e-9) return null;      // ray parallel to the axis
+  return (d * c - b * e) / denom;
+}
+
+// Angle of the pointer around an axis, measured in the plane through the pivot.
+function angleAroundAxis(ev, origin, dir) {
+  const ndc = ndcFromEvent(ev);
+  raycaster.setFromCamera(ndc, camera);
+  const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(dir, origin);
+  const hit = new THREE.Vector3();
+  if (!raycaster.ray.intersectPlane(plane, hit)) return null;
+  const ref = Math.abs(dir.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+  const u = new THREE.Vector3().crossVectors(ref, dir).normalize();
+  const v = new THREE.Vector3().crossVectors(dir, u).normalize();
+  const rel = new THREE.Vector3().subVectors(hit, origin);
+  return Math.atan2(rel.dot(v), rel.dot(u));
+}
+
+function beginGizmoDrag(ev, part) {
+  const g = part.userData.gizmo;
+  const pivot = gizmoTarget;
+  if (!pivot) return false;
+  dragCtx = captureDragContext(pivot);
+  if (!dragCtx) return false;
+
+  const dir = GIZMO_AXES.find(a => a.key === g.axis).dir.clone();
+  const origin = pivot.position.clone();
+  gizmoDrag = { kind: g.kind, axis: g.axis, dir, origin };
+
+  if (g.kind === 'rotate') {
+    gizmoDrag.startAngle = angleAroundAxis(ev, origin, dir);
+    if (gizmoDrag.startAngle === null) { gizmoDrag = null; dragCtx = null; return false; }
+  } else {
+    gizmoDrag.startParam = axisParamFromPointer(ev, origin, dir);
+    if (gizmoDrag.startParam === null) { gizmoDrag = null; dragCtx = null; return false; }
+    // Scale needs a reference length so the factor is relative, not absolute.
+    gizmoDrag.refLen = Math.max(0.35, gizmoRoot.scale.x * R_SCL);
+  }
+  orbit.enabled = false;
+  setGizmoHighlight(g.axis, g.kind);
+  return true;
+}
+
+function updateGizmoDrag(ev) {
+  if (!gizmoDrag || !dragCtx) return;
+  const s = App.sensitivity;
+  const { dir, origin, kind } = gizmoDrag;
+  const T = new THREE.Matrix4().makeTranslation(origin.x, origin.y, origin.z);
+  const Tinv = new THREE.Matrix4().makeTranslation(-origin.x, -origin.y, -origin.z);
+  let local = null;
+
+  if (kind === 'move') {
+    const t = axisParamFromPointer(ev, origin, dir);
+    if (t === null) return;
+    let d = (t - gizmoDrag.startParam) * THREE.MathUtils.clamp(0.5 + 0.5 * s, 0.3, 1);
+    if (App.snap) d = Math.round(d / SNAP_MOVE) * SNAP_MOVE;
+    const off = dir.clone().multiplyScalar(d);
+    // Pure translation - no conjugation needed.
+    applyDeltaToSelection(new THREE.Matrix4().makeTranslation(off.x, off.y, off.z));
+    return;
+  }
+
+  if (kind === 'rotate') {
+    const a = angleAroundAxis(ev, origin, dir);
+    if (a === null) return;
+    let ang = (a - gizmoDrag.startAngle) * THREE.MathUtils.clamp(ROTATE_BASE * s, 0.02, 1);
+    if (App.snap) ang = Math.round(ang / SNAP_ROTATE) * SNAP_ROTATE;
+    local = new THREE.Matrix4().makeRotationAxis(dir, ang);
+  } else { // scale
+    const t = axisParamFromPointer(ev, origin, dir);
+    if (t === null) return;
+    const raw = (t - gizmoDrag.startParam) / gizmoDrag.refLen;
+    let f = 1 + raw * THREE.MathUtils.clamp(SCALE_BASE * s, 0.02, 1);
+    if (App.snap) f = Math.round(f / SNAP_SCALE) * SNAP_SCALE;
+    f = Math.max(MIN_SCALE_FACTOR, Math.abs(f)); // never cross zero and invert
+    const v = new THREE.Vector3(
+      dir.x ? f : 1,
+      dir.y ? f : 1,
+      dir.z ? f : 1
+    );
+    local = new THREE.Matrix4().makeScale(v.x, v.y, v.z);
+  }
+
+  // Rotation and scale act about the pivot, so conjugate them through it.
+  applyDeltaToSelection(new THREE.Matrix4().multiplyMatrices(T, new THREE.Matrix4().multiplyMatrices(local, Tinv)));
+}
+
+function endGizmoDrag() {
+  if (!gizmoDrag) return;
+  gizmoDrag = null;
+  dragCtx = null;
+  orbit.enabled = true;
+  setGizmoHighlight(null, null);
+  // Put the pivot back on the selection - damping means the geometry moved
+  // less than the handle did, so without this it drifts a little every drag.
+  recenterPivot();
+  updateGizmoScale();
+  pushHistory();
+}
+
+// Which handle, if any, is under this pointer.
+function pickGizmoPart(ev) {
+  if (!gizmoRoot.visible) return null;
+  raycaster.setFromCamera(ndcFromEvent(ev), camera);
+  const hits = raycaster.intersectObjects(gizmoParts.filter(p => p.visible), false);
+  return hits.length ? hits[0].object : null;
+}
 
 /* ---------------- Raycasting / picking ---------------- */
 
@@ -4153,7 +4280,7 @@ function updateSelGestureAnchor() {
   // They used to fall back to sitting near the hub so Box/Lasso stayed
   // reachable before a first selection, but that put them under the tool
   // fan - and an empty scene has nothing to region-select anyway.
-  const hasGizmo = !!(App.pivot && gizmoList.some(g => g.object));
+  const hasGizmo = !!(App.pivot && gizmoRoot.visible && gizmoTarget);
   const anchor = hasGizmo ? worldToScreen(App.pivot.position) : null;
   if (!anchor) { row.style.display = 'none'; return; }
   // Explicit 'block', not '' - an empty string would fall back to the CSS
@@ -4376,9 +4503,18 @@ let pointerDown = null;
 let lastTap = null;
 let boxDrag = null;
 renderer.domElement.addEventListener('pointerdown', (ev) => {
-  pointerDown = { x: ev.clientX, y: ev.clientY, t: performance.now(), overGizmo: anyGizmoAxis() };
   camAnim = null; // a new touch/click cancels any in-flight focus animation
   cancelSmartCamera();
+
+  // A gizmo handle wins over everything else. Only one can ever be hit,
+  // since move/rotate/scale now sit at different distances from the centre.
+  const part = pickGizmoPart(ev);
+  if (part && beginGizmoDrag(ev, part)) {
+    pointerDown = { x: ev.clientX, y: ev.clientY, t: performance.now(), overGizmo: true };
+    return;
+  }
+
+  pointerDown = { x: ev.clientX, y: ev.clientY, t: performance.now(), overGizmo: false };
   if (App.selectDrag !== 'off' && !pointerDown.overGizmo) {
     const rect = viewportEl.getBoundingClientRect();
     const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
@@ -4388,7 +4524,17 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
 });
 
 renderer.domElement.addEventListener('pointermove', (ev) => {
-  if (!boxDrag) return;
+  if (gizmoDrag) { updateGizmoDrag(ev); return; }
+  if (!boxDrag) {
+    // Hover feedback, and what anyGizmoAxis() reports to the tap handler.
+    const over = pickGizmoPart(ev);
+    const axis = over ? over.userData.gizmo.axis : null;
+    if (axis !== gizmoHoverAxis) {
+      gizmoHoverAxis = axis;
+      setGizmoHighlight(axis, over ? over.userData.gizmo.kind : null);
+    }
+    return;
+  }
   const rect = viewportEl.getBoundingClientRect();
   const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
 
@@ -4408,6 +4554,7 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
 });
 
 renderer.domElement.addEventListener('pointerup', (ev) => {
+  if (gizmoDrag) { endGizmoDrag(); pointerDown = null; return; }
   if (boxDrag) {
     const rect = viewportEl.getBoundingClientRect();
     const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
@@ -5011,17 +5158,15 @@ function duplicateSelection() {
 
 /* ---------------- Snapping ----------------
    Applied to the gizmo, so dragging lands on clean values. Vertex/edge/face
-   drags go through the same TransformControls, so they snap too. */
+   drags read App.snap directly, so they snap too. */
 
 const SNAP_MOVE = 0.25;
 const SNAP_ROTATE = Math.PI / 12; // 15 degrees
 const SNAP_SCALE = 0.1;
 
-function applySnapSettings() {
-  gizmoTranslate.setTranslationSnap(App.snap ? SNAP_MOVE : null);
-  gizmoRotate.setRotationSnap(App.snap ? SNAP_ROTATE : null);
-  gizmoScale.setScaleSnap(App.snap ? SNAP_SCALE : null);
-}
+// Kept as a no-op so its call sites don't need touching: the new gizmo reads
+// App.snap directly while dragging rather than being configured up front.
+function applySnapSettings() {}
 
 /* ---------------- Numeric transform panel ---------------- */
 
@@ -6238,6 +6383,7 @@ function animate() {
   }
   if (viewHelper.animating) { viewHelper.update(delta); camAnim = null; }
   orbit.update();
+  updateGizmoScale();
   updateSelGestureAnchor();
   renderer.render(scene, camera);
   // Separate renderer - cannot affect the main viewport above.
