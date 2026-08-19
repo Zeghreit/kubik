@@ -44,6 +44,19 @@
     --hint-bg: 251 250 247;
     --accent-rgb: 60 110 147;
     --vignette: 16 14 10;
+
+    /* One spacing and shape scale, so nothing has to be decided twice.
+       Irregularity reads as carelessness even when every individual value
+       is defensible - ten different corner radii were doing the work of
+       three. */
+    --edge: 14px;
+    --edge-l: calc(14px + env(safe-area-inset-left));
+    --edge-r: calc(14px + env(safe-area-inset-right));
+    --edge-b: calc(14px + env(safe-area-inset-bottom));
+    --gap: 8px;
+    --r-sm: 6px;    /* small controls, inputs, swatches */
+    --r-md: 12px;   /* buttons, panels, cards */
+    --r-pill: 999px;
   }
 
   /* Workshop dark: the original palette, for working at night or when a
@@ -97,7 +110,7 @@
   }
 
   #hubBtn {
-    position: absolute; left: 14px; bottom: 14px;
+    position: absolute; left: var(--edge-l); bottom: var(--edge-b);
     width: 62px; height: 62px; min-height: 62px; padding: 0;
     border-radius: 50%; justify-content: center; font-size: 24px;
     background: var(--accent); color: var(--on-accent); border: none;
@@ -125,13 +138,17 @@
      needs the safe-area inset here - top doesn't, since #viewport already
      starts below #topBar, which accounted for the top inset in its own
      padding; adding it again here would just push these down twice. */
+  /* Every edge-anchored control measures from the same inset. Three columns
+     down the left at 20px, 10px and 14px was the most visible inconsistency
+     in the app - and it sat on the edge the thumb lives on, so it was on
+     screen constantly. */
   #quickRow {
-    position: absolute; left: calc(20px + env(safe-area-inset-left)); top: 8px;
-    display: flex; gap: 6px; z-index: 13;
+    position: absolute; left: var(--edge-l); top: var(--edge);
+    display: flex; gap: var(--gap); z-index: 13;
   }
   #quickRow button {
     width: 44px; height: 44px; min-height: 44px; padding: 0; justify-content: center;
-    font-size: 17px; border-radius: 12px; background: var(--panel2);
+    font-size: 17px; border-radius: var(--r-md); background: var(--panel2);
   }
 
   /* A fixed column down the left edge. It used to chase the gizmo's screen
@@ -142,25 +159,34 @@
      other persistent readouts rather than in the thumb's way - something to
      glance at, not to press. Its CSS was lost when the gizmo was stripped,
      so the chip was rendering unstyled. */
+  /* Lives in the top bar rather than floating over the viewport. It's the
+     only thing telling you what a drag will do, and everything now depends
+     on that - at the bottom edge in small grey type it read as a footnote
+     rather than as state.
+
+     Floating it at top-centre was the obvious move, but the top row is
+     already spoken for on a phone: undo/redo take the left, the view cube
+     the right, leaving 170px for a chip that needs 175px. In the bar it has
+     room, sits level with the title, and reads as status instead of as
+     something stuck on top of the model. */
   #toolChip {
-    position: absolute; left: 50%; transform: translateX(-50%); bottom: 12px; z-index: 13;
-    display: flex; align-items: center; gap: 6px;
-    padding: 5px 11px; border-radius: 999px;
-    background: rgb(var(--hint-bg) / .8); border: 1px solid var(--line);
-    color: var(--text-dim); font-size: 11px; font-weight: 600;
+    display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+    padding: 5px 11px; border-radius: var(--r-pill);
+    background: var(--accent-dim); border: 1px solid var(--accent);
+    color: var(--text); font-size: 11px; font-weight: 600;
     letter-spacing: .04em; text-transform: uppercase; pointer-events: none;
   }
   #toolChip .ic { display: flex; color: var(--accent); }
   #toolChip .sep { opacity: .4; }
 
   #selGestureRow {
-    position: absolute; left: calc(10px + env(safe-area-inset-left));
+    position: absolute; left: var(--edge-l);
     top: 50%; transform: translateY(-50%);
-    display: flex; flex-direction: column; gap: 8px; z-index: 13;
+    display: flex; flex-direction: column; gap: var(--gap); z-index: 13;
   }
   #selGestureRow button {
     width: 40px; height: 40px; min-height: 40px; padding: 0; justify-content: center;
-    border-radius: 12px; background: var(--panel2);
+    border-radius: var(--r-md); background: var(--panel2);
   }
 
   .ic-svg { display: block; }
@@ -204,7 +230,7 @@
   .proj-del:hover { border-color: var(--danger); color: var(--danger); }
   #projName {
     flex: 1 1 120px; min-width: 100px; background: var(--panel2);
-    border: 1px solid var(--line); color: var(--text); border-radius: 8px;
+    border: 1px solid var(--line); color: var(--text); border-radius: var(--r-sm);
     padding: 8px 10px; font-size: 16px; font-family: inherit;
   }
   #projName:focus { outline: none; border-color: var(--accent); }
@@ -212,7 +238,7 @@
 
   button, .btn {
     background: var(--panel2); color: var(--text); border: 1px solid var(--line);
-    border-radius: 8px; padding: 8px 12px; font-size: 13px; cursor: pointer;
+    border-radius: var(--r-sm); padding: 8px 12px; font-size: 13px; cursor: pointer;
     min-height: 40px; display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
     transition: background .12s, border-color .12s, color .12s;
   }
@@ -223,18 +249,18 @@
   button:disabled { opacity: .35; cursor: not-allowed; }
   button.small { padding: 6px 9px; min-height: 34px; font-size: 12px; }
 
-  .group { display: inline-flex; gap: 2px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 2px; flex-shrink: 0; }
-  .group button { border: none; background: transparent; border-radius: 6px; }
+  .group { display: inline-flex; gap: 2px; background: var(--panel2); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 2px; flex-shrink: 0; }
+  .group button { border: none; background: transparent; border-radius: var(--r-sm); }
   .group button.active { background: var(--accent); color: var(--on-accent); font-weight: 600; }
 
   #objectStrip { gap: 8px; }
   .objChip {
     display: inline-flex; align-items: center; gap: 8px; background: var(--panel2);
-    border: 1px solid var(--line); border-radius: 20px; padding: 6px 12px 6px 8px;
+    border: 1px solid var(--line); border-radius: var(--r-md); padding: 6px 12px 6px 8px;
     min-height: 36px; cursor: pointer; font-size: 12px; color: var(--text-dim); flex-shrink: 0;
   }
   .objChip.selected { border-color: var(--accent); color: var(--text); background: var(--accent-dim); }
-  .swatch { width: 14px; height: 14px; border-radius: 4px; border: 1px solid rgba(255,255,255,.25); flex-shrink: 0; }
+  .swatch { width: 14px; height: 14px; border-radius: var(--r-sm); border: 1px solid rgba(255,255,255,.25); flex-shrink: 0; }
 
   #viewport { position: relative; flex: 1 1 auto; min-height: 0; touch-action: none; overscroll-behavior: none; }
   #viewport canvas { display: block; width: 100%; height: 100%; touch-action: none; }
@@ -244,16 +270,16 @@
        positioning - that's what had it floating lower than the title
        instead of sitting level with it. */
     font-size: 11px; color: var(--text-dim);
-    background: rgb(var(--hint-bg) / .82); padding: 6px 10px; border-radius: 8px;
+    background: rgb(var(--hint-bg) / .82); padding: 6px 10px; border-radius: var(--r-sm);
     text-align: right; line-height: 1.5; flex-shrink: 0;
   }
 
   input[type=color] {
     -webkit-appearance: none; appearance: none; width: 40px; height: 36px; border: 1px solid var(--line);
-    border-radius: 8px; padding: 2px; background: var(--panel2); cursor: pointer; flex-shrink: 0;
+    border-radius: var(--r-sm); padding: 2px; background: var(--panel2); cursor: pointer; flex-shrink: 0;
   }
   input[type=color]::-webkit-color-swatch-wrapper { padding: 2px; }
-  input[type=color]::-webkit-color-swatch { border-radius: 6px; border: none; }
+  input[type=color]::-webkit-color-swatch { border-radius: var(--r-sm); border: none; }
 
   label.fileBtn { position: relative; overflow: hidden; }
   label.fileBtn input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
@@ -263,7 +289,7 @@
   #toast {
     position: absolute; left: 50%; top: 14px; transform: translateX(-50%);
     background: #1f232b; border: 1px solid var(--line); color: var(--text);
-    padding: 8px 14px; border-radius: 8px; font-size: 12px; opacity: 0; pointer-events: none;
+    padding: 8px 14px; border-radius: var(--r-sm); font-size: 12px; opacity: 0; pointer-events: none;
     transition: opacity .2s ease, transform .2s ease;
   }
   #toast.show { opacity: 1; transform: translateX(-50%) translateY(4px); }
@@ -281,8 +307,8 @@
      mid-model. Assisting-finger territory, not thumb territory, so these are
      settings you glance at and tap - not the primary action loop. */
   #btnSymmetry, #btnGrid, #btnSmartCam, #btnSnap, #btnShade {
-    position: absolute; right: calc(20px + env(safe-area-inset-right)); z-index: 13;
-    width: 42px; min-height: 42px; padding: 0; border-radius: 10px;
+    position: absolute; right: var(--edge-r); z-index: 13;
+    width: 42px; min-height: 42px; padding: 0; border-radius: var(--r-md);
     background: var(--panel2); border: 1px solid var(--line);
     line-height: 1; justify-content: center;
   }
@@ -296,7 +322,7 @@
   }
 
   #viewCube {
-    position: absolute; top: 2px; right: calc(20px + env(safe-area-inset-right)); width: 96px; height: 96px;
+    position: absolute; top: 2px; right: var(--edge-r); width: 96px; height: 96px;
     z-index: 12; cursor: pointer; touch-action: none;
   }
   #viewCube canvas { display: block; width: 100%; height: 100%; }
@@ -326,7 +352,7 @@
   #inspector {
     /* Below the hint, on the left where the viewport is otherwise clear. */
     position: absolute; left: calc(10px + env(safe-area-inset-left)); top: 78px; z-index: 16; display: none;
-    background: var(--panel2); border: 1px solid var(--line); border-radius: 12px;
+    background: var(--panel2); border: 1px solid var(--line); border-radius: var(--r-md);
     padding: 8px 10px 10px; min-width: 226px; backdrop-filter: blur(6px);
   }
   #inspector.show { display: block; }
@@ -338,7 +364,7 @@
     z-index: 17; display: none; align-items: center; justify-content: center;
     flex-wrap: wrap; gap: 8px;
     background: var(--panel2); border: 1px solid var(--accent);
-    border-radius: 14px; padding: 8px 12px; box-shadow: 0 8px 24px rgb(var(--shadow) / .16);
+    border-radius: var(--r-md); padding: 8px 12px; box-shadow: 0 8px 24px rgb(var(--shadow) / .16);
   }
   #opBar.show { display: flex; }
   #opLabel { font-size: 12px; color: var(--text); font-weight: 600; flex-shrink: 0; }
@@ -360,7 +386,7 @@
   }
   .stepper {
     display: flex; align-items: center; gap: 2px; flex-shrink: 0;
-    background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 2px;
+    background: var(--panel2); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 2px;
   }
   .stepper button {
     width: 30px; min-height: 30px; padding: 0; justify-content: center;
@@ -371,7 +397,7 @@
     /* 16px is the threshold below which iOS Safari zooms the page when a field
        takes focus - which drags the whole interface off screen. */
     width: 66px; background: var(--panel2); border: 1px solid var(--line); color: var(--text);
-    border-radius: 6px; padding: 6px 4px; font-size: 16px; text-align: center;
+    border-radius: var(--r-sm); padding: 6px 4px; font-size: 16px; text-align: center;
     -moz-appearance: textfield; flex-shrink: 0;
   }
   #opValue::-webkit-outer-spin-button, #opValue::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
@@ -386,7 +412,7 @@
   .insp-label { font-size: 11px; color: var(--text-dim); width: 34px; flex-shrink: 0; }
   .insp-row input {
     width: 62px; background: var(--panel2); border: 1px solid var(--line); color: var(--text);
-    border-radius: 6px; padding: 6px 4px; font-size: 16px; text-align: center;
+    border-radius: var(--r-sm); padding: 6px 4px; font-size: 16px; text-align: center;
     -moz-appearance: textfield;
   }
   .insp-row input::-webkit-outer-spin-button,
@@ -410,8 +436,9 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.67</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.68</span></div>
     <div class="spacer"></div>
+    <div id="toolChip" title="Two fingers switch tool, three switch mode"></div>
     <div id="status"></div>
   </div>
 
@@ -422,7 +449,6 @@
     <button id="btnGrid" title="Show or hide the floor grid"></button>
     <button id="btnSmartCam" title="Drift to a useful angle after selecting"></button>
     <button id="btnSnap" title="Snap moves to a grid and rotations to fixed angles"></button>
-    <div id="toolChip" title="Two fingers switch tool, three switch mode"></div>
     <button id="btnShade" title="Shade smooth / flat - applies to the whole object or the current selection"></button>
     <div id="vignette"></div>
     <div id="selectBox"></div>
