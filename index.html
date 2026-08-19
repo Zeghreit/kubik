@@ -161,16 +161,15 @@
      telling you what a drag will do, and everything now depends on that -
      so it needs to be visible without being in the thumb's way.
 
-     Centred under the header, where it was asked for twice before and
-     didn't fit: spelling out "Move" next to a move icon was width with
-     nothing behind it, since the icon already says that. Icon plus just
-     the mode word is roughly half as wide, with real margin either side
-     instead of a hairline fit. */
+     Same top offset and height as quickRow, with its own content vertically
+     centred by flexbox - that's what actually lines its centre up with
+     undo/redo's centre, rather than guessing a pixel offset that would only
+     be right for one exact font rendering. */
   #toolChip {
     position: absolute; left: 50%; transform: translateX(-50%);
-    top: calc(var(--edge) + 52px); z-index: 13;
+    top: var(--edge); height: 44px; z-index: 13;
     display: flex; align-items: center; gap: 6px;
-    padding: 6px 12px; border-radius: var(--r-pill);
+    padding: 0 12px; border-radius: var(--r-pill);
     background: var(--accent-dim); border: 1px solid var(--accent);
     color: var(--text); font-size: 11px; font-weight: 600;
     letter-spacing: .04em; text-transform: uppercase; pointer-events: none;
@@ -458,7 +457,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.72</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.73</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -6440,6 +6439,10 @@ document.getElementById('btnSmartCam').addEventListener('click', (ev) => {
 
 document.getElementById('btnGrid').addEventListener('click', (ev) => {
   grid.visible = !grid.visible;
+  // Tied to the same toggle rather than a separate one - the contact
+  // shadow is a floor-relative cue, so it reads as part of "the floor" and
+  // should come and go with it instead of lingering once the grid is gone.
+  shadowCatcher.visible = grid.visible;
   ev.currentTarget.classList.toggle('active', grid.visible);
   toast(grid.visible ? 'Floor grid on' : 'Floor grid off');
 });
