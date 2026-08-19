@@ -85,6 +85,12 @@
     margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--text);
     font-family: "Noto Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     overflow: hidden; -webkit-tap-highlight-color: transparent; user-select: none;
+    /* The new press-and-hold tool ring is the first genuine hold-and-dwell
+       gesture in the app - every earlier interaction was a quick tap or an
+       immediate drag, so iOS Safari's native long-press text-selection UI
+       never had a chance to fire before now. user-select:none doesn't
+       suppress it; this is the specific property that does. */
+    -webkit-touch-callout: none; -webkit-user-select: none;
     overscroll-behavior: none; position: fixed; inset: 0;
   }
   #app { display: flex; flex-direction: column; height: 100%; }
@@ -111,18 +117,16 @@
 
   #hubBtn {
     position: absolute; left: var(--edge-l); bottom: var(--edge-b);
-    /* Sits below the arc it opens. The arc sweeps up and to the right from
-       this corner, so the button has to stay out of that quarter or the
-       nearest tool lands on top of it. */
     width: 62px; height: 62px; min-height: 62px; padding: 0;
     border-radius: 50%; justify-content: center; font-size: 24px;
     background: var(--accent); color: var(--on-accent); border: none;
     box-shadow: 0 6px 18px rgb(var(--shadow) / .16);
   }
-  #hubBtn.open { background: var(--panel2); color: var(--text); border: 1px solid var(--accent); }
 
-  /* Tools fan out along an arc the thumb can sweep without shifting grip. */
-  #hubArc { position: absolute; left: 45px; bottom: 45px; width: 0; height: 0; }
+  /* Shared by every tool icon the app shows, wherever it appears - right
+     now that's only the press-and-hold ring, which supplies its own
+     unconditional display rule since it isn't scoped under a fixed #hubArc
+     any more. */
   .hub-item {
     position: absolute; width: 52px; height: 52px; margin-left: -26px; margin-bottom: -26px;
     border-radius: 50%; background: var(--panel2); border: 1px solid var(--accent);
@@ -130,7 +134,6 @@
     justify-content: center; gap: 1px; cursor: pointer; user-select: none;
     box-shadow: 0 4px 14px rgb(var(--shadow) / .14);
   }
-  #hubArc.open .hub-item { display: flex; animation: radial-pop .14s ease-out; }
   .hub-item .ic { font-size: 17px; line-height: 1; }
   .hub-item .tx { font-size: 8px; color: var(--text-dim); letter-spacing: .02em; }
   .hub-item.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
@@ -158,13 +161,14 @@
      telling you what a drag will do, and everything now depends on that -
      so it needs to be visible without being in the thumb's way.
 
-     Left edge, under undo/redo. Centring it doesn't fit - on a 390px phone
-     undo/redo take the left and the view cube the right, leaving 170px for
-     a chip needing 175. The right edge is worse: the corner stack starts
-     106px down and runs the whole way, so a chip there lands on the
-     symmetry button. Below undo/redo is the one gap nothing else uses. */
+     Centred under the header, where it was asked for twice before and
+     didn't fit: spelling out "Move" next to a move icon was width with
+     nothing behind it, since the icon already says that. Icon plus just
+     the mode word is roughly half as wide, with real margin either side
+     instead of a hairline fit. */
   #toolChip {
-    position: absolute; left: var(--edge-l); top: calc(var(--edge) + 52px); z-index: 13;
+    position: absolute; left: 50%; transform: translateX(-50%);
+    top: calc(var(--edge) + 52px); z-index: 13;
     display: flex; align-items: center; gap: 6px;
     padding: 6px 12px; border-radius: var(--r-pill);
     background: var(--accent-dim); border: 1px solid var(--accent);
@@ -172,7 +176,6 @@
     letter-spacing: .04em; text-transform: uppercase; pointer-events: none;
   }
   #toolChip .ic { display: flex; color: var(--accent); }
-  #toolChip .sep { opacity: .4; }
 
   /* Anchored above the tool arc rather than centred in the viewport.
      Centring works on a tall phone but collides the moment the viewport
@@ -455,7 +458,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.71</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.72</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -473,10 +476,6 @@
     <div id="selectBox"></div>
     <svg id="lassoSvg"><polyline id="lassoPath" /></svg>
     <div id="thumbZone">
-      <!-- Permanently open now - the hub button switches Object/Component
-           instead of showing or hiding this, so there's nothing left to
-           toggle the 'open' class for. -->
-      <div id="hubArc" class="open"></div>
       <button id="hubBtn" title="Object/Component - tap to switch">✥</button>
     </div>
 
@@ -4106,11 +4105,13 @@ function cycleTransformMode() {
 function refreshToolIndicator() {
   const el = document.getElementById('toolChip');
   if (!el) return;
-  const label = { move: 'Move', rotate: 'Rotate', scale: 'Scale' }[App.transformTool];
   const glyph = { move: 'move', rotate: 'rotate', scale: 'scale' }[App.transformTool];
   const mode = App.transformMode === 'axis' ? 'Axis' : 'Free';
-  el.innerHTML = '<span class="ic">' + icon(glyph, 15) + '</span><span>' +
-                 label + '</span><span class="sep">/</span><span>' + mode + '</span>';
+  // Icon carries the tool - Move/Rotate/Scale is already what the shape
+  // says, so spelling it out too was pure width with nothing behind it.
+  // Dropping it is what let this fit centred under the header instead of
+  // getting relocated a fourth time.
+  el.innerHTML = '<span class="ic">' + icon(glyph, 16) + '</span><span>' + mode + '</span>';
 }
 
 function setTransformTool(tool) {
@@ -6162,14 +6163,12 @@ function icon(name, size) {
 }
 
 const hubBtnEl = document.getElementById('hubBtn');
-const hubArcEl = document.getElementById('hubArc');
 
-// Three tool sets, one per state, swapped automatically rather than chosen
-// by opening/closing anything - the hub button itself is now the Object/
-// Component toggle, so tapping it changes which set applies here rather than
-// showing or hiding the arc. Every action here is the same function a drawer
-// button already calls - none of this is new logic, just a second way to
-// reach it, so there's nothing here that hasn't already been tested.
+// Three tool sets, one per state, read by currentHubTools() and rendered
+// fresh into the press-and-hold ring each time it blooms. Every action here
+// is the same function a drawer button already calls - none of this is new
+// logic, just a second way to reach it, so there's nothing here that hasn't
+// already been tested.
 // Component tools are split by the actual sub-type selected, verified
 // against each function's own mode guard rather than assumed - Extrude and
 // Bridge genuinely work in both Edge and Face mode, but Inset is Face-only,
@@ -6359,90 +6358,17 @@ function closeToolRing(run) {
   orbit.enabled = true;
 }
 
-// Six items on one arc would put 52px targets only ~29px apart, so they're
-// split across two rings. Radii and sweep are chosen so nothing overlaps and
-// nothing falls off a small screen.
-// Radii and sweeps solved so 52px targets keep >=58px clearance and nothing
-// falls off a 360x520 viewport. The outer ring carries five tools, so it needs
-// both a wider sweep and a larger radius than the inner three.
-/* Pushed out from 84/156. The items are 52px circles, but each carries a
-   label as well as an icon, so the thing you actually see is wider than the
-   circle - measuring circle-to-circle said there was 27px of clearance while
-   the nearest tool was visibly sitting on the hub button. */
-const HUB_RINGS = [104, 176];
-const HUB_SWEEPS = [84, 90];
-
-function buildHubArc() {
-  hubArcEl.innerHTML = '';
-  const tools = currentHubTools();
-  tools.forEach(tool => {
-    const inRing = tools.filter(t => t.ring === tool.ring);
-    const i = inRing.indexOf(tool);
-    const f = inRing.length === 1 ? 0 : i / (inRing.length - 1);
-    const angle = (90 - f * HUB_SWEEPS[tool.ring]) * Math.PI / 180;
-    const radius = HUB_RINGS[tool.ring];
-
-    const el = document.createElement('div');
-    el.className = 'hub-item';
-    el.dataset.key = tool.key;
-    el.style.left = Math.cos(angle) * radius + 'px';
-    el.style.bottom = Math.sin(angle) * radius + 'px';
-    el.innerHTML = '<span class="ic"></span><span class="tx"></span>';
-    el.querySelector('.ic').innerHTML = icon(tool.icon, 20);
-    el.querySelector('.tx').textContent = tool.label;
-    el.title = tool.label;
-    el.addEventListener('pointerdown', (ev) => ev.stopPropagation());
-    el.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      tool.run();
-      // The arc no longer opens or closes - it's always here, so a tap just
-      // runs the tool and refreshes which item (if any) reads as active.
-      refreshHub();
-    });
-    hubArcEl.appendChild(el);
-  });
-}
-
-// Rebuilds the arc only when the active tool SET actually changes (object vs
-// component vs nothing selected) - refreshUI() runs constantly, and most of
-// those calls have nothing to do with which set applies, so this guards
-// against rebuilding the arc's DOM on every one of them.
-let _lastHubSetKey = null;
-function hubSetKey() {
-  if (App.mode === 'object') {
-    // 'object-multi' is its own key, not just 'object' - Join only appears
-    // once a second object joins the selection, so crossing that boundary
-    // has to trigger a rebuild too, not just 0-vs-1.
-    if (App.selectedObjectIds.size === 0) return 'empty';
-    return App.selectedObjectIds.size > 1 ? 'object-multi' : 'object';
-  }
-  // Each sub-type is its own key now that they have their own tool sets -
-  // a flat 'component' here meant switching vertex->edge produced no key
-  // change, so the cache guard below skipped the rebuild and the arc kept
-  // showing the previous type's tools until something else forced it.
-  return App.mode;
-}
-function refreshHubToolset() {
-  const key = hubSetKey();
-  if (key === _lastHubSetKey) return;
-  _lastHubSetKey = key;
-  buildHubArc();
-}
-
-function refreshHub() {
-  hubArcEl.querySelectorAll('.hub-item').forEach(el => {
-    el.classList.toggle('active', false);   // no persistent tool state in the arc any more
-  });
-}
+// The old fixed-corner arc, its two-ring geometry, and the cache that
+// decided when to rebuild it are all gone - the press-and-hold ring reads
+// currentHubTools() fresh at the moment it blooms, so there's nothing left
+// that needs tracking between rebuilds.
 
 hubBtnEl.addEventListener('pointerdown', (ev) => ev.stopPropagation());
 hubBtnEl.addEventListener('click', (ev) => {
   ev.stopPropagation();
-  // The hub button is the Object/Component switch now, not an open/close
-  // toggle - the arc is permanently present, and this just changes which of
-  // the three tool sets it's showing.
+  // The hub button is the Object/Component switch - tools live in the
+  // press-and-hold ring now, which doesn't need this tap to refresh it.
   toggleObjComponentMode();
-  refreshHub();
 });
 
 /* ---------------- Drawer ---------------- */
@@ -6554,7 +6480,6 @@ document.getElementById('btnInspector').addEventListener('click', (ev) => {
 
 function refreshUI() {
   refreshObjComponentBtn();
-  refreshHubToolset();
   document.getElementById('btnUndo').disabled = App.historyIndex <= 0;
   document.getElementById('btnRedo').disabled = App.historyIndex >= App.history.length - 1;
 
@@ -6566,7 +6491,6 @@ function refreshUI() {
   refreshInspector();
   updateFrameVisibility();
   App.objects.forEach(o => { o.mesh.castShadow = true; o.mesh.receiveShadow = true; });
-  refreshHub();
   document.querySelectorAll('#symAxisGroup button').forEach(b => b.classList.toggle('active', b.dataset.sym === App.symmetryAxis));
 
   // object list chips
@@ -6963,7 +6887,6 @@ function init() {
   paintStaticIcons();
   refreshToolIndicator();
   applyTheme(App.theme);
-  buildHubArc();
   document.getElementById('btnGrid').classList.toggle('active', grid.visible);
   document.getElementById('btnSmartCam').classList.toggle('active', App.smartCam);
   document.getElementById('btnSnap').classList.toggle('active', App.snap);
