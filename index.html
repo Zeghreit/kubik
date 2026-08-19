@@ -312,6 +312,14 @@
     to { transform: scale(1); opacity: 1; }
   }
 
+  /* Blooms at the finger, not at a fixed hub - so it's anchored via left/top
+     the same zero-size-container trick #hubArc uses, just fed a dynamic
+     point instead of a corner. .hub-item's own display:none default was
+     gated on "#hubArc.open", which this container isn't, so it needs its
+     own unconditional show rule. */
+  #touchToolRing { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 20; }
+  #touchToolRing .hub-item { display: flex; animation: radial-pop .14s ease-out; }
+
   /* The view-cube lives on its own small canvas so it can never disturb the
      main viewport's renderer state. */
   /* Under the view cube: everything you'd otherwise dig into the drawer for
@@ -447,7 +455,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.70</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.71</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -471,6 +479,11 @@
       <div id="hubArc" class="open"></div>
       <button id="hubBtn" title="Object/Component - tap to switch">✥</button>
     </div>
+
+    <!-- A sibling of thumbZone, not a child of it - same reason as quickRow:
+         this needs real viewport coordinates to bloom at an arbitrary touch
+         point, and thumbZone's own corner-anchored box isn't that. -->
+    <div id="touchToolRing"></div>
 
     <!-- A sibling of thumbZone, not a child of it - same reason as quickRow
          below: this needs real viewport coordinates to position itself
@@ -4808,6 +4821,8 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   // that was mid-flight rather than fighting the pinch.
   if (activePointers.size > 1) {
     if (directDrag) { directDrag = null; dragCtx = null; axisGuide.visible = false; }
+    clearToolRingTimer();
+    closeToolRing(false);
     directCandidate = null;
     orbit.enabled = true;
     return;
@@ -4821,6 +4836,15 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   directCandidate = (App.selectDrag === 'off' && pointerOnSelection(ev))
     ? { x: ev.clientX, y: ev.clientY } : null;
 
+  // Holding still on the selection blooms the tool ring at the finger. Real
+  // movement before this fires cancels it in pointermove, the same instant
+  // it promotes the candidate into a drag instead.
+  clearToolRingTimer();
+  if (directCandidate) {
+    const px = ev.clientX, py = ev.clientY;
+    toolRingTimer = setTimeout(() => { toolRingTimer = null; bloomToolRing(px, py); }, TOOL_RING_HOLD_MS);
+  }
+
   if (App.selectDrag !== 'off' && !pointerDown.overGizmo) {
     const rect = viewportEl.getBoundingClientRect();
     const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
@@ -4832,12 +4856,16 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
 renderer.domElement.addEventListener('pointermove', (ev) => {
   trackPointerMove(ev);
   if (activePointers.size > 1) return;   // camera gesture - hands off
+  if (toolRingActive) { updateToolRingHover(ev); return; }
   if (directDrag) { updateDirectDrag(ev); return; }
 
   // A candidate becomes a real drag only once the finger has travelled far
-  // enough that it clearly isn't a tap.
+  // enough that it clearly isn't a tap - which also means it clearly isn't
+  // a hold, so the ring timer is cancelled here rather than left to fire
+  // late over an object that's already being dragged.
   if (directCandidate && !boxDrag) {
     if (Math.hypot(ev.clientX - directCandidate.x, ev.clientY - directCandidate.y) > DIRECT_START_PX) {
+      clearToolRingTimer();
       if (beginDirectDrag(ev)) { updateDirectDrag(ev); return; }
       directCandidate = null;
     }
@@ -4863,6 +4891,21 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
 });
 
 renderer.domElement.addEventListener('pointerup', (ev) => {
+  // Cleared unconditionally, first - a release before the hold threshold
+  // fires must cancel it outright, or a bloom would appear over a finger
+  // that's already lifted.
+  clearToolRingTimer();
+  if (toolRingActive) {
+    // Still has to run - it's what removes this pointer from the tracker.
+    // Skipping it would leak the pointer and corrupt every tap gesture
+    // after this one; its tap/pinch verdict just isn't relevant here.
+    trackPointerUp(ev);
+    closeToolRing(true);
+    pointerDown = null;
+    directCandidate = null;
+    return;
+  }
+
   // Judged on release, since two fingers going down is also how a pinch
   // starts - only a quick, still release could have been a tap.
   const tapped = trackPointerUp(ev);
@@ -6205,6 +6248,117 @@ function currentHubTools() {
   return [];
 }
 
+/* ---------------- Touch tool ring ----------------
+   Press and hold on a selected component, and tools bloom around the finger
+   instead of at a fixed hub - so reaching one is a straight slide, not a
+   reach-somewhere-else-then-tap. Three distinct things a touch on the
+   selection can become, told apart by what actually happens rather than by
+   a mode switch:
+     - lifts quickly, barely moved      -> tap, selects
+     - moves right away                 -> drag, transforms
+     - holds still past the threshold   -> tools bloom, slide to one and lift
+
+   The tool DATA is exactly currentHubTools() - the same array the old fixed
+   arc read from. Only the geometry is new: it centres on wherever the
+   finger landed instead of a corner, so there's no sweep to keep clear of a
+   button and no arbitrary inner/outer split - everything gets one ring,
+   evenly spread through a full circle, unless a set is too big for that. */
+const TOOL_RING_HOLD_MS = 300;
+const TOOL_RING_DEAD_ZONE_PX = 26;   // release this close to centre = cancel
+const TOOL_RING_R1 = 76;
+const TOOL_RING_R2 = 132;            // only used when a set needs a second ring
+
+let toolRingTimer = null;
+let toolRingActive = null;   // { x, y, tools, itemEls, hoveredIndex }
+const touchToolRingEl = document.getElementById('touchToolRing');
+
+function clearToolRingTimer() {
+  if (toolRingTimer) { clearTimeout(toolRingTimer); toolRingTimer = null; }
+}
+
+function bloomToolRing(x, y) {
+  const tools = currentHubTools();
+  if (!tools.length) return;
+
+  const rect = viewportEl.getBoundingClientRect();
+  const maxR = tools.length > 6 ? TOOL_RING_R2 : TOOL_RING_R1;
+  const margin = maxR + 30;
+  const cx = THREE.MathUtils.clamp(x - rect.left, margin, rect.width - margin);
+  const cy = THREE.MathUtils.clamp(y - rect.top, margin, rect.height - margin);
+
+  touchToolRingEl.innerHTML = '';
+  touchToolRingEl.style.left = cx + 'px';
+  touchToolRingEl.style.top = cy + 'px';
+
+  const single = tools.length <= 6;
+  const ring0 = single ? tools : tools.filter(t => t.ring === 0);
+  const ring1 = single ? [] : tools.filter(t => t.ring !== 0);
+  const itemEls = [];
+
+  [ring0, ring1].forEach((group, gi) => {
+    const R = single ? TOOL_RING_R1 : (gi === 0 ? TOOL_RING_R1 - 6 : TOOL_RING_R2);
+    group.forEach((tool, idx) => {
+      // Full circle, not a sweep - there's no corner to stay clear of here,
+      // so every item gets an equal, generous slice.
+      const angle = (90 - (idx / group.length) * 360) * Math.PI / 180;
+      const el = document.createElement('div');
+      el.className = 'hub-item';
+      el.dataset.key = tool.key;
+      el.style.left = Math.cos(angle) * R + 'px';
+      el.style.bottom = Math.sin(angle) * R + 'px';
+      // Icon only - a label at this size is what made items read wider than
+      // they measured and caused the last overlap; the icon set is already
+      // legible on its own since it doubled as the drawer's icons.
+      el.innerHTML = '<span class="ic"></span>';
+      el.querySelector('.ic').innerHTML = icon(tool.icon, 20);
+      el.title = tool.label;
+      itemEls.push({ el, tool, angle });
+      touchToolRingEl.appendChild(el);
+    });
+  });
+
+  toolRingActive = { x: cx, y: cy, tools, itemEls, hoveredIndex: -1 };
+  orbit.enabled = false;
+  directCandidate = null;   // committed to the ring now, not to a drag
+}
+
+function updateToolRingHover(ev) {
+  if (!toolRingActive) return;
+  const rect = viewportEl.getBoundingClientRect();
+  const dx = (ev.clientX - rect.left) - toolRingActive.x;
+  const dy = (ev.clientY - rect.top) - toolRingActive.y;
+  const dist = Math.hypot(dx, dy);
+
+  let hovered = -1;
+  if (dist > TOOL_RING_DEAD_ZONE_PX) {
+    // Screen Y grows downward; the items were placed using -sin for that
+    // same reason, so the pointer angle needs the same flip to match.
+    const ang = Math.atan2(-dy, dx);
+    let best = -1, bestDiff = Infinity;
+    toolRingActive.itemEls.forEach((it, i) => {
+      let diff = Math.abs(ang - it.angle);
+      if (diff > Math.PI) diff = Math.PI * 2 - diff;
+      if (diff < bestDiff) { bestDiff = diff; best = i; }
+    });
+    hovered = best;
+  }
+
+  if (hovered !== toolRingActive.hoveredIndex) {
+    toolRingActive.hoveredIndex = hovered;
+    toolRingActive.itemEls.forEach((it, i) => it.el.classList.toggle('active', i === hovered));
+  }
+}
+
+function closeToolRing(run) {
+  if (!toolRingActive) return;
+  if (run && toolRingActive.hoveredIndex >= 0) {
+    toolRingActive.itemEls[toolRingActive.hoveredIndex].tool.run();
+  }
+  touchToolRingEl.innerHTML = '';
+  toolRingActive = null;
+  orbit.enabled = true;
+}
+
 // Six items on one arc would put 52px targets only ~29px apart, so they're
 // split across two rings. Radii and sweep are chosen so nothing overlaps and
 // nothing falls off a small screen.
@@ -6698,6 +6852,11 @@ window.addEventListener('resize', onResize);
   renderer.domElement.addEventListener(name, (ev) => {
     activePointers.delete(ev.pointerId);
     if (activePointers.size === 0) { tapArmed = false; tapPeakCount = 0; }
+    // A lost pointer mid-hold must not leave a bloom stuck open with no
+    // finger left to slide it or lift it.
+    clearToolRingTimer();
+    closeToolRing(false);
+    directCandidate = null;
   });
 });
 
