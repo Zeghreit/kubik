@@ -138,6 +138,21 @@
      position, but with the gizmo gone there's nothing to follow - and a
      control that stays put is easier to reach for anyway. Vertically centred
      so it's within a thumb's arc without crowding the hub below it. */
+  /* Which transform a drag will perform, and in which mode. Sits with the
+     other persistent readouts rather than in the thumb's way - something to
+     glance at, not to press. Its CSS was lost when the gizmo was stripped,
+     so the chip was rendering unstyled. */
+  #toolChip {
+    position: absolute; left: 50%; transform: translateX(-50%); bottom: 12px; z-index: 13;
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 11px; border-radius: 999px;
+    background: rgb(var(--hint-bg) / .8); border: 1px solid var(--line);
+    color: var(--text-dim); font-size: 11px; font-weight: 600;
+    letter-spacing: .04em; text-transform: uppercase; pointer-events: none;
+  }
+  #toolChip .ic { display: flex; color: var(--accent); }
+  #toolChip .sep { opacity: .4; }
+
   #selGestureRow {
     position: absolute; left: calc(10px + env(safe-area-inset-left));
     top: 50%; transform: translateY(-50%);
@@ -395,7 +410,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.64</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.65</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -407,7 +422,7 @@
     <button id="btnGrid" title="Show or hide the floor grid"></button>
     <button id="btnSmartCam" title="Drift to a useful angle after selecting"></button>
     <button id="btnSnap" title="Snap moves to a grid and rotations to fixed angles"></button>
-    <div id="toolChip" title="Two-finger tap on empty space to switch"></div>
+    <div id="toolChip" title="Two fingers switch tool, three switch mode"></div>
     <button id="btnShade" title="Shade smooth / flat - applies to the whole object or the current selection"></button>
     <div id="vignette"></div>
     <div id="selectBox"></div>
@@ -724,6 +739,7 @@ const App = {
   mode: 'object',        // object | vertex | edge | face
   multiSelect: true,  // permanently on: every tap adds, tap empty space to clear
   transformTool: 'move',   // move | rotate | scale - cycled by two-finger tap
+  transformMode: 'free',   // free | axis - switched by three-finger tap
   lastComponentMode: 'face', // resumed when the Object/Component toggle re-enters Component mode
   selectDrag: 'off',   // 'off' | 'box' | 'lasso'
   snap: false,
@@ -4004,14 +4020,14 @@ function angleAroundAxis(ev, origin, dir) {
 
 const DIRECT_START_PX = 6;     // movement before a touch counts as a drag
 const DIRECT_DECIDE_PX = 15;   // ... and before the axis question is settled
-/* 12 degrees, not 20. At 20 the three cones cover 68% of every possible
-   drag direction, so free movement becomes the hard thing to reach - you'd
-   keep snapping to axes you never asked for. At 12 it's 42% axis, 58% free:
-   free is the default you fall into, and an axis is something you aim for.
-   Release is wider than catch so a locked axis holds through a wobbly thumb
-   instead of flickering in and out. */
-const AXIS_CATCH_DEG = 12;
-const AXIS_RELEASE_DEG = 23;
+/* No catch cone any more. It only existed because free and axis movement
+   shared one gesture, so a threshold had to tell them apart - and that
+   threshold was the source of most of the strangeness: a curving drag could
+   silently change axis halfway through.
+
+   With free and axis as separate modes, axis mode simply takes whichever
+   projected axis the drag started along, and holds it until the finger
+   lifts. Nothing to catch, nothing to release, nothing to re-decide. */
 
 let directCandidate = null;    // a touch that might become a drag
 let directDrag = null;
@@ -4030,14 +4046,29 @@ const TWO_TAP_MAX_MS = 260;    // longer than this and it was a hold
 const TWO_TAP_MAX_PX = 14;     // further than this and it was a pinch
 
 const activePointers = new Map();   // pointerId -> { x, y, t, moved }
-let twoTapArmed = false;            // a two-finger gesture that still might be a tap
+// How many fingers went down together, and whether they've all stayed still
+// enough to still count as a tap. Recorded at peak because fingers lift one
+// at a time, and the count has already dropped by the time we judge it.
+let tapPeakCount = 0;
+let tapArmed = false;
+
+function setTransformMode(mode) {
+  App.transformMode = mode;
+  refreshToolIndicator();
+  toast(mode === 'axis' ? 'Axis' : 'Free');
+}
+function cycleTransformMode() {
+  setTransformMode(App.transformMode === 'free' ? 'axis' : 'free');
+}
 
 function refreshToolIndicator() {
   const el = document.getElementById('toolChip');
   if (!el) return;
   const label = { move: 'Move', rotate: 'Rotate', scale: 'Scale' }[App.transformTool];
   const glyph = { move: 'move', rotate: 'rotate', scale: 'scale' }[App.transformTool];
-  el.innerHTML = '<span class="ic">' + icon(glyph, 15) + '</span><span>' + label + '</span>';
+  const mode = App.transformMode === 'axis' ? 'Axis' : 'Free';
+  el.innerHTML = '<span class="ic">' + icon(glyph, 15) + '</span><span>' +
+                 label + '</span><span class="sep">/</span><span>' + mode + '</span>';
 }
 
 function setTransformTool(tool) {
@@ -4055,35 +4086,39 @@ function cycleTransformTool() {
 
 function trackPointerDown(ev) {
   activePointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY, t: performance.now(), moved: 0 });
-  // Two down at once, neither having travelled yet: this could still be a tap.
-  if (activePointers.size === 2) twoTapArmed = true;
-  else if (activePointers.size > 2) twoTapArmed = false;
+  const n = activePointers.size;
+  if (n >= 2) { tapPeakCount = Math.max(tapPeakCount, n); tapArmed = true; }
+  else { tapPeakCount = n; tapArmed = false; }
 }
 
 function trackPointerMove(ev) {
   const p = activePointers.get(ev.pointerId);
   if (!p) return;
   p.moved = Math.max(p.moved, Math.hypot(ev.clientX - p.x, ev.clientY - p.y));
-  // Any real travel means the user is pinching or orbiting, not tapping.
-  if (p.moved > TWO_TAP_MAX_PX) twoTapArmed = false;
+  // Any real travel means this is a pinch or an orbit, not a tap.
+  if (p.moved > TWO_TAP_MAX_PX) tapArmed = false;
 }
 
-// Returns true if this release completed a clean two-finger tap.
+/* Returns how many fingers completed a clean tap, or 0. Judged on the first
+   release, since that's the only moment the peak count is still known and
+   the timing is still tight - by the last finger up, the gesture could have
+   been anything. */
 function trackPointerUp(ev) {
   const p = activePointers.get(ev.pointerId);
   activePointers.delete(ev.pointerId);
-  if (!p) return false;
+  if (!p) { if (!activePointers.size) { tapArmed = false; tapPeakCount = 0; } return 0; }
 
   const quick = performance.now() - p.t <= TWO_TAP_MAX_MS;
   const still = p.moved <= TWO_TAP_MAX_PX;
-  // Fires on the first of the two fingers to lift, then disarms so the
-  // second release doesn't cycle the tool a second time.
-  if (twoTapArmed && quick && still && activePointers.size === 1) {
-    twoTapArmed = false;
-    return true;
+  const firstUp = activePointers.size === tapPeakCount - 1;
+
+  if (tapArmed && quick && still && firstUp) {
+    const n = tapPeakCount;
+    tapArmed = false;          // the remaining releases must not fire again
+    return n;
   }
-  if (activePointers.size === 0) twoTapArmed = false;
-  return false;
+  if (activePointers.size === 0) { tapArmed = false; tapPeakCount = 0; }
+  return 0;
 }
 
 // One reusable guide line, drawn only while an axis is locked.
@@ -4162,16 +4197,23 @@ function beginDirectDrag(ev) {
   return true;
 }
 
-// Compares the drag's screen direction against each axis and locks on if one
-// is close enough. Hysteresis keeps a locked axis from flickering: it takes a
-// wider stray to let go than it took to catch.
+/* Decides the axis exactly once, on the first real movement, and never
+   revisits it. Holding the choice until the finger lifts is the whole point:
+   re-deciding mid-drag is what made a curving gesture wander between axes.
+
+   The axes are compared as they currently PROJECT ON SCREEN, measured from
+   the selection's own position, so the gesture always follows the axis you
+   can actually see rather than some fixed screen direction. Turn the camera
+   and the same axis is still reached by dragging along how it now looks. */
 function resolveDirectAxis(ev) {
   const d = directDrag;
+  if (d.decided) return;                    // committed - never reconsider
+  if (App.transformMode !== 'axis') { d.decided = true; return; }
+
   const rect = viewportEl.getBoundingClientRect();
   const dx = (ev.clientX - rect.left) - d.startX;
   const dy = (ev.clientY - rect.top) - d.startY;
-  const travel = Math.hypot(dx, dy);
-  if (travel < DIRECT_DECIDE_PX) return;
+  if (Math.hypot(dx, dy) < DIRECT_DECIDE_PX) return;   // not enough to read yet
 
   const dragDir = new THREE.Vector2(dx, dy).normalize();
   let best = null, bestDeg = 1e9;
@@ -4184,23 +4226,13 @@ function resolveDirectAxis(ev) {
   });
   if (!best) return;
 
-  const limit = d.axis ? AXIS_RELEASE_DEG : AXIS_CATCH_DEG;
-  const want = bestDeg <= limit ? best : null;
-  if (want && (!d.axis || d.axis.key !== want.key)) {
-    d.axis = want;
-    // Re-anchor at the moment of locking, for whichever tool is active -
-    // otherwise the first frame after a lock jumps by however far the drag
-    // had already travelled.
-    d.startParam = axisParamFromPointer(ev, d.origin, want.dir) ?? 0;
-    d.startAngle = angleAroundAxis(ev, d.origin, want.dir) ?? 0;
-    d.paramBase = d.startParam;
-  } else if (!want && d.axis) {
-    d.axis = null;
-    // Re-anchor the free plane so releasing an axis doesn't jump the selection.
-    const hit = new THREE.Vector3();
-    raycaster.setFromCamera(ndcFromEvent(ev), camera);
-    if (raycaster.ray.intersectPlane(d.plane, hit)) d.startHit.copy(hit).sub(d.accum || new THREE.Vector3());
-  }
+  d.axis = best;
+  // Anchor at the moment of committing, so the first frame after doesn't
+  // jump by however far the drag had already travelled.
+  d.startParam = axisParamFromPointer(ev, d.origin, best.dir) ?? 0;
+  d.startAngle = angleAroundAxis(ev, d.origin, best.dir) ?? 0;
+  d.startX = (ev.clientX - rect.left);
+  d.startY = (ev.clientY - rect.top);
   d.decided = true;
 }
 
@@ -4216,11 +4248,10 @@ function updateDirectDrag(ev) {
   const px = (ev.clientX - rect.left) - d.startX;
   const py = (ev.clientY - rect.top) - d.startY;
 
-  /* One gesture, three meanings. Move slides along the axis or the camera
-     plane; rotate turns about the axis, or about the camera's own view
-     direction when free; scale stretches one axis, or all three at once.
-     The axis question is answered the same way in every case, so the feel
-     carries across all three tools. */
+  /* One gesture, three meanings, in either of two modes. Free mode works
+     across the camera plane and never touches an axis; axis mode commits to
+     one at the start of the drag and holds it. d.axis is only ever set in
+     axis mode, so each branch below reads it to know which it's in. */
   if (App.transformTool === 'move') {
     let offset = new THREE.Vector3();
     if (d.axis) {
@@ -4733,7 +4764,9 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
 renderer.domElement.addEventListener('pointerup', (ev) => {
   // Judged on release, since two fingers going down is also how a pinch
   // starts - only a quick, still release could have been a tap.
-  if (trackPointerUp(ev)) { cycleTransformTool(); pointerDown = null; return; }
+  const tapped = trackPointerUp(ev);
+  if (tapped === 2) { cycleTransformTool(); pointerDown = null; return; }
+  if (tapped >= 3) { cycleTransformMode(); pointerDown = null; return; }
   // pointerDown is cleared so the release doesn't also register as a tap and
   // change the selection out from under the move that just happened.
   if (directDrag) { endDirectDrag(); pointerDown = null; return; }
@@ -6559,7 +6592,7 @@ window.addEventListener('resize', onResize);
 ['pointercancel', 'pointerleave'].forEach(name => {
   renderer.domElement.addEventListener(name, (ev) => {
     activePointers.delete(ev.pointerId);
-    if (activePointers.size === 0) twoTapArmed = false;
+    if (activePointers.size === 0) { tapArmed = false; tapPeakCount = 0; }
   });
 });
 
