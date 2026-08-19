@@ -395,7 +395,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.63</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.64</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -4104,8 +4104,19 @@ function pointerOnSelection(ev) {
     const hit = pickObjectAt(ev);
     return !!(hit && App.selectedObjectIds.has(hit.id));
   }
-  const pick = pickComponentOnActive(ev);
-  return !!(pick && pick.type === App.mode && App.selectedElements.has(pick.index));
+  /* Ask for the current mode's type directly rather than going through the
+     vertex-then-edge-then-face picker. That picker exists to decide what a
+     tap SELECTS, where the priority order is what you want - but here we
+     already know what's selected. Using it meant that touching a selected
+     face anywhere near one of its edges returned the edge, which didn't
+     match the mode, and the grab was silently refused. That was the
+     "sometimes it won't pick things up" problem: it happened wherever a
+     face's own border ran, which is a lot of the face. */
+  let idx = -1;
+  if (App.mode === 'vertex') idx = pickVertexOnActive(ev);
+  else if (App.mode === 'edge') idx = pickEdgeOnActive(ev);
+  else if (App.mode === 'face') idx = pickFaceOnActive(ev);
+  return idx >= 0 && App.selectedElements.has(idx);
 }
 
 // Where an axis points on screen, as a unit 2D direction from the pivot.
@@ -4240,11 +4251,27 @@ function updateDirectDrag(ev) {
       axis = d.axis.dir.clone();
       ang = (a - d.startAngle) * THREE.MathUtils.clamp(ROTATE_BASE * s, 0.02, 1);
     } else {
-      // Free rotation spins about the way the camera is looking, so a
-      // sideways drag turns the selection the way it looks like it should.
-      axis = new THREE.Vector3();
-      camera.getWorldDirection(axis);
-      ang = (px / 160) * THREE.MathUtils.clamp(ROTATE_BASE * s * 4, 0.02, 2);
+      /* Free rotation used to read only horizontal movement and always spin
+         about the camera's view direction - so a vertical drag did nothing
+         at all, and a diagonal one felt like it was ignoring half the
+         gesture. That was the "rotation acts wrong" problem.
+
+         Now the drag direction picks the axis: dragging sideways tumbles the
+         selection about the screen's vertical, dragging up and down tumbles
+         it about the screen's horizontal. That's how spinning an object in
+         your hand works, and it means every direction of drag does
+         something. */
+      const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+      const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1).normalize();
+      const travel = Math.hypot(px, py);
+      if (travel < 0.5) return;
+      // Screen-Y grows downward, so dragging down should tip the near face
+      // toward you - hence the sign on the horizontal-axis term.
+      axis = new THREE.Vector3()
+        .addScaledVector(up, px / travel)
+        .addScaledVector(right, py / travel);
+      if (axis.lengthSq() < 1e-9) return;
+      ang = (travel / 150) * THREE.MathUtils.clamp(ROTATE_BASE * s * 4, 0.02, 2);
     }
     if (App.snap) ang = Math.round(ang / SNAP_ROTATE) * SNAP_ROTATE;
     const local = new THREE.Matrix4().makeRotationAxis(axis.normalize(), ang);
@@ -4254,9 +4281,18 @@ function updateDirectDrag(ev) {
     // Scale: drag away from the pivot to grow, toward it to shrink.
     let f;
     if (d.axis) {
-      const t = axisParamFromPointer(ev, d.origin, d.axis.dir);
-      if (t === null) return;
-      f = 1 + ((t - d.startParam) / Math.max(0.35, d.refLen)) * THREE.MathUtils.clamp(SCALE_BASE * s, 0.02, 1);
+      /* Scale along the axis is driven by how far the pointer travels on
+         SCREEN, not by its position along the world axis. The world-axis
+         reading blows up when the axis points nearly at the camera - a tiny
+         thumb movement then maps to an enormous distance, which is what made
+         axis scaling feel wild and unpredictable at certain angles.
+
+         Screen travel is stable from every viewpoint. It's projected onto
+         the axis's own screen direction so pulling along the axis grows and
+         pushing back shrinks, which is what the gesture implies. */
+      const sd = axisScreenDir(d.origin, d.axis.dir);
+      const along = sd ? (px * sd.x + py * sd.y) : (px - py);
+      f = 1 + (along / 180) * THREE.MathUtils.clamp(SCALE_BASE * s * 3, 0.02, 2);
     } else {
       f = 1 + (-py / 200) * THREE.MathUtils.clamp(SCALE_BASE * s * 3, 0.02, 2);
     }
