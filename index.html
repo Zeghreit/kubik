@@ -511,7 +511,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.75</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.76</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -6357,12 +6357,18 @@ function currentHubTools() {
    The tool DATA is exactly currentHubTools() - the same array the old fixed
    arc read from. Only the geometry is new: it centres on wherever the
    finger landed instead of a corner, so there's no sweep to keep clear of a
-   button and no arbitrary inner/outer split - everything gets one ring,
-   evenly spread through a full circle, unless a set is too big for that. */
+   button. Always one ring, never two - a two-ring fallback for large sets
+   used to exist here, but the touch-tracking below can only tell which
+   ITEM is nearest by direction, not which ring, so an inner item would win
+   even when a finger was clearly out at the outer radius. The outer ring
+   was effectively unreachable. One ring removes the ambiguity outright
+   instead of trying to detect it - the ring just grows to fit however many
+   tools are in it. */
 const TOOL_RING_HOLD_MS = 300;
 const TOOL_RING_DEAD_ZONE_PX = 26;   // release this close to centre = cancel
-const TOOL_RING_R1 = 76;
-const TOOL_RING_R2 = 132;            // only used when a set needs a second ring
+const TOOL_RING_ITEM = 52;           // width of a single tool icon
+const TOOL_RING_GAP = 40;            // minimum clear space between icons
+const TOOL_RING_MIN_R = 80;          // floor, so small sets don't crowd the finger
 
 let toolRingTimer = null;
 let toolRingActive = null;   // { x, y, tools, itemEls, hoveredIndex }
@@ -6376,9 +6382,18 @@ function bloomToolRing(x, y) {
   const tools = currentHubTools();
   if (!tools.length) return;
 
+  // Ring radius scales with item count rather than staying fixed - a 3-tool
+  // set (Vertex) stays close and quick to reach, a 9-tool set (Edge, now
+  // that Shade lives there too) spreads out enough to keep real spacing.
+  // Every set lands at roughly the same gap between icons regardless of
+  // how many there are.
+  const R = Math.max(
+    TOOL_RING_MIN_R,
+    (TOOL_RING_ITEM + TOOL_RING_GAP) / (2 * Math.sin(Math.PI / tools.length))
+  );
+
   const rect = viewportEl.getBoundingClientRect();
-  const maxR = tools.length > 6 ? TOOL_RING_R2 : TOOL_RING_R1;
-  const margin = maxR + 30;
+  const margin = R + 30;
   const cx = THREE.MathUtils.clamp(x - rect.left, margin, rect.width - margin);
   const cy = THREE.MathUtils.clamp(y - rect.top, margin, rect.height - margin);
 
@@ -6386,36 +6401,29 @@ function bloomToolRing(x, y) {
   touchToolRingEl.style.left = cx + 'px';
   touchToolRingEl.style.top = cy + 'px';
 
-  const single = tools.length <= 6;
-  const ring0 = single ? tools : tools.filter(t => t.ring === 0);
-  const ring1 = single ? [] : tools.filter(t => t.ring !== 0);
   const itemEls = [];
-
-  [ring0, ring1].forEach((group, gi) => {
-    const R = single ? TOOL_RING_R1 : (gi === 0 ? TOOL_RING_R1 - 6 : TOOL_RING_R2);
-    group.forEach((tool, idx) => {
-      // Full circle, not a sweep - there's no corner to stay clear of here,
-      // so every item gets an equal, generous slice.
-      const angle = (90 - (idx / group.length) * 360) * Math.PI / 180;
-      const el = document.createElement('div');
-      el.className = 'hub-item';
-      el.dataset.key = tool.key;
-      el.style.left = Math.cos(angle) * R + 'px';
-      el.style.bottom = Math.sin(angle) * R + 'px';
-      // Icon only - a label at this size is what made items read wider than
-      // they measured and caused the last overlap; the icon set is already
-      // legible on its own since it doubled as the drawer's icons.
-      el.innerHTML = '<span class="ic"></span>';
-      // Shade's icon reflects current App.shadeSmooth rather than staying
-      // fixed, the same way the old corner button showed which state a tap
-      // would leave you in - so its icon is a function, evaluated fresh
-      // every time the ring blooms rather than a static name like the rest.
-      const iconName = typeof tool.icon === 'function' ? tool.icon() : tool.icon;
-      el.querySelector('.ic').innerHTML = icon(iconName, 20);
-      el.title = tool.label;
-      itemEls.push({ el, tool, angle });
-      touchToolRingEl.appendChild(el);
-    });
+  tools.forEach((tool, idx) => {
+    // Full circle, not a sweep - there's no corner to stay clear of here,
+    // so every item gets an equal, generous slice.
+    const angle = (90 - (idx / tools.length) * 360) * Math.PI / 180;
+    const el = document.createElement('div');
+    el.className = 'hub-item';
+    el.dataset.key = tool.key;
+    el.style.left = Math.cos(angle) * R + 'px';
+    el.style.bottom = Math.sin(angle) * R + 'px';
+    // Icon only - a label at this size is what made items read wider than
+    // they measured and caused an earlier overlap; the icon set is already
+    // legible on its own since it doubled as the drawer's icons.
+    el.innerHTML = '<span class="ic"></span>';
+    // Shade's icon reflects current App.shadeSmooth rather than staying
+    // fixed, the same way the old corner button showed which state a tap
+    // would leave you in - so its icon is a function, evaluated fresh
+    // every time the ring blooms rather than a static name like the rest.
+    const iconName = typeof tool.icon === 'function' ? tool.icon() : tool.icon;
+    el.querySelector('.ic').innerHTML = icon(iconName, 20);
+    el.title = tool.label;
+    itemEls.push({ el, tool, angle });
+    touchToolRingEl.appendChild(el);
   });
 
   toolRingActive = { x: cx, y: cy, tools, itemEls, hoveredIndex: -1 };
