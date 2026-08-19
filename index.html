@@ -410,7 +410,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.65</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.66</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -3986,19 +3986,6 @@ function axisParamFromPointer(ev, origin, dir) {
   return (b * e - c * d) / denom;
 }
 
-// Angle of the pointer around an axis, measured in the plane through the pivot.
-function angleAroundAxis(ev, origin, dir) {
-  const ndc = ndcFromEvent(ev);
-  raycaster.setFromCamera(ndc, camera);
-  const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(dir, origin);
-  const hit = new THREE.Vector3();
-  if (!raycaster.ray.intersectPlane(plane, hit)) return null;
-  const ref = Math.abs(dir.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
-  const u = new THREE.Vector3().crossVectors(ref, dir).normalize();
-  const v = new THREE.Vector3().crossVectors(dir, u).normalize();
-  const rel = new THREE.Vector3().subVectors(hit, origin);
-  return Math.atan2(rel.dot(v), rel.dot(u));
-}
 
 
 
@@ -4187,10 +4174,8 @@ function beginDirectDrag(ev) {
     startY: ev.clientY - rect.top,
     axis: null,          // null = free across the camera plane
     startParam: 0,
-    startAngle: 0,
-    // Scale needs a reference length so the factor is relative to the
-    // selection's own size rather than to world units.
-    refLen: Math.max(0.35, selectionRadius() || 0.5),
+    prevScreenAngle: undefined,   // screen-angle tracking for axis rotation
+    totalAngle: 0,
     decided: false
   };
   orbit.enabled = false;
@@ -4230,9 +4215,12 @@ function resolveDirectAxis(ev) {
   // Anchor at the moment of committing, so the first frame after doesn't
   // jump by however far the drag had already travelled.
   d.startParam = axisParamFromPointer(ev, d.origin, best.dir) ?? 0;
-  d.startAngle = angleAroundAxis(ev, d.origin, best.dir) ?? 0;
   d.startX = (ev.clientX - rect.left);
   d.startY = (ev.clientY - rect.top);
+  // Screen-angle tracking starts fresh from here, or the first frame after
+  // committing would count everything swept before the axis was known.
+  d.prevScreenAngle = undefined;
+  d.totalAngle = 0;
   d.decided = true;
 }
 
@@ -4275,60 +4263,91 @@ function updateDirectDrag(ev) {
     applyDeltaToSelection(new THREE.Matrix4().makeTranslation(offset.x, offset.y, offset.z));
 
   } else if (App.transformTool === 'rotate') {
-    let axis, ang;
+    let local;
     if (d.axis) {
-      const a = angleAroundAxis(ev, d.origin, d.axis.dir);
-      if (a === null) return;
-      axis = d.axis.dir.clone();
-      ang = (a - d.startAngle) * THREE.MathUtils.clamp(ROTATE_BASE * s, 0.02, 1);
-    } else {
-      /* Free rotation used to read only horizontal movement and always spin
-         about the camera's view direction - so a vertical drag did nothing
-         at all, and a diagonal one felt like it was ignoring half the
-         gesture. That was the "rotation acts wrong" problem.
+      /* Rotation about a chosen axis is measured as a SCREEN angle around
+         the pivot - where your thumb sits on the dial, not where a ray hits
+         a plane in the scene. The old ray-plane reading became violently
+         unstable whenever the axis turned edge-on to the camera, because the
+         plane was then nearly parallel to the view and a pixel of thumb
+         movement swept an enormous arc. Screen angle behaves identically
+         from every viewpoint.
 
-         Now the drag direction picks the axis: dragging sideways tumbles the
-         selection about the screen's vertical, dragging up and down tumbles
-         it about the screen's horizontal. That's how spinning an object in
-         your hand works, and it means every direction of drag does
-         something. */
+         It's also 1:1 now. It was damped to about a fifth, so a full sweep
+         of the thumb produced barely 60 degrees - that was the "struggling
+         to rotate" feeling. Turning a dial should turn it by as much as you
+         turned your hand. */
+      const pc = worldToScreen(d.origin);
+      if (!pc) return;
+      const cur = Math.atan2((ev.clientY - rect.top) - pc.y, (ev.clientX - rect.left) - pc.x);
+      if (d.prevScreenAngle === undefined) { d.prevScreenAngle = cur; d.totalAngle = 0; }
+      // Unwrap, so sweeping past the 180-degree seam doesn't jump a full turn.
+      let step = cur - d.prevScreenAngle;
+      if (step > Math.PI) step -= Math.PI * 2;
+      if (step < -Math.PI) step += Math.PI * 2;
+      d.prevScreenAngle = cur;
+      d.totalAngle += step;
+
+      // An axis pointing away from the viewer turns the opposite way on
+      // screen from one pointing toward them.
+      const camDir = new THREE.Vector3();
+      camera.getWorldDirection(camDir);
+      const sign = d.axis.dir.dot(camDir) >= 0 ? 1 : -1;
+
+      let ang = d.totalAngle * sign * THREE.MathUtils.clamp(s * 1.4, 0.3, 2);
+      if (App.snap) ang = Math.round(ang / SNAP_ROTATE) * SNAP_ROTATE;
+      local = new THREE.Matrix4().makeRotationAxis(d.axis.dir.clone().normalize(), ang);
+
+    } else {
+      /* Free rotation is a two-axis tumble measured from where the drag
+         STARTED. Recomputing the axis from the instantaneous drag direction
+         each frame was what made it chaotic: as the thumb curved, the axis
+         swung with it and the selection lurched about. Sideways and vertical
+         travel now drive two fixed screen axes independently, and the two
+         rotations compose - which is how turning something in your hand
+         actually works. */
       const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0).normalize();
       const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1).normalize();
-      const travel = Math.hypot(px, py);
-      if (travel < 0.5) return;
-      // Screen-Y grows downward, so dragging down should tip the near face
-      // toward you - hence the sign on the horizontal-axis term.
-      axis = new THREE.Vector3()
-        .addScaledVector(up, px / travel)
-        .addScaledVector(right, py / travel);
-      if (axis.lengthSq() < 1e-9) return;
-      ang = (travel / 150) * THREE.MathUtils.clamp(ROTATE_BASE * s * 4, 0.02, 2);
+      const k = 0.008 * THREE.MathUtils.clamp(s * 1.4, 0.3, 2);
+      let ax = px * k, ay = py * k;
+      if (App.snap) {
+        ax = Math.round(ax / SNAP_ROTATE) * SNAP_ROTATE;
+        ay = Math.round(ay / SNAP_ROTATE) * SNAP_ROTATE;
+      }
+      const q = new THREE.Quaternion()
+        .setFromAxisAngle(up, ax)
+        .multiply(new THREE.Quaternion().setFromAxisAngle(right, ay));
+      local = new THREE.Matrix4().makeRotationFromQuaternion(q);
     }
-    if (App.snap) ang = Math.round(ang / SNAP_ROTATE) * SNAP_ROTATE;
-    const local = new THREE.Matrix4().makeRotationAxis(axis.normalize(), ang);
     applyDeltaToSelection(new THREE.Matrix4().multiplyMatrices(T, new THREE.Matrix4().multiplyMatrices(local, Tinv)));
 
   } else {
-    // Scale: drag away from the pivot to grow, toward it to shrink.
+    /* Scale grows and shrinks by the same proportion for the same travel,
+       in both directions, and can never reach zero or flip.
+
+       The old form was f = 1 + travel*k, floored with Math.abs(). Dragging
+       far enough inward drove f negative, and the abs() then turned it
+       positive again - so pulling further made the selection start GROWING.
+       That was the chaos. An exponential can't do that: halving and
+       doubling are the same distance apart, and it approaches zero without
+       ever arriving. */
     let f;
     if (d.axis) {
-      /* Scale along the axis is driven by how far the pointer travels on
-         SCREEN, not by its position along the world axis. The world-axis
-         reading blows up when the axis points nearly at the camera - a tiny
-         thumb movement then maps to an enormous distance, which is what made
-         axis scaling feel wild and unpredictable at certain angles.
-
-         Screen travel is stable from every viewpoint. It's projected onto
-         the axis's own screen direction so pulling along the axis grows and
-         pushing back shrinks, which is what the gesture implies. */
       const sd = axisScreenDir(d.origin, d.axis.dir);
       const along = sd ? (px * sd.x + py * sd.y) : (px - py);
-      f = 1 + (along / 180) * THREE.MathUtils.clamp(SCALE_BASE * s * 3, 0.02, 2);
+      f = Math.exp((along / 260) * THREE.MathUtils.clamp(s * 1.6, 0.3, 3));
     } else {
-      f = 1 + (-py / 200) * THREE.MathUtils.clamp(SCALE_BASE * s * 3, 0.02, 2);
+      /* Uniform scale follows how far the thumb is from the pivot compared
+         with where it started - the one-finger equivalent of a pinch, and
+         far more natural than reading vertical travel alone. */
+      const pc = worldToScreen(d.origin);
+      if (!pc) return;
+      const startR = Math.max(30, Math.hypot(d.startX - pc.x, d.startY - pc.y));
+      const curR = Math.max(1, Math.hypot((ev.clientX - rect.left) - pc.x, (ev.clientY - rect.top) - pc.y));
+      f = Math.pow(curR / startR, THREE.MathUtils.clamp(s * 1.4, 0.3, 2));
     }
     if (App.snap) f = Math.round(f / SNAP_SCALE) * SNAP_SCALE;
-    f = Math.max(MIN_SCALE_FACTOR, Math.abs(f));   // never cross zero and invert
+    f = Math.max(MIN_SCALE_FACTOR, f);   // floor without abs, so it can't rebound
     const v = d.axis
       ? new THREE.Vector3(d.axis.dir.x ? f : 1, d.axis.dir.y ? f : 1, d.axis.dir.z ? f : 1)
       : new THREE.Vector3(f, f, f);
