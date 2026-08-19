@@ -161,20 +161,18 @@
      telling you what a drag will do, and everything now depends on that -
      so it needs to be visible without being in the thumb's way.
 
-     Same top offset and height as quickRow, with its own content vertically
-     centred by flexbox - that's what actually lines its centre up with
-     undo/redo's centre, rather than guessing a pixel offset that would only
-     be right for one exact font rendering. */
+     Plain text now, no background - a pill drawing the eye toward itself is
+     the wrong instinct for something that should read at a glance and then
+     get out of the way. Still lines up with undo/redo's centre via the
+     same top offset and height, content centred by flexbox. */
   #toolChip {
     position: absolute; left: 50%; transform: translateX(-50%);
     top: var(--edge); height: 44px; z-index: 13;
-    display: flex; align-items: center; gap: 6px;
-    padding: 0 12px; border-radius: var(--r-pill);
-    background: var(--accent-dim); border: 1px solid var(--accent);
-    color: var(--text); font-size: 11px; font-weight: 600;
-    letter-spacing: .04em; text-transform: uppercase; pointer-events: none;
+    display: flex; align-items: center;
+    color: var(--text); font-size: 13px; font-weight: 600;
+    letter-spacing: .01em; pointer-events: none;
   }
-  #toolChip .ic { display: flex; color: var(--accent); }
+  #toolChip .mode { color: var(--text-dim); font-weight: 500; margin-left: 5px; }
 
   /* Anchored above the tool arc rather than centred in the viewport.
      Centring works on a tall phone but collides the moment the viewport
@@ -279,12 +277,16 @@
   #viewport canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 
   #status {
-    /* A normal flex child of #topBar now, not pulled out with absolute
-       positioning - that's what had it floating lower than the title
-       instead of sitting level with it. */
-    font-size: 11px; color: var(--text-dim);
+    /* Sits above the hub rather than in the top bar - "editing: Cube 2" is
+       about what your thumb is currently working on, so it belongs near
+       the thumb's own corner, not up with the page title. Same --edge-l/
+       --edge-b tokens hubBtn already positions itself with successfully,
+       stacked one hub-height plus a gap above it. */
+    position: absolute; left: var(--edge-l);
+    bottom: calc(var(--edge-b) + 62px + var(--gap)); z-index: 13;
+    font-size: 11px; color: var(--text-dim); text-align: left;
     background: rgb(var(--hint-bg) / .82); padding: 6px 10px; border-radius: var(--r-sm);
-    text-align: right; line-height: 1.5; flex-shrink: 0;
+    line-height: 1.5; pointer-events: none; max-width: 60vw;
   }
 
   input[type=color] {
@@ -327,18 +329,31 @@
   /* Under the view cube: everything you'd otherwise dig into the drawer for
      mid-model. Assisting-finger territory, not thumb territory, so these are
      settings you glance at and tap - not the primary action loop. */
-  #btnSymmetry, #btnGrid, #btnSmartCam, #btnSnap, #btnShade {
+  #btnXray, #btnGrid, #btnSmartCam, #btnSnap {
     position: absolute; right: var(--edge-r); z-index: 13;
     width: 42px; min-height: 42px; padding: 0; border-radius: var(--r-md);
     background: var(--panel2); border: 1px solid var(--line);
     line-height: 1; justify-content: center;
   }
-  #btnSymmetry { top: 106px; }
+  #btnXray { top: 106px; }
   #btnGrid { top: 154px; }
   #btnSmartCam { top: 202px; }
   #btnSnap { top: 250px; }
-  #btnShade { top: 298px; }
-  #btnSymmetry.active, #btnGrid.active, #btnSmartCam.active, #btnSnap.active, #btnShade.active {
+  #btnXray.active, #btnGrid.active, #btnSmartCam.active, #btnSnap.active {
+    background: var(--accent-dim); border-color: var(--accent); color: var(--accent);
+  }
+
+  /* Left side, directly under undo/redo - a settings toggle that used to
+     live on the right, but "mirror while you work" is close kin to the
+     transform tools next to it now, not to the view settings it was
+     grouped with. */
+  #btnSymmetry {
+    position: absolute; left: var(--edge-l); top: calc(var(--edge) + 44px + var(--gap)); z-index: 13;
+    width: 44px; height: 44px; min-height: 44px; padding: 0; border-radius: var(--r-md);
+    background: var(--panel2); border: 1px solid var(--line);
+    line-height: 1; justify-content: center;
+  }
+  #btnSymmetry.active {
     background: var(--accent-dim); border-color: var(--accent); color: var(--accent);
   }
 
@@ -457,24 +472,24 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.73</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.74</span></div>
     <div class="spacer"></div>
-    <div id="status"></div>
   </div>
 
   <div id="viewport">
     <div id="toast"></div>
     <div id="viewCube"></div>
-    <button id="btnSymmetry" title="Mirror edits across an axis while you work"></button>
+    <button id="btnXray" title="Selection view: solid with an edge overlay, or see-through"></button>
     <button id="btnGrid" title="Show or hide the floor grid"></button>
     <button id="btnSmartCam" title="Drift to a useful angle after selecting"></button>
     <button id="btnSnap" title="Snap moves to a grid and rotations to fixed angles"></button>
-    <button id="btnShade" title="Shade smooth / flat - applies to the whole object or the current selection"></button>
+    <button id="btnSymmetry" title="Mirror edits across an axis while you work"></button>
     <div id="toolChip" title="Two fingers switch tool, three switch mode"></div>
     <div id="vignette"></div>
     <div id="selectBox"></div>
     <svg id="lassoSvg"><polyline id="lassoPath" /></svg>
     <div id="thumbZone">
+      <div id="status"></div>
       <button id="hubBtn" title="Object/Component - tap to switch">✥</button>
     </div>
 
@@ -796,6 +811,11 @@ const App = {
   fillet: false,
   filletRadius: 0.04,
   sensitivity: 0.7,   // transform speed multiplier, tunable in the drawer
+  // Default off: selection reads as solid with the edge overlay resting on
+  // its visible surface. On, the overlay ignores depth and shows the hidden
+  // side too, which is what made a selected object look transparent before
+  // this was a choice rather than the only behaviour.
+  xraySelection: false,
   smartCam: true,     // camera drifts to a useful angle after you select
   pendingOp: null,
   symmetry: false,
@@ -1248,7 +1268,11 @@ function ensureHelpers(obj) {
   const vGeo = new THREE.BufferGeometry();
   vGeo.setAttribute('position', new THREE.BufferAttribute(vPos, 3));
   vGeo.setAttribute('color', new THREE.BufferAttribute(vCol, 3));
-  const vMat = new THREE.PointsMaterial({ size: 0.11, vertexColors: true, sizeAttenuation: true, depthTest: false, fog: false });
+  // depthTest is the inverse of the toggle: xraySelection OFF (default)
+  // means the overlay respects depth and only shows on the visible surface
+  // - ON means it ignores depth and shows through, which is the see-through
+  // look this toggle exists to make optional rather than permanent.
+  const vMat = new THREE.PointsMaterial({ size: 0.11, vertexColors: true, sizeAttenuation: true, depthTest: !App.xraySelection, fog: false });
   const points = new THREE.Points(vGeo, vMat);
   points.renderOrder = 10;
   points.visible = false;
@@ -1268,7 +1292,7 @@ function ensureHelpers(obj) {
   const eGeo = new THREE.BufferGeometry();
   eGeo.setAttribute('position', new THREE.BufferAttribute(ePos, 3));
   eGeo.setAttribute('color', new THREE.BufferAttribute(eCol, 3));
-  const eMat = new THREE.LineBasicMaterial({ vertexColors: true, depthTest: false, linewidth: 1, fog: false });
+  const eMat = new THREE.LineBasicMaterial({ vertexColors: true, depthTest: !App.xraySelection, linewidth: 1, fog: false });
   const lines = new THREE.LineSegments(eGeo, eMat);
   lines.renderOrder = 9;
   lines.visible = false;
@@ -1289,6 +1313,18 @@ function ensureHelpers(obj) {
     return mesh;
   });
   obj.mesh.userData.faceOverlays = overlays;
+}
+
+// ensureHelpers only builds these materials once per object, guarded by its
+// own early-return - so flipping the toggle mid-session needs this to reach
+// back into every object that's already been built and update them in place,
+// not just change what new objects will get.
+function refreshXrayMode() {
+  App.objects.forEach(o => {
+    const p = o.mesh.userData.vertexPoints, l = o.mesh.userData.edgeLines;
+    if (p) p.material.depthTest = !App.xraySelection;
+    if (l) l.material.depthTest = !App.xraySelection;
+  });
 }
 
 /* ---------------- Cut / Split / Extrude ----------------
@@ -4104,13 +4140,11 @@ function cycleTransformMode() {
 function refreshToolIndicator() {
   const el = document.getElementById('toolChip');
   if (!el) return;
-  const glyph = { move: 'move', rotate: 'rotate', scale: 'scale' }[App.transformTool];
+  const label = { move: 'Move', rotate: 'Rotate', scale: 'Scale' }[App.transformTool];
   const mode = App.transformMode === 'axis' ? 'Axis' : 'Free';
-  // Icon carries the tool - Move/Rotate/Scale is already what the shape
-  // says, so spelling it out too was pure width with nothing behind it.
-  // Dropping it is what let this fit centred under the header instead of
-  // getting relocated a fourth time.
-  el.innerHTML = '<span class="ic">' + icon(glyph, 16) + '</span><span>' + mode + '</span>';
+  // Text, not an icon - the icon lived inside a pill that's gone now, and
+  // "Move" in plain type reads faster than a shape you have to decode.
+  el.innerHTML = label + '<span class="mode">' + mode + '</span>';
 }
 
 function setTransformTool(tool) {
@@ -6143,6 +6177,7 @@ const ICON = {
   del:     '<path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/>',
   smooth:  '<path d="M3 15c4 0 5-8 9-8s5 8 9 8"/>',
   flat:    '<path d="M3 18h6l6-12h6"/>',
+  eye:     '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
   color:   '<path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.7-.9 1.4-1.8-.4-1.1.4-2.2 1.6-2.2H17a4 4 0 0 0 4-4c0-5.5-4-10-9-10z"/><circle cx="8" cy="11" r="1.1"/><circle cx="12" cy="8" r="1.1"/><circle cx="16" cy="11" r="1.1"/>',
   focus:   '<circle cx="12" cy="12" r="3"/><path d="M4 8V4h4M20 8V4h-4M4 16v4h4M20 16v4h-4"/>',
   dupe:    '<path d="M9 3h12v12"/><path d="M3 9h12v12H3z"/>',
@@ -6191,6 +6226,7 @@ const HUB_TOOLS_EDGE = [
   { key: 'split', icon: 'split', label: 'Split', ring: 1, run: splitSelection },
   { key: 'crease', icon: 'crease', label: 'Crease', ring: 1, run: () => creaseSelection(true) },
   { key: 'uncrease', icon: 'uncrease', label: 'Uncrease', ring: 1, run: () => creaseSelection(false) },
+  { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', ring: 1, run: toggleShading },
   { key: 'delete', icon: 'del', label: 'Delete', ring: 1, run: deleteSelection }
 ];
 
@@ -6198,6 +6234,7 @@ const HUB_TOOLS_FACE = [
   { key: 'extrude', icon: 'extrude', label: 'Extrude', ring: 0, run: extrudeSelection },
   { key: 'inset', icon: 'inset', label: 'Inset', ring: 0, run: insetSelection },
   { key: 'bridge', icon: 'bridge', label: 'Bridge', ring: 0, run: bridgeSelection },
+  { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', ring: 1, run: toggleShading },
   { key: 'delete', icon: 'del', label: 'Delete', ring: 1, run: deleteSelection }
 ];
 
@@ -6205,11 +6242,12 @@ const HUB_TOOLS_OBJECT_BASE = [
   { key: 'duplicate', icon: 'dupe', label: 'Duplicate', ring: 0, run: duplicateSelection },
   { key: 'mirror', icon: 'mirror', label: 'Mirror', ring: 0, run: () => mirrorSelectedObjects(App.symmetryAxis) },
   { key: 'delete', icon: 'del', label: 'Delete', ring: 0, run: deleteSelection },
-  // Kept together as a group, in this order, since they're the three most
+  // Kept together as a group, in this order, since they're the four most
   // related to how the object actually looks.
   { key: 'subdivide', icon: 'subdiv', label: 'Subdivide', ring: 1, run: () => subdivideSelection('smooth') },
   { key: 'material', icon: 'color', label: 'Material', ring: 1, run: cycleMaterialFinish },
-  { key: 'fillet', icon: 'bevel', label: 'Fillet', ring: 1, run: toggleFilletPreview }
+  { key: 'fillet', icon: 'bevel', label: 'Fillet', ring: 1, run: toggleFilletPreview },
+  { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', ring: 1, run: toggleShading }
 ];
 // Join only means something with more than one object selected, matching
 // the old radial menu's own condition for showing it - appended live rather
@@ -6308,7 +6346,12 @@ function bloomToolRing(x, y) {
       // they measured and caused the last overlap; the icon set is already
       // legible on its own since it doubled as the drawer's icons.
       el.innerHTML = '<span class="ic"></span>';
-      el.querySelector('.ic').innerHTML = icon(tool.icon, 20);
+      // Shade's icon reflects current App.shadeSmooth rather than staying
+      // fixed, the same way the old corner button showed which state a tap
+      // would leave you in - so its icon is a function, evaluated fresh
+      // every time the ring blooms rather than a static name like the rest.
+      const iconName = typeof tool.icon === 'function' ? tool.icon() : tool.icon;
+      el.querySelector('.ic').innerHTML = icon(iconName, 20);
       el.title = tool.label;
       itemEls.push({ el, tool, angle });
       touchToolRingEl.appendChild(el);
@@ -6452,16 +6495,24 @@ document.getElementById('btnSnap').addEventListener('click', (ev) => {
   ev.currentTarget.classList.toggle('active', App.snap);
   toast(App.snap ? 'Snapping to 0.25 units / 15°' : 'Snapping off');
 });
+document.getElementById('btnXray').addEventListener('click', (ev) => {
+  App.xraySelection = !App.xraySelection;
+  refreshXrayMode();
+  ev.currentTarget.classList.toggle('active', App.xraySelection);
+  toast(App.xraySelection ? 'Selection: see-through' : 'Selection: solid');
+});
 // A plain flip-flop: 0/I, not a readout of the actual mixed shading state
 // across faces - it just toggles and applies, same pattern as the Material
 // cycler. Works on the whole object in Object mode or the current selection
 // in Component mode, since shadeSelection() already handles both.
-document.getElementById('btnShade').addEventListener('click', (ev) => {
+// Named so the bloom ring can call it directly - it's a modelling operation
+// on the current selection, not a persistent view setting, so it moved out
+// of the corner stack rather than keeping its own dedicated button there.
+function toggleShading() {
   App.shadeSmooth = !App.shadeSmooth;
-  ev.currentTarget.classList.toggle('active', App.shadeSmooth);
-  ev.currentTarget.innerHTML = icon(App.shadeSmooth ? 'smooth' : 'flat', 19);
   shadeSelection(App.shadeSmooth);
-});
+  toast(App.shadeSmooth ? 'Shaded smooth' : 'Shaded flat');
+}
 document.getElementById('btnSymmetry').addEventListener('click', (ev) => {
   App.symmetry = !App.symmetry;
   ev.currentTarget.classList.toggle('active', App.symmetry);
@@ -6815,7 +6866,7 @@ function paintStaticIcons() {
   const map = {
     btnMenu: ['menu', 20], btnUndo: ['undo', 20], btnRedo: ['redo', 20],
     btnSymmetry: ['mirror', 19], btnGrid: ['grid', 19], btnSmartCam: ['camera', 19],
-    btnSnap: ['snap', 19],
+    btnSnap: ['snap', 19], btnXray: ['eye', 19],
     btnSelFree: ['free', 18], btnSelBox: ['box', 18], btnSelLasso: ['lasso', 18],
     drawerClose: ['close', 16], inspClose: ['close', 16], opCancel: ['close', 16]
   };
@@ -6823,9 +6874,6 @@ function paintStaticIcons() {
     const el = document.getElementById(id);
     if (el) el.innerHTML = icon(name, size);
   });
-  // Reflects App.shadeSmooth's actual value, not a fixed default - matters if
-  // this ever runs after state's been restored from a saved session.
-  document.getElementById('btnShade').innerHTML = icon(App.shadeSmooth ? 'smooth' : 'flat', 19);
   refreshObjComponentBtn();
 }
 
@@ -6894,6 +6942,7 @@ function init() {
   document.getElementById('btnSmartCam').classList.toggle('active', App.smartCam);
   document.getElementById('btnSnap').classList.toggle('active', App.snap);
   document.getElementById('btnSymmetry').classList.toggle('active', App.symmetry);
+  document.getElementById('btnXray').classList.toggle('active', App.xraySelection);
   setSelectGesture(App.selectDrag);
   applySnapSettings();
   // Pick up where you left off. Only fall back to a fresh cube when there's
