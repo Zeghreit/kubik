@@ -410,7 +410,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.66</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.67</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -4007,6 +4007,11 @@ function axisParamFromPointer(ev, origin, dir) {
 
 const DIRECT_START_PX = 6;     // movement before a touch counts as a drag
 const DIRECT_DECIDE_PX = 15;   // ... and before the axis question is settled
+/* 18 degrees. Wide enough that each axis keeps a comfortable cone, narrow
+   enough that uniform scale stays easy to reach - at 26 the three cones
+   swallowed 87% of all directions in the default view, leaving uniform
+   nearly unreachable. At 18 it sits around 40%. */
+const FREE_SCALE_CATCH_DEG = 18;
 /* No catch cone any more. It only existed because free and axis movement
    shared one gesture, so a threshold had to tell them apart - and that
    threshold was the source of most of the strangeness: a curving drag could
@@ -4176,6 +4181,9 @@ function beginDirectDrag(ev) {
     startParam: 0,
     prevScreenAngle: undefined,   // screen-angle tracking for axis rotation
     totalAngle: 0,
+    freeRotAxis: null,            // committed once from the swipe direction
+    freeScaleDecided: false,      // which axis (if any) a free scale drag chose
+    freeScaleAxis: null,
     decided: false
   };
   orbit.enabled = false;
@@ -4299,25 +4307,33 @@ function updateDirectDrag(ev) {
       local = new THREE.Matrix4().makeRotationAxis(d.axis.dir.clone().normalize(), ang);
 
     } else {
-      /* Free rotation is a two-axis tumble measured from where the drag
-         STARTED. Recomputing the axis from the instantaneous drag direction
-         each frame was what made it chaotic: as the thumb curved, the axis
-         swung with it and the selection lurched about. Sideways and vertical
-         travel now drive two fixed screen axes independently, and the two
-         rotations compose - which is how turning something in your hand
-         actually works. */
-      const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0).normalize();
-      const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1).normalize();
-      const k = 0.008 * THREE.MathUtils.clamp(s * 1.4, 0.3, 2);
-      let ax = px * k, ay = py * k;
-      if (App.snap) {
-        ax = Math.round(ax / SNAP_ROTATE) * SNAP_ROTATE;
-        ay = Math.round(ay / SNAP_ROTATE) * SNAP_ROTATE;
+      /* The swipe direction picks the axis, and then it holds. Deciding it
+         from the instantaneous drag direction on every frame is what made
+         this chaotic before - a curving thumb swung the axis with it. The
+         idea was right, the timing wasn't: lock it once, at the start, the
+         same way axis mode does. */
+      if (!d.freeRotAxis) {
+        const travel0 = Math.hypot(px, py);
+        if (travel0 < DIRECT_DECIDE_PX) return;   // not enough to read a direction yet
+        const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+        const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1).normalize();
+        // Turning about an axis perpendicular to the swipe, as if rolling the
+        // object under your fingertip.
+        d.freeRotAxis = new THREE.Vector3()
+          .addScaledVector(up, px / travel0)
+          .addScaledVector(right, py / travel0)
+          .normalize();
+        // The screen direction the swipe committed to.
+        d.freeRotDirX = px / travel0;
+        d.freeRotDirY = py / travel0;
       }
-      const q = new THREE.Quaternion()
-        .setFromAxisAngle(up, ax)
-        .multiply(new THREE.Quaternion().setFromAxisAngle(right, ay));
-      local = new THREE.Matrix4().makeRotationFromQuaternion(q);
+      /* Measured along the committed swipe direction, not by total distance
+         travelled - so dragging back the way you came unwinds the rotation
+         instead of adding more of it. */
+      const along = px * d.freeRotDirX + py * d.freeRotDirY;
+      let ang = (along / 150) * THREE.MathUtils.clamp(ROTATE_BASE * s * 4, 0.02, 2);
+      if (App.snap) ang = Math.round(ang / SNAP_ROTATE) * SNAP_ROTATE;
+      local = new THREE.Matrix4().makeRotationAxis(d.freeRotAxis, ang);
     }
     applyDeltaToSelection(new THREE.Matrix4().multiplyMatrices(T, new THREE.Matrix4().multiplyMatrices(local, Tinv)));
 
@@ -4331,15 +4347,44 @@ function updateDirectDrag(ev) {
        That was the chaos. An exponential can't do that: halving and
        doubling are the same distance apart, and it approaches zero without
        ever arriving. */
-    let f;
-    if (d.axis) {
-      const sd = axisScreenDir(d.origin, d.axis.dir);
+    /* Free mode reads the same three axes as axis mode, but as they PROJECT
+       ON SCREEN - so dragging the way an axis looks scales along it, and a
+       drag matching none of them scales everything at once.
+
+       This is how depth becomes reachable without inventing a gesture for
+       it. Depth has no natural screen direction the way vertical and
+       horizontal do, but it almost always has SOME screen presence, and
+       dragging along that presence is unambiguous. It only becomes
+       unreachable when the axis points straight at the camera - at which
+       point it's also invisible, so there'd be nothing to aim at anyway. */
+    let f, scaleAxis = d.axis;
+
+    if (!scaleAxis) {
+      if (!d.freeScaleDecided) {
+        const travel0 = Math.hypot(px, py);
+        if (travel0 < DIRECT_DECIDE_PX) return;
+        const dragDir = new THREE.Vector2(px / travel0, py / travel0);
+        let best = null, bestDeg = 1e9;
+        GIZMO_AXES.forEach(ax => {
+          const sd = axisScreenDir(d.origin, ax.dir);
+          if (!sd) return;
+          const deg = THREE.MathUtils.radToDeg(Math.acos(THREE.MathUtils.clamp(Math.abs(dragDir.dot(sd)), -1, 1)));
+          if (deg < bestDeg) { bestDeg = deg; best = ax; }
+        });
+        // Close to an axis scales along it; anything else is uniform.
+        d.freeScaleAxis = (best && bestDeg <= FREE_SCALE_CATCH_DEG) ? best : null;
+        d.freeScaleDecided = true;
+      }
+      scaleAxis = d.freeScaleAxis;
+    }
+
+    if (scaleAxis) {
+      const sd = axisScreenDir(d.origin, scaleAxis.dir);
       const along = sd ? (px * sd.x + py * sd.y) : (px - py);
       f = Math.exp((along / 260) * THREE.MathUtils.clamp(s * 1.6, 0.3, 3));
     } else {
       /* Uniform scale follows how far the thumb is from the pivot compared
-         with where it started - the one-finger equivalent of a pinch, and
-         far more natural than reading vertical travel alone. */
+         with where it started - the one-finger equivalent of a pinch. */
       const pc = worldToScreen(d.origin);
       if (!pc) return;
       const startR = Math.max(30, Math.hypot(d.startX - pc.x, d.startY - pc.y));
@@ -4348,8 +4393,8 @@ function updateDirectDrag(ev) {
     }
     if (App.snap) f = Math.round(f / SNAP_SCALE) * SNAP_SCALE;
     f = Math.max(MIN_SCALE_FACTOR, f);   // floor without abs, so it can't rebound
-    const v = d.axis
-      ? new THREE.Vector3(d.axis.dir.x ? f : 1, d.axis.dir.y ? f : 1, d.axis.dir.z ? f : 1)
+    const v = scaleAxis
+      ? new THREE.Vector3(scaleAxis.dir.x ? f : 1, scaleAxis.dir.y ? f : 1, scaleAxis.dir.z ? f : 1)
       : new THREE.Vector3(f, f, f);
     const local = new THREE.Matrix4().makeScale(v.x, v.y, v.z);
     applyDeltaToSelection(new THREE.Matrix4().multiplyMatrices(T, new THREE.Matrix4().multiplyMatrices(local, Tinv)));
