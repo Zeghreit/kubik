@@ -277,16 +277,12 @@
   #viewport canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 
   #status {
-    /* Sits above the hub rather than in the top bar - "editing: Cube 2" is
-       about what your thumb is currently working on, so it belongs near
-       the thumb's own corner, not up with the page title. Same --edge-l/
-       --edge-b tokens hubBtn already positions itself with successfully,
-       stacked one hub-height plus a gap above it. */
-    position: absolute; left: var(--edge-l);
-    bottom: calc(var(--edge-b) + 62px + var(--gap)); z-index: 13;
-    font-size: 11px; color: var(--text-dim); text-align: left;
+    /* A normal flex child of #topBar - the lower-left corner it briefly
+       moved to put it too close to the hub and the selection column for
+       the small amount of clarity it added being near the thumb. */
+    font-size: 11px; color: var(--text-dim);
     background: rgb(var(--hint-bg) / .82); padding: 6px 10px; border-radius: var(--r-sm);
-    line-height: 1.5; pointer-events: none; max-width: 60vw;
+    text-align: right; line-height: 1.5; flex-shrink: 0;
   }
 
   input[type=color] {
@@ -301,10 +297,17 @@
 
   .label { font-size: 11px; color: var(--text-dim); padding: 0 4px; flex-shrink: 0; }
 
+  /* No pill any more - a background box was fighting the mode pill for the
+     same spot at the top, and text alone reads faster for something meant
+     to be glanced at and gone. Sits just under the mode pill's own row
+     instead of on top of it, with a text-shadow standing in for a
+     background so it stays legible over whatever part of the model happens
+     to be behind it. */
   #toast {
-    position: absolute; left: 50%; top: 14px; transform: translateX(-50%);
-    background: #1f232b; border: 1px solid var(--line); color: var(--text);
-    padding: 8px 14px; border-radius: var(--r-sm); font-size: 12px; opacity: 0; pointer-events: none;
+    position: absolute; left: 50%; top: calc(var(--edge) + 44px + 6px); transform: translateX(-50%);
+    color: var(--text); font-size: 12px; font-weight: 600;
+    text-shadow: 0 1px 4px rgb(var(--shadow) / .8), 0 1px 2px rgb(var(--shadow) / .6);
+    opacity: 0; pointer-events: none;
     transition: opacity .2s ease, transform .2s ease;
   }
   #toast.show { opacity: 1; transform: translateX(-50%) translateY(4px); }
@@ -444,6 +447,42 @@
     font-size: 12px; color: var(--text-dim); margin-bottom: 8px; gap: 10px;
   }
   .insp-head button { min-height: 26px; padding: 2px 8px; }
+
+  /* Lower-right - the one corner nothing else on screen has claimed, and a
+     secondary weight (panel-coloured, not accent-filled) so it doesn't
+     compete with the hub for "primary button" status. */
+  #btnHelp {
+    position: absolute; right: var(--edge-r); bottom: var(--edge-b); z-index: 13;
+    width: 44px; height: 44px; min-height: 44px; padding: 0; border-radius: 50%;
+    background: var(--panel2); border: 1px solid var(--accent); color: var(--accent);
+    font-size: 18px; font-weight: 700; justify-content: center;
+  }
+
+  /* One organised card rather than a scatter of labels pinned next to each
+     real button. Matching a dozen callouts to a dozen exact on-screen
+     positions is exactly the kind of layout math that's caused most of the
+     collisions this session - a single scrollable reference avoids all of
+     it, and reads as one coherent thing instead of clutter over the model. */
+  #helpOverlay {
+    position: fixed; inset: 0; z-index: 40; display: none;
+    align-items: center; justify-content: center; padding: 20px;
+    background: rgb(var(--shadow) / .6); backdrop-filter: blur(2px);
+  }
+  #helpOverlay.show { display: flex; }
+  #helpCard {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-md);
+    padding: 16px; width: min(360px, 100%); max-height: 80vh; overflow-y: auto;
+    box-shadow: 0 12px 32px rgb(var(--shadow) / .3);
+  }
+  .help-row {
+    display: flex; align-items: center; gap: 10px; padding: 6px 0;
+    font-size: 13px; color: var(--text);
+  }
+  .help-row .ic { display: flex; color: var(--accent); flex-shrink: 0; }
+  #helpGestures {
+    margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--line);
+    font-size: 12px; color: var(--text-dim); line-height: 1.7;
+  }
   .insp-row { display: flex; align-items: center; gap: 4px; margin-top: 5px; }
   .insp-label { font-size: 11px; color: var(--text-dim); width: 34px; flex-shrink: 0; }
   .insp-row input {
@@ -472,8 +511,9 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.74</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.75</span></div>
     <div class="spacer"></div>
+    <div id="status"></div>
   </div>
 
   <div id="viewport">
@@ -489,7 +529,6 @@
     <div id="selectBox"></div>
     <svg id="lassoSvg"><polyline id="lassoPath" /></svg>
     <div id="thumbZone">
-      <div id="status"></div>
       <button id="hubBtn" title="Object/Component - tap to switch">✥</button>
     </div>
 
@@ -527,6 +566,27 @@
       <input type="number" id="opValue" step="0.01" />
       <button id="opOk" class="ok">✓ OK</button>
       <button id="opCancel">✕</button>
+    </div>
+
+    <!-- Lower-right is the one corner nothing else has claimed. -->
+    <button id="btnHelp" title="Help">?</button>
+
+    <div id="helpOverlay">
+      <div id="helpCard">
+        <div class="insp-head">
+          <span>How Kubik works</span>
+          <button id="helpClose" title="Close"></button>
+        </div>
+        <div id="helpButtons"></div>
+        <div id="helpGestures">
+          <div>Tap to select, tap empty space to clear</div>
+          <div>Drag the selection to move, rotate or scale</div>
+          <div>Two fingers, tap: switch Move / Rotate / Scale</div>
+          <div>Three fingers, tap: switch Free / Axis</div>
+          <div>Press and hold the selection: tools bloom at your finger</div>
+          <div>One finger on empty space: orbit &middot; pinch: zoom</div>
+        </div>
+      </div>
     </div>
 
     <div id="inspector">
@@ -6425,6 +6485,33 @@ function setDrawerOpen(open) {
 document.getElementById('btnMenu').addEventListener('click', () => setDrawerOpen(true));
 document.getElementById('drawerClose').addEventListener('click', () => setDrawerOpen(false));
 scrimEl.addEventListener('click', () => setDrawerOpen(false));
+
+/* One reference card rather than labels pinned beside each real button -
+   see the CSS comment on #helpOverlay for why. Icon + name pairs, using the
+   exact same icon() calls and glyph names the real buttons already render
+   with, so what you read here matches what you see on screen. */
+const helpOverlayEl = document.getElementById('helpOverlay');
+const HELP_BUTTONS = [
+  ['undo', 'Undo'], ['redo', 'Redo'],
+  ['object', 'Hub - tap to switch Object / Component'],
+  ['mirror', 'Symmetry - mirror while you edit'],
+  ['eye', 'Selection: solid or see-through'],
+  ['grid', 'Floor grid'], ['camera', 'Smart camera framing'], ['snap', 'Snap to steps'],
+  ['free', 'Tap to select'], ['box', 'Drag a box to select'], ['lasso', 'Draw a lasso to select']
+];
+function openHelp() {
+  document.getElementById('helpButtons').innerHTML = HELP_BUTTONS.map(([name, label]) =>
+    '<div class="help-row"><span class="ic">' + icon(name, 18) + '</span><span>' + label + '</span></div>'
+  ).join('');
+  helpOverlayEl.classList.add('show');
+}
+function closeHelp() { helpOverlayEl.classList.remove('show'); }
+document.getElementById('btnHelp').addEventListener('click', openHelp);
+document.getElementById('helpClose').addEventListener('click', closeHelp);
+// Tapping the dimmed backdrop dismisses it too, but only the backdrop itself -
+// checking the event target rather than using a separate scrim element, so
+// taps inside the card (like scrolling the gesture list) don't close it.
+helpOverlayEl.addEventListener('click', (ev) => { if (ev.target === helpOverlayEl) closeHelp(); });
 // btnObjComponent is gone - the hub button itself is the toggle now, wired
 // directly in its own click handler above.
 // Free / Box / Lasso choose the drag gesture, not whether taps add to the
@@ -6868,7 +6955,7 @@ function paintStaticIcons() {
     btnSymmetry: ['mirror', 19], btnGrid: ['grid', 19], btnSmartCam: ['camera', 19],
     btnSnap: ['snap', 19], btnXray: ['eye', 19],
     btnSelFree: ['free', 18], btnSelBox: ['box', 18], btnSelLasso: ['lasso', 18],
-    drawerClose: ['close', 16], inspClose: ['close', 16], opCancel: ['close', 16]
+    drawerClose: ['close', 16], inspClose: ['close', 16], opCancel: ['close', 16], helpClose: ['close', 16]
   };
   Object.entries(map).forEach(([id, [name, size]]) => {
     const el = document.getElementById(id);
