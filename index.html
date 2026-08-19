@@ -154,29 +154,15 @@
     font-size: 17px; border-radius: var(--r-md); background: var(--panel2);
   }
 
-  /* A fixed column down the left edge. It used to chase the gizmo's screen
-     position, but with the gizmo gone there's nothing to follow - and a
-     control that stays put is easier to reach for anyway. Vertically centred
-     so it's within a thumb's arc without crowding the hub below it. */
-  /* Which transform a drag will perform, and in which mode. Sits with the
-     other persistent readouts rather than in the thumb's way - something to
-     glance at, not to press. Its CSS was lost when the gizmo was stripped,
-     so the chip was rendering unstyled. */
-  /* Lives in the top bar rather than floating over the viewport. It's the
-     only thing telling you what a drag will do, and everything now depends
-     on that - at the bottom edge in small grey type it read as a footnote
-     rather than as state.
+  /* Which transform a drag will perform, and in which mode. The only thing
+     telling you what a drag will do, and everything now depends on that -
+     so it needs to be visible without being in the thumb's way.
 
-     Floating it at top-centre was the obvious move, but the top row is
-     already spoken for on a phone: undo/redo take the left, the view cube
-     the right, leaving 170px for a chip that needs 175px. In the bar it has
-     room, sits level with the title, and reads as status instead of as
-     something stuck on top of the model. */
-  /* Just under the header line, left-aligned with everything else on that
-     edge. Centring it would clash: on a 390px-wide phone undo/redo take the
-     left and the view cube the right, leaving 170px for a chip that needs
-     175. Left-aligned it sits in the gap below undo/redo instead, still the
-     first thing in the reading order. */
+     Left edge, under undo/redo. Centring it doesn't fit - on a 390px phone
+     undo/redo take the left and the view cube the right, leaving 170px for
+     a chip needing 175. The right edge is worse: the corner stack starts
+     106px down and runs the whole way, so a chip there lands on the
+     symmetry button. Below undo/redo is the one gap nothing else uses. */
   #toolChip {
     position: absolute; left: var(--edge-l); top: calc(var(--edge) + 52px); z-index: 13;
     display: flex; align-items: center; gap: 6px;
@@ -196,7 +182,7 @@
      Anchoring removes the dependency on height entirely. */
   #selGestureRow {
     position: absolute; left: var(--edge-l);
-    bottom: calc(var(--edge-b) + 232px);
+    bottom: calc(var(--edge-b) + 268px);
     display: flex; flex-direction: column; gap: var(--gap); z-index: 13;
   }
 
@@ -461,7 +447,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.69</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.70</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -6225,7 +6211,11 @@ function currentHubTools() {
 // Radii and sweeps solved so 52px targets keep >=58px clearance and nothing
 // falls off a 360x520 viewport. The outer ring carries five tools, so it needs
 // both a wider sweep and a larger radius than the inner three.
-const HUB_RINGS = [84, 156];
+/* Pushed out from 84/156. The items are 52px circles, but each carries a
+   label as well as an icon, so the thing you actually see is wider than the
+   circle - measuring circle-to-circle said there was 27px of clearance while
+   the nearest tool was visibly sitting on the hub button. */
+const HUB_RINGS = [104, 176];
 const HUB_SWEEPS = [84, 90];
 
 function buildHubArc() {
