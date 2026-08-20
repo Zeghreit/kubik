@@ -332,7 +332,7 @@
   /* Under the view cube: everything you'd otherwise dig into the drawer for
      mid-model. Assisting-finger territory, not thumb territory, so these are
      settings you glance at and tap - not the primary action loop. */
-  #btnXray, #btnGrid, #btnSmartCam, #btnSnap {
+  #btnXray, #btnGrid, #btnAimAssist, #btnSnap {
     position: absolute; right: var(--edge-r); z-index: 13;
     width: 42px; min-height: 42px; padding: 0; border-radius: var(--r-md);
     background: var(--panel2); border: 1px solid var(--line);
@@ -340,9 +340,9 @@
   }
   #btnXray { top: 106px; }
   #btnGrid { top: 154px; }
-  #btnSmartCam { top: 202px; }
+  #btnAimAssist { top: 202px; }
   #btnSnap { top: 250px; }
-  #btnXray.active, #btnGrid.active, #btnSmartCam.active, #btnSnap.active {
+  #btnXray.active, #btnGrid.active, #btnAimAssist.active, #btnSnap.active {
     background: var(--accent-dim); border-color: var(--accent); color: var(--accent);
   }
 
@@ -511,7 +511,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.87</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.88</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -521,7 +521,7 @@
     <div id="viewCube"></div>
     <button id="btnXray" title="Selection view: solid with an edge overlay, or see-through"></button>
     <button id="btnGrid" title="Show or hide the floor grid"></button>
-    <button id="btnSmartCam" title="Drift to a useful angle after selecting, and ease in when targets are crowded"></button>
+    <button id="btnAimAssist" title="Ease the view in when vertex targets are too crowded to tap"></button>
     <button id="btnSnap" title="Snap moves to a grid and rotations to fixed angles"></button>
     <button id="btnSymmetry" title="Mirror edits across an axis while you work"></button>
     <div id="toolChip" title="Two fingers switch tool, three switch mode"></div>
@@ -629,7 +629,7 @@
         <div class="drawer-row">
           <button id="btnTheme" title="Switch theme">Theme</button>
         </div>
-        <div class="drawer-note">Grid, Smart camera and Snap moved under the axis cube.</div>
+        <div class="drawer-note">Grid, Aim assist and Snap moved under the axis cube.</div>
       </div>
 
       <div class="drawer-sec">
@@ -735,7 +735,13 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 // that reads as lit.
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
-renderer.shadowMap.enabled = true;
+/* Floor contact shadow - OFF as of v1.88. Everything it needs is still wired
+   up (the light's shadow camera, the catcher plane, the per-theme opacity),
+   so bringing it back is this one word. Left in place rather than deleted
+   because it was the strongest depth cue the scene had without
+   postprocessing, and we may well want it again. */
+const SHOW_FLOOR_SHADOW = false;
+renderer.shadowMap.enabled = SHOW_FLOOR_SHADOW;
 renderer.shadowMap.type = THREE.PCFShadowMap; // soft since r182; PCFSoftShadowMap is deprecated
 viewportEl.appendChild(renderer.domElement);
 renderer.domElement.addEventListener('webglcontextlost', (e) => {
@@ -756,7 +762,7 @@ const hemi = new THREE.HemisphereLight(0xFFFDF8, 0xC9BFAC, 1.5);
 scene.add(hemi);
 const dir = new THREE.DirectionalLight(0xFFF8EC, 0.85);
 dir.position.set(3.5, 13, 2.5); // steep, so the shadow stays close under the object
-dir.castShadow = true;
+dir.castShadow = SHOW_FLOOR_SHADOW;
 dir.shadow.mapSize.set(2048, 2048); // the newer soft PCF needs the resolution to avoid stair-stepping
 dir.shadow.radius = 2;
 dir.shadow.camera.near = 0.5;
@@ -795,6 +801,7 @@ const shadowCatcher = new THREE.Mesh(
 shadowCatcher.rotation.x = -Math.PI / 2;
 shadowCatcher.position.y = -0.002;
 shadowCatcher.receiveShadow = true;
+shadowCatcher.visible = SHOW_FLOOR_SHADOW;
 scene.add(shadowCatcher);
 
 let grid = null;
@@ -876,7 +883,7 @@ const App = {
   // side too, which is what made a selected object look transparent before
   // this was a choice rather than the only behaviour.
   xraySelection: false,
-  smartCam: true,     // camera drifts to a useful angle after you select
+  aimAssist: true,    // ease the view in when vertex targets are crowded
   pendingOp: null,
   symmetry: false,
   symmetryAxis: 'x',
@@ -1028,7 +1035,7 @@ let gizmoTarget = null;
 
    gl_PointSize is in device pixels, so the CSS size has to be multiplied by
    the pixel ratio or dots come out three times too small on a phone. */
-const VERTEX_DOT_PX = 6;
+const VERTEX_DOT_PX = 2;
 function vertexDotSize() {
   return VERTEX_DOT_PX * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1);
 }
@@ -3348,7 +3355,6 @@ function beginPendingOp(kind, obj, payload) {
   hideRadialMenu();
   applyPendingOp();
   showOpBar();
-  scheduleSmartCamera();
 }
 
 // Re-runs the operation from the captured snapshot at the current amount.
@@ -3956,6 +3962,9 @@ function setActiveObjectHelpersVisible(obj, mode) {
   if (ov) ov.forEach(o => o.visible = false);
 }
 
+// How far a non-active object's wireframe is dimmed, as a plain multiplier.
+const FRAME_DIM = 0.4;
+
 // Shows every object's wireframe whenever anything at all is selected, in any
 // mode, and hides it all again once the scene has no selection - so the frame
 // acts as an "editing is active" cue rather than something tied to Edge mode.
@@ -3967,7 +3976,16 @@ function updateFrameVisibility() {
   App.objects.forEach(o => {
     if (anySelected) ensureHelpers(o);
     const lines = o.mesh.userData.edgeLines;
-    if (lines) lines.visible = anySelected;
+    if (!lines) return;
+    lines.visible = anySelected;
+    /* The object you're EDITING gets its wireframe at full strength; every
+       other object's is dimmed. Before this they were identical, so with
+       more than one cube on screen nothing said which one your taps were
+       going to land on. LineBasicMaterial.color multiplies the per-vertex
+       colours, so this dims without touching the theme's own values. */
+    const active = o.id === App.activeObjectId ||
+      (App.mode === 'object' && App.selectedObjectIds.has(o.id));
+    lines.material.color.setScalar(active ? 1 : FRAME_DIM);
   });
 }
 
@@ -4075,7 +4093,6 @@ function recenterPivot() {
 }
 
 function refreshGizmoAttachment() {
-  scheduleSmartCamera();
   detachAllGizmos();
 
   if (App.mode === 'object') {
@@ -5321,7 +5338,6 @@ let lastTap = null;
 let boxDrag = null;
 renderer.domElement.addEventListener('pointerdown', (ev) => {
   camAnim = null; // a new touch/click cancels any in-flight focus animation
-  cancelSmartCamera();
   trackPointerDown(ev);
 
   // A second finger means the camera is taking over - abandon any transform
@@ -6982,11 +6998,11 @@ document.getElementById('btnTheme').addEventListener('click', () => {
   toast(THEMES[next].label);
 });
 
-document.getElementById('btnSmartCam').addEventListener('click', (ev) => {
-  App.smartCam = !App.smartCam;
-  ev.currentTarget.classList.toggle('active', App.smartCam);
-  if (!App.smartCam) { cancelSmartCamera(); camAnim = null; }
-  toast(App.smartCam ? 'Smart camera + aim assist on' : 'Smart camera off');
+document.getElementById('btnAimAssist').addEventListener('click', (ev) => {
+  App.aimAssist = !App.aimAssist;
+  ev.currentTarget.classList.toggle('active', App.aimAssist);
+  if (!App.aimAssist) camAnim = null;   // stop any nudge already in flight
+  toast(App.aimAssist ? 'Aim assist on' : 'Aim assist off');
 });
 
 document.getElementById('btnGrid').addEventListener('click', (ev) => {
@@ -6994,7 +7010,7 @@ document.getElementById('btnGrid').addEventListener('click', (ev) => {
   // Tied to the same toggle rather than a separate one - the contact
   // shadow is a floor-relative cue, so it reads as part of "the floor" and
   // should come and go with it instead of lingering once the grid is gone.
-  shadowCatcher.visible = grid.visible;
+  shadowCatcher.visible = SHOW_FLOOR_SHADOW && grid.visible;
   ev.currentTarget.classList.toggle('active', grid.visible);
   toast(grid.visible ? 'Floor grid on' : 'Floor grid off');
 });
@@ -7191,142 +7207,9 @@ function focusOnObject(obj) {
   frameBox(box);
 }
 
-/* ---------------- Smart camera ----------------
-   Drifts the view to an angle that actually shows what you're working on,
-   instead of leaving you to orbit there by hand. Rules that keep it from
-   becoming annoying:
-     - it never moves while you're touching anything;
-     - it does nothing if the current view is already reasonable;
-     - it moves slowly, so it reads as the scene settling rather than a cut;
-     - any touch cancels an in-flight move instantly.
-   The angle it aims for is a three-quarter view of the selection's normal:
-   straight-on hides depth, edge-on hides the face itself. */
-
-const SMART_ANGLE = THREE.MathUtils.degToRad(55);
-let smartCamTimer = null;
-
-// Where the selection is, how big it is, and which way it faces.
-function smartCameraTargetInfo() {
-  if (App.mode === 'object') {
-    const ids = Array.from(App.selectedObjectIds);
-    if (!ids.length) return null;
-    const box = new THREE.Box3();
-    ids.forEach(id => { const o = findObject(id); if (o) box.expandByObject(o.mesh); });
-    if (box.isEmpty()) return null;
-    const center = box.getCenter(new THREE.Vector3());
-    const radius = Math.max(box.getSize(new THREE.Vector3()).length() * 0.5, 0.4);
-    return { center, normal: null, radius, objectCenter: center, objectRadius: radius };
-  }
-
-  const obj = findObject(App.activeObjectId);
-  if (!obj || !App.selectedElements.size) return null;
-  ensureHelpers(obj);
-  const topo = obj.mesh.userData.topo;
-
-  const logical = new Set();
-  if (App.mode === 'vertex') App.selectedElements.forEach(l => logical.add(l));
-  else if (App.mode === 'edge') App.selectedElements.forEach(ei => {
-    const e = topo.edges[ei];
-    if (e) { logical.add(e[0]); logical.add(e[1]); }
-  });
-  else App.selectedElements.forEach(gi => {
-    const fg = topo.faceGroups[gi];
-    if (fg) fg.logicalVerts.forEach(l => logical.add(l));
-  });
-  if (!logical.size) return null;
-
-  const posAttr = obj.mesh.geometry.attributes.position;
-  const nrmAttr = obj.mesh.geometry.attributes.normal;
-  const nm = new THREE.Matrix3().getNormalMatrix(obj.mesh.matrixWorld);
-  const center = new THREE.Vector3();
-  const normal = new THREE.Vector3();
-  const pts = [];
-
-  logical.forEach(l => {
-    const ais = topo.logicalGroups[l] || [];
-    if (!ais.length) return;
-    const p = new THREE.Vector3().fromBufferAttribute(posAttr, ais[0]);
-    obj.mesh.localToWorld(p);
-    pts.push(p);
-    center.add(p);
-    if (nrmAttr) ais.forEach(ai => normal.add(new THREE.Vector3().fromBufferAttribute(nrmAttr, ai).applyMatrix3(nm)));
-  });
-  if (!pts.length) return null;
-
-  center.divideScalar(pts.length);
-  let radius = 0;
-  pts.forEach(p => { radius = Math.max(radius, p.distanceTo(center)); });
-
-  const objBox = new THREE.Box3().setFromObject(obj.mesh);
-  return {
-    center,
-    radius: Math.max(radius, 0.15),
-    normal: normal.lengthSq() > 1e-8 ? normal.normalize() : null,
-    objectCenter: objBox.getCenter(new THREE.Vector3()),
-    objectRadius: Math.max(objBox.getSize(new THREE.Vector3()).length() * 0.5, 0.4)
-  };
-}
-
-function runSmartCamera() {
-  if (!App.smartCam) return;
-  // Never steal the view mid-gesture - wait until hands are off.
-  if (pointerDown || boxDrag || directDrag) { scheduleSmartCamera(); return; }
-
-  const info = smartCameraTargetInfo();
-  if (!info) return;
-
-  // Keep some of the object in frame rather than diving onto the selection.
-  const focus = info.objectCenter.clone().lerp(info.center, 0.75);
-  const framing = Math.max(info.radius * 1.6, info.objectRadius * 0.55, 0.5);
-  const desiredDist = THREE.MathUtils.clamp(
-    (framing / Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) * 1.25, 1.6, 40);
-
-  const curDir = new THREE.Vector3().subVectors(camera.position, orbit.target);
-  const curDist = curDir.length() || 1;
-  curDir.normalize();
-
-  let targetDir = curDir.clone();
-  if (info.normal) {
-    const N = info.normal.clone();
-    const up = new THREE.Vector3(0, 1, 0);
-    // Stay on the side the user is already viewing from, so the move is a
-    // small adjustment rather than a swing around the model.
-    const perpCam = curDir.clone().addScaledVector(N, -curDir.dot(N));
-    const perpUp = up.clone().addScaledVector(N, -up.dot(N));
-    let perp;
-    if (perpCam.lengthSq() > 1e-6 && perpUp.lengthSq() > 1e-6) {
-      perp = perpCam.normalize().multiplyScalar(0.75).add(perpUp.normalize().multiplyScalar(0.45));
-    } else if (perpCam.lengthSq() > 1e-6) perp = perpCam.normalize();
-    else if (perpUp.lengthSq() > 1e-6) perp = perpUp.normalize();
-    else perp = new THREE.Vector3(1, 0, 0);
-    if (perp.lengthSq() < 1e-8) perp.set(1, 0, 0);
-    perp.normalize();
-    targetDir = N.multiplyScalar(Math.cos(SMART_ANGLE)).add(perp.multiplyScalar(Math.sin(SMART_ANGLE))).normalize();
-  }
-
-  // If the view is already workable, leave it alone - constant nudging would
-  // be far more irritating than a slightly imperfect angle.
-  const angleOk = !info.normal || (() => {
-    const a = Math.acos(THREE.MathUtils.clamp(curDir.dot(info.normal), -1, 1));
-    return a > THREE.MathUtils.degToRad(25) && a < THREE.MathUtils.degToRad(78);
-  })();
-  const distOk = curDist > desiredDist * 0.55 && curDist < desiredDist * 1.9;
-  const targetOk = orbit.target.distanceTo(focus) < info.radius * 1.2 + 0.35;
-  if (angleOk && distOk && targetOk) return;
-
-  camAnim = {
-    fromPos: camera.position.clone(),
-    toPos: focus.clone().addScaledVector(targetDir, desiredDist),
-    fromTarget: orbit.target.clone(),
-    toTarget: focus,
-    start: performance.now(),
-    duration: 950 // slow enough to read as drift, not a cut
-  };
-}
-
 /* ---------------- Aim assist ----------------
 
-   A 6px dot with a 28px catch radius is easy to hit while the vertices are
+   A 2px dot with a 28px catch radius is easy to hit while the vertices are
    spread out, and impossible to aim BETWEEN when they aren't. Rather than
    asking you to pinch-zoom by hand before every fiddly selection, the view
    does it for you: land a tap where the neighbours are crowded and the
@@ -7336,8 +7219,12 @@ function runSmartCamera() {
    tap easier. It never changes what the tap you just made selected - which
    is what keeps it from being the disorienting kind of help.
 
-   Rides on the Smart camera toggle rather than adding another button: same
-   promise, that the view will help rather than sit still. */
+   This replaced the old Smart camera, which drifted the view to a
+   three-quarter angle after every selection. That answered a question
+   nobody was asking - the angle was usually fine, and being moved for no
+   visible reason is worse than a slightly imperfect view. Aim assist only
+   moves when there is a measurable problem: targets too close together to
+   tell apart. Tagged v1.87-smartcam if it is ever wanted back. */
 
 const AIM_CROWD_PX = 30;    // a neighbour closer than this means it's crowded
 const AIM_ROOMY_PX = 60;    // ... and this is how far apart we'd like them
@@ -7369,7 +7256,7 @@ function nearestVisibleNeighbourPx(obj, l, home) {
 }
 
 function aimAssistAfterPick(pick) {
-  if (!App.smartCam || pick.type !== 'vertex') return;
+  if (!App.aimAssist || pick.type !== 'vertex') return;
   // A tap that DESELECTED shouldn't pull the camera in after it.
   if (!App.selectedElements.has(pick.index)) return;
   const now = performance.now();
@@ -7399,7 +7286,6 @@ function aimAssistAfterPick(pick) {
   // some of the model in frame is what stops this reading as a jump cut.
   const target = orbit.target.clone().lerp(hit.world, 0.7);
   aimAssistAt = now;
-  cancelSmartCamera();                        // only one thing moves the view
   camAnim = {
     fromPos: camera.position.clone(),
     toPos: target.clone().addScaledVector(dir, dist * factor),
@@ -7410,14 +7296,6 @@ function aimAssistAfterPick(pick) {
   };
 }
 
-function scheduleSmartCamera() {
-  if (!App.smartCam) return;
-  clearTimeout(smartCamTimer);
-  // Short delay so a burst of taps settles before the camera reacts.
-  smartCamTimer = setTimeout(runSmartCamera, 320);
-}
-
-function cancelSmartCamera() { clearTimeout(smartCamTimer); }
 
 function focusOnAll() {
   if (!App.objects.length) { animateCameraTo(new THREE.Vector3(4.5, 3.5, 6), new THREE.Vector3(0, 0, 0)); return; }
@@ -7480,7 +7358,7 @@ let lastFrameTime = performance.now();
 function paintStaticIcons() {
   const map = {
     btnMenu: ['menu', 20], btnUndo: ['undo', 20], btnRedo: ['redo', 20],
-    btnSymmetry: ['mirror', 19], btnGrid: ['grid', 19], btnSmartCam: ['camera', 19],
+    btnSymmetry: ['mirror', 19], btnGrid: ['grid', 19], btnAimAssist: ['camera', 19],
     btnSnap: ['snap', 19], btnXray: ['eye', 19],
     btnSelFree: ['free', 18], btnSelBox: ['box', 18], btnSelLasso: ['lasso', 18],
     drawerClose: ['close', 16], inspClose: ['close', 16], opCancel: ['close', 16], helpClose: ['close', 16]
@@ -7554,7 +7432,7 @@ function init() {
   refreshToolIndicator();
   applyTheme(App.theme);
   document.getElementById('btnGrid').classList.toggle('active', grid.visible);
-  document.getElementById('btnSmartCam').classList.toggle('active', App.smartCam);
+  document.getElementById('btnAimAssist').classList.toggle('active', App.aimAssist);
   document.getElementById('btnSnap').classList.toggle('active', App.snap);
   document.getElementById('btnSymmetry').classList.toggle('active', App.symmetry);
   document.getElementById('btnXray').classList.toggle('active', App.xraySelection);

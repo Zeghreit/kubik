@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: C:\Users\a.bodrov\Projects\kubik  (index.html is ~6600 lines)
-- Version at time of writing: v1.87
+- Version at time of writing: v1.88
 - Debug console: append ?debug=1 to the URL. Tap picks also log a
   `[pick] ...` line explaining exactly why a tap resolved as it did.
 
@@ -52,11 +52,11 @@ onto one and lift to run it. Ring radius scales with the number of tools.
   (8px) of each other are a tie, settled by DEPTH - the one nearest the
   camera is the one you meant.
 
-- v1.87: dot 8px -> 6px, catch radius 22px -> 28px. Deliberately opposite
-  directions - the MARKER should be quiet, the TARGET generous, and there is
-  no reason they must match. `OFF_MODE_PICK_BIAS` went 0.9 -> 0.7 at the same
-  time so an off-mode target still measures ~19.6px, exactly as before; only
-  the in-mode radius grew.
+- v1.87/v1.88: dot 8px -> 6px -> 2px, catch radius 22px -> 28px. Deliberately
+  opposite directions - the MARKER should be quiet, the TARGET generous, and
+  there is no reason they must match. `OFF_MODE_PICK_BIAS` went 0.9 -> 0.7 at
+  the same time so an off-mode target still measures ~19.6px, exactly as
+  before; only the in-mode radius grew.
 
 **Aim assist** (v1.87). After a vertex tap, if the nearest visible neighbour
 is under 30px away, the camera eases in (380ms) until neighbours sit around
@@ -65,8 +65,8 @@ the pick, so it can only make the NEXT tap easier and never changes what the
 tap just selected. Rate-limited to one nudge per 700ms, never more than 2.2x
 closer per move, and it stops at a distance floor of 1.2 so a dense mesh
 can't be nudged into the near plane one tap at a time. Simulated: converges
-in 1-3 nudges from every starting spacing tried. Rides on the Smart camera
-toggle rather than adding another button.
+in 1-3 nudges from every starting spacing tried. It owns the third button on the right rail and is ON
+by default.
 
 **Selecting and grabbing use different radii.** They are different
 questions: selecting asks "which of these did you mean" and wants
@@ -150,3 +150,22 @@ empty space orbits, pinch zooms.
   type you want. May need an explicit control.
 - Gesture-driven modelling tools (extrude on two-finger tap, etc.) -
   discussed, not built.
+
+## Removed in v1.88
+
+- **Smart camera.** Drifted the view to a three-quarter angle after every
+  selection. Removed because it answered a question nobody was asking - the
+  angle was usually fine, and being moved for no visible reason is worse than
+  a slightly imperfect view. Aim assist replaced it on the same button and
+  only moves when there is a measurable problem. Tagged `v1.87-smartcam`.
+- **Floor contact shadow.** Off via `SHOW_FLOOR_SHADOW = false`, not deleted -
+  the light's shadow camera, the catcher plane and the per-theme opacity are
+  all still wired up, so it comes back by flipping that one word. It was the
+  strongest depth cue the scene had without postprocessing, so it may well be
+  wanted again.
+
+## Also in v1.88
+
+- The ACTIVE object's wireframe renders at full strength; every other
+  object's is dimmed to `FRAME_DIM` (0.4). They used to be identical, so with
+  more than one cube on screen nothing said which one your taps would hit.
