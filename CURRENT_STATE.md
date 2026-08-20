@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **v1.95**
+- Version at time of writing: **v1.96**
 - Debug: append `?debug=1`. Tap picks log a `[pick] ...` line explaining why
   a tap resolved as it did, every mesh edit logs a `[winding] ...` line (see
   Winding audit), and `window.__kubik` exposes the live app (see Testing
@@ -267,22 +267,49 @@ bounding-box centre on that axis, in the object's local space**.
 - Both toasts name the plane when it isn't at zero, so a wrong plane is
   visible rather than silent.
 
-**Mirror uses the same plane.** Symmetry **off** → the world axis plane, as
-always. Symmetry **on** → the object's captured plane, mirrored inside local
-space (`matrixWorld × T(2·offset) × S(−1)`) so Mirror and symmetric editing
-finally agree; they used to disagree, world zero against local zero. The
-toast says which.
+Measured on a cube whose geometry was drifted +0.7 off its local origin:
+**0 vertices paired before, 8 after**, plane captured at 0.7. A centred
+object gets `offset = 0` and behaves exactly as it did.
 
-`combineObjectsInto`'s `dropOnPlane` now takes an axis letter OR a world
+## Mirror (v1.96)
+
+**Mirror uses whichever plane symmetry is describing.** Off → the world axis
+plane. On → the object's captured plane. Both arrive as one world
+`THREE.Plane`, so the two stop disagreeing the way they used to (world zero
+against local zero). `mirrorObject(obj, plane)` reflects with
+`I − 2nnᵀ` plus `−2dn`; the axis-aligned cases fall out of it unchanged.
+
+**If the plane CUTS the object, Mirror bisects first.** Mirroring a whole
+object about a plane through its middle just lays a second copy over the
+first — which is what v1.95 did, and it read as "two cubes inside each
+other". Now the object is cut at the plane, the half you are **looking at**
+is kept, the other is thrown away, and the mirror rebuilds it. The rim of the
+cut becomes an edge loop lying exactly on the plane.
+
+- **Camera-side, deliberately.** A destructive op needs the user to choose,
+  and orbiting to the side you want costs no UI at all. The toast says it
+  kept the half facing you.
+- The cut face is left **OPEN**. A cap would be a wall trapped inside the
+  join; the two rims weld into a closed surface instead.
+- Sutherland-Hodgman on each face's boundary loop. Clipping a convex polygon
+  by a half-space stays convex, so the re-fan is safe.
+- Vertices the discarded half owned are **compacted away**, or they hang
+  around as orphan dots in Vertex mode.
+- **A plane that misses the object still mirrors the whole thing** — that is
+  the mirror-an-arm-across-the-body case and it was never broken.
+
+`combineObjectsInto`'s `dropOnPlane` takes an axis letter OR a world
 `THREE.Plane`, and **clips near-plane vertices onto the plane** (same 1e-3
 relative tolerance as `buildSymmetryMap`) before merging. That is what makes
 the seam weld and the coplanar-face drop actually fire — it only ever deleted
 faces already within 1e-4 of the plane, and nothing had put them there.
 
-Measured on a cube whose geometry was drifted +0.7 off its local origin:
-**0 vertices paired before, 8 after**, plane captured at 0.7, and the mirror
-matrix maps every vertex onto its partner with error 0.0. A centred object
-gets `offset = 0` and behaves exactly as it did.
+Measured, cutting the default cube through its centre: 6 faces → a 5-face
+open half → **10 faces, 12 vertices, 20 edges** merged. V−E+F = 2, boundary
+0, winding clean — a closed cube with an edge loop on the plane. The kept
+half sits on the camera's side of the plane (+0.25 against −0.25). An object
+the plane misses still yields the old two-shell mirror, 12 faces, 16
+vertices.
 
 ## Winding audit (v1.94)
 
