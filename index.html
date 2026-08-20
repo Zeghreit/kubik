@@ -115,13 +115,40 @@
     left: env(safe-area-inset-left); bottom: env(safe-area-inset-bottom);
   }
 
-  #hubBtn {
-    position: absolute; left: var(--edge-l); bottom: var(--edge-b);
-    width: 62px; height: 62px; min-height: 62px; padding: 0;
-    border-radius: 50%; justify-content: center; font-size: 24px;
-    background: var(--accent); color: var(--on-accent); border: none;
-    box-shadow: 0 6px 18px rgb(var(--shadow) / .16);
+  /* Object / Component switch, pinned to the middle of the left edge where
+     a thumb reaches it without moving the hand. Two halves, a knob that
+     slides between them, and no text - the icon in each half says which
+     mode that half means. */
+  #modeSlider {
+    position: absolute; left: var(--edge-l); top: 50%; transform: translateY(-50%);
+    z-index: 16; width: 46px; height: 106px; border-radius: 23px;
+    background: var(--panel2); border: 1px solid var(--line);
+    display: flex; flex-direction: column; overflow: hidden;
+    touch-action: none; -webkit-user-select: none; user-select: none;
+    box-shadow: 0 4px 14px rgb(var(--shadow) / .14);
   }
+  #modeSlider .ms-half {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    position: relative; z-index: 2; color: var(--text-dim);
+  }
+  #modeSlider .ms-half.on { color: var(--accent); }
+  /* The knob moves by TRANSFORM, and every number here is a plain pixel.
+     Transitioning `top` between 3px and calc(50% + 1px) reported 3px
+     forever - the animation never advanced, and setting top inline while
+     the transition was live was ignored too. Measured in the browser, not
+     reasoned about. Transform also animates without relayout, which is what
+     it should have been doing regardless.
+
+     The slider is 106px tall with a 1px border, so its content box is
+     104px: knob 48px tall at top 3px, shifted down 50px, lands 3px clear of
+     the bottom. Exact, and no percentage to resolve against the wrong box. */
+  #msKnob {
+    position: absolute; left: 3px; right: 3px; top: 3px;
+    height: 48px; border-radius: 20px; z-index: 1;
+    background: var(--accent-dim); border: 1px solid var(--accent);
+    transition: transform .18s cubic-bezier(.4, 0, .2, 1);
+  }
+  #modeSlider.component #msKnob { transform: translateY(50px); }
 
   /* Shared by every tool icon the app shows, wherever it appears - right
      now that's only the press-and-hold ring, which supplies its own
@@ -136,6 +163,10 @@
   }
   .hub-item .ic { font-size: 17px; line-height: 1; }
   .hub-item .tx { font-size: 8px; color: var(--text-dim); letter-spacing: .02em; }
+  /* Two different things, deliberately different looks: .on means the
+     toggle is currently switched on, .active means your finger is over it
+     right now and lifting would run it. */
+  .hub-item.on { background: var(--accent-dim); color: var(--accent); }
   .hub-item.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
   .hub-item.active .tx { color: var(--on-accent); opacity: .85; }
 
@@ -180,30 +211,12 @@
      always reaches ~200px up from the bottom while the centred column
      drops toward it. Measured: anything under about 590px tall overlapped.
      Anchoring removes the dependency on height entirely. */
-  #selGestureRow {
-    position: absolute; left: var(--edge-l);
-    bottom: calc(var(--edge-b) + 268px);
-    display: flex; flex-direction: column; gap: var(--gap); z-index: 13;
-  }
 
-  /* On a genuinely short viewport there isn't room for a vertical column
-     above the arc, so it lays out along the top edge instead. */
-  @media (max-height: 620px) {
-    #selGestureRow {
-      bottom: auto; top: var(--edge);
-      left: calc(var(--edge-l) + 104px);
-      flex-direction: row;
-    }
-  }
-  #selGestureRow button {
-    width: 40px; height: 40px; min-height: 40px; padding: 0; justify-content: center;
-    border-radius: var(--r-md); background: var(--panel2);
-  }
 
   .ic-svg { display: block; }
   .hub-item .ic { display: flex; align-items: center; justify-content: center; }
 
-  #quickRow, #selGestureRow { transition: opacity .15s ease; }
+  #quickRow { transition: opacity .15s ease; }
 
   /* ---- Drawer: rarely-touched settings, for the assisting finger ---- */
   #scrim {
@@ -332,33 +345,11 @@
   /* Under the view cube: everything you'd otherwise dig into the drawer for
      mid-model. Assisting-finger territory, not thumb territory, so these are
      settings you glance at and tap - not the primary action loop. */
-  #btnXray, #btnGrid, #btnAimAssist, #btnSnap {
-    position: absolute; right: var(--edge-r); z-index: 13;
-    width: 42px; min-height: 42px; padding: 0; border-radius: var(--r-md);
-    background: var(--panel2); border: 1px solid var(--line);
-    line-height: 1; justify-content: center;
-  }
-  #btnXray { top: 106px; }
-  #btnGrid { top: 154px; }
-  #btnAimAssist { top: 202px; }
-  #btnSnap { top: 250px; }
-  #btnXray.active, #btnGrid.active, #btnAimAssist.active, #btnSnap.active {
-    background: var(--accent-dim); border-color: var(--accent); color: var(--accent);
-  }
 
   /* Left side, directly under undo/redo - a settings toggle that used to
      live on the right, but "mirror while you work" is close kin to the
      transform tools next to it now, not to the view settings it was
      grouped with. */
-  #btnSymmetry {
-    position: absolute; left: var(--edge-l); top: calc(var(--edge) + 44px + var(--gap)); z-index: 13;
-    width: 44px; height: 44px; min-height: 44px; padding: 0; border-radius: var(--r-md);
-    background: var(--panel2); border: 1px solid var(--line);
-    line-height: 1; justify-content: center;
-  }
-  #btnSymmetry.active {
-    background: var(--accent-dim); border-color: var(--accent); color: var(--accent);
-  }
 
   #viewCube {
     position: absolute; top: 2px; right: var(--edge-r); width: 96px; height: 96px;
@@ -511,7 +502,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.88</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.89</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -519,17 +510,25 @@
   <div id="viewport">
     <div id="toast"></div>
     <div id="viewCube"></div>
-    <button id="btnXray" title="Selection view: solid with an edge overlay, or see-through"></button>
-    <button id="btnGrid" title="Show or hide the floor grid"></button>
-    <button id="btnAimAssist" title="Ease the view in when vertex targets are too crowded to tap"></button>
-    <button id="btnSnap" title="Snap moves to a grid and rotations to fixed angles"></button>
-    <button id="btnSymmetry" title="Mirror edits across an axis while you work"></button>
+    <!-- The right rail (Xray / Grid / Aim assist / Snap) and the left-side
+         Symmetry button are gone as of v1.89. All five live in the ring that
+         blooms on a long press over empty space, along with Add Cube and the
+         select-gesture choice, which is what finally clears the viewport
+         edges. -->
     <div id="toolChip" title="Two fingers switch tool, three switch mode"></div>
     <div id="vignette"></div>
     <div id="selectBox"></div>
     <svg id="lassoSvg"><polyline id="lassoPath" /></svg>
-    <div id="thumbZone">
-      <button id="hubBtn" title="Object/Component - tap to switch">✥</button>
+    <div id="thumbZone"></div>
+
+    <!-- Object / Component, as a two-position switch on the left edge rather
+         than the old round button in the corner. Tap the half you want, or
+         swipe toward it - both work without looking, which a single button
+         that cycles never did. -->
+    <div id="modeSlider">
+      <div id="msKnob"></div>
+      <div class="ms-half" data-mode="object"><span class="ic"></span></div>
+      <div class="ms-half" data-mode="component"><span class="ic"></span></div>
     </div>
 
     <!-- A sibling of thumbZone, not a child of it - same reason as quickRow:
@@ -540,11 +539,6 @@
     <!-- A sibling of thumbZone, not a child of it - same reason as quickRow
          below: this needs real viewport coordinates to position itself
          against the gizmo, and thumbZone's own corner isn't that. -->
-    <div id="selGestureRow">
-      <button id="btnSelFree" title="Tap to select"></button>
-      <button id="btnSelBox" title="Drag a box to select"></button>
-      <button id="btnSelLasso" title="Draw a lasso to select"></button>
-    </div>
 
     <!-- A sibling of thumbZone, not a child of it - this needs the full
          viewport width to centre against, and thumbZone itself is sized only
@@ -3983,8 +3977,9 @@ function updateFrameVisibility() {
        more than one cube on screen nothing said which one your taps were
        going to land on. LineBasicMaterial.color multiplies the per-vertex
        colours, so this dims without touching the theme's own values. */
-    const active = o.id === App.activeObjectId ||
-      (App.mode === 'object' && App.selectedObjectIds.has(o.id));
+    const active = App.mode === 'object'
+      ? App.selectedObjectIds.has(o.id)
+      : o.id === App.activeObjectId;
     lines.material.color.setScalar(active ? 1 : FRAME_DIM);
   });
 }
@@ -5318,7 +5313,7 @@ function shrinkSelection() {
 
 document.addEventListener('touchmove', (ev) => {
   if (ev.target && ev.target.closest &&
-      ev.target.closest('#topBar, #drawer, #inspector, #opBar, #thumbZone')) return; // let the UI work
+      ev.target.closest('#topBar, #drawer, #inspector, #opBar, #thumbZone, #modeSlider')) return; // let the UI work
   if (ev.cancelable) ev.preventDefault();
 }, { passive: false });
 
@@ -5359,13 +5354,25 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   directCandidate = (App.selectDrag === 'off' && pointerOnSelection(ev))
     ? { x: ev.clientX, y: ev.clientY } : null;
 
-  // Holding still on the selection blooms the tool ring at the finger. Real
-  // movement before this fires cancels it in pointermove, the same instant
-  // it promotes the candidate into a drag instead.
+  /* Holding still blooms a ring at the finger. WHICH ring depends on what
+     is under it: on the selection you get that selection's tools, on empty
+     space you get the world ring - Add Cube and everything that used to be
+     a button around the edge.
+
+     Empty space waits longer. Pressing on your own selection and pausing
+     means one thing only, but pressing on the background and pausing is
+     also how a careful orbit starts, so that gesture has to prove itself
+     before it takes the press away from the camera. */
   clearToolRingTimer();
+  const px = ev.clientX, py = ev.clientY;
   if (directCandidate) {
-    const px = ev.clientX, py = ev.clientY;
     toolRingTimer = setTimeout(() => { toolRingTimer = null; bloomToolRing(px, py); }, TOOL_RING_HOLD_MS);
+  } else if (App.selectDrag === 'off') {
+    // Not while Box or Lasso is armed - there the press IS the gesture.
+    toolRingTimer = setTimeout(() => {
+      toolRingTimer = null;
+      bloomToolRing(px, py, HUB_TOOLS_WORLD);
+    }, WORLD_RING_HOLD_MS);
   }
 
   if (App.selectDrag !== 'off' && !pointerDown.overGizmo) {
@@ -5378,6 +5385,14 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
 
 renderer.domElement.addEventListener('pointermove', (ev) => {
   trackPointerMove(ev);
+  /* Any real travel means this was a drag or an orbit, never a hold. The
+     selection ring's timer is also cancelled below when its candidate is
+     promoted to a drag; this covers the empty-space case, which has no
+     candidate to promote. */
+  if (toolRingTimer && pointerDown &&
+      Math.hypot(ev.clientX - pointerDown.x, ev.clientY - pointerDown.y) > RING_MOVE_CANCEL_PX) {
+    clearToolRingTimer();
+  }
   if (activePointers.size > 1) return;   // camera gesture - hands off
   if (toolRingActive) { updateToolRingHover(ev); return; }
   if (directDrag) { updateDirectDrag(ev); return; }
@@ -6180,6 +6195,34 @@ function mirrorSelectedObjects(axis) {
   toast('Mirrored and joined across ' + axis.toUpperCase() + '=0');
 }
 
+/* Puts the selection back where new objects appear: centred on X and Z,
+   resting on the floor. NOT the bounding box centre moved to (0,0,0) - that
+   sinks half of every object below the grid, which looks like a bug even
+   when it is exactly what was asked for. This matches where a fresh cube
+   spawns, so "centre" and "new" agree. */
+function centreSelectionToOrigin() {
+  if (App.mode !== 'object') { toast('Centre works in Object mode'); return; }
+  const ids = Array.from(App.selectedObjectIds);
+  if (!ids.length) { toast('Select an object to centre'); return; }
+
+  const box = new THREE.Box3();
+  ids.forEach(id => { const o = findObject(id); if (o) box.expandByObject(o.mesh); });
+  if (box.isEmpty()) { toast('Nothing to centre'); return; }
+
+  const c = box.getCenter(new THREE.Vector3());
+  const shift = new THREE.Vector3(-c.x, -box.min.y, -c.z);
+  if (shift.lengthSq() < 1e-10) { toast('Already centred'); return; }
+
+  ids.forEach(id => {
+    const o = findObject(id);
+    if (o) { o.mesh.position.add(shift); o.mesh.updateMatrixWorld(true); }
+  });
+  refreshUI();
+  refreshGizmoAttachment();
+  pushHistory();
+  toast('Centred on the origin');
+}
+
 function joinSelection() {
   if (App.mode !== 'object') { toast('Join works in Object mode'); return; }
   const ids = Array.from(App.selectedObjectIds);
@@ -6676,7 +6719,8 @@ const ICON = {
   crease:  '<path d="M3 18L12 6l9 12"/><circle cx="12" cy="6" r="1.8" fill="currentColor" stroke="none"/>',
   uncrease:'<path d="M3 18c4-6 14-6 18 0"/>',
   subdiv:  '<path d="M3 3h18v18H3z"/><path d="M12 3v18M3 12h18"/>',
-  bridge:  '<path d="M4 17V9M20 17V9"/><path d="M4 9h16"/><path d="M8 9v4M12 9v5M16 9v4"/>'
+  bridge:  '<path d="M4 17V9M20 17V9"/><path d="M4 9h16"/><path d="M8 9v4M12 9v5M16 9v4"/>',
+  centre:  '<circle cx="12" cy="12" r="2.2"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5"/><circle cx="12" cy="12" r="7.5" stroke-dasharray="2.5 3"/>'
 };
 
 // Wraps a pictogram in an svg at the size the caller needs.
@@ -6686,7 +6730,7 @@ function icon(name, size) {
     'stroke-linejoin="round" aria-hidden="true">' + (ICON[name] || '') + '</svg>';
 }
 
-const hubBtnEl = document.getElementById('hubBtn');
+const modeSliderEl = document.getElementById('modeSlider');
 
 // Three tool sets, one per state, read by currentHubTools() and rendered
 // fresh into the press-and-hold ring each time it blooms. Every action here
@@ -6731,6 +6775,7 @@ const HUB_TOOLS_FACE = [
 const HUB_TOOLS_OBJECT_BASE = [
   { key: 'duplicate', icon: 'dupe', label: 'Duplicate', ring: 0, run: duplicateSelection },
   { key: 'mirror', icon: 'mirror', label: 'Mirror', ring: 0, run: () => mirrorSelectedObjects(App.symmetryAxis) },
+  { key: 'centre', icon: 'centre', label: 'Centre', ring: 0, run: centreSelectionToOrigin },
   { key: 'delete', icon: 'del', label: 'Delete', ring: 0, run: deleteSelection },
   // Kept together as a group, in this order, since they're the four most
   // related to how the object actually looks.
@@ -6751,6 +6796,44 @@ const HUB_TOOLS_EMPTY = [
   // trigger the OS file picker, there's no equivalent function to call.
   { key: 'load', icon: 'load', label: 'Load', ring: 0, run: () => document.getElementById('fileLoad').click() },
   { key: 'export', icon: 'file_export', label: 'Export', ring: 1, run: exportGlbAction }
+];
+
+/* The world ring: what a long press on EMPTY SPACE blooms, in any mode and
+   whatever is or isn't selected. It holds everything that used to sit as a
+   button around the viewport edge, which is how the edges finally got
+   clear.
+
+   The halves are not decoration. The four view toggles lived on the RIGHT
+   rail and the select-gesture choice and Symmetry lived on the LEFT, so
+   they keep those relationships: right-rail items occupy the top half of
+   the ring, left-rail items the bottom half. Anyone who built muscle memory
+   for "the eye is on the right" still finds it grouped with what it used to
+   sit beside.
+
+   Add Cube takes the right-hand pole on its own - it belongs to neither
+   group, it is the one item here that MAKES something rather than toggling
+   something, and the matching left pole is deliberately left empty so the
+   two arcs read as two arcs. */
+const HUB_TOOLS_WORLD = [
+  { key: 'addcube', icon: 'object', label: 'Add Cube', half: 'pole', run: addCubeAction },
+
+  { key: 'xray', icon: 'eye', label: 'See-through', half: 'top',
+    on: () => App.xraySelection, run: toggleXray },
+  { key: 'grid', icon: 'grid', label: 'Floor grid', half: 'top',
+    on: () => grid.visible, run: toggleFloorGrid },
+  { key: 'aim', icon: 'camera', label: 'Aim assist', half: 'top',
+    on: () => App.aimAssist, run: toggleAimAssist },
+  { key: 'snap', icon: 'snap', label: 'Snap', half: 'top',
+    on: () => App.snap, run: toggleSnapping },
+
+  { key: 'symmetry', icon: 'mirror', label: 'Symmetry', half: 'bottom',
+    on: () => App.symmetry, run: toggleSymmetry },
+  { key: 'selfree', icon: 'free', label: 'Tap select', half: 'bottom',
+    on: () => App.selectDrag === 'off', run: () => setSelectGesture('off') },
+  { key: 'selbox', icon: 'box', label: 'Box select', half: 'bottom',
+    on: () => App.selectDrag === 'box', run: () => setSelectGesture('box') },
+  { key: 'sellasso', icon: 'lasso', label: 'Lasso select', half: 'bottom',
+    on: () => App.selectDrag === 'lasso', run: () => setSelectGesture('lasso') }
 ];
 
 // Cycles Standard -> Matte -> Metal on repeated taps, since the arc only
@@ -6795,6 +6878,12 @@ function currentHubTools() {
    instead of trying to detect it - the ring just grows to fit however many
    tools are in it. */
 const TOOL_RING_HOLD_MS = 300;
+/* Longer than the selection ring's. A press on empty space is ambiguous in
+   a way a press on your own selection isn't - it's also how an orbit
+   begins - so it has to be held clearly on purpose before the camera loses
+   the gesture. */
+const WORLD_RING_HOLD_MS = 480;
+const RING_MOVE_CANCEL_PX = 8;   // travel this far and it was never a hold
 const TOOL_RING_DEAD_ZONE_PX = 26;   // release this close to centre = cancel
 const TOOL_RING_ITEM = 52;           // width of a single tool icon
 const TOOL_RING_GAP = 40;            // minimum clear space between icons
@@ -6808,18 +6897,54 @@ function clearToolRingTimer() {
   if (toolRingTimer) { clearTimeout(toolRingTimer); toolRingTimer = null; }
 }
 
-function bloomToolRing(x, y) {
-  const tools = currentHubTools();
+/* Where each tool sits on the ring, in degrees, 0 = right and rising
+   anticlockwise (the same convention the placement below uses).
+
+   An even set is spread over the whole circle. A HALVED set - the world
+   ring - places its groups inside their own half and inset from the poles,
+   so neither group ever touches the other and the poles stay free for
+   whatever claims them. */
+function toolRingAngles(tools) {
+  const halved = tools.some(t => t.half);
+  if (!halved) return tools.map((t, i) => 90 - (i / tools.length) * 360);
+
+  const spread = (list, from) => list.map((t, i) => from + 180 * ((i + 1) / (list.length + 1)));
+  const top = tools.filter(t => t.half === 'top');
+  const bottom = tools.filter(t => t.half === 'bottom');
+  const topA = spread(top, 0), botA = spread(bottom, 180);
+  return tools.map(t => {
+    if (t.half === 'top') return topA[top.indexOf(t)];
+    if (t.half === 'bottom') return botA[bottom.indexOf(t)];
+    return 0;                       // pole: due right
+  });
+}
+
+// The tightest gap between any two items, which is what actually decides
+// how big the ring has to be. Measured rather than assumed, because a
+// halved set has uneven spacing by construction.
+function minAngularGapDeg(anglesDeg) {
+  const a = anglesDeg.slice().sort((p, q) => p - q);
+  if (a.length < 2) return 360;
+  let best = 360 - (a[a.length - 1] - a[0]);   // the wrap-around gap
+  for (let i = 1; i < a.length; i++) best = Math.min(best, a[i] - a[i - 1]);
+  return Math.max(best, 1);
+}
+
+function bloomToolRing(x, y, tools) {
+  tools = tools || currentHubTools();
   if (!tools.length) return;
 
-  // Ring radius scales with item count rather than staying fixed - a 3-tool
-  // set (Vertex) stays close and quick to reach, a 9-tool set (Edge, now
-  // that Shade lives there too) spreads out enough to keep real spacing.
-  // Every set lands at roughly the same gap between icons regardless of
-  // how many there are.
+  const anglesDeg = toolRingAngles(tools);
+
+  // Ring radius scales with the CLOSEST pair rather than staying fixed - a
+  // 3-tool set (Vertex) stays close and quick to reach, a 9-tool set
+  // spreads out enough to keep real spacing. Every set lands at roughly the
+  // same gap between icons regardless of how many there are or how they're
+  // grouped.
+  const gap = THREE.MathUtils.degToRad(minAngularGapDeg(anglesDeg));
   const R = Math.max(
     TOOL_RING_MIN_R,
-    (TOOL_RING_ITEM + TOOL_RING_GAP) / (2 * Math.sin(Math.PI / tools.length))
+    (TOOL_RING_ITEM + TOOL_RING_GAP) / (2 * Math.sin(gap / 2))
   );
 
   const rect = viewportEl.getBoundingClientRect();
@@ -6833,11 +6958,12 @@ function bloomToolRing(x, y) {
 
   const itemEls = [];
   tools.forEach((tool, idx) => {
-    // Full circle, not a sweep - there's no corner to stay clear of here,
-    // so every item gets an equal, generous slice.
-    const angle = (90 - (idx / tools.length) * 360) * Math.PI / 180;
+    const angle = anglesDeg[idx] * Math.PI / 180;
     const el = document.createElement('div');
     el.className = 'hub-item';
+    // A toggle has to show which way it is currently set, or you can't tell
+    // whether you're about to turn the grid on or off.
+    if (tool.on && tool.on()) el.classList.add('on');
     el.dataset.key = tool.key;
     el.style.left = Math.cos(angle) * R + 'px';
     el.style.bottom = Math.sin(angle) * R + 'px';
@@ -6903,13 +7029,49 @@ function closeToolRing(run) {
 // currentHubTools() fresh at the moment it blooms, so there's nothing left
 // that needs tracking between rebuilds.
 
-hubBtnEl.addEventListener('pointerdown', (ev) => ev.stopPropagation());
-hubBtnEl.addEventListener('click', (ev) => {
+/* The Object / Component switch, v1.89. A single button that cycled was
+   fine to hit and useless to read - you could not tell which mode a tap
+   would leave you in without looking at the icon and reasoning backwards.
+   Two halves with a knob between them says the current state and the
+   available state at once, and can be worked without looking: swipe toward
+   the half you want, or tap it. */
+const MODE_SWIPE_PX = 16;   // past this the gesture is a swipe, not a tap
+let modeSliderPress = null;
+
+function setObjComponentMode(want) {
+  const isObj = App.mode === 'object';
+  if (want === 'object' && !isObj) setMode('object');
+  else if (want === 'component' && isObj) setMode(App.lastComponentMode);
+  else refreshObjComponentBtn();   // already there - just re-settle the knob
+}
+
+modeSliderEl.addEventListener('pointerdown', (ev) => {
   ev.stopPropagation();
-  // The hub button is the Object/Component switch - tools live in the
-  // press-and-hold ring now, which doesn't need this tap to refresh it.
-  toggleObjComponentMode();
+  ev.preventDefault();
+  // Capture so a swipe that leaves the pill still reports its release here.
+  // Guarded: a pointer id the browser doesn't recognise throws, and losing
+  // capture is survivable where losing the whole handler is not.
+  try { modeSliderEl.setPointerCapture(ev.pointerId); } catch (e) { /* no capture, still fine */ }
+  const r = modeSliderEl.getBoundingClientRect();
+  modeSliderPress = { y: ev.clientY, top: r.top, h: r.height };
 });
+
+modeSliderEl.addEventListener('pointerup', (ev) => {
+  ev.stopPropagation();
+  if (!modeSliderPress) return;
+  const p = modeSliderPress;
+  modeSliderPress = null;
+  const dy = ev.clientY - p.y;
+  /* A swipe names a direction, a tap names a place. Object is the upper
+     half, so swiping up and tapping the top mean the same thing - which is
+     what lets the control be used without looking at it. */
+  const want = Math.abs(dy) > MODE_SWIPE_PX
+    ? (dy < 0 ? 'object' : 'component')
+    : ((ev.clientY - p.top) < p.h / 2 ? 'object' : 'component');
+  setObjComponentMode(want);
+});
+
+modeSliderEl.addEventListener('pointercancel', () => { modeSliderPress = null; });
 
 /* ---------------- Drawer ---------------- */
 
@@ -6953,21 +7115,14 @@ helpOverlayEl.addEventListener('click', (ev) => { if (ev.target === helpOverlayE
 // btnObjComponent is gone - the hub button itself is the toggle now, wired
 // directly in its own click handler above.
 // Free / Box / Lasso choose the drag gesture, not whether taps add to the
-// selection - that's permanent now. Three explicit buttons rather than one
-// cycling through states, since they sit right next to the hub and can each
-// be reached directly.
+// selection - that's permanent now. Three explicit choices rather than one
+// control cycling through states; they live in the world ring as of v1.89,
+// where each is still reachable directly.
 function setSelectGesture(mode) {
   App.selectDrag = mode;
-  const active = { off: 'btnSelFree', box: 'btnSelBox', lasso: 'btnSelLasso' }[mode];
-  ['btnSelFree', 'btnSelBox', 'btnSelLasso'].forEach(id => {
-    document.getElementById(id).classList.toggle('active', id === active);
-  });
   const name = { off: 'Tap', box: 'Box', lasso: 'Lasso' }[mode];
   toast(mode === 'off' ? 'Tap to select' : name + ' select on - drag in the viewport');
 }
-document.getElementById('btnSelFree').addEventListener('click', () => setSelectGesture('off'));
-document.getElementById('btnSelBox').addEventListener('click', () => setSelectGesture('box'));
-document.getElementById('btnSelLasso').addEventListener('click', () => setSelectGesture('lasso'));
 // Grow/Shrink buttons removed for now - growSelection/shrinkSelection stay defined below, ready to wire back in.
 // Subdivide drawer buttons removed - the fan's Subdivide item calls
 // subdivideSelection('smooth'). subdivideSelection('keep') and
@@ -6998,34 +7153,37 @@ document.getElementById('btnTheme').addEventListener('click', () => {
   toast(THEMES[next].label);
 });
 
-document.getElementById('btnAimAssist').addEventListener('click', (ev) => {
+/* The four view toggles and Symmetry, as plain functions. They used to be
+   click handlers bolted to five buttons around the viewport edge; those
+   buttons are gone as of v1.89 and the world ring calls these directly.
+   The bodies are unchanged apart from dropping the classList line, which
+   the ring works out for itself from `on()`. */
+function toggleAimAssist() {
   App.aimAssist = !App.aimAssist;
-  ev.currentTarget.classList.toggle('active', App.aimAssist);
   if (!App.aimAssist) camAnim = null;   // stop any nudge already in flight
   toast(App.aimAssist ? 'Aim assist on' : 'Aim assist off');
-});
+}
 
-document.getElementById('btnGrid').addEventListener('click', (ev) => {
+function toggleFloorGrid() {
   grid.visible = !grid.visible;
   // Tied to the same toggle rather than a separate one - the contact
   // shadow is a floor-relative cue, so it reads as part of "the floor" and
   // should come and go with it instead of lingering once the grid is gone.
   shadowCatcher.visible = SHOW_FLOOR_SHADOW && grid.visible;
-  ev.currentTarget.classList.toggle('active', grid.visible);
   toast(grid.visible ? 'Floor grid on' : 'Floor grid off');
-});
-document.getElementById('btnSnap').addEventListener('click', (ev) => {
+}
+
+function toggleSnapping() {
   App.snap = !App.snap;
   applySnapSettings();
-  ev.currentTarget.classList.toggle('active', App.snap);
   toast(App.snap ? 'Snapping to 0.25 units / 15°' : 'Snapping off');
-});
-document.getElementById('btnXray').addEventListener('click', (ev) => {
+}
+
+function toggleXray() {
   App.xraySelection = !App.xraySelection;
   refreshXrayMode();
-  ev.currentTarget.classList.toggle('active', App.xraySelection);
   toast(App.xraySelection ? 'Selection: see-through' : 'Selection: solid');
-});
+}
 // A plain flip-flop: 0/I, not a readout of the actual mixed shading state
 // across faces - it just toggles and applies, same pattern as the Material
 // cycler. Works on the whole object in Object mode or the current selection
@@ -7038,9 +7196,8 @@ function toggleShading() {
   shadeSelection(App.shadeSmooth);
   toast(App.shadeSmooth ? 'Shaded smooth' : 'Shaded flat');
 }
-document.getElementById('btnSymmetry').addEventListener('click', (ev) => {
+function toggleSymmetry() {
   App.symmetry = !App.symmetry;
-  ev.currentTarget.classList.toggle('active', App.symmetry);
   refreshUI();
   if (!App.symmetry) { toast('Symmetry off'); return; }
   /* Report how many mirror pairs were actually found, on screen. Symmetry
@@ -7059,7 +7216,7 @@ document.getElementById('btnSymmetry').addEventListener('click', (ev) => {
   toast('Symmetry on (' + App.symmetryAxis.toUpperCase() + ') - ' +
         (pairs < 0 ? 'no active object'
                    : pairs + ' pairs' + (App.mode === 'object' ? ' - switch to a component mode' : '')));
-});
+}
 document.querySelectorAll('#symAxisGroup button').forEach(btn => {
   btn.addEventListener('click', () => {
     App.symmetryAxis = btn.dataset.sym;
@@ -7168,7 +7325,7 @@ window.addEventListener('keydown', (ev) => {
     const order = ['off', 'box', 'lasso'];
     setSelectGesture(order[(order.indexOf(App.selectDrag) + 1) % order.length]);
   }
-  else if (ev.key.toLowerCase() === 'n') document.getElementById('btnSnap').click();
+  else if (ev.key.toLowerCase() === 'n') toggleSnapping();
   else if (ev.key === 'Escape') {
     App.selectedObjectIds.clear(); App.selectedElements.clear();
     hideRadialMenu();
@@ -7358,9 +7515,6 @@ let lastFrameTime = performance.now();
 function paintStaticIcons() {
   const map = {
     btnMenu: ['menu', 20], btnUndo: ['undo', 20], btnRedo: ['redo', 20],
-    btnSymmetry: ['mirror', 19], btnGrid: ['grid', 19], btnAimAssist: ['camera', 19],
-    btnSnap: ['snap', 19], btnXray: ['eye', 19],
-    btnSelFree: ['free', 18], btnSelBox: ['box', 18], btnSelLasso: ['lasso', 18],
     drawerClose: ['close', 16], inspClose: ['close', 16], opCancel: ['close', 16], helpClose: ['close', 16]
   };
   Object.entries(map).forEach(([id, [name, size]]) => {
@@ -7375,13 +7529,21 @@ function paintStaticIcons() {
 // communicates both which top-level mode you're in and, in Component mode,
 // which sub-type, without a second row of state to read.
 function refreshObjComponentBtn() {
-  const btn = document.getElementById('hubBtn');
-  if (!btn) return;
-  const iconName = App.mode === 'object' ? 'object' : App.mode;
-  btn.innerHTML = icon(iconName, 26);
-  btn.title = App.mode === 'object'
-    ? 'Object mode - tap to edit components'
-    : 'Component mode (' + App.mode + ') - tap to edit whole objects';
+  const el = modeSliderEl;
+  if (!el) return;
+  const isObj = App.mode === 'object';
+  el.classList.toggle('component', !isObj);
+  const halves = el.querySelectorAll('.ms-half');
+  if (halves.length < 2) return;
+  halves[0].classList.toggle('on', isObj);
+  halves[1].classList.toggle('on', !isObj);
+  halves[0].querySelector('.ic').innerHTML = icon('object', 22);
+  // The lower half shows the component type it would put you IN, which is
+  // the one you last worked in - not a generic "component" glyph.
+  halves[1].querySelector('.ic').innerHTML = icon(isObj ? App.lastComponentMode : App.mode, 22);
+  el.title = isObj
+    ? 'Object mode - tap the lower half or swipe down to edit components'
+    : 'Component mode (' + App.mode + ') - tap the upper half or swipe up for objects';
 }
 
 /* ---------------- Update detection ----------------
@@ -7431,11 +7593,6 @@ function init() {
   paintStaticIcons();
   refreshToolIndicator();
   applyTheme(App.theme);
-  document.getElementById('btnGrid').classList.toggle('active', grid.visible);
-  document.getElementById('btnAimAssist').classList.toggle('active', App.aimAssist);
-  document.getElementById('btnSnap').classList.toggle('active', App.snap);
-  document.getElementById('btnSymmetry').classList.toggle('active', App.symmetry);
-  document.getElementById('btnXray').classList.toggle('active', App.xraySelection);
   setSelectGesture(App.selectDrag);
   applySnapSettings();
   // Pick up where you left off. Only fall back to a fresh cube when there's

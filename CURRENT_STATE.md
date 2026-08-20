@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: C:\Users\a.bodrov\Projects\kubik  (index.html is ~6600 lines)
-- Version at time of writing: v1.88
+- Version at time of writing: v1.89
 - Debug console: append ?debug=1 to the URL. Tap picks also log a
   `[pick] ...` line explaining exactly why a tap resolved as it did.
 
@@ -30,7 +30,34 @@ it. The same drag moves, rotates or scales depending on the active tool.
 
 **Tools bloom at your finger.** Press and hold on a selected component and
 the relevant tools appear in a single ring around the touch point. Slide
-onto one and lift to run it. Ring radius scales with the number of tools.
+onto one and lift to run it. Ring radius scales with the number of tools -
+measured from the CLOSEST pair of items, not from the count, so unevenly
+grouped sets still get real spacing.
+
+**The world ring** (v1.89). Press and hold on EMPTY SPACE, in any mode,
+whatever is selected, and you get Add Cube plus everything that used to be
+a button around the viewport edge. The right rail (See-through, Floor grid,
+Aim assist, Snap) occupies the TOP half of the ring; the left-side controls
+(Symmetry, and Tap/Box/Lasso select) occupy the BOTTOM half, so anything
+you had muscle memory for is still grouped with what it sat beside. Add
+Cube takes the right-hand pole alone - it is the only item that makes
+something rather than toggling something - and the left pole is left empty
+so the two arcs read as two arcs.
+- It waits longer than the selection ring (480ms vs 300ms). Pressing on
+  your own selection and pausing means one thing; pressing on the
+  background and pausing is also how a careful orbit starts, so that
+  gesture has to prove itself before the camera loses it.
+- Not armed while Box or Lasso select is on - there the press IS the
+  gesture.
+- `.on` (toggle is currently on) and `.active` (your finger is over it)
+  are deliberately different looks.
+
+**Object / Component is a two-position switch** on the middle of the left
+edge (v1.89), replacing the round corner button. Tap the half you want or
+swipe toward it; Object is the upper half. A button that cycled was fine to
+hit and impossible to read - you could not tell which mode a tap would
+leave you in without looking at the icon and reasoning backwards. The lower
+half shows the component type it would put you IN, not a generic glyph.
 
 **Selection**
 - Vertex and edge picking is SCREEN-SPACE (pixel distance to the projected
@@ -169,3 +196,28 @@ empty space orbits, pinch zooms.
 - The ACTIVE object's wireframe renders at full strength; every other
   object's is dimmed to `FRAME_DIM` (0.4). They used to be identical, so with
   more than one cube on screen nothing said which one your taps would hit.
+  v1.89 fixed the Object-mode case: there the SELECTED set decides, not
+  `activeObjectId`, which can point at something you aren't editing.
+
+## Testing loop (set up v1.89)
+
+The app can be driven from a Claude session end to end: `python -m
+http.server 8765` in the repo folder, then Chrome on the same machine loads
+`http://localhost:8765/index.html?debug=1` and synthetic PointerEvents
+dispatched into the canvas exercise taps, holds and drags. This caught two
+real problems in v1.89 before anything was pushed.
+
+Two traps, both of which cost time:
+- **A backgrounded tab freezes CSS transitions and clamps `setTimeout` to
+  ~1s.** A transitioned property reads its START value forever, so
+  `getComputedStyle` lied about the slider knob, and hold-vs-tap timing
+  could not be told apart. Check `document.hidden` FIRST; disable the
+  transition before measuring a transitioned property.
+- **Synthetic pointer events make OrbitControls throw**
+  `setPointerCapture: No active pointer`. Harmless and unreachable with a
+  real finger - but it fills the console, so filter by stack, not by count.
+
+## Still open after v1.89
+
+- Symmetry Local vs World: the mode switch AND its mechanics. Agreed, not
+  built. It belongs next to Symmetry in the world ring's bottom half.
