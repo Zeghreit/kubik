@@ -511,7 +511,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.85a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.85b</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -4638,8 +4638,17 @@ function pickObjectAt(ev) {
 
    A pixel threshold is also constant on screen by definition, so the
    camera-distance scaling and the object-size cap both disappear. */
-const PICK_RADIUS_PX = 22;         // thumb-sized catch radius
-const OFF_MODE_PICK_BIAS = 0.55;   // other types catch narrower than the current one
+const PICK_RADIUS_PX = 22;         // thumb-sized catch radius (44px target)
+/* Only a slight preference for the mode you're already in - not the harsh
+   0.55 this started at. That shrank an off-mode target to 24px across,
+   about half Apple's 44px minimum, and because the mode only changes AFTER
+   a successful pick you were stuck at that size trying to make the first
+   one. Vertices and edges became almost untappable from face mode.
+
+   The heavy bias was there to stop edges stealing taps meant for faces -
+   but the type lock now handles that outright once anything is selected,
+   so this only nudges the very first tap. */
+const OFF_MODE_PICK_BIAS = 0.9;
 
 // Projects a world point to viewport pixels, or null if it's behind the camera.
 function worldToScreenPx(p) {
