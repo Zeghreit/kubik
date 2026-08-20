@@ -511,7 +511,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.85c</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.86</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1018,6 +1018,21 @@ const gizmoStrokes = [];
 // point that rotation and scale work around.
 let gizmoTarget = null;
 
+/* Vertex dots are sized in SCREEN pixels, not world units.
+
+   They used to use sizeAttenuation, so a dot shrank as you zoomed out: on a
+   unit cube at camera distance 25 the dot measured ~4px while the catch
+   radius stayed 22px. You were aiming at something you could barely see,
+   and the catch zones of neighbouring vertices overlapped. Constant screen
+   size makes what you SEE the thing you can HIT at every zoom level.
+
+   gl_PointSize is in device pixels, so the CSS size has to be multiplied by
+   the pixel ratio or dots come out three times too small on a phone. */
+const VERTEX_DOT_PX = 11;
+function vertexDotSize() {
+  return VERTEX_DOT_PX * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1);
+}
+
 // LineMaterial needs the viewport size to work out a pixel width; without
 // this the strokes render at the wrong weight after any resize or rotation.
 function updateStrokeResolution() {
@@ -1332,7 +1347,7 @@ function ensureHelpers(obj) {
   // means the overlay respects depth and only shows on the visible surface
   // - ON means it ignores depth and shows through, which is the see-through
   // look this toggle exists to make optional rather than permanent.
-  const vMat = new THREE.PointsMaterial({ size: 0.11, vertexColors: true, sizeAttenuation: true, depthTest: !App.xraySelection, fog: false });
+  const vMat = new THREE.PointsMaterial({ size: vertexDotSize(), vertexColors: true, sizeAttenuation: false, depthTest: !App.xraySelection, fog: false });
   const points = new THREE.Points(vGeo, vMat);
   points.renderOrder = 10;
   points.visible = false;
@@ -4207,6 +4222,18 @@ function axisParamFromPointer(ev, origin, dir) {
 
 const DIRECT_START_PX = 6;     // movement before a touch counts as a drag
 const DIRECT_DECIDE_PX = 15;   // ... and before the axis question is settled
+
+/* A mouse pointer lands where you put it. A thumb doesn't - it rolls a few
+   pixels as it presses and again as it lifts. One shared 6px slop meant a
+   perfectly ordinary thumb tap travelled too far, got thrown away as a
+   camera drag, and read to the user as "it didn't register". Touch gets a
+   wider allowance; the mouse keeps its precision. Pen counts as a mouse. */
+const DIRECT_START_TOUCH_PX = 8;
+const TAP_SLOP_PX = 6;
+const TAP_SLOP_TOUCH_PX = 12;
+const isTouchEvent = (ev) => ev.pointerType === 'touch';
+const dragStartPx = (ev) => (isTouchEvent(ev) ? DIRECT_START_TOUCH_PX : DIRECT_START_PX);
+const tapSlopPx = (ev) => (isTouchEvent(ev) ? TAP_SLOP_TOUCH_PX : TAP_SLOP_PX);
 /* 18 degrees. Wide enough that each axis keeps a comfortable cone, narrow
    enough that uniform scale stays easy to reach - at 26 the three cones
    swallowed 87% of all directions in the default view, leaving uniform
@@ -4325,25 +4352,81 @@ axisGuide.visible = false;
 scene.add(axisGuide);
 gizmoStrokes.push(axisGuide);
 
-// Is the pointer over something that's already selected?
+/* Where the current selection sits on screen: its points, and the segments
+   joining them. Measured only against SELECTED components, so an unselected
+   neighbour that happens to lie nearer the finger can no longer steal the
+   grab and turn it into an orbit. */
+function selectionScreenShape() {
+  const obj = findObject(App.activeObjectId);
+  if (!obj || !App.selectedElements.size) return null;
+  const topo = obj.mesh.userData.topo;
+  const pa = obj.mesh.geometry.attributes.position;
+  const pts = [], segs = [];
+  const at = (l) => {
+    const g = topo.logicalGroups[l];
+    if (!g) return null;
+    const p = new THREE.Vector3(pa.getX(g[0]), pa.getY(g[0]), pa.getZ(g[0]));
+    obj.mesh.localToWorld(p);
+    return worldToScreenPx(p);
+  };
+
+  if (App.mode === 'vertex') {
+    App.selectedElements.forEach(l => { const s = at(l); if (s) pts.push(s); });
+  } else if (App.mode === 'edge') {
+    App.selectedElements.forEach(i => {
+      const e = topo.edges[i];
+      if (!e) return;
+      const a = at(e[0]), b = at(e[1]);
+      if (a) pts.push(a);
+      if (b) pts.push(b);
+      if (a && b) segs.push([a, b]);
+    });
+  } else if (App.mode === 'face') {
+    App.selectedElements.forEach(gi => {
+      const ring = [];
+      groupLogicalLoop(obj, gi).forEach(l => { const s = at(l); if (s) { pts.push(s); ring.push(s); } });
+      for (let i = 0; i < ring.length; i++) segs.push([ring[i], ring[(i + 1) % ring.length]]);
+    });
+  }
+  return pts.length ? { pts, segs } : null;
+}
+
+// Is the pointer close enough to the selection to be taking hold of it?
 function pointerOnSelection(ev) {
   if (App.mode === 'object') {
     const hit = pickObjectAt(ev);
     return !!(hit && App.selectedObjectIds.has(hit.id));
   }
-  /* Ask for the current mode's type directly rather than going through the
-     vertex-then-edge-then-face picker. That picker exists to decide what a
-     tap SELECTS, where the priority order is what you want - but here we
-     already know what's selected. Using it meant that touching a selected
-     face anywhere near one of its edges returned the edge, which didn't
-     match the mode, and the grab was silently refused. That was the
-     "sometimes it won't pick things up" problem: it happened wherever a
-     face's own border ran, which is a lot of the face. */
-  let idx = -1;
-  if (App.mode === 'vertex') idx = pickVertexOnActive(ev);
-  else if (App.mode === 'edge') idx = pickEdgeOnActive(ev);
-  else if (App.mode === 'face') idx = pickFaceOnActive(ev);
-  return idx >= 0 && App.selectedElements.has(idx);
+  // A selected face is grabbable anywhere its surface is under the finger.
+  if (App.mode === 'face') {
+    const f = pickFaceOnActive(ev);
+    if (f >= 0 && App.selectedElements.has(f)) return true;
+  }
+
+  const shape = selectionScreenShape();
+  if (!shape) return false;
+  const tap = pointerPx(ev);
+
+  for (const p of shape.pts) if (p.distanceTo(tap) <= GRAB_RADIUS_PX) return true;
+  for (const s of shape.segs) if (distPxToSegment(tap, s[0], s[1]) <= GRAB_RADIUS_PX) return true;
+
+  /* Pressing inside the area the selection covers counts as grabbing it.
+     That is the natural place to take hold of a group of components, and it
+     used to be refused because no single element was near enough.
+
+     Skipped when the box is most of the screen - a selection spread across
+     the whole model would otherwise leave nowhere left to orbit from. */
+  if (shape.pts.length >= 3) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    shape.pts.forEach(p => {
+      x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
+      x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y);
+    });
+    const r = viewportEl.getBoundingClientRect();
+    const covers = ((x1 - x0) * (y1 - y0)) / Math.max(1, r.width * r.height);
+    if (covers < 0.6 && tap.x >= x0 && tap.x <= x1 && tap.y >= y0 && tap.y <= y1) return true;
+  }
+  return false;
 }
 
 // Where an axis points on screen, as a unit 2D direction from the pivot.
@@ -4671,6 +4754,17 @@ const PICK_RADIUS_PX = 22;         // thumb-sized catch radius (44px target)
    so this only nudges the very first tap. */
 const OFF_MODE_PICK_BIAS = 0.9;
 
+/* Grabbing is a different question from selecting, and it was a mistake to
+   answer both with PICK_RADIUS_PX.
+
+   Selecting asks "which one of these did you mean", so it wants precision.
+   Grabbing asks "are you taking hold of what's already yours", and there is
+   nothing to arbitrate against - so it wants generosity. Sharing one radius
+   meant a press 25px from a selected vertex, or a press in the middle of a
+   multi-selection, was refused and silently became a camera orbit. That is
+   the "sometimes it won't translate" bug. */
+const GRAB_RADIUS_PX = 34;
+
 // Projects a world point to viewport pixels, or null if it's behind the camera.
 function worldToScreenPx(p) {
   const v = p.clone().project(camera);
@@ -4758,6 +4852,21 @@ function edgeVisible(obj, e) {
 }
 
 
+/* Two vertices that land within this many pixels of each other are, as far
+   as a thumb is concerned, the same spot. When that happens pixel distance
+   is noise, so depth decides instead - and the one nearest the camera is
+   always the one you meant. */
+const VERT_TIE_PX = 8;
+
+/* Nearest visible vertex wins, which is a Voronoi split of the screen: the
+   catch zones can never overlap however far out you zoom, because each
+   vertex owns exactly the pixels closest to it. The old code did the same
+   comparison but the DRAWN dots shrank with distance, so the zones stopped
+   matching anything you could see. With constant-size dots the two agree.
+
+   The one case pixel distance can't settle is two vertices projecting on
+   top of each other - front and back of the cube seen edge-on. There the
+   near one wins on depth. */
 function pickVertexOnActive(ev, bias = 1) {
   const obj = findObject(App.activeObjectId);
   if (!obj) return -1;
@@ -4765,7 +4874,8 @@ function pickVertexOnActive(ev, bias = 1) {
   const limit = PICK_RADIUS_PX * bias;
   const topo = obj.mesh.userData.topo;
   const pa = obj.mesh.geometry.attributes.position;
-  let best = -1, bestD = limit;
+
+  let best = -1, bestD = Infinity, bestZ = Infinity;
   for (let l = 0; l < topo.logicalCount; l++) {
     const ai = topo.logicalGroups[l][0];
     const p = new THREE.Vector3(pa.getX(ai), pa.getY(ai), pa.getZ(ai));
@@ -4773,7 +4883,15 @@ function pickVertexOnActive(ev, bias = 1) {
     const s = worldToScreenPx(p);
     if (!s) continue;
     const d = s.distanceTo(tap);
-    if (d < bestD && vertexVisible(obj, l)) { bestD = d; best = l; }
+    if (d > limit) continue;                 // outside the catch radius
+    if (!vertexVisible(obj, l)) continue;
+    const z = p.distanceTo(camera.position);
+    // Inside the tie band the nearer-to-camera vertex wins; outside it,
+    // plain pixel distance decides as before.
+    const tied = Math.abs(d - bestD) <= VERT_TIE_PX;
+    if (best < 0 || (tied ? z < bestZ : d < bestD)) {
+      best = l; bestD = Math.min(bestD, d); bestZ = z;
+    }
   }
   return best;
 }
@@ -5214,7 +5332,7 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
   // a hold, so the ring timer is cancelled here rather than left to fire
   // late over an object that's already being dragged.
   if (directCandidate && !boxDrag) {
-    if (Math.hypot(ev.clientX - directCandidate.x, ev.clientY - directCandidate.y) > DIRECT_START_PX) {
+    if (Math.hypot(ev.clientX - directCandidate.x, ev.clientY - directCandidate.y) > dragStartPx(ev)) {
       clearToolRingTimer();
       if (beginDirectDrag(ev)) { updateDirectDrag(ev); return; }
       directCandidate = null;
@@ -5295,7 +5413,7 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
   const moved = Math.sqrt(dx * dx + dy * dy);
   const wasOverGizmo = pointerDown.overGizmo;
   pointerDown = null;
-  if (moved > 6 || wasOverGizmo) return; // treat as camera drag or gizmo interaction, not a selection tap
+  if (moved > tapSlopPx(ev) || wasOverGizmo) return; // camera drag, not a selection tap
 
   const now = performance.now();
   const isDoubleTap = lastTap && (now - lastTap.time) < 450 &&
