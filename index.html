@@ -511,7 +511,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.86</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.86a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1028,9 +1028,29 @@ let gizmoTarget = null;
 
    gl_PointSize is in device pixels, so the CSS size has to be multiplied by
    the pixel ratio or dots come out three times too small on a phone. */
-const VERTEX_DOT_PX = 11;
+const VERTEX_DOT_PX = 8;
 function vertexDotSize() {
   return VERTEX_DOT_PX * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1);
+}
+
+/* PointsMaterial draws an untextured point as a SQUARE. At 4px nobody could
+   tell; at this size the squares read as UI chrome scattered over the model.
+   A round sprite reads as a marker instead, and a circle carries about 21%
+   less area than a square of the same width, so the same dot sits quieter
+   without becoming harder to see. Built once and shared by every object. */
+let _vertexDotTexture = null;
+function vertexDotTexture() {
+  if (_vertexDotTexture) return _vertexDotTexture;
+  const S = 64;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d');
+  g.beginPath();
+  g.arc(S / 2, S / 2, S / 2 - 1.5, 0, Math.PI * 2);
+  g.fillStyle = '#ffffff';   // white, so the per-vertex colour comes through
+  g.fill();
+  _vertexDotTexture = new THREE.CanvasTexture(c);
+  return _vertexDotTexture;
 }
 
 // LineMaterial needs the viewport size to work out a pixel width; without
@@ -1347,7 +1367,11 @@ function ensureHelpers(obj) {
   // means the overlay respects depth and only shows on the visible surface
   // - ON means it ignores depth and shows through, which is the see-through
   // look this toggle exists to make optional rather than permanent.
-  const vMat = new THREE.PointsMaterial({ size: vertexDotSize(), vertexColors: true, sizeAttenuation: false, depthTest: !App.xraySelection, fog: false });
+  const vMat = new THREE.PointsMaterial({
+    size: vertexDotSize(), vertexColors: true, sizeAttenuation: false,
+    map: vertexDotTexture(), alphaTest: 0.4, transparent: true, depthWrite: false,
+    depthTest: !App.xraySelection, fog: false
+  });
   const points = new THREE.Points(vGeo, vMat);
   points.renderOrder = 10;
   points.visible = false;
@@ -3919,9 +3943,15 @@ function setActiveObjectHelpersVisible(obj, mode) {
      you in the same mode with the same problem.
 
      Seeing what you can select is the point - the tap priority
-     (vertex > edge > face) then does the rest. */
+     (vertex > edge > face) then does the rest.
+
+     v1.86a narrows that for VERTEX dots only: they now appear in Vertex mode
+     alone. Constant-size dots made them loud enough to clutter Edge and Face
+     work, where they were never the thing being aimed at. Edge lines still
+     show in every component mode - they double as the wireframe, so they
+     read as part of the model rather than as markers laid over it. */
   const inComponentMode = mode === 'vertex' || mode === 'edge' || mode === 'face';
-  if (p) p.visible = inComponentMode;
+  if (p) p.visible = mode === 'vertex';
   if (l) l.visible = inComponentMode;
   if (ov) ov.forEach(o => o.visible = false);
 }

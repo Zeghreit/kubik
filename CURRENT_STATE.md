@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: C:\Users\a.bodrov\Projects\kubik  (index.html is ~6600 lines)
-- Version at time of writing: v1.86
+- Version at time of writing: v1.86a
 - Debug console: append ?debug=1 to the URL. Tap picks also log a
   `[pick] ...` line explaining exactly why a tap resolved as it did.
 
@@ -41,6 +41,12 @@ onto one and lift to run it. Ring radius scales with the number of tools.
   the catch radius stayed 22px - you aimed at something you could not see,
   and neighbouring catch zones overlapped. Constant size makes what you SEE
   the thing you can HIT at every zoom.
+- v1.86a: dots are 8px ROUND sprites (PointsMaterial draws untextured points
+  as squares, which read as UI chrome once they stopped shrinking), and they
+  now show in VERTEX MODE ONLY. Edge lines still show in every component
+  mode - they double as the wireframe. Note this means a tap near a corner
+  in Edge or Face mode can still be claimed by a vertex you cannot see, as
+  vertex keeps tap priority; deliberate, but worth watching.
 - Nearest visible vertex wins, which is a Voronoi split of the screen, so
   catch zones can never overlap. Vertices projecting within `VERT_TIE_PX`
   (8px) of each other are a tie, settled by DEPTH - the one nearest the
