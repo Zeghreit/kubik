@@ -511,7 +511,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.84</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.85</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -6824,7 +6824,23 @@ document.getElementById('btnSymmetry').addEventListener('click', (ev) => {
   App.symmetry = !App.symmetry;
   ev.currentTarget.classList.toggle('active', App.symmetry);
   refreshUI();
-  toast(App.symmetry ? 'Symmetry on (' + App.symmetryAxis.toUpperCase() + ' axis)' : 'Symmetry off');
+  if (!App.symmetry) { toast('Symmetry off'); return; }
+  /* Report how many mirror pairs were actually found, on screen. Symmetry
+     silently does nothing when the map comes back empty - which happens if
+     the geometry isn't symmetric about the chosen axis in LOCAL space - and
+     without this the toggle looks identical whether it worked or not. */
+  const obj = findObject(App.activeObjectId);
+  let pairs = -1;
+  if (obj) {
+    ensureHelpers(obj);
+    const map = buildSymmetryMap(obj, App.symmetryAxis);
+    pairs = 0;
+    map.forEach((v, k) => { if (v !== k) pairs++; });
+    pairs = Math.round(pairs / 2);
+  }
+  toast('Symmetry on (' + App.symmetryAxis.toUpperCase() + ') - ' +
+        (pairs < 0 ? 'no active object'
+                   : pairs + ' pairs' + (App.mode === 'object' ? ' - switch to a component mode' : '')));
 });
 document.querySelectorAll('#symAxisGroup button').forEach(btn => {
   btn.addEventListener('click', () => {
