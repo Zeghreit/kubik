@@ -552,7 +552,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.92a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.93</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -750,6 +750,10 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+// LineSegments2 is Line2's disjoint sibling: the selection overlay is a
+// set of unconnected edges, not one continuous run.
+import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
 
 /* ----------------------------------------------------------------------
    Kubik
@@ -967,9 +971,12 @@ const THEMES = {
     shadow: 0.16,
     exposure: 1.0,
     vignette: '16 14 10',
-    // Selection wears the SAME blue as the accent on every button and
-    // outline, so "this is chosen" means one colour across the whole app.
-    select: 0x3C6E93, vert: 0x6E6558, edge: 0x8A806F, crease: 0xC46A3A,
+    /* Selection is RED, deliberately the one colour the interface never
+       uses. Matching it to the accent (v1.91) made "chosen" agree with the
+       buttons but disappear against the model - a blue-grey wireframe on a
+       blue-grey cube. A colour nothing else wears is what makes it read at
+       a glance, which matters more here than palette tidiness. */
+    select: 0xD1443A, vert: 0x6E6558, edge: 0x8A806F, crease: 0xC46A3A,
     material: 0x514A3B, swatch: '#514a3b'
   },
   dark: {
@@ -984,7 +991,7 @@ const THEMES = {
     shadow: 0.42,
     exposure: 1.1,
     vignette: '0 0 0',
-    select: 0x5b8cff, vert: 0x8b93a3, edge: 0x656d80, crease: 0xff7a45,
+    select: 0xff4d47, vert: 0x8b93a3, edge: 0x656d80, crease: 0xff7a45,
     material: 0x303338, swatch: '#303338'
   }
 };
@@ -1214,6 +1221,7 @@ function disposeHelpersOnly(obj) {
   if (ud.vertexPoints) { obj.mesh.remove(ud.vertexPoints); ud.vertexPoints.geometry.dispose(); ud.vertexPoints.material.dispose(); ud.vertexPoints = null; }
   if (ud.edgeLines) { obj.mesh.remove(ud.edgeLines); ud.edgeLines.geometry.dispose(); ud.edgeLines.material.dispose(); ud.edgeLines = null; }
   if (ud.faceOverlays) { ud.faceOverlays.forEach(o => { obj.mesh.remove(o); o.geometry.dispose(); o.material.dispose(); }); ud.faceOverlays = null; }
+  disposeSelectionOverlay(obj);
   ud.topo = null;
 }
 
@@ -3945,6 +3953,9 @@ function syncHelperGeometry(obj) {
     });
     lines.geometry.attributes.position.needsUpdate = true;
   }
+  // The overlay is rebuilt rather than nudged - it holds only the selected
+  // few, so this is cheaper than tracking which of its vertices moved.
+  syncSelectionOverlay(obj);
 }
 
 function refreshElementColors(obj) {
@@ -3981,9 +3992,93 @@ function refreshElementColors(obj) {
     lines.geometry.attributes.color.needsUpdate = true;
   }
   if (App.mode === 'face' && overlays) {
-    overlays.forEach((o, i) => { o.visible = App.selectedElements.has(i); });
+    overlays.forEach((o, i) => {
+      o.visible = App.selectedElements.has(i);
+      o.material.color.setHex(SELECT_COLOR);
+    });
   } else if (overlays) {
     overlays.forEach(o => { o.visible = false; });
+  }
+  syncSelectionOverlay(obj);
+}
+
+/* ---------------- Selection overlay ----------------
+
+   Selected components get their OWN geometry rather than just a different
+   colour in the shared buffers. Two reasons, both structural:
+
+   - PointsMaterial carries one size for every point in the object, and
+     LineBasicMaterial's linewidth is ignored outright by WebGL. So
+     "thicker when selected" is impossible within the existing helpers -
+     it needs separate objects with their own materials.
+   - The base helpers are deliberately quiet now (2px dots, hairline
+     wireframe). Making the SELECTED few loud is what restores readability
+     without making the whole model shout.
+
+   Rebuilt from scratch on every selection change. The arrays are the size
+   of the selection, not the mesh, so this stays cheap. */
+const SEL_DOT_PX = 7;        // vs 2px for unselected
+const SEL_EDGE_PX = 3.5;     // vs a 1px hairline
+
+function disposeSelectionOverlay(obj) {
+  const ud = obj.mesh.userData;
+  if (ud.selPoints) { obj.mesh.remove(ud.selPoints); ud.selPoints.geometry.dispose(); ud.selPoints.material.dispose(); ud.selPoints = null; }
+  if (ud.selLines) { obj.mesh.remove(ud.selLines); ud.selLines.geometry.dispose(); ud.selLines.material.dispose(); ud.selLines = null; }
+}
+
+function syncSelectionOverlay(obj) {
+  if (!obj || !obj.mesh || !obj.mesh.userData.topo) return;
+  disposeSelectionOverlay(obj);
+  const topo = obj.mesh.userData.topo;
+  const pa = obj.mesh.geometry.attributes.position;
+  const at = (l) => {
+    const g = topo.logicalGroups[l];
+    return g ? [pa.getX(g[0]), pa.getY(g[0]), pa.getZ(g[0])] : null;
+  };
+
+  if (App.mode === 'vertex' && App.selectedElements.size) {
+    const pos = [];
+    App.selectedElements.forEach(l => { const p = at(l); if (p) pos.push(p[0], p[1], p[2]); });
+    if (pos.length) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      const mat = new THREE.PointsMaterial({
+        size: SEL_DOT_PX * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1),
+        sizeAttenuation: false, map: vertexDotTexture(), alphaTest: 0.4,
+        transparent: true, depthWrite: false, depthTest: false, fog: false
+      });
+      mat.color.setHex(SELECT_COLOR);
+      const pts = new THREE.Points(geo, mat);
+      pts.renderOrder = 12;   // above the quiet base dots
+      obj.mesh.add(pts);
+      obj.mesh.userData.selPoints = pts;
+    }
+  }
+
+  if (App.mode === 'edge' && App.selectedElements.size) {
+    const pos = [];
+    App.selectedElements.forEach(i => {
+      const e = topo.edges[i];
+      if (!e) return;
+      const a = at(e[0]), b = at(e[1]);
+      if (a && b) pos.push(a[0], a[1], a[2], b[0], b[1], b[2]);
+    });
+    if (pos.length) {
+      const geo = new LineSegmentsGeometry();
+      geo.setPositions(pos);
+      const mat = new LineMaterial({
+        color: SELECT_COLOR, linewidth: SEL_EDGE_PX, worldUnits: false,
+        transparent: true, depthTest: false, depthWrite: false
+      });
+      mat.resolution.set(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
+      const seg = new LineSegments2(geo, mat);
+      seg.renderOrder = 11;
+      obj.mesh.add(seg);
+      obj.mesh.userData.selLines = seg;
+      // Keeps its pixel width correct across resize and rotation, same as
+      // every other Line2 in the app.
+      gizmoStrokes.push(seg);
+    }
   }
 }
 
@@ -4052,6 +4147,10 @@ function updateFrameVisibility() {
 
 function hideAllHelpers() {
   App.objects.forEach(o => {
+    // The overlay is geometry, not a visibility flag, so it has to be torn
+    // down here or a mode switch leaves a stale red selection floating over
+    // a model that no longer has anything selected.
+    disposeSelectionOverlay(o);
     if (o.mesh.userData.vertexPoints) o.mesh.userData.vertexPoints.visible = false;
     if (o.mesh.userData.edgeLines) o.mesh.userData.edgeLines.visible = false;
     if (o.mesh.userData.faceOverlays) o.mesh.userData.faceOverlays.forEach(x => x.visible = false);
@@ -5111,7 +5210,12 @@ function pickComponentOnActive(ev) {
   return r;
 }
 
+/* Set when the type lock refused a tap, and to WHAT it refused. Read once
+   by handleTap and cleared on the next pick. */
+let pickBlockedBy = null;
+
 function pickComponentOnActiveInner(ev) {
+  pickBlockedBy = null;
   /* Once something is selected, the type is LOCKED: only that same type can
      be picked until you tap empty space to clear. Overlapping catch zones
      then can't interfere at all, because there's nothing to arbitrate
@@ -5123,7 +5227,19 @@ function pickComponentOnActiveInner(ev) {
     if (App.mode === 'vertex') idx = pickVertexOnActive(ev);
     else if (App.mode === 'edge') idx = pickEdgeOnActive(ev);
     else if (App.mode === 'face') idx = pickFaceOnActive(ev);
-    return idx >= 0 ? { type: App.mode, index: idx } : null;
+    if (idx >= 0) return { type: App.mode, index: idx };
+
+    /* Nothing of the locked type was close enough. Find out whether the tap
+       landed on something of ANOTHER type, because if it did, the lock is
+       the entire reason nothing happened - and this was landing in total
+       silence. Tapping the model in the wrong mode hits neither branch of
+       handleTap below: the object under the finger IS the active object, so
+       there's no object to switch to, and it isn't empty space, so there's
+       no selection to clear. The tap simply evaporated. */
+    if (App.mode !== 'vertex' && pickVertexOnActive(ev, OFF_MODE_PICK_BIAS) >= 0) pickBlockedBy = 'vertex';
+    else if (App.mode !== 'edge' && pickEdgeOnActive(ev, OFF_MODE_PICK_BIAS) >= 0) pickBlockedBy = 'edge';
+    else if (App.mode !== 'face' && pickFaceOnActive(ev) >= 0) pickBlockedBy = 'face';
+    return null;
   }
 
   // Nothing selected yet, so the first tap is free to decide the type.
@@ -5930,6 +6046,15 @@ function handleTap(ev) {
   // wins over edge wins over face, and landing on a different type than
   // you're currently in switches you into it rather than being ignored.
   const pick = pickComponentOnActive(ev);
+
+  /* Say so. A refused tap used to do nothing whatsoever, which is
+     indistinguishable from the app being broken - and that is exactly how
+     it was reported. */
+  if (!pick && pickBlockedBy) {
+    toast('That\u2019s ' + (pickBlockedBy === 'edge' ? 'an ' : 'a ') + pickBlockedBy +
+          ' \u2014 ' + App.mode + ' is locked. Tap empty space first.');
+    return;
+  }
 
   if (pick) {
     if (pick.type !== App.mode) switchToComponentType(pick.type);
