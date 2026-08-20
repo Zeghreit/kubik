@@ -552,7 +552,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.94</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.95</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1696,6 +1696,38 @@ function weldVerticesOp(obj, logicalIds) {
 // Pairs each logical vertex with its mirror-image counterpart across the given
 // axis plane (in the object's own space). A vertex lying on the plane maps to
 // itself, which callers treat as "keep it on the plane".
+/* THE SYMMETRY PLANE, captured per object.
+
+   buildSymmetryMap used to reflect about local ZERO, so any object whose
+   geometry had drifted off the origin found no pairs and symmetry silently
+   did nothing - indistinguishable from it being off.
+
+   Offset is the geometry's BOUNDING-BOX centre on the axis, not its centre of
+   mass: a vertex centroid moves when you subdivide one half, so the plane
+   would drift because you added edge loops.
+
+   Captured ONCE - when symmetry is switched on, and again when the axis
+   changes - never recomputed live. The bbox centre is set by the extremes, so
+   dragging a vertex outward would otherwise shift the plane mid-drag. With
+   symmetry on every edit is mirrored, so the centre cannot move anyway, and
+   re-enabling symmetry is the escape hatch: one tap. */
+function captureSymmetryPlane(obj, axis) {
+  const geo = obj.mesh.geometry;
+  geo.computeBoundingBox();
+  const c = geo.boundingBox.getCenter(new THREE.Vector3());
+  const plane = { axis: axis, offset: c[axis] };
+  obj.mesh.userData.symPlane = plane;
+  return plane;
+}
+
+// The captured plane, capturing on first use for an object that never had one
+// - loaded from a save, or made after symmetry was already on.
+function symmetryPlane(obj, axis) {
+  const p = obj.mesh.userData.symPlane;
+  if (p && p.axis === axis) return p;
+  return captureSymmetryPlane(obj, axis);
+}
+
 function buildSymmetryMap(obj, axis) {
   const topo = obj.mesh.userData.topo;
   if (!topo || !topo.logicalCount) return new Map();
@@ -1712,11 +1744,13 @@ function buildSymmetryMap(obj, axis) {
   const tol = Math.max(size.x, size.y, size.z, 1) * 1e-3;
   const tol2 = tol * tol;
 
+  // Reflect about the captured plane, not local zero: x' = 2*offset - x.
+  const off = symmetryPlane(obj, axis).offset;
   const map = new Map();
   const m = new THREE.Vector3();
   for (let l = 0; l < topo.logicalCount; l++) {
     m.copy(pts[l]);
-    m[axis] = -m[axis];
+    m[axis] = 2 * off - m[axis];
     let best = -1, bestD = tol2;
     for (let k = 0; k < pts.length; k++) {
       const d = m.distanceToSquared(pts[k]);
@@ -1750,7 +1784,29 @@ function combineObjectsInto(objs, name, dropOnPlane) {
   objs.forEach(o => center.add(new THREE.Box3().setFromObject(o.mesh).getCenter(new THREE.Vector3())));
   center.divideScalar(objs.length);
   const toLocal = new THREE.Matrix4().makeTranslation(-center.x, -center.y, -center.z);
-  const axisIdx = { x: 0, y: 1, z: 2 }[dropOnPlane];
+
+  /* `dropOnPlane` is either an axis letter - the world axis plane through the
+     combined centre, where a world mirror puts the seam - or a THREE.Plane in
+     world space, which is how the captured symmetry plane arrives. Either way
+     it ends up as one plane in the combined object's local space. */
+  let dropPlane = null;
+  if (typeof dropOnPlane === 'string') {
+    const n = new THREE.Vector3();
+    n[dropOnPlane] = 1;
+    dropPlane = new THREE.Plane(n, 0);
+  } else if (dropOnPlane && dropOnPlane.isPlane) {
+    dropPlane = dropOnPlane.clone().translate(center.clone().negate());
+  }
+
+  /* Vertices NEAR the plane are clipped onto it exactly. Without this the two
+     halves' seam vertices differ by a hair, so position welding leaves them as
+     two loose shells and the coplanar-face drop below never fires - it only
+     ever deleted faces that were already within 1e-4 of the plane, and nothing
+     put them there. Same relative tolerance as buildSymmetryMap. */
+  const span = new THREE.Box3();
+  objs.forEach(o => span.expandByObject(o.mesh));
+  const s = span.getSize(new THREE.Vector3());
+  const clipTol = Math.max(s.x, s.y, s.z, 1) * 1e-3;
 
   const positions = [];
   const groups = [];
@@ -1769,6 +1825,10 @@ function combineObjectsInto(objs, name, dropOnPlane) {
     const p = new THREE.Vector3();
     for (let i = 0; i < ed.positions.length; i += 3) {
       p.set(ed.positions[i], ed.positions[i + 1], ed.positions[i + 2]).applyMatrix4(m);
+      if (dropPlane) {
+        const d = dropPlane.distanceToPoint(p);
+        if (Math.abs(d) < clipTol) p.addScaledVector(dropPlane.normal, -d);
+      }
       positions.push(p.x, p.y, p.z);
     }
     const srcMats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
@@ -1779,8 +1839,12 @@ function combineObjectsInto(objs, name, dropOnPlane) {
         const s = t.map(v => v + base);
         return flipped ? [s[0], s[2], s[1]] : s;
       });
-      if (dropOnPlane !== undefined && axisIdx !== undefined) {
-        const onPlane = tris.every(t => t.every(v => Math.abs(positions[v * 3 + axisIdx]) < 1e-4));
+      if (dropPlane) {
+        const q = new THREE.Vector3();
+        const onPlane = tris.every(t => t.every(v => {
+          q.set(positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]);
+          return Math.abs(dropPlane.distanceToPoint(q)) < 1e-4;
+        }));
         if (onPlane) return; // seam wall where the halves meet - discard it
       }
       const newGi = groups.length;
@@ -1822,14 +1886,28 @@ function duplicateObject(obj) {
   return dup;
 }
 
-function mirrorObject(obj, axis) {
+/* `localOffset` undefined mirrors about the WORLD axis plane, which is what
+   Mirror did before and still does with symmetry off. Given an offset it
+   mirrors inside the object's OWN space instead (x' = 2*offset - x) and lets
+   the object's transform carry the result into the world - so Mirror and
+   symmetric editing finally use the same plane. They used to disagree:
+   Mirror about world zero, editing about local zero. */
+function mirrorObject(obj, axis, localOffset) {
   const mirrorMat = new THREE.Matrix4();
   if (axis === 'x') mirrorMat.makeScale(-1, 1, 1);
   else if (axis === 'y') mirrorMat.makeScale(1, -1, 1);
   else mirrorMat.makeScale(1, 1, -1);
 
   obj.mesh.updateMatrixWorld();
-  const newMatrix = new THREE.Matrix4().multiplyMatrices(mirrorMat, obj.mesh.matrixWorld);
+  let newMatrix;
+  if (localOffset === undefined) {
+    newMatrix = new THREE.Matrix4().multiplyMatrices(mirrorMat, obj.mesh.matrixWorld);
+  } else {
+    const t = new THREE.Vector3();
+    t[axis] = 2 * localOffset;
+    const local = new THREE.Matrix4().makeTranslation(t.x, t.y, t.z).multiply(mirrorMat);
+    newMatrix = new THREE.Matrix4().multiplyMatrices(obj.mesh.matrixWorld, local);
+  }
   const pos = new THREE.Vector3(), quat = new THREE.Quaternion(), scale = new THREE.Vector3();
   newMatrix.decompose(pos, quat, scale);
 
@@ -4432,6 +4510,8 @@ function captureDragContext(pivot) {
       return { logical: l, world: q };
     });
     ctx.mirrorMap = App.symmetry ? buildSymmetryMap(obj, App.symmetryAxis) : null;
+    // Snapshot the plane with the map: it must not move mid-drag.
+    ctx.mirrorOffset = App.symmetry ? symmetryPlane(obj, App.symmetryAxis).offset : 0;
   }
   return ctx;
 }
@@ -4453,6 +4533,7 @@ function applyDeltaToSelection(deltaMatrix) {
     const topo = obj.mesh.userData.topo;
     const pa = obj.mesh.geometry.attributes.position;
     const axis = App.symmetryAxis;
+    const off = dragCtx.mirrorOffset || 0;
     const setLocal = (logical, v) => {
       topo.logicalGroups[logical].forEach(ai => pa.setXYZ(ai, v.x, v.y, v.z));
     };
@@ -4463,12 +4544,13 @@ function applyDeltaToSelection(deltaMatrix) {
       if (dragCtx.mirrorMap) {
         const partner = dragCtx.mirrorMap.get(entry.logical);
         if (partner === entry.logical) {
+          // Its own mirror: it lives ON the plane, wherever the plane is.
           const clamped = local.clone();
-          clamped[axis] = 0;
+          clamped[axis] = off;
           setLocal(entry.logical, clamped);
         } else if (partner !== undefined) {
           const mirrored = local.clone();
-          mirrored[axis] = -mirrored[axis];
+          mirrored[axis] = 2 * off - mirrored[axis];
           setLocal(partner, mirrored);
         }
       }
@@ -6472,8 +6554,28 @@ function mirrorSelectedObjects(axis) {
   const created = [];
   ids.forEach(id => {
     const src = findObject(id);
-    const half = mirrorObject(src, axis);
-    const merged = combineObjectsInto([src, half], src.name + ' sym', axis);
+    /* Symmetry OFF mirrors about the world plane, as it always has. Symmetry
+       ON mirrors about this object's captured plane, so Mirror agrees with
+       what symmetric editing has been doing to the same object. */
+    let half, drop;
+    if (App.symmetry) {
+      const pl = symmetryPlane(src, axis);
+      half = mirrorObject(src, axis, pl.offset);
+      // The same plane, handed to the combine in world space. Normal matrix,
+      // not transformDirection: a non-uniformly scaled object skews normals.
+      src.mesh.updateMatrixWorld();
+      const n = new THREE.Vector3();
+      n[axis] = 1;
+      n.applyMatrix3(new THREE.Matrix3().getNormalMatrix(src.mesh.matrixWorld)).normalize();
+      const pt = new THREE.Vector3();
+      pt[axis] = pl.offset;
+      src.mesh.localToWorld(pt);
+      drop = new THREE.Plane().setFromNormalAndCoplanarPoint(n, pt);
+    } else {
+      half = mirrorObject(src, axis);
+      drop = axis;
+    }
+    const merged = combineObjectsInto([src, half], src.name + ' sym', drop);
     if (merged) {
       removeObjects([src, half]);
       created.push(merged.id);
@@ -6489,7 +6591,9 @@ function mirrorSelectedObjects(axis) {
   refreshUI();
   refreshGizmoAttachment();
   pushHistory();
-  toast('Mirrored and joined across ' + axis.toUpperCase() + '=0');
+  toast(App.symmetry
+    ? 'Mirrored across the symmetry plane (' + axis.toUpperCase() + ')'
+    : 'Mirrored across world ' + axis.toUpperCase() + '=0');
 }
 
 /* Puts the selection back where new objects appear: centred on X and Z,
@@ -7542,15 +7646,20 @@ function setSymmetry(on) {
      the geometry isn't symmetric about the chosen axis in LOCAL space - and
      without this the toggle looks identical whether it worked or not. */
   const obj = findObject(App.activeObjectId);
-  let pairs = -1;
+  let pairs = -1, plane = null;
   if (obj) {
     ensureHelpers(obj);
+    // Switching symmetry on is the capture moment, and the escape hatch when
+    // the plane has gone stale - so capture, never reuse what is stored.
+    plane = captureSymmetryPlane(obj, App.symmetryAxis);
     const map = buildSymmetryMap(obj, App.symmetryAxis);
     pairs = 0;
     map.forEach((v, k) => { if (v !== k) pairs++; });
     pairs = Math.round(pairs / 2);
   }
-  toast('Symmetry on (' + App.symmetryAxis.toUpperCase() + ') - ' +
+  const where = plane && Math.abs(plane.offset) > 1e-4
+    ? ' = ' + plane.offset.toFixed(2) : '';
+  toast('Symmetry on (' + App.symmetryAxis.toUpperCase() + where + ') - ' +
         (pairs < 0 ? 'no active object'
                    : pairs + ' pairs' + (App.mode === 'object' ? ' - switch to a component mode' : '')));
 }
@@ -7558,7 +7667,13 @@ document.querySelectorAll('#symAxisGroup button').forEach(btn => {
   btn.addEventListener('click', () => {
     App.symmetryAxis = btn.dataset.sym;
     refreshUI();
-    if (App.symmetry) toast('Symmetry axis: ' + App.symmetryAxis.toUpperCase());
+    if (App.symmetry) {
+      // A new axis means a new plane - the other capture moment.
+      const o = findObject(App.activeObjectId);
+      const pl = o ? captureSymmetryPlane(o, App.symmetryAxis) : null;
+      toast('Symmetry axis: ' + App.symmetryAxis.toUpperCase() +
+            (pl && Math.abs(pl.offset) > 1e-4 ? ' (plane at ' + pl.offset.toFixed(2) + ')' : ''));
+    }
   });
 });
 document.getElementById('btnInspector').addEventListener('click', (ev) => {
@@ -7998,6 +8113,8 @@ if (PICK_DEBUG) {
     findObject, worldToScreenPx, vertexVisible, ensureHelpers,
     // Winding: __kubik.windingAudit() for every object, or (id) for one.
     auditWinding, windingAudit,
+    // The captured plane: __kubik.symmetryPlane(obj, axis).
+    symmetryPlane, captureSymmetryPlane, buildSymmetryMap,
     // Screen-space spacing between visible vertices of the active object,
     // which is the number aim assist actually keys off.
     vertexSpacing() {

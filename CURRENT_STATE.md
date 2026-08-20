@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **v1.94**
+- Version at time of writing: **v1.95**
 - Debug: append `?debug=1`. Tap picks log a `[pick] ...` line explaining why
   a tap resolved as it did, every mesh edit logs a `[winding] ...` line (see
   Winding audit), and `window.__kubik` exposes the live app (see Testing
@@ -244,9 +244,45 @@ closer per move, and a distance floor of 1.2.
 - **Symmetry only mirrors vertices that already have a twin.** It keeps a
   symmetric model symmetric; it cannot restore lost symmetry.
 - Symmetry applies to component edits only, never object drags.
-- `buildSymmetryMap` reflects about local **zero**, so geometry that has
-  drifted off the origin finds no pairs and symmetry silently does nothing.
-  (Fix designed, see below.)
+- The symmetry plane is captured, not live — see The symmetry plane below. If
+  a model stops mirroring after a big change, re-tap Symmetry on.
+
+## The symmetry plane (v1.95)
+
+Symmetry no longer reflects about local zero. Each object carries
+`mesh.userData.symPlane = {axis, offset}`, where **offset is the geometry's
+bounding-box centre on that axis, in the object's local space**.
+
+- **Bbox centre, NOT centre of mass.** A vertex centroid moves when you
+  subdivide one half, so the plane would drift because you added edge loops.
+- **Captured once**, at two moments only: switching Symmetry **on**, and
+  changing the **axis**. Never recomputed live — the bbox centre is set by
+  the extremes, so dragging a vertex outward would shift the plane mid-drag.
+  With symmetry on every edit is mirrored, so the centre cannot move anyway.
+  `symmetryPlane(obj, axis)` captures lazily for objects that never had one
+  (loaded from a save, made later). Re-tapping Symmetry on is the escape
+  hatch.
+- `buildSymmetryMap` reflects `x' = 2·offset − x`; a vertex that is its own
+  mirror is clamped to `offset`, not to 0.
+- Both toasts name the plane when it isn't at zero, so a wrong plane is
+  visible rather than silent.
+
+**Mirror uses the same plane.** Symmetry **off** → the world axis plane, as
+always. Symmetry **on** → the object's captured plane, mirrored inside local
+space (`matrixWorld × T(2·offset) × S(−1)`) so Mirror and symmetric editing
+finally agree; they used to disagree, world zero against local zero. The
+toast says which.
+
+`combineObjectsInto`'s `dropOnPlane` now takes an axis letter OR a world
+`THREE.Plane`, and **clips near-plane vertices onto the plane** (same 1e-3
+relative tolerance as `buildSymmetryMap`) before merging. That is what makes
+the seam weld and the coplanar-face drop actually fire — it only ever deleted
+faces already within 1e-4 of the plane, and nothing had put them there.
+
+Measured on a cube whose geometry was drifted +0.7 off its local origin:
+**0 vertices paired before, 8 after**, plane captured at 0.7, and the mirror
+matrix maps every vertex onto its partner with error 0.0. A centred object
+gets `offset = 0` and behaves exactly as it did.
 
 ## Winding audit (v1.94)
 
@@ -325,33 +361,10 @@ section above.
 - An element that is its own mirror must appear once; set semantics handle
   that for free.
 
-**2. The symmetry plane, and Mirror.**
+Item 2 shipped in **v1.95** - see The symmetry plane above. Mirror and
+symmetric editing now use the same captured plane.
 
-- Capture `{axis, offset}` when symmetry is switched **on**, and again when
-  the **axis changes**. Offset is the geometry's **bounding-box centre** on
-  that axis, in the object's local space, stored per object.
-- Bbox centre, NOT centre of mass: a vertex centroid moves when you
-  subdivide one half, so the plane would drift because you added edge loops.
-- Capture once, do not recompute live: the bbox centre is set by the
-  extremes, so dragging a vertex outward would shift the plane mid-drag.
-  Recomputing after each op is also unnecessary — with symmetry on every
-  edit is mirrored, so the centre cannot move. Re-enabling symmetry is the
-  escape hatch, and it is one tap.
-- `buildSymmetryMap` reflects about that plane instead of zero. For centred
-  objects `offset = 0` and nothing changes; for drifted ones symmetry starts
-  working where it currently finds nothing.
-- **Mirror**: symmetry **off** → world plane; symmetry **on** → the captured
-  plane. Toast names which. No new UI, no dialog. World mirroring is
-  reachable by composing Centre + Mirror.
-- **Clip** near-plane vertices to exactly the plane before combining. This
-  closes the seam and makes the existing coplanar-face drop actually fire —
-  `combineObjectsInto` currently only deletes faces already within 1e-4 of
-  the plane, and never snaps anything.
-- Note `mirrorObject` currently mirrors about the WORLD plane
-  (`mirrorMat × matrixWorld`) while symmetric editing uses local zero. The
-  two features disagree today; this design makes them agree.
-
-**3. After that**, pick one: more primitives (cylinder/sphere/plane, still
+**2. After that**, pick one: more primitives (cylinder/sphere/plane, still
 in the original v1 spec), or acknowledging the moment an op lands — an
 extrude currently just happens, with no feedback, which for something whose
 identity is a fidget is a real gap.
