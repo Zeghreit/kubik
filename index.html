@@ -115,23 +115,27 @@
     left: env(safe-area-inset-left); bottom: env(safe-area-inset-bottom);
   }
 
-  /* Object / Component switch, pinned to the middle of the left edge where
-     a thumb reaches it without moving the hand. Two halves, a knob that
-     slides between them, and no text - the icon in each half says which
-     mode that half means. */
-  #modeSlider {
+  /* Edge switches, pinned to the middle of the left edge where a thumb
+     reaches them without moving the hand. Two halves, a knob that slides
+     between them, and no text - the icon in each half says what that half
+     means. The STACK is centred, not each switch, or the group sits
+     visibly high. */
+  #edgeSwitches {
     position: absolute; left: var(--edge-l); top: 50%; transform: translateY(-50%);
-    z-index: 16; width: 46px; height: 106px; border-radius: 23px;
+    z-index: 16; display: flex; flex-direction: column; gap: var(--gap);
+  }
+  .edge-switch {
+    position: relative; width: 46px; height: 106px; border-radius: 23px;
     background: var(--panel2); border: 1px solid var(--line);
     display: flex; flex-direction: column; overflow: hidden;
     touch-action: none; -webkit-user-select: none; user-select: none;
     box-shadow: 0 4px 14px rgb(var(--shadow) / .14);
   }
-  #modeSlider .ms-half {
+  .edge-switch .es-half {
     flex: 1; display: flex; align-items: center; justify-content: center;
     position: relative; z-index: 2; color: var(--text-dim);
   }
-  #modeSlider .ms-half.on { color: var(--accent); }
+  .edge-switch .es-half.on { color: var(--accent); }
   /* The knob moves by TRANSFORM, and every number here is a plain pixel.
      Transitioning `top` between 3px and calc(50% + 1px) reported 3px
      forever - the animation never advanced, and setting top inline while
@@ -142,13 +146,16 @@
      The slider is 106px tall with a 1px border, so its content box is
      104px: knob 48px tall at top 3px, shifted down 50px, lands 3px clear of
      the bottom. Exact, and no percentage to resolve against the wrong box. */
-  #msKnob {
+  .edge-switch .es-knob {
     position: absolute; left: 3px; right: 3px; top: 3px;
     height: 48px; border-radius: 20px; z-index: 1;
     background: var(--accent-dim); border: 1px solid var(--accent);
     transition: transform .18s cubic-bezier(.4, 0, .2, 1);
   }
-  #modeSlider.component #msKnob { transform: translateY(50px); }
+  .edge-switch.lower .es-knob { transform: translateY(50px); }
+  /* Symmetry off is a resting state, not a chosen one - the knob goes
+     quiet rather than staying accent-coloured in the lower position. */
+  #symSlider.lower .es-knob { background: transparent; border-color: var(--line); }
 
   /* Shared by every tool icon the app shows, wherever it appears - right
      now that's only the press-and-hold ring, which supplies its own
@@ -502,7 +509,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.89</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.90</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -521,14 +528,22 @@
     <svg id="lassoSvg"><polyline id="lassoPath" /></svg>
     <div id="thumbZone"></div>
 
-    <!-- Object / Component, as a two-position switch on the left edge rather
-         than the old round button in the corner. Tap the half you want, or
-         swipe toward it - both work without looking, which a single button
-         that cycles never did. -->
-    <div id="modeSlider">
-      <div id="msKnob"></div>
-      <div class="ms-half" data-mode="object"><span class="ic"></span></div>
-      <div class="ms-half" data-mode="component"><span class="ic"></span></div>
+    <!-- Two-position switches on the left edge, stacked and centred as a
+         GROUP. Tap the half you want or swipe toward it - both work without
+         looking, which a button that cycles never did. Symmetry sits above
+         because it is the rarer decision; the mode switch stays nearest the
+         middle of the edge, where the thumb rests. -->
+    <div id="edgeSwitches">
+      <div id="symSlider" class="edge-switch">
+        <div class="es-knob"></div>
+        <div class="es-half" data-v="on"><span class="ic"></span></div>
+        <div class="es-half" data-v="off"><span class="ic"></span></div>
+      </div>
+      <div id="modeSlider" class="edge-switch">
+        <div class="es-knob"></div>
+        <div class="es-half" data-v="object"><span class="ic"></span></div>
+        <div class="es-half" data-v="component"><span class="ic"></span></div>
+      </div>
     </div>
 
     <!-- A sibling of thumbZone, not a child of it - same reason as quickRow:
@@ -3945,19 +3960,23 @@ function setActiveObjectHelpersVisible(obj, mode) {
      Seeing what you can select is the point - the tap priority
      (vertex > edge > face) then does the rest.
 
-     v1.86a narrows that for VERTEX dots only: they now appear in Vertex mode
-     alone. Constant-size dots made them loud enough to clutter Edge and Face
-     work, where they were never the thing being aimed at. Edge lines still
-     show in every component mode - they double as the wireframe, so they
-     read as part of the model rather than as markers laid over it. */
+     v1.86a narrowed this to Vertex mode only, on the theory that the dots
+     cluttered Edge and Face work. v1.90 puts it back: at 2px they are not
+     clutter, and hiding them meant a tap near a corner could be claimed by
+     a vertex you could not see - the exact trap the note above warns
+     about. Dots and wireframe now appear and disappear together. */
   const inComponentMode = mode === 'vertex' || mode === 'edge' || mode === 'face';
-  if (p) p.visible = mode === 'vertex';
+  if (p) p.visible = inComponentMode;
   if (l) l.visible = inComponentMode;
   if (ov) ov.forEach(o => o.visible = false);
 }
 
-// How far a non-active object's wireframe is dimmed, as a plain multiplier.
-const FRAME_DIM = 0.4;
+/* Plain multipliers on the theme's own edge colour. The active object's
+   wireframe runs HOT - above 1 - which the ACES tone mapping rolls off
+   rather than clipping, so it reads brighter without going chalky. The
+   inactive gain keeps the same 40% relationship it had at 1.0. */
+const FRAME_ACTIVE = 2.0;
+const FRAME_DIM = 0.8;
 
 // Shows every object's wireframe whenever anything at all is selected, in any
 // mode, and hides it all again once the scene has no selection - so the frame
@@ -3980,7 +3999,11 @@ function updateFrameVisibility() {
     const active = App.mode === 'object'
       ? App.selectedObjectIds.has(o.id)
       : o.id === App.activeObjectId;
-    lines.material.color.setScalar(active ? 1 : FRAME_DIM);
+    lines.material.color.setScalar(active ? FRAME_ACTIVE : FRAME_DIM);
+    // Dots only ever show on the active object, and at 2px they need to
+    // keep up with a wireframe that just got twice as bright.
+    const pts = o.mesh.userData.vertexPoints;
+    if (pts) pts.material.color.setScalar(FRAME_ACTIVE);
   });
 }
 
@@ -6720,6 +6743,7 @@ const ICON = {
   uncrease:'<path d="M3 18c4-6 14-6 18 0"/>',
   subdiv:  '<path d="M3 3h18v18H3z"/><path d="M12 3v18M3 12h18"/>',
   bridge:  '<path d="M4 17V9M20 17V9"/><path d="M4 9h16"/><path d="M8 9v4M12 9v5M16 9v4"/>',
+  symoff:  '<path d="M12 3v18" opacity=".45"/><path d="M9 7L5 12l4 5z" opacity=".45"/><path d="M15 7l4 5-4 5z" opacity=".45"/><path d="M4 20L20 4"/>',
   centre:  '<circle cx="12" cy="12" r="2.2"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5"/><circle cx="12" cy="12" r="7.5" stroke-dasharray="2.5 3"/>'
 };
 
@@ -6731,6 +6755,7 @@ function icon(name, size) {
 }
 
 const modeSliderEl = document.getElementById('modeSlider');
+const symSliderEl = document.getElementById('symSlider');
 
 // Three tool sets, one per state, read by currentHubTools() and rendered
 // fresh into the press-and-hold ring each time it blooms. Every action here
@@ -6804,9 +6829,11 @@ const HUB_TOOLS_EMPTY = [
    clear.
 
    The halves are not decoration. The four view toggles lived on the RIGHT
-   rail and the select-gesture choice and Symmetry lived on the LEFT, so
-   they keep those relationships: right-rail items occupy the top half of
-   the ring, left-rail items the bottom half. Anyone who built muscle memory
+   rail and the select-gesture choice lived on the LEFT, so they keep those
+   relationships: right-rail items occupy the top half of the ring,
+   left-rail items the bottom half. (Symmetry passed through here in v1.89
+   and left again in v1.90 - it is a persistent MODE you need to watch, not
+   an action, so it earned a switch on the edge instead.) Anyone who built muscle memory
    for "the eye is on the right" still finds it grouped with what it used to
    sit beside.
 
@@ -6826,8 +6853,6 @@ const HUB_TOOLS_WORLD = [
   { key: 'snap', icon: 'snap', label: 'Snap', half: 'top',
     on: () => App.snap, run: toggleSnapping },
 
-  { key: 'symmetry', icon: 'mirror', label: 'Symmetry', half: 'bottom',
-    on: () => App.symmetry, run: toggleSymmetry },
   { key: 'selfree', icon: 'free', label: 'Tap select', half: 'bottom',
     on: () => App.selectDrag === 'off', run: () => setSelectGesture('off') },
   { key: 'selbox', icon: 'box', label: 'Box select', half: 'bottom',
@@ -7029,14 +7054,44 @@ function closeToolRing(run) {
 // currentHubTools() fresh at the moment it blooms, so there's nothing left
 // that needs tracking between rebuilds.
 
-/* The Object / Component switch, v1.89. A single button that cycled was
-   fine to hit and useless to read - you could not tell which mode a tap
-   would leave you in without looking at the icon and reasoning backwards.
-   Two halves with a knob between them says the current state and the
-   available state at once, and can be worked without looking: swipe toward
-   the half you want, or tap it. */
+/* Edge switches, v1.89, generalised in v1.90 when Symmetry got one too.
+
+   A button that cycled was fine to hit and useless to read - you could not
+   tell which state a tap would leave you in without looking at the icon and
+   reasoning backwards. Two halves with a knob between them says the current
+   state and the available state at once, and can be worked without looking:
+   swipe toward the half you want, or tap it.
+
+   A swipe names a direction, a tap names a place, and the upper half is
+   always the "more" state - Object over Component, Symmetry on over off -
+   so the two gestures agree. */
 const MODE_SWIPE_PX = 16;   // past this the gesture is a swipe, not a tap
-let modeSliderPress = null;
+
+function wireEdgeSwitch(el, onPick) {
+  let press = null;
+  el.addEventListener('pointerdown', (ev) => {
+    ev.stopPropagation();
+    ev.preventDefault();
+    // Capture so a swipe that leaves the pill still reports its release
+    // here. Guarded: a pointer id the browser doesn't recognise throws, and
+    // losing capture is survivable where losing the whole handler is not.
+    try { el.setPointerCapture(ev.pointerId); } catch (e) { /* no capture, still fine */ }
+    const r = el.getBoundingClientRect();
+    press = { y: ev.clientY, top: r.top, h: r.height };
+  });
+  el.addEventListener('pointerup', (ev) => {
+    ev.stopPropagation();
+    if (!press) return;
+    const p = press;
+    press = null;
+    const dy = ev.clientY - p.y;
+    const upper = Math.abs(dy) > MODE_SWIPE_PX
+      ? dy < 0
+      : (ev.clientY - p.top) < p.h / 2;
+    onPick(upper);
+  });
+  el.addEventListener('pointercancel', () => { press = null; });
+}
 
 function setObjComponentMode(want) {
   const isObj = App.mode === 'object';
@@ -7045,33 +7100,8 @@ function setObjComponentMode(want) {
   else refreshObjComponentBtn();   // already there - just re-settle the knob
 }
 
-modeSliderEl.addEventListener('pointerdown', (ev) => {
-  ev.stopPropagation();
-  ev.preventDefault();
-  // Capture so a swipe that leaves the pill still reports its release here.
-  // Guarded: a pointer id the browser doesn't recognise throws, and losing
-  // capture is survivable where losing the whole handler is not.
-  try { modeSliderEl.setPointerCapture(ev.pointerId); } catch (e) { /* no capture, still fine */ }
-  const r = modeSliderEl.getBoundingClientRect();
-  modeSliderPress = { y: ev.clientY, top: r.top, h: r.height };
-});
-
-modeSliderEl.addEventListener('pointerup', (ev) => {
-  ev.stopPropagation();
-  if (!modeSliderPress) return;
-  const p = modeSliderPress;
-  modeSliderPress = null;
-  const dy = ev.clientY - p.y;
-  /* A swipe names a direction, a tap names a place. Object is the upper
-     half, so swiping up and tapping the top mean the same thing - which is
-     what lets the control be used without looking at it. */
-  const want = Math.abs(dy) > MODE_SWIPE_PX
-    ? (dy < 0 ? 'object' : 'component')
-    : ((ev.clientY - p.top) < p.h / 2 ? 'object' : 'component');
-  setObjComponentMode(want);
-});
-
-modeSliderEl.addEventListener('pointercancel', () => { modeSliderPress = null; });
+wireEdgeSwitch(modeSliderEl, (upper) => setObjComponentMode(upper ? 'object' : 'component'));
+wireEdgeSwitch(symSliderEl, (upper) => setSymmetry(upper));
 
 /* ---------------- Drawer ---------------- */
 
@@ -7196,8 +7226,13 @@ function toggleShading() {
   shadeSelection(App.shadeSmooth);
   toast(App.shadeSmooth ? 'Shaded smooth' : 'Shaded flat');
 }
-function toggleSymmetry() {
-  App.symmetry = !App.symmetry;
+/* Takes the state it should END in rather than flipping, because a two-
+   position switch already knows which side you asked for - re-deriving it
+   from the current value would let a stray repeat put the knob and the
+   state out of step. */
+function setSymmetry(on) {
+  if (App.symmetry === on) { refreshObjComponentBtn(); return; }
+  App.symmetry = on;
   refreshUI();
   if (!App.symmetry) { toast('Symmetry off'); return; }
   /* Report how many mirror pairs were actually found, on screen. Symmetry
@@ -7383,9 +7418,19 @@ function focusOnObject(obj) {
    moves when there is a measurable problem: targets too close together to
    tell apart. Tagged v1.87-smartcam if it is ever wanted back. */
 
-const AIM_CROWD_PX = 30;    // a neighbour closer than this means it's crowded
-const AIM_ROOMY_PX = 60;    // ... and this is how far apart we'd like them
-const AIM_MAX_ZOOM = 0.45;  // never more than this much closer in one move
+/* These are expressed as multiples of the catch radius, because that is
+   what they are actually about. Two vertices are tellable apart when the
+   gap between them is comfortably wider than the target you're aiming
+   with; below that, your Voronoi cell is narrower than your fingertip.
+
+   v1.89 used a flat 30px and it may as well not have existed. Measured on a
+   unit cube, minimum vertex spacing runs 85px at the default framing, 61px
+   at camera distance 12, 42px at 18 and 30px at 26 - so a 30px trigger only
+   fired once the whole cube was a speck. At 2x the catch radius it engages
+   from distance ~13, which is where aiming actually starts to get hard. */
+const AIM_CROWD_PX = PICK_RADIUS_PX * 2;   // 56px - closer than this is crowded
+const AIM_ROOMY_PX = PICK_RADIUS_PX * 4;   // 112px - and this is comfortable
+const AIM_MAX_ZOOM = 0.33;  // never more than 3x closer in one move
 let aimAssistAt = 0;
 
 // Screen position of one logical vertex, or null if it's behind the camera.
@@ -7413,7 +7458,8 @@ function nearestVisibleNeighbourPx(obj, l, home) {
 }
 
 function aimAssistAfterPick(pick) {
-  if (!App.aimAssist || pick.type !== 'vertex') return;
+  if (!App.aimAssist) return;
+  if (pick.type !== 'vertex' && pick.type !== 'edge') return;
   // A tap that DESELECTED shouldn't pull the camera in after it.
   if (!App.selectedElements.has(pick.index)) return;
   const now = performance.now();
@@ -7422,10 +7468,24 @@ function aimAssistAfterPick(pick) {
 
   const obj = findObject(App.activeObjectId);
   if (!obj) return;
-  const hit = logicalVertexPx(obj, pick.index);
+
+  /* Edges crowd for exactly the same reason vertices do - their endpoints
+     are too close together - so they're measured the same way, from one
+     endpoint, and the view settles on the edge's midpoint. */
+  let anchorL = pick.index, hit = null;
+  if (pick.type === 'edge') {
+    const e = obj.mesh.userData.topo.edges[pick.index];
+    if (!e) return;
+    const a = logicalVertexPx(obj, e[0]), b = logicalVertexPx(obj, e[1]);
+    if (!a || !a.px || !b || !b.px) return;
+    anchorL = e[0];
+    hit = { px: a.px, world: a.world.clone().lerp(b.world, 0.5) };
+  } else {
+    hit = logicalVertexPx(obj, pick.index);
+  }
   if (!hit || !hit.px) return;
 
-  const spacing = nearestVisibleNeighbourPx(obj, pick.index, hit.px);
+  const spacing = nearestVisibleNeighbourPx(obj, anchorL, hit.px);
   if (!isFinite(spacing) || spacing >= AIM_CROWD_PX) return;   // roomy already
 
   /* Screen spacing scales inversely with camera distance, so the factor that
@@ -7529,21 +7589,31 @@ function paintStaticIcons() {
 // communicates both which top-level mode you're in and, in Component mode,
 // which sub-type, without a second row of state to read.
 function refreshObjComponentBtn() {
-  const el = modeSliderEl;
-  if (!el) return;
+  // Paints one switch: knob side, which half reads as chosen, both icons.
+  const paint = (el, upperChosen, upperIcon, lowerIcon, title) => {
+    if (!el) return;
+    el.classList.toggle('lower', !upperChosen);
+    const halves = el.querySelectorAll('.es-half');
+    if (halves.length < 2) return;
+    halves[0].classList.toggle('on', upperChosen);
+    halves[1].classList.toggle('on', !upperChosen);
+    halves[0].querySelector('.ic').innerHTML = icon(upperIcon, 22);
+    halves[1].querySelector('.ic').innerHTML = icon(lowerIcon, 22);
+    el.title = title;
+  };
+
   const isObj = App.mode === 'object';
-  el.classList.toggle('component', !isObj);
-  const halves = el.querySelectorAll('.ms-half');
-  if (halves.length < 2) return;
-  halves[0].classList.toggle('on', isObj);
-  halves[1].classList.toggle('on', !isObj);
-  halves[0].querySelector('.ic').innerHTML = icon('object', 22);
-  // The lower half shows the component type it would put you IN, which is
-  // the one you last worked in - not a generic "component" glyph.
-  halves[1].querySelector('.ic').innerHTML = icon(isObj ? App.lastComponentMode : App.mode, 22);
-  el.title = isObj
-    ? 'Object mode - tap the lower half or swipe down to edit components'
-    : 'Component mode (' + App.mode + ') - tap the upper half or swipe up for objects';
+  paint(modeSliderEl, isObj, 'object',
+    // The lower half shows the component type it would put you IN, which is
+    // the one you last worked in - not a generic "component" glyph.
+    isObj ? App.lastComponentMode : App.mode,
+    isObj ? 'Object mode - tap the lower half or swipe down to edit components'
+          : 'Component mode (' + App.mode + ') - tap the upper half or swipe up for objects');
+
+  paint(symSliderEl, App.symmetry, 'mirror', 'symoff',
+    App.symmetry
+      ? 'Symmetry on (' + App.symmetryAxis.toUpperCase() + ') - tap the lower half or swipe down to turn it off'
+      : 'Symmetry off - tap the upper half or swipe up to mirror edits across ' + App.symmetryAxis.toUpperCase());
 }
 
 /* ---------------- Update detection ----------------
@@ -7609,6 +7679,58 @@ function init() {
   checkForUpdate();
 }
 init();
+
+/* ---------------- Debug handle ----------------
+   Under ?debug=1 only, a window handle onto the live app. Everything in
+   this file is module-scoped, which is right for shipping and useless for
+   testing: an automated harness driving the app from outside could see the
+   DOM and nothing else, so every question about state had to be inferred
+   from pixels. Several wrong conclusions this session came from exactly
+   that. Read-only by intent - it exposes what is already there rather than
+   adding a second way to change anything. */
+if (PICK_DEBUG) {
+  window.__kubik = {
+    App, camera, orbit, scene,
+    // A getter, not a value - camAnim is replaced rather than mutated, and
+    // a harness needs to see that it was SET even when the tab is hidden
+    // and requestAnimationFrame never runs to apply it.
+    get camAnim() { return camAnim; },
+    get aimThresholds() { return { crowd: AIM_CROWD_PX, roomy: AIM_ROOMY_PX, maxZoom: AIM_MAX_ZOOM }; },
+    findObject, worldToScreenPx, vertexVisible, ensureHelpers,
+    // Screen-space spacing between visible vertices of the active object,
+    // which is the number aim assist actually keys off.
+    vertexSpacing() {
+      const obj = findObject(App.activeObjectId);
+      if (!obj) return null;
+      ensureHelpers(obj);
+      const topo = obj.mesh.userData.topo;
+      const pa = obj.mesh.geometry.attributes.position;
+      const pts = [];
+      for (let l = 0; l < topo.logicalCount; l++) {
+        if (!vertexVisible(obj, l)) continue;
+        const g = topo.logicalGroups[l];
+        const p = new THREE.Vector3(pa.getX(g[0]), pa.getY(g[0]), pa.getZ(g[0]));
+        obj.mesh.localToWorld(p);
+        const sp = worldToScreenPx(p);
+        if (sp) pts.push(sp);
+      }
+      const near = pts.map((a, i) => {
+        let d = Infinity;
+        pts.forEach((b, j) => { if (i !== j) d = Math.min(d, a.distanceTo(b)); });
+        return d;
+      }).filter(d => isFinite(d));
+      if (!near.length) return null;
+      near.sort((a, b) => a - b);
+      return {
+        visible: pts.length,
+        min: +near[0].toFixed(1),
+        median: +near[Math.floor(near.length / 2)].toFixed(1),
+        max: +near[near.length - 1].toFixed(1),
+        camDist: +camera.position.distanceTo(orbit.target).toFixed(2)
+      };
+    }
+  };
+}
 </script>
 </body>
 </html>
