@@ -120,26 +120,29 @@
      between them, and no text - the icon in each half says what that half
      means. The STACK is centred, not each switch, or the group sits
      visibly high. */
-  /* Bottom-left, so the mode switch sits opposite Help across the bottom
-     of the screen and Undo/Redo splits the difference between them. The
-     stack grows UPWARD from there, which puts the switch you touch most
-     nearest the thumb and the rarer Symmetry decision above it. */
-  #edgeSwitches {
+  /* Object / Component, back to a single round button in the bottom-left
+     corner - opposite Help, with Undo/Redo between them. */
+  #hubBtn {
     position: absolute; left: var(--edge-l); bottom: var(--edge-b);
-    z-index: 16; display: flex; flex-direction: column; gap: var(--gap);
+    width: 56px; height: 56px; min-height: 56px; padding: 0;
+    border-radius: 50%; justify-content: center;
+    background: var(--accent); color: var(--on-accent); border: none;
+    box-shadow: 0 6px 18px rgb(var(--shadow) / .16);
   }
-  .edge-switch {
-    position: relative; width: 46px; height: 106px; border-radius: 23px;
+
+  /* Symmetry: horizontal two-state pill under the view cube. */
+  #symPill {
+    position: absolute; right: var(--edge-r); top: 118px;
+    z-index: 13; width: 88px; height: 40px; border-radius: 20px;
     background: var(--panel2); border: 1px solid var(--line);
-    display: flex; flex-direction: column; overflow: hidden;
+    display: flex; overflow: hidden; position: absolute;
     touch-action: none; -webkit-user-select: none; user-select: none;
-    box-shadow: 0 4px 14px rgb(var(--shadow) / .14);
   }
-  .edge-switch .es-half {
+  #symPill .sp-half {
     flex: 1; display: flex; align-items: center; justify-content: center;
     position: relative; z-index: 2; color: var(--text-dim);
   }
-  .edge-switch .es-half.on { color: var(--accent); }
+  #symPill .sp-half.on { color: var(--accent); }
   /* The knob moves by TRANSFORM, and every number here is a plain pixel.
      Transitioning `top` between 3px and calc(50% + 1px) reported 3px
      forever - the animation never advanced, and setting top inline while
@@ -150,16 +153,17 @@
      The slider is 106px tall with a 1px border, so its content box is
      104px: knob 48px tall at top 3px, shifted down 50px, lands 3px clear of
      the bottom. Exact, and no percentage to resolve against the wrong box. */
-  .edge-switch .es-knob {
-    position: absolute; left: 3px; right: 3px; top: 3px;
-    height: 48px; border-radius: 20px; z-index: 1;
+  /* Knob slides sideways here rather than down. Same reason as before for
+     using transform: it animates without relayout. */
+  #symPill .sp-knob {
+    position: absolute; top: 3px; bottom: 3px; left: 3px;
+    width: 41px; border-radius: 18px; z-index: 1;
     background: var(--accent-dim); border: 1px solid var(--accent);
     transition: transform .18s cubic-bezier(.4, 0, .2, 1);
   }
-  .edge-switch.lower .es-knob { transform: translateY(50px); }
   /* Symmetry off is a resting state, not a chosen one - the knob goes
-     quiet rather than staying accent-coloured in the lower position. */
-  #symSlider.lower .es-knob { background: transparent; border-color: var(--line); }
+     quiet rather than staying accent-coloured on the right. */
+  #symPill.lower .sp-knob { transform: translateX(41px); background: transparent; border-color: var(--line); }
 
   /* Shared by every tool icon the app shows, wherever it appears - right
      now that's only the press-and-hold ring, which supplies its own
@@ -376,10 +380,19 @@
      keeps clicks accurate: handleClick offsets by (offsetWidth - dim),
      which is now zero, and then measures getBoundingClientRect - which
      includes the transform. Box and helper agree at any scale. */
+  /* 128 exactly, and no scaling. ViewHelper always draws a 128x128 square
+     anchored in a corner of its element - `dim` is a fixed constant in the
+     library - so at 96 it was clipped and at 1.5x it became a 192px hit
+     target with touch-action:none sitting over a quarter of a phone
+     screen. Taps and drags starting anywhere in that corner never reached
+     the model, which read as selection and dragging being broken.
+
+     128 is the size the library actually draws: nothing clipped, nothing
+     stolen. Pinned flush to the corner because the gizmo carries its own
+     padding inside that square, so any CSS inset reads as double. */
   #viewCube {
-    position: absolute; top: var(--edge); right: var(--edge-r);
+    position: absolute; top: 0; right: 0;
     width: 128px; height: 128px;
-    transform: scale(1.5); transform-origin: top right;
     z-index: 12; cursor: pointer; touch-action: none;
   }
   #viewCube canvas { display: block; width: 100%; height: 100%; }
@@ -531,7 +544,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.91</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.92</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -548,24 +561,22 @@
     <div id="vignette"></div>
     <div id="selectBox"></div>
     <svg id="lassoSvg"><polyline id="lassoPath" /></svg>
-    <div id="thumbZone"></div>
+    <div id="thumbZone">
+      <button id="hubBtn" title="Object/Component - tap to switch"></button>
+    </div>
 
     <!-- Two-position switches on the left edge, stacked and centred as a
          GROUP. Tap the half you want or swipe toward it - both work without
          looking, which a button that cycles never did. Symmetry sits above
          because it is the rarer decision; the mode switch stays nearest the
          middle of the edge, where the thumb rests. -->
-    <div id="edgeSwitches">
-      <div id="symSlider" class="edge-switch">
-        <div class="es-knob"></div>
-        <div class="es-half" data-v="on"><span class="ic"></span></div>
-        <div class="es-half" data-v="off"><span class="ic"></span></div>
-      </div>
-      <div id="modeSlider" class="edge-switch">
-        <div class="es-knob"></div>
-        <div class="es-half" data-v="object"><span class="ic"></span></div>
-        <div class="es-half" data-v="component"><span class="ic"></span></div>
-      </div>
+    <!-- Symmetry: a horizontal two-state pill tucked under the view cube,
+         where nothing competes for the space and it stays visible without
+         sitting in the way of the model. -->
+    <div id="symPill">
+      <div class="sp-knob"></div>
+      <div class="sp-half" data-v="on"><span class="ic"></span></div>
+      <div class="sp-half" data-v="off"><span class="ic"></span></div>
     </div>
 
     <!-- A sibling of thumbZone, not a child of it - same reason as quickRow:
@@ -884,11 +895,8 @@ const viewCubeEl = document.getElementById('viewCube');
 /* The view cube renders through its own renderer and canvas, kept separate
    from the main viewport - sharing one caused blank frames on iPhone. */
 const cubeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-/* The cube is drawn at 128 CSS px and displayed at 1.5x by the CSS above,
-   so its buffer is rendered 1.5x oversized to match - otherwise the corner
-   labels come back soft from being upscaled. */
-cubeRenderer.setPixelRatio(pixelRatio * 1.5);
-cubeRenderer.setSize(128, 128);
+cubeRenderer.setPixelRatio(pixelRatio);
+cubeRenderer.setSize(128, 128);   // matches ViewHelper's fixed 128px draw
 viewCubeEl.appendChild(cubeRenderer.domElement);
 
 const viewHelper = new ViewHelper(camera, viewCubeEl);
@@ -5363,7 +5371,7 @@ function shrinkSelection() {
 
 document.addEventListener('touchmove', (ev) => {
   if (ev.target && ev.target.closest &&
-      ev.target.closest('#topBar, #drawer, #inspector, #opBar, #thumbZone, #modeSlider')) return; // let the UI work
+      ev.target.closest('#topBar, #drawer, #inspector, #opBar, #thumbZone, #symPill')) return; // let the UI work
   if (ev.cancelable) ev.preventDefault();
 }, { passive: false });
 
@@ -6793,8 +6801,8 @@ function icon(name, size) {
     'stroke-linejoin="round" aria-hidden="true">' + (ICON[name] || '') + '</svg>';
 }
 
-const modeSliderEl = document.getElementById('modeSlider');
-const symSliderEl = document.getElementById('symSlider');
+const hubBtnEl = document.getElementById('hubBtn');
+const symPillEl = document.getElementById('symPill');
 
 // Three tool sets, one per state, read by currentHubTools() and rendered
 // fresh into the press-and-hold ring each time it blooms. Every action here
@@ -7106,7 +7114,8 @@ function closeToolRing(run) {
    so the two gestures agree. */
 const MODE_SWIPE_PX = 16;   // past this the gesture is a swipe, not a tap
 
-function wireEdgeSwitch(el, onPick) {
+function wireEdgeSwitch(el, onPick, axis) {
+  const horiz = axis === 'x';
   let press = null;
   el.addEventListener('pointerdown', (ev) => {
     ev.stopPropagation();
@@ -7116,18 +7125,19 @@ function wireEdgeSwitch(el, onPick) {
     // losing capture is survivable where losing the whole handler is not.
     try { el.setPointerCapture(ev.pointerId); } catch (e) { /* no capture, still fine */ }
     const r = el.getBoundingClientRect();
-    press = { y: ev.clientY, top: r.top, h: r.height };
+    press = horiz
+      ? { a: ev.clientX, start: r.left, len: r.width }
+      : { a: ev.clientY, start: r.top, len: r.height };
   });
   el.addEventListener('pointerup', (ev) => {
     ev.stopPropagation();
     if (!press) return;
     const p = press;
     press = null;
-    const dy = ev.clientY - p.y;
-    const upper = Math.abs(dy) > MODE_SWIPE_PX
-      ? dy < 0
-      : (ev.clientY - p.top) < p.h / 2;
-    onPick(upper);
+    const now = horiz ? ev.clientX : ev.clientY;
+    const d = now - p.a;
+    const first = Math.abs(d) > MODE_SWIPE_PX ? d < 0 : (now - p.start) < p.len / 2;
+    onPick(first);
   });
   el.addEventListener('pointercancel', () => { press = null; });
 }
@@ -7139,8 +7149,11 @@ function setObjComponentMode(want) {
   else refreshObjComponentBtn();   // already there - just re-settle the knob
 }
 
-wireEdgeSwitch(modeSliderEl, (upper) => setObjComponentMode(upper ? 'object' : 'component'));
-wireEdgeSwitch(symSliderEl, (upper) => setSymmetry(upper));
+hubBtnEl.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+hubBtnEl.addEventListener('click', (ev) => { ev.stopPropagation(); toggleObjComponentMode(); });
+
+// The pill is horizontal, so the axis is x: swipe left/right, or tap a half.
+wireEdgeSwitch(symPillEl, (first) => setSymmetry(first), 'x');
 
 /* ---------------- Drawer ---------------- */
 
@@ -7628,31 +7641,28 @@ function paintStaticIcons() {
 // communicates both which top-level mode you're in and, in Component mode,
 // which sub-type, without a second row of state to read.
 function refreshObjComponentBtn() {
-  // Paints one switch: knob side, which half reads as chosen, both icons.
-  const paint = (el, upperChosen, upperIcon, lowerIcon, title) => {
-    if (!el) return;
-    el.classList.toggle('lower', !upperChosen);
-    const halves = el.querySelectorAll('.es-half');
-    if (halves.length < 2) return;
-    halves[0].classList.toggle('on', upperChosen);
-    halves[1].classList.toggle('on', !upperChosen);
-    halves[0].querySelector('.ic').innerHTML = icon(upperIcon, 22);
-    halves[1].querySelector('.ic').innerHTML = icon(lowerIcon, 22);
-    el.title = title;
-  };
-
   const isObj = App.mode === 'object';
-  paint(modeSliderEl, isObj, 'object',
-    // The lower half shows the component type it would put you IN, which is
-    // the one you last worked in - not a generic "component" glyph.
-    isObj ? App.lastComponentMode : App.mode,
-    isObj ? 'Object mode - tap the lower half or swipe down to edit components'
-          : 'Component mode (' + App.mode + ') - tap the upper half or swipe up for objects');
+  if (hubBtnEl) {
+    // The button shows the mode you are IN, same as it always did.
+    hubBtnEl.innerHTML = icon(isObj ? 'object' : App.mode, 24);
+    hubBtnEl.title = isObj
+      ? 'Object mode - tap to edit components'
+      : 'Component mode (' + App.mode + ') - tap to edit whole objects';
+  }
 
-  paint(symSliderEl, App.symmetry, 'mirror', 'symoff',
-    App.symmetry
-      ? 'Symmetry on (' + App.symmetryAxis.toUpperCase() + ') - tap the lower half or swipe down to turn it off'
-      : 'Symmetry off - tap the upper half or swipe up to mirror edits across ' + App.symmetryAxis.toUpperCase());
+  if (symPillEl) {
+    symPillEl.classList.toggle('lower', !App.symmetry);
+    const halves = symPillEl.querySelectorAll('.sp-half');
+    if (halves.length >= 2) {
+      halves[0].classList.toggle('on', App.symmetry);
+      halves[1].classList.toggle('on', !App.symmetry);
+      halves[0].querySelector('.ic').innerHTML = icon('mirror', 19);
+      halves[1].querySelector('.ic').innerHTML = icon('symoff', 19);
+    }
+    symPillEl.title = App.symmetry
+      ? 'Symmetry on (' + App.symmetryAxis.toUpperCase() + ') - tap the right half to turn it off'
+      : 'Symmetry off - tap the left half to mirror edits across ' + App.symmetryAxis.toUpperCase();
+  }
 }
 
 /* ---------------- Update detection ----------------
