@@ -511,7 +511,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.77</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.78</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -4590,50 +4590,60 @@ function pickObjectAt(ev) {
   return null;
 }
 
-/* How far off a vertex or edge a tap can land and still count, in world
-   units, scaled so it stays roughly constant on screen as you zoom.
+/* Vertex and edge picking work in SCREEN SPACE - pixels between your thumb
+   and the projected point or line - not 3D distance from the camera ray.
 
-   The cap is the important part. This used to be an uncapped
-   camDist * 0.018, which grows forever - zoomed out to camDist 20 the band
-   around each edge swallowed all but 8% of a cube face, and past ~28 a face
-   became literally unselectable because every point on it was within reach
-   of an edge. Limiting it to a fraction of the selection's own size means
-   the catch radius can never grow large enough to eat the thing it sits on,
-   however far away the camera gets. */
-const OFF_MODE_PICK_BIAS = 0.55;   // other modes catch narrower than the current one
+   The 3D version had a failure mode that no amount of threshold tuning
+   fixes: when the camera looks along an edge, the ray runs nearly parallel
+   to it and stays "close" in 3D across a huge sweep of screen. Measured, an
+   edge viewed at 5 degrees claimed 69% of a face, and at 2 degrees the
+   whole thing - which is precisely the "unselectable at some angles and
+   sides" behaviour. In screen space a nearly edge-on edge projects to a
+   short segment and simply stops competing.
 
-function pickThreshold() {
-  const camDist = camera.position.distanceTo(orbit.target);
-  const scaled = Math.max(camDist * 0.018, 0.05);
-  /* Measured from the object being picked, not from selectionRadius() -
-     that one returns 0 when nothing is selected yet, which is precisely
-     the moment you're making your first tap. Falling back to a fixed 0.5
-     there would cap a large object's threshold far too tightly and a tiny
-     object's not at all. */
-  const obj = findObject(App.activeObjectId);
-  let objR = 0.5;
-  if (obj) {
-    const size = new THREE.Box3().setFromObject(obj.mesh).getSize(new THREE.Vector3());
-    objR = Math.max(size.x, size.y, size.z) * 0.5 || 0.5;
-  }
-  return Math.min(scaled, objR * 0.22);
+   A pixel threshold is also constant on screen by definition, so the
+   camera-distance scaling and the object-size cap both disappear. */
+const PICK_RADIUS_PX = 22;         // thumb-sized catch radius
+const OFF_MODE_PICK_BIAS = 0.55;   // other types catch narrower than the current one
+
+// Projects a world point to viewport pixels, or null if it's behind the camera.
+function worldToScreenPx(p) {
+  const v = p.clone().project(camera);
+  if (v.z > 1) return null;
+  const r = viewportEl.getBoundingClientRect();
+  return new THREE.Vector2((v.x * 0.5 + 0.5) * r.width, (-v.y * 0.5 + 0.5) * r.height);
+}
+
+function pointerPx(ev) {
+  const r = viewportEl.getBoundingClientRect();
+  return new THREE.Vector2(ev.clientX - r.left, ev.clientY - r.top);
+}
+
+// Pixel distance from a point to a projected segment.
+function distPxToSegment(p, a, b) {
+  const ab = new THREE.Vector2().subVectors(b, a);
+  const len2 = ab.lengthSq();
+  if (len2 < 1e-9) return p.distanceTo(a);
+  let t = new THREE.Vector2().subVectors(p, a).dot(ab) / len2;
+  t = THREE.MathUtils.clamp(t, 0, 1);
+  return p.distanceTo(new THREE.Vector2(a.x + ab.x * t, a.y + ab.y * t));
 }
 
 function pickVertexOnActive(ev, bias = 1) {
   const obj = findObject(App.activeObjectId);
   if (!obj) return -1;
-  const ndc = ndcFromEvent(ev);
-  raycaster.setFromCamera(ndc, camera);
-  const ray = raycaster.ray;
-  const threshold = pickThreshold() * bias;
+  const tap = pointerPx(ev);
+  const limit = PICK_RADIUS_PX * bias;
   const topo = obj.mesh.userData.topo;
   const pa = obj.mesh.geometry.attributes.position;
-  let best = -1, bestD = threshold * threshold;
+  let best = -1, bestD = limit;
   for (let l = 0; l < topo.logicalCount; l++) {
     const ai = topo.logicalGroups[l][0];
     const p = new THREE.Vector3(pa.getX(ai), pa.getY(ai), pa.getZ(ai));
     obj.mesh.localToWorld(p);
-    const d = ray.distanceSqToPoint(p);
+    const s = worldToScreenPx(p);
+    if (!s) continue;
+    const d = s.distanceTo(tap);
     if (d < bestD) { bestD = d; best = l; }
   }
   return best;
@@ -4642,38 +4652,43 @@ function pickVertexOnActive(ev, bias = 1) {
 function pickEdgeOnActive(ev, bias = 1) {
   const obj = findObject(App.activeObjectId);
   if (!obj) return -1;
-  const ndc = ndcFromEvent(ev);
-  raycaster.setFromCamera(ndc, camera);
-  const ray = raycaster.ray;
-  const threshold = pickThreshold() * bias;
+  const tap = pointerPx(ev);
+  const limit = PICK_RADIUS_PX * bias;
   const topo = obj.mesh.userData.topo;
   const pa = obj.mesh.geometry.attributes.position;
-  let best = -1, bestD = threshold * threshold;
-  const tmp = new THREE.Vector3();
+  let best = -1, bestD = limit;
   topo.edges.forEach((e, i) => {
     const a = topo.logicalGroups[e[0]][0], b = topo.logicalGroups[e[1]][0];
     const pA = new THREE.Vector3(pa.getX(a), pa.getY(a), pa.getZ(a)); obj.mesh.localToWorld(pA);
     const pB = new THREE.Vector3(pa.getX(b), pa.getY(b), pa.getZ(b)); obj.mesh.localToWorld(pB);
-    const d = ray.distanceSqToSegment(pA, pB, null, tmp);
+    const sA = worldToScreenPx(pA), sB = worldToScreenPx(pB);
+    if (!sA || !sB) return;
+    const d = distPxToSegment(tap, sA, sB);
     if (d < bestD) { bestD = d; best = i; }
   });
   return best;
 }
 
 /* Tries vertex, then edge, then face - the priority you'd expect when your
-   thumb is bigger than the thing you're aiming at. Vertex and edge share a
-   camera-scaled distance threshold; face falls back to an exact raycast
-   against the mesh, so it always catches a tap that missed both. */
+   thumb is bigger than the thing you're aiming at. */
 function pickComponentOnActive(ev) {
-  /* Vertex still outranks edge outranks face, so tapping a corner picks the
-     corner - but the mode you're ALREADY in gets a wider catch radius than
-     the others. Without that bias the priority was absolute, and in Face
-     mode every tap near an edge returned the edge and switched you out of
-     Face mode. Measured on a unit cube: only 67% of a face was reachable at
-     normal zoom, 8% zoomed out, and none at all past a certain distance.
+  /* Once something is selected, the type is LOCKED: only that same type can
+     be picked until you tap empty space to clear. Overlapping catch zones
+     then can't interfere at all, because there's nothing to arbitrate
+     between - the ambiguity is removed by construction rather than tuned
+     down. Tap empty space and the next tap is free to choose again. */
+  const hasSelection = App.selectedElements.size > 0;
+  if (hasSelection) {
+    let idx = -1;
+    if (App.mode === 'vertex') idx = pickVertexOnActive(ev);
+    else if (App.mode === 'edge') idx = pickEdgeOnActive(ev);
+    else if (App.mode === 'face') idx = pickFaceOnActive(ev);
+    return idx >= 0 ? { type: App.mode, index: idx } : null;
+  }
 
-     Same hysteresis idea as the axis lock - it should take a deliberate tap
-     to leave the mode you're working in, and a sloppy one to stay. */
+  // Nothing selected yet, so the first tap is free to decide the type.
+  // The current mode still gets a wider catch radius than the others, so a
+  // tap that's ambiguous resolves toward what you're already working in.
   const v = pickVertexOnActive(ev, App.mode === 'vertex' ? 1 : OFF_MODE_PICK_BIAS);
   if (v >= 0) return { type: 'vertex', index: v };
   const e = pickEdgeOnActive(ev, App.mode === 'edge' ? 1 : OFF_MODE_PICK_BIAS);
