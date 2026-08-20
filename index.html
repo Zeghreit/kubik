@@ -511,7 +511,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.80</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.81</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -4720,46 +4720,6 @@ function distPxToSegment(p, a, b) {
   let t = new THREE.Vector2().subVectors(p, a).dot(ab) / len2;
   t = THREE.MathUtils.clamp(t, 0, 1);
   return p.distanceTo(new THREE.Vector2(a.x + ab.x * t, a.y + ab.y * t));
-}
-
-function pickVertexOnActive(ev, bias = 1) {
-  const obj = findObject(App.activeObjectId);
-  if (!obj) return -1;
-  const tap = pointerPx(ev);
-  const limit = PICK_RADIUS_PX * bias;
-  const topo = obj.mesh.userData.topo;
-  const pa = obj.mesh.geometry.attributes.position;
-  let best = -1, bestD = limit;
-  for (let l = 0; l < topo.logicalCount; l++) {
-    const ai = topo.logicalGroups[l][0];
-    const p = new THREE.Vector3(pa.getX(ai), pa.getY(ai), pa.getZ(ai));
-    obj.mesh.localToWorld(p);
-    const s = worldToScreenPx(p);
-    if (!s) continue;
-    const d = s.distanceTo(tap);
-    if (d < bestD) { bestD = d; best = l; }
-  }
-  return best;
-}
-
-function pickEdgeOnActive(ev, bias = 1) {
-  const obj = findObject(App.activeObjectId);
-  if (!obj) return -1;
-  const tap = pointerPx(ev);
-  const limit = PICK_RADIUS_PX * bias;
-  const topo = obj.mesh.userData.topo;
-  const pa = obj.mesh.geometry.attributes.position;
-  let best = -1, bestD = limit;
-  topo.edges.forEach((e, i) => {
-    const a = topo.logicalGroups[e[0]][0], b = topo.logicalGroups[e[1]][0];
-    const pA = new THREE.Vector3(pa.getX(a), pa.getY(a), pa.getZ(a)); obj.mesh.localToWorld(pA);
-    const pB = new THREE.Vector3(pa.getX(b), pa.getY(b), pa.getZ(b)); obj.mesh.localToWorld(pB);
-    const sA = worldToScreenPx(pA), sB = worldToScreenPx(pB);
-    if (!sA || !sB) return;
-    const d = distPxToSegment(tap, sA, sB);
-    if (d < bestD) { bestD = d; best = i; }
-  });
-  return best;
 }
 
 /* Tries vertex, then edge, then face - the priority you'd expect when your
