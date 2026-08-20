@@ -552,7 +552,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.93</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.94</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1838,6 +1838,92 @@ function mirrorObject(obj, axis) {
   newObj.mesh.quaternion.copy(quat);
   newObj.mesh.scale.copy(scale);
   return newObj;
+}
+
+/* Winding audit - ?debug=1 only.
+   Since v1.79 the app culls back faces, so a face wound the wrong way round
+   is invisible from outside and unpickable, and nothing says so. Generated
+   topology (extrude, bridge, subdivide, mirror) is the likeliest source, so
+   this walks every face and compares each shared edge against its neighbour.
+   Measure, don't reason. */
+function auditWinding(obj) {
+  const ed = toEditable(obj.mesh);
+  const L = edLogical(ed);
+  const key = (a, b) => (a < b ? a + '_' + b : b + '_' + a);
+
+  // One group is one face, and its boundary loop is the polygon in winding
+  // order - which skips the fan diagonals a raw triangle walk would trip on.
+  const loops = ed.groups.map((g, gi) =>
+    getGroupBoundaryLoopAttr(ed, gi).map(a => L.logicalOf[a]));
+
+  const uses = new Map();
+  const faces = [];
+  loops.forEach((lp, gi) => {
+    if (lp.length < 3) return;
+    faces.push(gi);
+    for (let i = 0; i < lp.length; i++) {
+      const a = lp[i], b = lp[(i + 1) % lp.length];
+      if (a === b) continue;
+      const k = key(a, b);
+      if (!uses.has(k)) uses.set(k, []);
+      uses.get(k).push({ gi: gi, forward: a < b });
+    }
+  });
+
+  // Two faces sharing an edge agree when they traverse it in OPPOSITE
+  // directions. Same direction means one of the two is flipped.
+  let boundary = 0, nonManifold = 0, conflicts = 0;
+  const adj = new Map();
+  const link = (x, y, agrees) => {
+    if (!adj.has(x)) adj.set(x, []);
+    adj.get(x).push({ to: y, agrees: agrees });
+  };
+  uses.forEach(u => {
+    if (u.length === 1) { boundary++; return; }
+    if (u.length > 2) { nonManifold++; return; }
+    const agrees = u[0].forward !== u[1].forward;
+    if (!agrees) conflicts++;
+    link(u[0].gi, u[1].gi, agrees);
+    link(u[1].gi, u[0].gi, agrees);
+  });
+
+  // Flood each connected shell, flipping the expected orientation across a
+  // conflicting edge. The smaller side of the split is the set that is wrong -
+  // "every face reversed" is just the same mesh seen inside out.
+  const orient = new Map();
+  let reversed = 0, shells = 0;
+  faces.forEach(seed => {
+    if (orient.has(seed)) return;
+    shells++;
+    orient.set(seed, 0);
+    const stack = [seed], shell = [];
+    while (stack.length) {
+      const cur = stack.pop();
+      shell.push(cur);
+      (adj.get(cur) || []).forEach(e => {
+        if (orient.has(e.to)) return;
+        orient.set(e.to, e.agrees ? orient.get(cur) : 1 - orient.get(cur));
+        stack.push(e.to);
+      });
+    }
+    const flipped = shell.filter(gi => orient.get(gi) === 1).length;
+    reversed += Math.min(flipped, shell.length - flipped);
+  });
+
+  return {
+    object: obj.name, faces: faces.length, edges: uses.size, shells: shells,
+    boundary: boundary, nonManifold: nonManifold,
+    conflictEdges: conflicts, reversed: reversed,
+    ok: conflicts === 0 && nonManifold === 0
+  };
+}
+
+// Every object at once, or one by id. Logs each report and returns them all.
+function windingAudit(id) {
+  const list = (id === undefined ? App.objects : [findObject(id)]).filter(Boolean);
+  const out = list.map(o => auditWinding(o));
+  out.forEach(r => console.log('[winding]', JSON.stringify(r)));
+  return out;
 }
 
 // Returns the ordered boundary loop of a face group as indices into the
@@ -3331,9 +3417,9 @@ const OP_SPECS = {
   extrude: {
     label: 'Extrude', min: -1.5, max: 1.5, step: 0.01, start: 0.4,
     options: [
-      { key: 'each', label: 'Each' },
+      { key: 'own', label: 'Joined ⇗' },
       { key: 'avg', label: 'Joined ⇈' },
-      { key: 'own', label: 'Joined ⇗' }
+      { key: 'each', label: 'Each' }
     ]
   },
   inset: {
@@ -3742,6 +3828,14 @@ function showExtrudeGroupingChooser(obj, groups) {
 
 function finishMeshEdit(obj, message) {
   ensureHelpers(obj);
+  // A silent no-op is the worst failure mode: under ?debug=1 an op that
+  // breaks winding says so in the same toast that reports the op.
+  if (PICK_DEBUG) {
+    const w = auditWinding(obj);
+    console.log('[winding]', JSON.stringify(w));
+    if (!w.ok) message += ' \u00b7 winding: ' + w.reversed + ' reversed, '
+      + w.conflictEdges + ' bad edges, ' + w.nonManifold + ' non-manifold';
+  }
   setActiveObjectHelpersVisible(obj, App.mode);
   refreshElementColors(obj);
   refreshUI();
@@ -7902,6 +7996,8 @@ if (PICK_DEBUG) {
     get camAnim() { return camAnim; },
     get aimThresholds() { return { crowd: AIM_CROWD_PX, roomy: AIM_ROOMY_PX, maxZoom: AIM_MAX_ZOOM }; },
     findObject, worldToScreenPx, vertexVisible, ensureHelpers,
+    // Winding: __kubik.windingAudit() for every object, or (id) for one.
+    auditWinding, windingAudit,
     // Screen-space spacing between visible vertices of the active object,
     // which is the number aim assist actually keys off.
     vertexSpacing() {

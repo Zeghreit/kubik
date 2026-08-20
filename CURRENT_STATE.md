@@ -5,10 +5,11 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **v1.93**
+- Version at time of writing: **v1.94**
 - Debug: append `?debug=1`. Tap picks log a `[pick] ...` line explaining why
-  a tap resolved as it did, and `window.__kubik` exposes the live app
-  (see Testing loop).
+  a tap resolved as it did, every mesh edit logs a `[winding] ...` line (see
+  Winding audit), and `window.__kubik` exposes the live app (see Testing
+  loop).
 
 This file describes the app AS IT IS, not how it got here. Version numbers
 appear only where they explain why something is the way it is. It was
@@ -238,13 +239,34 @@ closer per move, and a distance floor of 1.2.
 - v1.79 made **winding correctness load-bearing** by switching to FrontSide
   culling. Anything producing reversed winding can render or pick wrongly.
   Mirror is handled (negative-determinant flip in `combineObjectsInto`);
-  **extrude, bridge and subdivide are untested.**
+  **extrude, bridge and subdivide are still unmeasured** — but no longer
+  invisible: run the op under `?debug=1` and read the `[winding]` line.
 - **Symmetry only mirrors vertices that already have a twin.** It keeps a
   symmetric model symmetric; it cannot restore lost symmetry.
 - Symmetry applies to component edits only, never object drags.
 - `buildSymmetryMap` reflects about local **zero**, so geometry that has
   drifted off the origin finds no pairs and symmetry silently does nothing.
   (Fix designed, see below.)
+
+## Winding audit (v1.94)
+
+`auditWinding(obj)` walks every face, takes its boundary loop as the polygon
+in winding order (which skips the fan diagonals a raw triangle walk trips
+on) and compares each shared edge against its neighbour. **Two faces sharing
+an edge agree when they traverse it in OPPOSITE directions.** It then floods
+each connected shell, flipping the expected orientation across a conflicting
+edge, and counts the SMALLER side of the split — "every face reversed" is
+the same mesh seen inside out, not a bug.
+
+Returns `{object, faces, edges, shells, boundary, nonManifold,
+conflictEdges, reversed, ok}`.
+
+- **`__kubik.windingAudit()`** audits every object, `(id)` one.
+- Every `finishMeshEdit` runs it under `?debug=1`, logs `[winding] {...}` and
+  **appends the failure to the op's own toast** rather than staying silent.
+- Measured on a clean cube: 6 faces, 12 edges, all zeros. With one face's
+  triangles deliberately reversed: `conflictEdges 4, reversed 1, ok false`.
+  Verified against a broken mesh, not just a good one.
 
 ## Testing loop
 
@@ -281,20 +303,13 @@ Three traps, all of which cost real time:
 
 The next block of work, settled in discussion and ready to implement.
 
-**1. Extrude's default grouping is wrong.** With several faces selected the
-chooser offers `Each / Joined ⇈ / Joined ⇗` and defaults to `opts[0]` —
-`Each` — which extrudes every face independently and leaves a membrane
-between touching faces. Region extrude already does the right thing: it
-counts boundary edges across the selection and walls only those appearing
-once. **Reorder so a joined mode leads.** Small, immediate, unrelated to
-symmetry.
+Items 1 and 2 shipped in **v1.94**: the extrude chooser now reads
+`Joined ⇗ / Joined ⇈ / Each`, so the default is joined-along-own-normals
+(identical to `⇈` on a flat patch, better on a bent one) and no longer
+leaves a membrane between touching faces; the winding audit has its own
+section above.
 
-**2. Winding audit under `?debug=1`.** Walk every face, check its normal
-agrees with its neighbours, report the count. Do this BEFORE any mirrored
-topology work — mirrored ops are the likeliest thing to flip winding, and
-right now the failure is invisible until faces vanish.
-
-**3. Symmetry-aware modelling ops** (extrude, inset, bevel, loop cut).
+**1. Symmetry-aware modelling ops** (extrude, inset, bevel, loop cut).
 
 - **Topology wants the UNION.** Expand the selection to include its mirror
   and run the op once over the whole set. Because the rim is built from
@@ -310,7 +325,7 @@ right now the failure is invisible until faces vanish.
 - An element that is its own mirror must appear once; set semantics handle
   that for free.
 
-**4. The symmetry plane, and Mirror.**
+**2. The symmetry plane, and Mirror.**
 
 - Capture `{axis, offset}` when symmetry is switched **on**, and again when
   the **axis changes**. Offset is the geometry's **bounding-box centre** on
@@ -336,7 +351,7 @@ right now the failure is invisible until faces vanish.
   (`mirrorMat × matrixWorld`) while symmetric editing uses local zero. The
   two features disagree today; this design makes them agree.
 
-**5. After that**, pick one: more primitives (cylinder/sphere/plane, still
+**3. After that**, pick one: more primitives (cylinder/sphere/plane, still
 in the original v1 spec), or acknowledging the moment an op lands — an
 extrude currently just happens, with no feedback, which for something whose
 identity is a fidget is a real gap.
