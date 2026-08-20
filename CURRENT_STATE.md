@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: C:\Users\a.bodrov\Projects\kubik  (index.html is ~6600 lines)
-- Version at time of writing: v1.86a
+- Version at time of writing: v1.87
 - Debug console: append ?debug=1 to the URL. Tap picks also log a
   `[pick] ...` line explaining exactly why a tap resolved as it did.
 
@@ -51,6 +51,22 @@ onto one and lift to run it. Ring radius scales with the number of tools.
   catch zones can never overlap. Vertices projecting within `VERT_TIE_PX`
   (8px) of each other are a tie, settled by DEPTH - the one nearest the
   camera is the one you meant.
+
+- v1.87: dot 8px -> 6px, catch radius 22px -> 28px. Deliberately opposite
+  directions - the MARKER should be quiet, the TARGET generous, and there is
+  no reason they must match. `OFF_MODE_PICK_BIAS` went 0.9 -> 0.7 at the same
+  time so an off-mode target still measures ~19.6px, exactly as before; only
+  the in-mode radius grew.
+
+**Aim assist** (v1.87). After a vertex tap, if the nearest visible neighbour
+is under 30px away, the camera eases in (380ms) until neighbours sit around
+60px apart, bringing the picked vertex 70% of the way to centre. Runs AFTER
+the pick, so it can only make the NEXT tap easier and never changes what the
+tap just selected. Rate-limited to one nudge per 700ms, never more than 2.2x
+closer per move, and it stops at a distance floor of 1.2 so a dense mesh
+can't be nudged into the near plane one tap at a time. Simulated: converges
+in 1-3 nudges from every starting spacing tried. Rides on the Smart camera
+toggle rather than adding another button.
 
 **Selecting and grabbing use different radii.** They are different
 questions: selecting asks "which of these did you mean" and wants

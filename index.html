@@ -511,7 +511,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.86a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.87</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -521,7 +521,7 @@
     <div id="viewCube"></div>
     <button id="btnXray" title="Selection view: solid with an edge overlay, or see-through"></button>
     <button id="btnGrid" title="Show or hide the floor grid"></button>
-    <button id="btnSmartCam" title="Drift to a useful angle after selecting"></button>
+    <button id="btnSmartCam" title="Drift to a useful angle after selecting, and ease in when targets are crowded"></button>
     <button id="btnSnap" title="Snap moves to a grid and rotations to fixed angles"></button>
     <button id="btnSymmetry" title="Mirror edits across an axis while you work"></button>
     <div id="toolChip" title="Two fingers switch tool, three switch mode"></div>
@@ -1028,7 +1028,7 @@ let gizmoTarget = null;
 
    gl_PointSize is in device pixels, so the CSS size has to be multiplied by
    the pixel ratio or dots come out three times too small on a phone. */
-const VERTEX_DOT_PX = 8;
+const VERTEX_DOT_PX = 6;
 function vertexDotSize() {
   return VERTEX_DOT_PX * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1);
 }
@@ -4772,7 +4772,13 @@ function pickObjectAt(ev) {
 
    A pixel threshold is also constant on screen by definition, so the
    camera-distance scaling and the object-size cap both disappear. */
-const PICK_RADIUS_PX = 22;         // thumb-sized catch radius (44px target)
+/* v1.87: raised from 22 to 28, and the dot shrank from 8px to 6px at the
+   same time. Those pull in opposite directions on purpose - the MARKER
+   should be quiet, the TARGET should be generous, and there is no reason
+   they have to be the same size. Nearest-wins means a bigger radius costs
+   nothing in ambiguity: it only extends how far out you can be sloppy
+   before the tap misses everything. */
+const PICK_RADIUS_PX = 28;         // catch radius for the mode you're in
 /* Only a slight preference for the mode you're already in - not the harsh
    0.55 this started at. That shrank an off-mode target to 24px across,
    about half Apple's 44px minimum, and because the mode only changes AFTER
@@ -4782,7 +4788,10 @@ const PICK_RADIUS_PX = 22;         // thumb-sized catch radius (44px target)
    The heavy bias was there to stop edges stealing taps meant for faces -
    but the type lock now handles that outright once anything is selected,
    so this only nudges the very first tap. */
-const OFF_MODE_PICK_BIAS = 0.9;
+/* Retuned to 0.7 when PICK_RADIUS_PX went 22 -> 28, so an off-mode target
+   still measures ~19.6px, exactly what it did before. Only the IN-mode
+   radius grew; nothing got easier to steal from the mode you're in. */
+const OFF_MODE_PICK_BIAS = 0.7;
 
 /* Grabbing is a different question from selecting, and it was a mistake to
    answer both with PICK_RADIUS_PX.
@@ -5826,6 +5835,7 @@ function handleTap(ev) {
       App.edgeAnchor = null;
     }
     toggleElement(pick.index, additive);
+    aimAssistAfterPick(pick);
     return;
   }
 
@@ -6976,7 +6986,7 @@ document.getElementById('btnSmartCam').addEventListener('click', (ev) => {
   App.smartCam = !App.smartCam;
   ev.currentTarget.classList.toggle('active', App.smartCam);
   if (!App.smartCam) { cancelSmartCamera(); camAnim = null; }
-  toast(App.smartCam ? 'Smart camera on' : 'Smart camera off');
+  toast(App.smartCam ? 'Smart camera + aim assist on' : 'Smart camera off');
 });
 
 document.getElementById('btnGrid').addEventListener('click', (ev) => {
@@ -7311,6 +7321,92 @@ function runSmartCamera() {
     toTarget: focus,
     start: performance.now(),
     duration: 950 // slow enough to read as drift, not a cut
+  };
+}
+
+/* ---------------- Aim assist ----------------
+
+   A 6px dot with a 28px catch radius is easy to hit while the vertices are
+   spread out, and impossible to aim BETWEEN when they aren't. Rather than
+   asking you to pinch-zoom by hand before every fiddly selection, the view
+   does it for you: land a tap where the neighbours are crowded and the
+   camera eases in until they're comfortably apart.
+
+   It runs AFTER the pick, never before, so it can only ever make the NEXT
+   tap easier. It never changes what the tap you just made selected - which
+   is what keeps it from being the disorienting kind of help.
+
+   Rides on the Smart camera toggle rather than adding another button: same
+   promise, that the view will help rather than sit still. */
+
+const AIM_CROWD_PX = 30;    // a neighbour closer than this means it's crowded
+const AIM_ROOMY_PX = 60;    // ... and this is how far apart we'd like them
+const AIM_MAX_ZOOM = 0.45;  // never more than this much closer in one move
+let aimAssistAt = 0;
+
+// Screen position of one logical vertex, or null if it's behind the camera.
+function logicalVertexPx(obj, l) {
+  const topo = obj.mesh.userData.topo;
+  const g = topo.logicalGroups[l];
+  if (!g) return null;
+  const pa = obj.mesh.geometry.attributes.position;
+  const p = new THREE.Vector3(pa.getX(g[0]), pa.getY(g[0]), pa.getZ(g[0]));
+  obj.mesh.localToWorld(p);
+  return { px: worldToScreenPx(p), world: p };
+}
+
+// How far the nearest OTHER visible vertex sits from this one, in pixels.
+function nearestVisibleNeighbourPx(obj, l, home) {
+  const topo = obj.mesh.userData.topo;
+  let best = Infinity;
+  for (let i = 0; i < topo.logicalCount; i++) {
+    if (i === l || !vertexVisible(obj, i)) continue;
+    const n = logicalVertexPx(obj, i);
+    if (!n || !n.px) continue;
+    best = Math.min(best, n.px.distanceTo(home));
+  }
+  return best;
+}
+
+function aimAssistAfterPick(pick) {
+  if (!App.smartCam || pick.type !== 'vertex') return;
+  // A tap that DESELECTED shouldn't pull the camera in after it.
+  if (!App.selectedElements.has(pick.index)) return;
+  const now = performance.now();
+  if (now - aimAssistAt < 700) return;        // one nudge per burst of taps
+  if (camAnim || directDrag || boxDrag) return;
+
+  const obj = findObject(App.activeObjectId);
+  if (!obj) return;
+  const hit = logicalVertexPx(obj, pick.index);
+  if (!hit || !hit.px) return;
+
+  const spacing = nearestVisibleNeighbourPx(obj, pick.index, hit.px);
+  if (!isFinite(spacing) || spacing >= AIM_CROWD_PX) return;   // roomy already
+
+  /* Screen spacing scales inversely with camera distance, so the factor that
+     turns "spacing" into "roomy" is simply the ratio between them. */
+  const factor = Math.max(spacing / AIM_ROOMY_PX, AIM_MAX_ZOOM);
+  const dir = new THREE.Vector3().subVectors(camera.position, orbit.target);
+  const dist = dir.length() || 1;
+  /* A floor, so a genuinely dense mesh can't be nudged into the near plane
+     one tap at a time. Past this point crowding is the model's, not the
+     view's, and no amount of dollying will fix it. */
+  if (dist * factor < 1.2) return;
+  dir.normalize();
+
+  // Bring the vertex most of the way to the centre, not all of it - keeping
+  // some of the model in frame is what stops this reading as a jump cut.
+  const target = orbit.target.clone().lerp(hit.world, 0.7);
+  aimAssistAt = now;
+  cancelSmartCamera();                        // only one thing moves the view
+  camAnim = {
+    fromPos: camera.position.clone(),
+    toPos: target.clone().addScaledVector(dir, dist * factor),
+    fromTarget: orbit.target.clone(),
+    toTarget: target,
+    start: now,
+    duration: 380   // quick enough to feel like a response to the tap
   };
 }
 
