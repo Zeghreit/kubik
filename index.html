@@ -552,7 +552,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -3871,18 +3871,80 @@ function loopCutPositions(count, mode, slide) {
   return even.map(e => centre + (e - 0.5) * 2 * half);
 }
 
-/* Slide positions for the mirrored ring.
+/* Which way does the mirrored ring slide?
 
-   `t` runs along the ring's own direction, decided by the walk from its
-   starting edge. The mirrored ring is walked from the mirrored edge, so
-   whether its parameterisation already comes out mirrored or has to be
-   flipped is a fact about the walk, not something to reason about - it was
-   MEASURED (see CURRENT_STATE, Loop cut). Flip lives in one place so the
-   answer can be changed in one place. */
-const LOOPCUT_MIRROR_FLIPS = false;
+   Not a constant, and not the endpoint order either - v1.99 assumed both and
+   was wrong on real models. `edgeLoopOp` keys its start edge with `edgeKey`,
+   which is order-independent, and measures t from `a0 = lp[entry]` - the
+   winding of whichever adjacent face happens to be `startGroups[0]`. That is
+   arbitrary per ring, so no fixed answer can be right for every ring.
 
-function mirrorLoopCutPositions(ts) {
-  return LOOPCUT_MIRROR_FLIPS ? ts.map(t => 1 - t) : ts.slice();
+   So: try it. Cut the real ring at an OFF-CENTRE t, note where the new loop
+   landed, mirror that point, then cut the mirrored ring at t and at 1-t and
+   keep whichever lands nearer. Three trial cuts and four restores, ONCE when
+   the op starts - not per slider tick - and the answer rides in the payload.
+   Empirical beats clever here: the walk's direction is a fact about the mesh,
+   and the mesh is right there to be asked. */
+const LOOPCUT_TRIAL_T = 0.25;   // 0.5 is symmetric and would tell you nothing
+
+function resolveEdgeByPositions(obj, pa, pb) {
+  const a = findLogicalByPosition(obj, pa), b = findLogicalByPosition(obj, pb);
+  if (a < 0 || b < 0) return null;
+  const topo = obj.mesh.userData.topo;
+  const i = topo.edges.findIndex(e => (e[0] === a && e[1] === b) || (e[0] === b && e[1] === a));
+  return i >= 0 ? [a, b] : null;
+}
+
+// Cuts, then returns the average position of the vertices that were not there
+// before - i.e. where this loop landed.
+function loopCutTrial(obj, startEdge, ts) {
+  ensureHelpers(obj);
+  const before = new Set();
+  const t0 = obj.mesh.userData.topo;
+  for (let l = 0; l < t0.logicalCount; l++) before.add(posKey(logicalPos(obj, l)));
+  edgeLoopOp(obj, startEdge, ts);
+  ensureHelpers(obj);
+  const t1 = obj.mesh.userData.topo;
+  const c = new THREE.Vector3();
+  let n = 0;
+  for (let l = 0; l < t1.logicalCount; l++) {
+    const p = logicalPos(obj, l);
+    if (!before.has(posKey(p))) { c.add(p); n++; }
+  }
+  return n ? c.divideScalar(n) : null;
+}
+
+function decideLoopCutFlip(obj, pa, pb, mpa, mpb, sym) {
+  const snap = captureObjectState(obj);
+  const back = () => { restoreObjectState(obj, snap); ensureHelpers(obj); };
+  const T = LOOPCUT_TRIAL_T;
+  let flip = false;
+  try {
+    const orig = resolveEdgeByPositions(obj, pa, pb);
+    if (!orig) return false;
+    const p1 = loopCutTrial(obj, orig, [T]);
+    back();
+    if (!p1) return false;
+
+    // Where the mirrored loop OUGHT to land.
+    const want = p1.clone();
+    want[sym.axis] = 2 * sym.offset - want[sym.axis];
+
+    const m1 = resolveEdgeByPositions(obj, mpa, mpb);
+    if (!m1) return false;
+    const same = loopCutTrial(obj, m1, [T]);
+    back();
+    const m2 = resolveEdgeByPositions(obj, mpa, mpb);
+    if (!m2) return false;
+    const flipped = loopCutTrial(obj, m2, [1 - T]);
+    back();
+
+    if (!same || !flipped) return false;
+    flip = flipped.distanceToSquared(want) < same.distanceToSquared(want);
+  } finally {
+    back();
+  }
+  return flip;
 }
 
 function beginPendingOp(kind, obj, payload) {
@@ -3978,7 +4040,7 @@ function applyPendingOp() {
         const still = now.edges.findIndex(e =>
           (e[0] === ma && e[1] === mb) || (e[0] === mb && e[1] === ma));
         if (still >= 0) {
-          edgeLoopOp(obj, [ma, mb], mirrorLoopCutPositions(ts));
+          edgeLoopOp(obj, [ma, mb], op.payload.mflip ? ts.map(t => 1 - t) : ts.slice());
           ensureHelpers(obj);
         }
       }
@@ -4462,7 +4524,7 @@ function edgeLoopSelection() {
      one op that neither family fits: the union would hand it two edges when
      it only reads the first, and a second pass after OK would mean the
      preview lied about the result. */
-  let mpa = null, mpb = null;
+  let mpa = null, mpb = null, mflip = false;
   if (App.symmetry) {
     const m = mirrorOfSelection(obj, [first]);
     if (m === null) {
@@ -4470,14 +4532,19 @@ function edgeLoopSelection() {
     } else {
       const other = Array.from(m).filter(e => e !== first);
       const me = other.length ? obj.mesh.userData.topo.edges[other[0]] : null;
-      if (me) { mpa = logicalPos(obj, me[0]); mpb = logicalPos(obj, me[1]); }
+      if (me) {
+        mpa = logicalPos(obj, me[0]);
+        mpb = logicalPos(obj, me[1]);
+        mflip = decideLoopCutFlip(obj, logicalPos(obj, pair[0]), logicalPos(obj, pair[1]),
+                                  mpa, mpb, opSymmetry(obj));
+      }
     }
   }
 
   beginPendingOp('loopcut', obj, {
     pa: logicalPos(obj, pair[0]),
     pb: logicalPos(obj, pair[1]),
-    mpa: mpa, mpb: mpb
+    mpa: mpa, mpb: mpb, mflip: mflip
   });
 }
 
@@ -8560,7 +8627,8 @@ if (PICK_DEBUG) {
     bisectObject, mirrorObject, planeSpan, mirrorMatrixForPlane,
     opSymmetry, mirrorOfSelection, expandSelectionToMirror, extrudeRegionOp,
     runMirrored, markElements, resolveElements, symExpand,
-    edgeLoopSelection, mirrorLoopCutPositions, applyPendingOp,
+    edgeLoopSelection, decideLoopCutFlip, loopCutTrial, applyPendingOp,
+    captureObjectState, restoreObjectState, cancelPendingOp,
     /* The op entry points, so a harness can run the REAL tool the ring
        runs instead of reimplementing it. Still nothing new - every one of
        these is already one tap away. */

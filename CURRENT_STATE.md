@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **v1.99**
+- Version at time of writing: **v1.99a**
 - Debug: append `?debug=1`. Tap picks log a `[pick] ...` line explaining why
   a tap resolved as it did, every mesh edit logs a `[winding] ...` line (see
   Winding audit), and `window.__kubik` exposes the live app (see Testing
@@ -347,7 +347,7 @@ its mirror across the seam: 16 faces, 18 verts, 32 edges, V−E+F = 2, boundary
 vertices still pair (6 pairs, 6 self-mirrored) with the seam at exactly
 x = 0: the op left the model symmetric, which is the invariant that matters.
 
-### Loop cut (v1.99)
+### Loop cut (v1.99, direction fixed v1.99a)
 
 Loop cut fits neither family: the union would hand it two edges when it only
 reads the first, and a pass after OK would mean the preview lied. It gets its
@@ -372,12 +372,37 @@ not there any more. Nothing is said about it: nothing went wrong, and the
 geometry is what was asked for. (A ring that cannot be FOUND is a different
 matter, and `edgeLoopSelection` says so.)
 
-**`LOOPCUT_MIRROR_FLIPS = false`, and that was MEASURED, not reasoned.** The
-slide `t` runs along each ring's own direction, and whether the mirrored ring
-comes out already-mirrored or reversed is a fact about the walk. Built with
-the flip on first: slid to t = 0.25 the loops landed at x = 0.6 and −0.8.
-With it off: **±0.6.** The constant sits alone so the answer can change in
-one place.
+**Which way the mirrored ring slides is decided PER RING, by trial.** This
+was got wrong twice before it was measured properly, and both wrong answers
+looked reasonable:
+
+1. v1.99 used a global constant, `LOOPCUT_MIRROR_FLIPS`, "measured" on a
+   single ring. It was right for that ring and wrong for others.
+2. The obvious repair — pass the mirrored endpoints in the mirrored order —
+   does nothing. `edgeLoopOp` keys its start edge with `edgeKey`, which is
+   **order-independent**, and measures `t` from `a0 = lp[entry]`: the winding
+   of whichever adjacent face happens to be `startGroups[0]`. Arbitrary per
+   ring.
+
+So `decideLoopCutFlip` asks the mesh instead. Cut the real ring at an
+off-centre `t`, note where the loop landed, mirror that point, then cut the
+mirrored ring at `t` and at `1−t` and keep whichever lands nearer. Three
+trial cuts and four restores, **once when the op starts** — not per slider
+tick — and the answer rides in the payload as `mflip`.
+
+The measurement that settles it: four X-running rings on the same two-nub
+cube, slider at 0.25.
+
+| ring | flip | result |
+|---|---|---|
+| 20 | false | symmetric, ±0.6 |
+| 21 | **true** | symmetric, ±0.8 |
+| 22 | false | symmetric, ±0.6 |
+| 23 | **true** | symmetric, ±0.6 |
+
+**Two of four rings need the flip, on one model.** No constant could have
+been right. (21 landing at ±0.8 rather than ±0.6 is only which end of that
+ring `t` measures from — still symmetric, which is the thing that matters.)
 
 Measured, two nubs on a cube (rings that do not cross the plane): 14 → 22
 faces, 16 → 24 vertices, symmetric, winding clean, loops at **±0.6** with the
