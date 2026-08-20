@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **v1.99c**
+- Version at time of writing: **v1.99d**
 - Debug: append `?debug=1`. Tap picks log a `[pick] ...` line explaining why
   a tap resolved as it did, every mesh edit logs a `[winding] ...` line (see
   Winding audit), and `window.__kubik` exposes the live app (see Testing
@@ -29,15 +29,21 @@ v1.85d.
 
 - **Top-left** hamburger → drawer. **Top-centre** tool/mode readout.
   **Top-right** view cube.
-- **Under the view cube**: the Symmetry pill, a horizontal two-state switch.
+- **Top-left, under the drawer button**: the Symmetry pill, a horizontal
+  two-state switch. It hung under the view cube until v1.99d, which left
+  the top-left empty and the top-right crowded - the cube is a 128px
+  object with its own presence, and a pill beneath it read as part of
+  the cube rather than as its own control.
 - **Bottom-left**: the round Object/Component button.
   **Bottom-centre**: Undo/Redo. **Bottom-right**: Help.
-- **The bottom row is aligned on CENTRES, via `--bar-cy`.** The hub is 56px
-  and the other three are 44px, so the shared `bottom: var(--edge-b)` they
-  all used lined up their bottom EDGES and left the hub's centre 6px high.
-  The CSS looked right and the row looked wrong, because a row of round
-  buttons is read by its centres. Anything added to that row measures from
-  `--bar-cy` too.
+- **The bottom row aligns on BOTTOM EDGES.** All four take a plain
+  `bottom: var(--edge-b)`, and `--edge-b` is 4px against the 14px the other
+  edges use, so the row sits low and leaves the viewport more air.
+  v1.99b aligned it on CENTRES instead, through a `--bar-cy` variable - the
+  textbook answer for round buttons of different sizes - and v1.99d reverted
+  that after seeing both on screen. **Do not "fix" this back:** the 56px hub
+  beside three 44px buttons reads better sharing a bottom edge. `--bar-cy`
+  no longer exists.
 - **`#thumbZone` is gone (v1.99c), and must not come back around one
   button.** It applied `env(safe-area-inset-*)` itself while `--edge-l` and
   `--bar-cy` applied it AGAIN to the button inside it, so on any phone with
@@ -55,7 +61,10 @@ v1.85d.
 same drag moves, rotates or scales depending on the active tool.
 
 - Two-finger tap on empty space cycles Move / Rotate / Scale.
-- Three-finger tap switches Free / Axis.
+- Three-finger tap switches Free / Axis. **Axis is the default** as of
+  v1.99d: a drag along one named axis is what is wanted almost every time
+  something is moved deliberately, and Free is one tap away. Not persisted
+  by save/load, so every session opens in Axis.
 - In Axis mode the axis is decided once from the first ~15px of the drag and
   held until you lift; re-deciding mid-drag made curving gestures wander.
 - Free rotation takes its axis from the swipe direction, locked at the start.

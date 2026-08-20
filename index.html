@@ -52,14 +52,11 @@
     --edge: 14px;
     --edge-l: calc(14px + env(safe-area-inset-left));
     --edge-r: calc(14px + env(safe-area-inset-right));
-    --edge-b: calc(14px + env(safe-area-inset-bottom));
-    /* The centre line of the bottom button row, measured from the bottom
-       edge. #hubBtn is 56px and Undo/Redo/Help are 44px, so a shared
-       `bottom` lined up their bottom EDGES and left the hub's centre 6px
-       high - the CSS looked right and the row looked wrong, because a row
-       of round buttons is read by its centres. Both sizes now measure from
-       this one line. Anything added to the row should do the same. */
-    --bar-cy: calc(var(--edge-b) + 22px);   /* 44 / 2 */
+    /* The bottom row sits closer to the edge than the other three insets
+       (4px against 14px), which is what buys the viewport its extra air.
+       On a phone the safe-area inset is added on top, so it never actually
+       ends up tight against the glass. */
+    --edge-b: calc(4px + env(safe-area-inset-bottom));
     --gap: 8px;
     --r-sm: 6px;    /* small controls, inputs, swatches */
     --r-md: 12px;   /* buttons, panels, cards */
@@ -123,21 +120,40 @@
      visibly high. */
   /* Object / Component, back to a single round button in the bottom-left
      corner - opposite Help, with Undo/Redo between them. */
+  /* Bottom EDGES, not centres. v1.99b aligned the row on centres, which is
+     the textbook answer for differently-sized round buttons - but with the
+     56px hub beside three 44px ones it was judged on screen and the shared
+     bottom edge reads better, so that is what it uses. All four now take a
+     plain `bottom: var(--edge-b)`. */
   #hubBtn {
     position: absolute; z-index: 16;
-    left: var(--edge-l); bottom: calc(var(--bar-cy) - 28px);
+    left: var(--edge-l); bottom: var(--edge-b);
     width: 56px; height: 56px; min-height: 56px; padding: 0;
     border-radius: 50%; justify-content: center;
     background: var(--accent); color: var(--on-accent); border: none;
     box-shadow: 0 6px 18px rgb(var(--shadow) / .16);
   }
 
-  /* Symmetry: horizontal two-state pill under the view cube. */
+  /* Symmetry: horizontal two-state pill at the TOP-LEFT, directly under the
+     drawer button, in the space Undo/Redo used to occupy before they moved
+     to the bottom centre.
+
+     It sat under the view cube until v1.99d. Nothing was wrong with it
+     there, but it left the top-left empty and the top-right crowded - the
+     cube is already a 128px object with its own presence, and a pill hung
+     beneath it read as part of the cube rather than as a separate control.
+     Under the drawer button it has the corner to itself.
+
+     `top: var(--edge)`, not `--edge-b` or an inset of its own: #viewport
+     already starts below #topBar, which accounted for the top safe-area
+     inset in its own padding. Adding it again here would push the pill
+     down twice - the same mistake #thumbZone was making at the bottom
+     until v1.99c. */
   #symPill {
-    position: absolute; right: var(--edge-r); top: 118px;
+    position: absolute; left: var(--edge-l); top: var(--edge);
     z-index: 13; width: 88px; height: 40px; border-radius: 20px;
     background: var(--panel2); border: 1px solid var(--line);
-    display: flex; overflow: hidden; position: absolute;
+    display: flex; overflow: hidden;
     touch-action: none; -webkit-user-select: none; user-select: none;
   }
   #symPill .sp-half {
@@ -600,7 +616,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99c</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99d</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -618,7 +634,7 @@
     <div id="selectBox"></div>
     <svg id="lassoSvg"><polyline id="lassoPath" /></svg>
     <!-- Was wrapped in #thumbZone until v1.99c. That wrapper applied
-         env(safe-area-inset-*) itself, and --edge-l / --bar-cy apply it
+         env(safe-area-inset-*) itself, and --edge-l / --edge-b apply it
          again to the button inside - so on any phone with a home indicator
          the inset landed TWICE and the hub sat a full inset (~34px) above
          Undo/Redo and Help. On a desktop both insets are 0, so the row
@@ -963,7 +979,12 @@ const App = {
   mode: 'object',        // object | vertex | edge | face
   multiSelect: true,  // permanently on: every tap adds, tap empty space to clear
   transformTool: 'move',   // move | rotate | scale - cycled by two-finger tap
-  transformMode: 'free',   // free | axis - switched by three-finger tap
+  /* Axis, not Free, as of v1.99d. Free is the more forgiving of the two to
+     discover, but a drag along one named axis is what you want almost every
+     time you move a thing on purpose - and Free is one three-finger tap
+     away when you want it. Not persisted in save/load, so this default is
+     what every session opens with. */
+  transformMode: 'axis',   // free | axis - switched by three-finger tap
   lastComponentMode: 'face', // resumed when the Object/Component toggle re-enters Component mode
   selectDrag: 'off',   // 'off' | 'box' | 'lasso'
   snap: false,
