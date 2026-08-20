@@ -357,7 +357,15 @@
      point instead of a corner. .hub-item's own display:none default was
      gated on "#hubArc.open", which this container isn't, so it needs its
      own unconditional show rule. */
-  #touchToolRing { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 20; }
+  /* pointer-events:none is load-bearing, not tidiness. The ring picks by
+     ANGLE from the finger, so the icons never need to be touched - but
+     while they were hit targets, sliding onto one sent pointermove and
+     pointerup to that div instead of the canvas. They aren't children of
+     the canvas, so nothing bubbled back, the hover stopped updating and
+     the release ran nothing. Only items you happened to stop SHORT of
+     worked. */
+  #touchToolRing { position: absolute; left: 0; top: 0; width: 0; height: 0;
+    z-index: 20; pointer-events: none; }
   #touchToolRing .hub-item { display: flex; animation: radial-pop .14s ease-out; }
 
   /* The view-cube lives on its own small canvas so it can never disturb the
@@ -544,7 +552,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.92</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.92a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -5422,9 +5430,9 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
      also how a careful orbit starts, so that gesture has to prove itself
      before it takes the press away from the camera. */
   clearToolRingTimer();
-  const px = ev.clientX, py = ev.clientY;
+  const px = ev.clientX, py = ev.clientY, pid = ev.pointerId;
   if (directCandidate) {
-    toolRingTimer = setTimeout(() => { toolRingTimer = null; bloomToolRing(px, py); }, TOOL_RING_HOLD_MS);
+    toolRingTimer = setTimeout(() => { toolRingTimer = null; bloomToolRing(px, py, null, pid); }, TOOL_RING_HOLD_MS);
   } else {
     /* v1.91: this used to be skipped while Box or Lasso was armed, on the
        theory that there the press IS the gesture. That made a dead end -
@@ -5441,7 +5449,7 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
         selectBoxEl.style.display = 'none';
         lassoSvgEl.style.display = 'none';
       }
-      bloomToolRing(px, py, HUB_TOOLS_WORLD);
+      bloomToolRing(px, py, HUB_TOOLS_WORLD, pid);
     }, WORLD_RING_HOLD_MS);
   }
 
@@ -7002,7 +7010,7 @@ function minAngularGapDeg(anglesDeg) {
   return Math.max(best, 1);
 }
 
-function bloomToolRing(x, y, tools) {
+function bloomToolRing(x, y, tools, pointerId) {
   tools = tools || currentHubTools();
   if (!tools.length) return;
 
@@ -7054,7 +7062,16 @@ function bloomToolRing(x, y, tools) {
     touchToolRingEl.appendChild(el);
   });
 
-  toolRingActive = { x: cx, y: cy, tools, itemEls, hoveredIndex: -1 };
+  /* Capture the pointer on the canvas for the life of the ring. The icons
+     are already inert (see the CSS), but the ring can also open over the
+     mode button, Undo/Redo, the symmetry pill or the view cube - all of
+     them above the canvas and all of them happy to swallow a release that
+     was meant for a tool. Capture makes the question moot: every move and
+     the up belong to the canvas until the ring closes. */
+  toolRingActive = { x: cx, y: cy, tools, itemEls, hoveredIndex: -1, pointerId };
+  if (pointerId !== undefined) {
+    try { renderer.domElement.setPointerCapture(pointerId); } catch (e) { /* fine without it */ }
+  }
   orbit.enabled = false;
   directCandidate = null;   // committed to the ring now, not to a drag
 }
@@ -7073,7 +7090,17 @@ function updateToolRingHover(ev) {
     const ang = Math.atan2(-dy, dx);
     let best = -1, bestDiff = Infinity;
     toolRingActive.itemEls.forEach((it, i) => {
-      let diff = Math.abs(ang - it.angle);
+      /* The modulo is load-bearing. atan2 returns (-PI, PI], but the halved
+         layout places items anywhere in [0, 2PI) - so for a finger below
+         the centre and an item near 2PI, |ang - angle| can exceed 2PI, and
+         `2PI - diff` then comes out NEGATIVE. A negative distance beats
+         every real one, so that item won every comparison and the items
+         either side of it could not be reached at all. Measured: aiming
+         dead centre on Box selected Lasso.
+
+         Before v1.89 the angles ran 90, 30, -30, -90..., which stayed
+         inside atan2's own range and hid the flaw. */
+      let diff = Math.abs(ang - it.angle) % (Math.PI * 2);
       if (diff > Math.PI) diff = Math.PI * 2 - diff;
       if (diff < bestDiff) { bestDiff = diff; best = i; }
     });
@@ -7088,11 +7115,15 @@ function updateToolRingHover(ev) {
 
 function closeToolRing(run) {
   if (!toolRingActive) return;
+  const pid = toolRingActive.pointerId;
   if (run && toolRingActive.hoveredIndex >= 0) {
     toolRingActive.itemEls[toolRingActive.hoveredIndex].tool.run();
   }
   touchToolRingEl.innerHTML = '';
   toolRingActive = null;
+  if (pid !== undefined) {
+    try { renderer.domElement.releasePointerCapture(pid); } catch (e) { /* already gone */ }
+  }
   orbit.enabled = true;
 }
 
