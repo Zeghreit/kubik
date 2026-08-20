@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: C:\Users\a.bodrov\Projects\kubik  (index.html is ~6600 lines)
-- Version at time of writing: v1.85c
+- Version at time of writing: v1.86
 - Debug console: append ?debug=1 to the URL. Tap picks also log a
   `[pick] ...` line explaining exactly why a tap resolved as it did.
 
@@ -35,6 +35,33 @@ onto one and lift to run it. Ring radius scales with the number of tools.
 **Selection**
 - Vertex and edge picking is SCREEN-SPACE (pixel distance to the projected
   point/line), never 3D ray distance.
+- v1.86: vertex dots are drawn at a CONSTANT SCREEN SIZE (11 CSS px, times
+  the pixel ratio, `sizeAttenuation: false`). They used to be 0.11 world
+  units, so on a unit cube at camera distance 25 a dot measured ~4px while
+  the catch radius stayed 22px - you aimed at something you could not see,
+  and neighbouring catch zones overlapped. Constant size makes what you SEE
+  the thing you can HIT at every zoom.
+- Nearest visible vertex wins, which is a Voronoi split of the screen, so
+  catch zones can never overlap. Vertices projecting within `VERT_TIE_PX`
+  (8px) of each other are a tie, settled by DEPTH - the one nearest the
+  camera is the one you meant.
+
+**Selecting and grabbing use different radii.** They are different
+questions: selecting asks "which of these did you mean" and wants
+precision (`PICK_RADIUS_PX` 22); grabbing asks "are you taking hold of what
+is already yours" and wants generosity (`GRAB_RADIUS_PX` 34). Sharing one
+radius was the "sometimes it refuses to translate" bug.
+- `pointerOnSelection()` now measures ONLY against selected components, so
+  an unselected neighbour nearer the finger can no longer steal the grab
+  and turn it into a camera orbit.
+- Pressing anywhere inside the selection's screen bounding box grabs it too
+  (3+ components, and skipped when the box covers >60% of the viewport, so
+  there is always somewhere left to orbit from).
+- A selected face is grabbable anywhere its surface is under the finger.
+
+**Tap slop is per pointer type** (v1.86). A thumb rolls a few pixels as it
+presses and lifts; one shared 6px slop threw ordinary taps away as camera
+drags. Touch gets 12px tap slop and 8px drag start, mouse and pen keep 6px.
 - Back-facing vertices and edges are rejected by face normal, so picking
   agrees with back-face culling. Mirrored (negative-determinant) objects are
   sign-corrected.
