@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **v1.98**
+- Version at time of writing: **v1.99**
 - Debug: append `?debug=1`. Tap picks log a `[pick] ...` line explaining why
   a tap resolved as it did, every mesh edit logs a `[winding] ...` line (see
   Winding audit), and `window.__kubik` exposes the live app (see Testing
@@ -244,9 +244,14 @@ closer per move, and a distance floor of 1.2.
 - **Symmetry only mirrors vertices that already have a twin.** It keeps a
   symmetric model symmetric; it cannot restore lost symmetry.
 - Symmetry applies to component edits only, never object drags.
-- **Loop cut is the ONE op symmetry does not reach.** It cuts a whole ring
-  from one chosen edge and is a live slider op, so a mirrored pass would mean
-  a second op bar. Everything else in every component mode is covered.
+- **One loop cut case is silently NOT symmetric**, and it is worth knowing
+  precisely: an edge running ALONG the mirror axis is its own mirror, so no
+  second ring is cut — correctly, there is only one ring — but the cut then
+  slides along that axis. At the default (Even, one loop) it lands on the
+  plane and all is well. **Slid off centre it lands off-plane, on one side
+  only.** Measured on a cube at t = 0.25: loop at x = +0.25, model no longer
+  symmetric. Fixing it means also cutting at the plane-mirrored position,
+  which doubles the loop count and so needs a design call, not just code.
 - **Region inset still walks only its FIRST rim loop.** Two disconnected
   patches inset as one and the second gets nothing — pre-existing, not new,
   but symmetry makes it easy to reach: pick Organic or Keep shape with a
@@ -263,7 +268,7 @@ and the difference is not a detail.
 |---|---|---|
 | **Union** | Extrude, Inset, Bevel, Split, Crease/Uncrease, Delete | `symExpand(obj)` adds the mirror to the selection |
 | **Relational** | Weld, Connect, Bridge | `runMirrored(obj, fn)` runs the op once per side |
-| **Neither yet** | Loop cut | see Watch out |
+| **Live re-run** | Loop cut | both rings cut on every slider tick |
 
 **Union ops act on each element independently**, so adding the mirror to the
 selection is the whole job.
@@ -341,6 +346,44 @@ its mirror across the seam: 16 faces, 18 verts, 32 edges, V−E+F = 2, boundary
 0, winding clean, **6 walls not 8** — no membrane at the seam. All 18
 vertices still pair (6 pairs, 6 self-mirrored) with the seam at exactly
 x = 0: the op left the model symmetric, which is the invariant that matters.
+
+### Loop cut (v1.99)
+
+Loop cut fits neither family: the union would hand it two edges when it only
+reads the first, and a pass after OK would mean the preview lied. It gets its
+own answer, which the op bar makes cheap — **`applyPendingOp` already rebuilds
+the whole mesh from a snapshot on every slider tick**, so the mirrored ring is
+cut in that same re-run. One op bar, one slider, both sides live, one Undo.
+
+**How other tools handle this, since it shaped the design:** Blender's X
+Mirror and Topology Mirror apply only to interactive transforms — Loop Cut is
+not mirrored, and the official answer is the Mirror modifier. Maya's Insert
+Edge Loop ignores symmetry outright; Multi-Cut inserts symmetric edges but
+*refuses to start a cut on the symmetry edge*, a visible guard rather than a
+silent skip. Modo mirrors component operations broadly and has an axis offset
+like ours — but note its Loop Slice has its own mode called "Symmetry"
+meaning something unrelated (mirror the slices about the ring's own 50%
+mark), so **do not reuse that word in our op bar.**
+
+**A ring that crosses the plane is detected without walking it.** If the first
+cut CONSUMED the mirrored starting edge, the two rings were one ring — a loop
+cut splits every edge of the ring it crosses, so the mirrored edge is simply
+not there any more. Nothing is said about it: nothing went wrong, and the
+geometry is what was asked for. (A ring that cannot be FOUND is a different
+matter, and `edgeLoopSelection` says so.)
+
+**`LOOPCUT_MIRROR_FLIPS = false`, and that was MEASURED, not reasoned.** The
+slide `t` runs along each ring's own direction, and whether the mirrored ring
+comes out already-mirrored or reversed is a fact about the walk. Built with
+the flip on first: slid to t = 0.25 the loops landed at x = 0.6 and −0.8.
+With it off: **±0.6.** The constant sits alone so the answer can change in
+one place.
+
+Measured, two nubs on a cube (rings that do not cross the plane): 14 → 22
+faces, 16 → 24 vertices, symmetric, winding clean, loops at **±0.6** with the
+slider at 0.25. And a vertical edge on a plain cube, whose mirror is a
+different edge on the SAME ring: 6 → 10 faces, 8 → 12 vertices — **one loop,
+not two.**
 
 ## The symmetry plane (v1.95)
 

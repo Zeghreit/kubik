@@ -552,7 +552,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.98</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -3871,6 +3871,20 @@ function loopCutPositions(count, mode, slide) {
   return even.map(e => centre + (e - 0.5) * 2 * half);
 }
 
+/* Slide positions for the mirrored ring.
+
+   `t` runs along the ring's own direction, decided by the walk from its
+   starting edge. The mirrored ring is walked from the mirrored edge, so
+   whether its parameterisation already comes out mirrored or has to be
+   flipped is a fact about the walk, not something to reason about - it was
+   MEASURED (see CURRENT_STATE, Loop cut). Flip lives in one place so the
+   answer can be changed in one place. */
+const LOOPCUT_MIRROR_FLIPS = false;
+
+function mirrorLoopCutPositions(ts) {
+  return LOOPCUT_MIRROR_FLIPS ? ts.map(t => 1 - t) : ts.slice();
+}
+
 function beginPendingOp(kind, obj, payload) {
   const spec = OP_SPECS[kind];
   App.pendingOp = {
@@ -3945,6 +3959,30 @@ function applyPendingOp() {
     const lb = findLogicalByPosition(obj, op.payload.pb);
     if (la >= 0 && lb >= 0) edgeLoopOp(obj, [la, lb], ts);
     ensureHelpers(obj);
+
+    /* The mirrored ring, cut in the SAME re-run, so the op bar previews both
+       sides while you drag rather than surprising you at OK.
+
+       If the first cut CONSUMED the mirrored edge, the two rings were one
+       ring - it crossed the plane, the cut is already symmetric, and there is
+       nothing left to do. That needs no ring walking to detect: a loop cut
+       splits every edge of the ring it crosses, so the mirrored edge simply
+       is not there any more. Nothing is said about it, because nothing went
+       wrong - the geometry is exactly what was asked for. (A ring that cannot
+       be FOUND is different, and edgeLoopSelection says so.) */
+    if (op.payload.mpa) {
+      const ma = findLogicalByPosition(obj, op.payload.mpa);
+      const mb = findLogicalByPosition(obj, op.payload.mpb);
+      if (ma >= 0 && mb >= 0) {
+        const now = obj.mesh.userData.topo;
+        const still = now.edges.findIndex(e =>
+          (e[0] === ma && e[1] === mb) || (e[0] === mb && e[1] === ma));
+        if (still >= 0) {
+          edgeLoopOp(obj, [ma, mb], mirrorLoopCutPositions(ts));
+          ensureHelpers(obj);
+        }
+      }
+    }
 
   } else if (op.kind === 'inset') {
     if (op.groupMode === 'each') {
@@ -4419,9 +4457,27 @@ function edgeLoopSelection() {
   const pair = obj.mesh.userData.topo.edges[first];
   if (!pair) { toast('Select an edge first'); return; }
 
+  /* The mirrored starting edge, remembered as coordinates like the first one,
+     so the op bar can cut BOTH rings on every slider tick. Loop cut is the
+     one op that neither family fits: the union would hand it two edges when
+     it only reads the first, and a second pass after OK would mean the
+     preview lied about the result. */
+  let mpa = null, mpb = null;
+  if (App.symmetry) {
+    const m = mirrorOfSelection(obj, [first]);
+    if (m === null) {
+      toast('Symmetry found no pairs here - cutting one side only');
+    } else {
+      const other = Array.from(m).filter(e => e !== first);
+      const me = other.length ? obj.mesh.userData.topo.edges[other[0]] : null;
+      if (me) { mpa = logicalPos(obj, me[0]); mpb = logicalPos(obj, me[1]); }
+    }
+  }
+
   beginPendingOp('loopcut', obj, {
     pa: logicalPos(obj, pair[0]),
-    pb: logicalPos(obj, pair[1])
+    pb: logicalPos(obj, pair[1]),
+    mpa: mpa, mpb: mpb
   });
 }
 
@@ -8504,6 +8560,7 @@ if (PICK_DEBUG) {
     bisectObject, mirrorObject, planeSpan, mirrorMatrixForPlane,
     opSymmetry, mirrorOfSelection, expandSelectionToMirror, extrudeRegionOp,
     runMirrored, markElements, resolveElements, symExpand,
+    edgeLoopSelection, mirrorLoopCutPositions, applyPendingOp,
     /* The op entry points, so a harness can run the REAL tool the ring
        runs instead of reimplementing it. Still nothing new - every one of
        these is already one tap away. */
