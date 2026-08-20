@@ -552,7 +552,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.96</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.97</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1728,6 +1728,84 @@ function symmetryPlane(obj, axis) {
   return captureSymmetryPlane(obj, axis);
 }
 
+/* SYMMETRY-AWARE OPS.
+
+   With symmetry on, an op runs over the selection UNION its mirror, once.
+   Topology wants the union: a region's rim is built from edges appearing
+   exactly once, so a face and its mirror that MEET at the plane share that
+   edge - it appears twice, no wall is built there, and the seam problem
+   solves itself. No welding, no merge threshold. An element that is its own
+   mirror appears once; set semantics handle that for free. */
+function opSymmetry(obj) {
+  if (!App.symmetry) return null;
+  const pl = symmetryPlane(obj, App.symmetryAxis);
+  const geo = obj.mesh.geometry;
+  geo.computeBoundingBox();
+  const s = geo.boundingBox.getSize(new THREE.Vector3());
+  // Same relative tolerance buildSymmetryMap pairs with, so "on the plane"
+  // means the same thing to both.
+  return { axis: pl.axis, offset: pl.offset, eps: Math.max(s.x, s.y, s.z, 1) * 1e-3 };
+}
+
+function mirrorOfSelection(obj, elements) {
+  const map = buildSymmetryMap(obj, App.symmetryAxis);
+  if (!map.size) return null;
+  const topo = obj.mesh.userData.topo;
+  const out = new Set();
+  const mv = l => (map.has(l) ? map.get(l) : -1);
+
+  if (App.mode === 'vertex') {
+    elements.forEach(l => { const m = mv(l); if (m >= 0) out.add(m); });
+  } else if (App.mode === 'edge') {
+    const key = (a, b) => (a < b ? a + '_' + b : b + '_' + a);
+    const byKey = new Map();
+    topo.edges.forEach((e, i) => byKey.set(key(e[0], e[1]), i));
+    elements.forEach(ei => {
+      const e = topo.edges[ei];
+      if (!e) return;
+      const a = mv(e[0]), b = mv(e[1]);
+      if (a < 0 || b < 0) return;
+      const i = byKey.get(key(a, b));
+      if (i !== undefined) out.add(i);
+    });
+  } else if (App.mode === 'face') {
+    const keyOf = vs => Array.from(vs).sort((x, y) => x - y).join(',');
+    const byKey = new Map();
+    topo.faceGroups.forEach((g, gi) => { if (g) byKey.set(keyOf(g.logicalVerts), gi); });
+    elements.forEach(gi => {
+      const g = topo.faceGroups[gi];
+      if (!g) return;
+      const m = [];
+      let ok = true;
+      Array.from(g.logicalVerts).forEach(l => { const q = mv(l); if (q < 0) ok = false; else m.push(q); });
+      if (!ok) return;
+      const j = byKey.get(keyOf(m));
+      if (j !== undefined) out.add(j);
+    });
+  }
+  return out;
+}
+
+/* Adds the mirror of the selection to the selection, in place, and returns
+   how many elements that added - or -1 when symmetry found no pairs at all.
+   Callers say so out loud: an op that quietly worked on one side only is
+   indistinguishable from symmetry being off. */
+function expandSelectionToMirror(obj) {
+  if (!App.symmetry || App.mode === 'object') return 0;
+  const before = App.selectedElements.size;
+  const m = mirrorOfSelection(obj, Array.from(App.selectedElements));
+  if (m === null) return -1;
+  m.forEach(e => App.selectedElements.add(e));
+  return App.selectedElements.size - before;
+}
+
+// The one line every op entry point needs. Returns the count it added.
+function symExpand(obj) {
+  const added = expandSelectionToMirror(obj);
+  if (added < 0) toast('Symmetry found no pairs here - working on one side only');
+  return added;
+}
+
 function buildSymmetryMap(obj, axis) {
   const topo = obj.mesh.userData.topo;
   if (!topo || !topo.logicalCount) return new Map();
@@ -2875,7 +2953,7 @@ function insetRegionOp(obj, groupIndices, ratio, shapeMode) {
    averaged normal (flat, like a piston), true sends every vertex along the
    normals of the faces meeting there - so a patch that bends around a corner
    grows outward following its own shape, while still staying joined. */
-function extrudeRegionOp(obj, groupIndices, offset, useOwnNormals) {
+function extrudeRegionOp(obj, groupIndices, offset, useOwnNormals, sym) {
   const mesh = obj.mesh;
   const ed = toEditable(mesh);
   const mats = Array.isArray(mesh.material) ? mesh.material : (mesh.material = [mesh.material]);
@@ -2897,25 +2975,65 @@ function extrudeRegionOp(obj, groupIndices, offset, useOwnNormals) {
   count.forEach((c, k) => { if (c === 1) rim.push(directed.get(k)); });
   if (rim.length < 3) return false;
 
+  /* A region can be SEVERAL disconnected patches - a face and its mirror are
+     usually nowhere near each other - so walk every rim loop, not just the
+     first. Walking only the first left the other patch with no side walls at
+     all, which is a hole rather than an extrusion. */
   const next = new Map();
   rim.forEach(([a, b]) => next.set(a, b));
-  const start = rim[0][0];
-  const loop = [start];
-  let cur = start;
-  for (let i = 0; i < rim.length; i++) {
-    const n = next.get(cur);
-    if (n === undefined || n === start) break;
-    loop.push(n); cur = n;
-  }
-  if (loop.length < 3) return false;
+  const rimLoops = [];
+  const walked = new Set();
+  rim.forEach(([a]) => {
+    if (walked.has(a)) return;
+    const lp = [a];
+    walked.add(a);
+    let cur = a;
+    for (let i = 0; i < rim.length; i++) {
+      const n = next.get(cur);
+      if (n === undefined || n === a || walked.has(n)) break;
+      walked.add(n); lp.push(n); cur = n;
+    }
+    if (lp.length >= 3) rimLoops.push(lp);
+  });
+  if (!rimLoops.length) return false;
 
   const faceNormals = new Map();
   groupIndices.forEach(gi => faceNormals.set(gi, loopNormal(ed, loops.get(gi))));
 
+  /* Summing every normal of a SYMMETRIC face set cancels the axis components
+     exactly - for two opposite faces of a cube it came to zero and the op
+     bailed, silently doing nothing. Sum the plus side only and mirror the
+     direction back per vertex below. A face sitting on the plane is its own
+     mirror, so it contributes with its axis component removed. */
   const avgDir = new THREE.Vector3();
-  faceNormals.forEach(n => avgDir.add(n));
+  if (sym) {
+    faceNormals.forEach((n, gi) => {
+      const d = loopCentroid(ed, loops.get(gi))[sym.axis] - sym.offset;
+      if (d > sym.eps) avgDir.add(n);
+      else if (d >= -sym.eps) { const m = n.clone(); m[sym.axis] = 0; avgDir.add(m); }
+    });
+  }
+  if (avgDir.lengthSq() < 1e-12) { avgDir.set(0, 0, 0); faceNormals.forEach(n => avgDir.add(n)); }
   if (avgDir.lengthSq() < 1e-12) return false;
   avgDir.normalize();
+
+  // Which side of the plane a vertex is on: +1, -1, or 0 for on it.
+  const symSide = (l) => {
+    if (!sym) return 1;
+    const d = vecAt(ed, L.logicalGroups[l][0])[sym.axis] - sym.offset;
+    return Math.abs(d) <= sym.eps ? 0 : (d > 0 ? 1 : -1);
+  };
+  /* The plus side keeps the region direction; the mirrored side gets its
+     axis component negated, so both halves grow outward instead of sliding
+     together. A vertex ON the plane must stay on it - its own mirror image
+     has to agree with it - so its axis component is zero. */
+  const symmetrise = (v, l) => {
+    if (!sym) return v;
+    const s = symSide(l);
+    if (s === 0) v[sym.axis] = 0;
+    else if (s < 0) v[sym.axis] = -v[sym.axis];
+    return v;
+  };
 
   // Lift every vertex of the patch, not just the rim, so interior detail rides along.
   const regionLogical = new Set();
@@ -2931,10 +3049,14 @@ function extrudeRegionOp(obj, groupIndices, offset, useOwnNormals) {
   });
 
   const dirAt = (l) => {
-    if (!useOwnNormals) return avgDir;
+    if (!useOwnNormals) return symmetrise(avgDir.clone(), l);
     const n = new THREE.Vector3();
     (facesAtVert.get(l) || []).forEach(gi => n.add(faceNormals.get(gi)));
-    if (n.lengthSq() < 1e-12) return avgDir;
+    // Own normals are already symmetric when the face set is - the mirrored
+    // vertex sums the mirrored faces - so only the on-plane case needs help.
+    if (n.lengthSq() < 1e-12) return symmetrise(avgDir.clone(), l);
+    if (sym && symSide(l) === 0) n[sym.axis] = 0;
+    if (n.lengthSq() < 1e-12) return symmetrise(avgDir.clone(), l);
     n.normalize();
     // On a bend the vertex normal leans away from each face, which would thin
     // the wall out; dividing by that lean keeps the thickness even.
@@ -2958,12 +3080,14 @@ function extrudeRegionOp(obj, groupIndices, offset, useOwnNormals) {
     }));
   });
 
-  for (let i = 0; i < loop.length; i++) {
-    const la = loop[i], lb = loop[(i + 1) % loop.length];
-    const oa = L.logicalGroups[la][0], ob = L.logicalGroups[lb][0];
-    mats.push((mats[groupIndices[0]] || mats[0]).clone());
-    ed.groups.push({ triangles: fanTriangles([oa, ob, newIdx.get(lb), newIdx.get(la)]) });
-  }
+  rimLoops.forEach(lp => {
+    for (let i = 0; i < lp.length; i++) {
+      const la = lp[i], lb = lp[(i + 1) % lp.length];
+      const oa = L.logicalGroups[la][0], ob = L.logicalGroups[lb][0];
+      mats.push((mats[groupIndices[0]] || mats[0]).clone());
+      ed.groups.push({ triangles: fanTriangles([oa, ob, newIdx.get(lb), newIdx.get(la)]) });
+    }
+  });
 
   rebuildFromEditable(obj, ed);
   return true;
@@ -3653,6 +3777,9 @@ function beginPendingOp(kind, obj, payload) {
   App.pendingOp = {
     kind, objId: obj.id, payload,
     state: captureObjectState(obj),
+    // Snapshot the plane with the op: each re-run rebuilds the mesh, so a
+    // bbox centre read live would drift as the extrusion grows.
+    sym: opSymmetry(obj),
     amount: spec.start,
     groupMode: null,
     segments: 1,
@@ -3688,7 +3815,7 @@ function applyPendingOp() {
       });
     } else {
       ensureHelpers(obj);
-      extrudeRegionOp(obj, op.payload.groups, op.amount, op.groupMode === 'own');
+      extrudeRegionOp(obj, op.payload.groups, op.amount, op.groupMode === 'own', op.sym);
     }
     ensureHelpers(obj);
     resultSelection = new Set(op.payload.groups);
@@ -3917,6 +4044,11 @@ function extrudeSelection() {
   if (!obj || App.selectedElements.size === 0) { toast('Select an edge or face to extrude'); return; }
   if (App.mode !== 'face' && App.mode !== 'edge') { toast('Extrude works in Edge or Face mode'); return; }
   ensureHelpers(obj);
+  const sym = opSymmetry(obj);
+  // How many the USER picked, before symmetry had its say - the chooser is
+  // about a choice they made, not one made on their behalf.
+  const picked = App.selectedElements.size;
+  symExpand(obj);
 
   let resultSelection = new Set();
 
@@ -3924,8 +4056,14 @@ function extrudeSelection() {
     const groups = Array.from(App.selectedElements);
     // Several faces at once still get a real topological choice - it's just
     // one tap instead of a slider, and it commits the instant you make it.
-    if (groups.length > 1) { showExtrudeGroupingChooser(obj, groups); return; }
-    extrudeFaceGroup(obj, groups[0], EXTRUDE_COMMIT_NUB);
+    if (picked > 1) { showExtrudeGroupingChooser(obj, groups, sym); return; }
+    if (groups.length > 1) {
+      // One face plus its mirror. There is no question to ask, so don't ask
+      // it - grow the pair as one region, each side along its own normals.
+      extrudeRegionOp(obj, groups, EXTRUDE_COMMIT_NUB, true, sym);
+    } else {
+      extrudeFaceGroup(obj, groups[0], EXTRUDE_COMMIT_NUB);
+    }
     ensureHelpers(obj);
     resultSelection = new Set(groups);
   } else {
@@ -3954,7 +4092,7 @@ function extrudeSelection() {
 // One tap: pick how several faces extrude together, then commit immediately
 // at the same small nub and hand off to the gizmo, same as the single-face
 // path. Reuses the op bar's grouping-row look without its slider/OK/Cancel.
-function showExtrudeGroupingChooser(obj, groups) {
+function showExtrudeGroupingChooser(obj, groups, sym) {
   const el = document.getElementById('opGrouping');
   const tips = {
     each: 'Every face grows its own separate extrusion',
@@ -3974,7 +4112,7 @@ function showExtrudeGroupingChooser(obj, groups) {
         groups.forEach(gi => { ensureHelpers(obj); extrudeFaceGroup(obj, gi, EXTRUDE_COMMIT_NUB); });
       } else {
         ensureHelpers(obj);
-        extrudeRegionOp(obj, groups, EXTRUDE_COMMIT_NUB, o.key === 'own');
+        extrudeRegionOp(obj, groups, EXTRUDE_COMMIT_NUB, o.key === 'own', sym);
       }
       ensureHelpers(obj);
       resultSelection = new Set(groups);
@@ -4103,6 +4241,9 @@ function insetSelection() {
   const obj = findObject(App.activeObjectId);
   if (!obj || App.selectedElements.size === 0) { toast('Select a face to inset'); return; }
   ensureHelpers(obj);
+  // Inset derives its direction from each face's own plane, so the union is
+  // all symmetry needs here - no per-side handling.
+  symExpand(obj);
   beginPendingOp('inset', obj, { groups: Array.from(App.selectedElements) });
 }
 
@@ -4112,6 +4253,8 @@ function bevelSelection() {
   const obj = findObject(App.activeObjectId);
   if (!obj || App.selectedElements.size === 0) { toast('Select an edge to bevel'); return; }
   ensureHelpers(obj);
+  // Bevel is geometry-derived too - mirrored edges bevel to mirrored widths.
+  symExpand(obj);
   // Keep positions rather than ids: each re-run rebuilds the mesh and
   // renumbers everything, but coordinates stay meaningful.
   const endpoints = Array.from(App.selectedElements).map(ei => {
@@ -8225,6 +8368,7 @@ if (PICK_DEBUG) {
     // The captured plane: __kubik.symmetryPlane(obj, axis).
     symmetryPlane, captureSymmetryPlane, buildSymmetryMap,
     bisectObject, mirrorObject, planeSpan, mirrorMatrixForPlane,
+    opSymmetry, mirrorOfSelection, expandSelectionToMirror, extrudeRegionOp,
     combineObjectsInto, removeObjects,
     // Screen-space spacing between visible vertices of the active object,
     // which is the number aim assist actually keys off.

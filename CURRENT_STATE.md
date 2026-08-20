@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **v1.96**
+- Version at time of writing: **v1.97**
 - Debug: append `?debug=1`. Tap picks log a `[pick] ...` line explaining why
   a tap resolved as it did, every mesh edit logs a `[winding] ...` line (see
   Winding audit), and `window.__kubik` exposes the live app (see Testing
@@ -244,8 +244,64 @@ closer per move, and a distance floor of 1.2.
 - **Symmetry only mirrors vertices that already have a twin.** It keeps a
   symmetric model symmetric; it cannot restore lost symmetry.
 - Symmetry applies to component edits only, never object drags.
+- **Loop cut is NOT symmetry-aware.** It cuts a whole ring from one chosen
+  edge, so mirroring it means running it twice; left for later.
+- **Region inset still walks only its FIRST rim loop.** Two disconnected
+  patches inset as one and the second gets nothing — pre-existing, not new,
+  but symmetry makes it easy to reach: pick Organic or Keep shape with a
+  mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## Symmetry-aware ops (v1.97)
+
+With symmetry on, Extrude, Inset and Bevel run over the selection **union its
+mirror**, once. `symExpand(obj)` adds the mirror elements to
+`App.selectedElements` in place before the op starts, so the op itself needs
+no symmetry code and you can see what it is about to touch.
+
+**Topology wants the union.** A region's rim is built from edges appearing
+exactly once, so a face and its mirror that MEET at the plane share that edge
+— it appears twice, no wall is built there, and **the seam problem solves
+itself.** No welding, no merge threshold. An element that is its own mirror
+appears once; set semantics handle that for free.
+
+**Direction wants per-side, and only Extrude needs it.** Inset works inside
+each face's own plane and Bevel is derived from the geometry, so a mirrored
+selection mirrors for free. `extrudeRegionOp` does not: it summed every face
+normal for one shared direction, and a symmetric set cancels the axis
+components **exactly** — for two opposite faces of a cube it returned `false`
+and did nothing, silently. Now, given a plane:
+
+- `avgDir` sums the **plus side only**; a face lying on the plane contributes
+  with its axis component removed.
+- Each vertex gets that direction with **its axis component negated on the
+  mirrored side**, and **zeroed if it sits on the plane** — a vertex that is
+  its own mirror has to agree with its own image, so it can only slide along.
+- Own-normals mode was already symmetric (the mirrored vertex sums the
+  mirrored faces); only the on-plane case needed forcing to zero.
+
+**`extrudeRegionOp` now walks EVERY rim loop, not just the first.** A face
+and its mirror are usually nowhere near each other, and the old single-loop
+walk gave the second patch no side walls at all — a hole, not an extrusion.
+
+**One face plus its mirror does not raise the grouping chooser.** The chooser
+is about a choice the user made; `picked` counts the selection before
+symmetry had its say.
+
+Measured on a cube, plane X = 0, selecting the +X face:
+
+| | before | after |
+|---|---|---|
+| `extrudeRegionOp` returns | `false` (silent) | `true` |
+| faces / verts / edges | 6 / 8 / 12 | 14 / 16 / 28 |
+| X extent | −0.5…0.5 | **−0.9…0.9** — both nubs grew outward |
+
+And on a cube split by an edge loop on the plane, extruding a top face plus
+its mirror across the seam: 16 faces, 18 verts, 32 edges, V−E+F = 2, boundary
+0, winding clean, **6 walls not 8** — no membrane at the seam. All 18
+vertices still pair (6 pairs, 6 self-mirrored) with the seam at exactly
+x = 0: the op left the model symmetric, which is the invariant that matters.
 
 ## The symmetry plane (v1.95)
 
@@ -362,39 +418,19 @@ Three traps, all of which cost real time:
   cannot reproduce a bug where another element steals the event. Use
   `document.elementFromPoint` to check what is really on top.
 
-## Agreed design, not yet built
+## What to build next
 
-The next block of work, settled in discussion and ready to implement.
+**The whole of the previous list has shipped**, v1.94 through v1.97: the
+extrude grouping default, the winding audit, the symmetry plane, Mirror, and
+symmetry-aware ops. Each has its own section above; nothing here is pending.
 
-Items 1 and 2 shipped in **v1.94**: the extrude chooser now reads
-`Joined ⇗ / Joined ⇈ / Each`, so the default is joined-along-own-normals
-(identical to `⇈` on a flat patch, better on a bent one) and no longer
-leaves a membrane between touching faces; the winding audit has its own
-section above.
+**Next, pick one:**
 
-**1. Symmetry-aware modelling ops** (extrude, inset, bevel, loop cut).
-
-- **Topology wants the UNION.** Expand the selection to include its mirror
-  and run the op once over the whole set. Because the rim is built from
-  edges appearing exactly once, a face and its mirror that meet at the plane
-  share that edge — so **no wall is built at the seam and the seam problem
-  solves itself.** No welding, no merge threshold.
-- **Direction wants PER-SIDE.** `extrudeRegionOp` derives one direction by
-  summing face normals and bails if the sum is near zero. Feed it a face and
-  its mirror and the axis components cancel exactly — for two opposite faces
-  of a cube it returns `false` and does nothing, silently. So: offset each
-  new vertex along the region direction **with its symmetry-axis component
-  negated on the mirrored side.**
-- An element that is its own mirror must appear once; set semantics handle
-  that for free.
-
-Item 2 shipped in **v1.95** - see The symmetry plane above. Mirror and
-symmetric editing now use the same captured plane.
-
-**2. After that**, pick one: more primitives (cylinder/sphere/plane, still
-in the original v1 spec), or acknowledging the moment an op lands — an
-extrude currently just happens, with no feedback, which for something whose
-identity is a fidget is a real gap.
+- **More primitives** — cylinder, sphere, plane. Still in the original v1
+  spec and never built.
+- **Acknowledging the moment an op lands.** An extrude currently just
+  happens, with no feedback. For something whose identity is a fidget that is
+  a real gap.
 
 ## Open threads
 
