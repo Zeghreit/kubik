@@ -511,7 +511,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.78</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.79</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1379,11 +1379,18 @@ function ensureHelpers(obj) {
 // own early-return - so flipping the toggle mid-session needs this to reach
 // back into every object that's already been built and update them in place,
 // not just change what new objects will get.
+/* Culling follows the same toggle as the helpers: solid mode culls back
+   faces so the object reads as a solid; see-through mode renders both sides.
+   The mesh materials were fixed at DoubleSide, which is what made a solid
+   object still read as a wireframe box you could see the far side of. */
 function refreshXrayMode() {
+  const side = App.xraySelection ? THREE.DoubleSide : THREE.FrontSide;
   App.objects.forEach(o => {
     const p = o.mesh.userData.vertexPoints, l = o.mesh.userData.edgeLines;
     if (p) p.material.depthTest = !App.xraySelection;
     if (l) l.material.depthTest = !App.xraySelection;
+    const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
+    mats.forEach(m => { if (m) { m.side = side; m.needsUpdate = true; } });
   });
 }
 
@@ -4619,6 +4626,84 @@ function pointerPx(ev) {
   return new THREE.Vector2(ev.clientX - r.left, ev.clientY - r.top);
 }
 
+/* Is this world point hidden behind the object's own surface?
+
+   Screen-space picking made a real problem visible: a vertex on the FAR
+   side of a cube projects to the same pixels as the near face you're
+   aiming at, so tapping the middle of a face could return an edge or
+   vertex sitting behind it. Culling fixed how it looks; this fixes what
+   you can hit, so the two agree.
+
+   In see-through mode every point is fair game, which is the whole point
+   of that mode. */
+// Slack so a point sitting exactly ON the surface isn't judged to be behind
+// it by floating-point noise. Declared before use - a const referenced from
+// a function that runs earlier in the file would be fine, but this one is
+// read by isPointOccluded which sits directly below, so keep the order plain.
+const OCCLUSION_EPS = 0.01;
+const _occRay = new THREE.Raycaster();
+
+function isPointOccluded(worldP, obj) {
+  if (App.xraySelection) return false;
+  const dir = new THREE.Vector3().subVectors(worldP, camera.position);
+  const dist = dir.length();
+  if (dist < 1e-6) return false;
+  dir.divideScalar(dist);
+  _occRay.set(camera.position, dir);
+  _occRay.near = 0;
+  _occRay.far = dist - OCCLUSION_EPS;   // stop just short of the point itself
+  if (_occRay.far <= 0) return false;
+  /* Raycasting respects material.side, and in solid mode the mesh is
+     FrontSide - which is exactly what we want here: only a front-facing
+     surface genuinely stands between the camera and the point. A back face
+     wouldn't hide anything from this viewpoint anyway. */
+  return _occRay.intersectObject(obj.mesh, false).length > 0;
+}
+
+function pickVertexOnActive(ev, bias = 1) {
+  const obj = findObject(App.activeObjectId);
+  if (!obj) return -1;
+  const tap = pointerPx(ev);
+  const limit = PICK_RADIUS_PX * bias;
+  const topo = obj.mesh.userData.topo;
+  const pa = obj.mesh.geometry.attributes.position;
+  let best = -1, bestD = limit;
+  for (let l = 0; l < topo.logicalCount; l++) {
+    const ai = topo.logicalGroups[l][0];
+    const p = new THREE.Vector3(pa.getX(ai), pa.getY(ai), pa.getZ(ai));
+    obj.mesh.localToWorld(p);
+    const s = worldToScreenPx(p);
+    if (!s) continue;
+    const d = s.distanceTo(tap);
+    if (d < bestD && !isPointOccluded(p, obj)) { bestD = d; best = l; }
+  }
+  return best;
+}
+
+function pickEdgeOnActive(ev, bias = 1) {
+  const obj = findObject(App.activeObjectId);
+  if (!obj) return -1;
+  const tap = pointerPx(ev);
+  const limit = PICK_RADIUS_PX * bias;
+  const topo = obj.mesh.userData.topo;
+  const pa = obj.mesh.geometry.attributes.position;
+  let best = -1, bestD = limit;
+  topo.edges.forEach((e, i) => {
+    const a = topo.logicalGroups[e[0]][0], b = topo.logicalGroups[e[1]][0];
+    const pA = new THREE.Vector3(pa.getX(a), pa.getY(a), pa.getZ(a)); obj.mesh.localToWorld(pA);
+    const pB = new THREE.Vector3(pa.getX(b), pa.getY(b), pa.getZ(b)); obj.mesh.localToWorld(pB);
+    const sA = worldToScreenPx(pA), sB = worldToScreenPx(pB);
+    if (!sA || !sB) return;
+    const d = distPxToSegment(tap, sA, sB);
+    if (d >= bestD) return;
+    // An edge counts as visible if either end is - a silhouette edge with
+    // one end tucked behind the surface should still be grabbable.
+    if (isPointOccluded(pA, obj) && isPointOccluded(pB, obj)) return;
+    bestD = d; best = i;
+  });
+  return best;
+}
+
 // Pixel distance from a point to a projected segment.
 function distPxToSegment(p, a, b) {
   const ab = new THREE.Vector2().subVectors(b, a);
@@ -6691,6 +6776,10 @@ function refreshUI() {
   refreshInspector();
   updateFrameVisibility();
   App.objects.forEach(o => { o.mesh.castShadow = true; o.mesh.receiveShadow = true; });
+  /* Objects made after the last toggle - the startup cube, duplicates, or
+     anything restored from a save - are built DoubleSide, so culling has to
+     be re-asserted here rather than only when the button is pressed. */
+  refreshXrayMode();
   document.querySelectorAll('#symAxisGroup button').forEach(b => b.classList.toggle('active', b.dataset.sym === App.symmetryAxis));
 
   // object list chips
