@@ -552,7 +552,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.97</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.98</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1726,6 +1726,105 @@ function symmetryPlane(obj, axis) {
   const p = obj.mesh.userData.symPlane;
   if (p && p.axis === axis) return p;
   return captureSymmetryPlane(obj, axis);
+}
+
+/* Two families of op, and the difference is not a detail.
+
+   UNION ops act on each element independently - extrude, inset, bevel,
+   split, crease, delete. Adding the mirror to the selection is all they
+   need, and symExpand does it.
+
+   RELATIONAL ops act on the selection AS A GROUP - weld melts it into one
+   point, connect wires its members together, bridge joins one half to the
+   other. Handing those the union is wrong, not merely imprecise: welding
+   {A,B} together with {A',B'} collapses all four onto the plane. They run
+   ONCE PER SIDE instead, which is what runMirrored does.
+
+   The second pass cannot reuse element ids - the first pass rebuilds the
+   mesh and renumbers everything - so the mirrored side is remembered as
+   POSITIONS and looked up again afterwards, the same trick bevel and loop
+   cut already use for their own payloads. */
+let symQuietHistory = false;
+
+function markElements(obj, set) {
+  const topo = obj.mesh.userData.topo;
+  const mode = App.mode;
+  const items = [];
+  set.forEach(e => {
+    if (mode === 'vertex') items.push({ p: logicalPos(obj, e) });
+    else if (mode === 'edge') {
+      const ed = topo.edges[e];
+      if (ed) items.push({ a: logicalPos(obj, ed[0]), b: logicalPos(obj, ed[1]) });
+    } else if (mode === 'face') {
+      const c = faceCentroidLocal(obj, e);
+      if (c) items.push({ c: c });
+    }
+  });
+  return { mode: mode, items: items };
+}
+
+function resolveElements(obj, marks) {
+  const topo = obj.mesh.userData.topo;
+  const out = new Set();
+  if (marks.mode === 'vertex') {
+    marks.items.forEach(it => {
+      const l = findLogicalByPosition(obj, it.p);
+      if (l >= 0) out.add(l);
+    });
+  } else if (marks.mode === 'edge') {
+    marks.items.forEach(it => {
+      const a = findLogicalByPosition(obj, it.a), b = findLogicalByPosition(obj, it.b);
+      if (a < 0 || b < 0) return;
+      const i = topo.edges.findIndex(e => (e[0] === a && e[1] === b) || (e[0] === b && e[1] === a));
+      if (i >= 0) out.add(i);
+    });
+  } else if (marks.mode === 'face') {
+    // Nearest centroid rather than an exact key: the op may have moved the
+    // face slightly, and a face is not identified by one coordinate.
+    marks.items.forEach(it => {
+      let best = -1, bestD = 1e-6;
+      for (let gi = 0; gi < topo.faceGroups.length; gi++) {
+        const c = faceCentroidLocal(obj, gi);
+        if (!c) continue;
+        const d = c.distanceToSquared(it.c);
+        if (d < bestD) { bestD = d; best = gi; }
+      }
+      if (best >= 0) out.add(best);
+    });
+  }
+  return out;
+}
+
+function runMirrored(obj, fn) {
+  if (!App.symmetry || App.mode === 'object') { fn(); return; }
+  ensureHelpers(obj);
+  const mine = new Set(App.selectedElements);
+  const m = mirrorOfSelection(obj, Array.from(mine));
+  if (m === null) {
+    toast('Symmetry found no pairs here - working on one side only');
+    fn();
+    return;
+  }
+  const other = new Set(Array.from(m).filter(e => !mine.has(e)));
+  // The selection is its own mirror: one pass is the whole job.
+  if (!other.size) { fn(); return; }
+
+  const marks = markElements(obj, other);
+  const objId = obj.id;
+  symQuietHistory = true;
+  try { fn(); } finally { symQuietHistory = false; }
+
+  const o2 = findObject(objId);
+  if (!o2) { pushHistory(); return; }   // the op removed the object
+  ensureHelpers(o2);
+  const back = resolveElements(o2, marks);
+  if (!back.size) {
+    toast('Symmetry: could not find the mirrored side after the first pass');
+    pushHistory();
+    return;
+  }
+  App.selectedElements = back;
+  fn();
 }
 
 /* SYMMETRY-AWARE OPS.
@@ -4178,6 +4277,7 @@ function creaseSelection(on) {
   if (!obj || !App.selectedElements.size) { toast('Select an edge first'); return; }
 
   ensureHelpers(obj);
+  symExpand(obj);   // a flag per edge - per-element, so the union is right
   const topo = obj.mesh.userData.topo;
   const creases = creaseSet(obj);
   let n = 0;
@@ -4213,6 +4313,15 @@ function clearAllCreases() {
 function bridgeSelection() {
   const obj = findObject(App.activeObjectId);
   if (!obj) { toast('Select an object first'); return; }
+  runMirrored(obj, bridgeSelectionOnce);
+}
+
+/* Bridge joins one half of the selection to the other, and guards on
+   "exactly 2". The union of a pair and its mirror is four, which would fail
+   that guard outright. One pass per side. */
+function bridgeSelectionOnce() {
+  const obj = findObject(App.activeObjectId);
+  if (!obj) return;
   ensureHelpers(obj);
 
   let res;
@@ -4268,6 +4377,14 @@ function connectSelection() {
   const obj = findObject(App.activeObjectId);
   if (App.mode !== 'vertex') { toast('Connect works in Vertex mode'); return; }
   if (!obj || App.selectedElements.size < 2) { toast('Select at least 2 vertices'); return; }
+  runMirrored(obj, connectSelectionOnce);
+}
+
+// Connect wires its selection together, so four vertices would get the wrong
+// pairs joined. One pass per side.
+function connectSelectionOnce() {
+  const obj = findObject(App.activeObjectId);
+  if (!obj || App.selectedElements.size < 2) return;
 
   ensureHelpers(obj);
   const topo = obj.mesh.userData.topo;
@@ -4315,6 +4432,7 @@ function splitSelection() {
   if (!obj || App.selectedElements.size === 0) { toast('Select an edge to split'); return; }
 
   ensureHelpers(obj);
+  symExpand(obj);   // a midpoint per edge - per-element, so the union is right
   const pairs = Array.from(App.selectedElements).map(ei => obj.mesh.userData.topo.edges[ei].slice());
   pairs.forEach(([la, lb]) => {
     ensureHelpers(obj);
@@ -6601,6 +6719,9 @@ function deleteSelection() {
   const obj = findObject(App.activeObjectId);
   if (!obj || App.selectedElements.size === 0) { toast('Nothing selected'); return; }
   ensureHelpers(obj);
+  // Deleting is per-element, so the union is exactly right: a face and its
+  // mirror both go.
+  symExpand(obj);
   const topo = obj.mesh.userData.topo;
 
   let survived;
@@ -6632,6 +6753,14 @@ function weldSelection() {
   if (App.mode !== 'vertex') { toast('Weld works in Vertex mode'); return; }
   const obj = findObject(App.activeObjectId);
   if (!obj || App.selectedElements.size < 2) { toast('Select 2+ vertices to weld'); return; }
+  runMirrored(obj, weldSelectionOnce);
+}
+
+// Weld melts its selection into ONE point, so the union of a group and its
+// mirror would collapse all of it onto the plane. One pass per side.
+function weldSelectionOnce() {
+  const obj = findObject(App.activeObjectId);
+  if (!obj || App.selectedElements.size < 2) return;
   const ok = weldVerticesOp(obj, App.selectedElements);
   App.selectedElements.clear();
   if (!ok) {
@@ -7064,6 +7193,10 @@ function restoreDoc(doc, opts = {}) {
 }
 
 function pushHistory() {
+  /* The mirrored second pass of a relational op has to land in the SAME undo
+     step as the first - otherwise one Undo leaves the model lopsided, which
+     is worse than either state. */
+  if (symQuietHistory) return;
   if (App.fillet) refreshFillets();
   scheduleAutosave();
   const doc = serializeDoc();
@@ -8352,8 +8485,9 @@ init();
    testing: an automated harness driving the app from outside could see the
    DOM and nothing else, so every question about state had to be inferred
    from pixels. Several wrong conclusions this session came from exactly
-   that. Read-only by intent - it exposes what is already there rather than
-   adding a second way to change anything. */
+   that. It exposes what is already there rather than inventing anything: as
+   of v1.98 that includes the op entry points themselves, so a harness runs
+   the REAL tool the ring runs instead of reimplementing it. */
 if (PICK_DEBUG) {
   window.__kubik = {
     App, camera, orbit, scene,
@@ -8369,6 +8503,13 @@ if (PICK_DEBUG) {
     symmetryPlane, captureSymmetryPlane, buildSymmetryMap,
     bisectObject, mirrorObject, planeSpan, mirrorMatrixForPlane,
     opSymmetry, mirrorOfSelection, expandSelectionToMirror, extrudeRegionOp,
+    runMirrored, markElements, resolveElements, symExpand,
+    /* The op entry points, so a harness can run the REAL tool the ring
+       runs instead of reimplementing it. Still nothing new - every one of
+       these is already one tap away. */
+    extrudeSelection, insetSelection, bevelSelection, splitSelection,
+    creaseSelection, deleteSelection, weldSelection, connectSelection,
+    bridgeSelection, mirrorSelectedObjects,
     combineObjectsInto, removeObjects,
     // Screen-space spacing between visible vertices of the active object,
     // which is the number aim assist actually keys off.

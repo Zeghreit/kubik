@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **v1.97**
+- Version at time of writing: **v1.98**
 - Debug: append `?debug=1`. Tap picks log a `[pick] ...` line explaining why
   a tap resolved as it did, every mesh edit logs a `[winding] ...` line (see
   Winding audit), and `window.__kubik` exposes the live app (see Testing
@@ -244,8 +244,9 @@ closer per move, and a distance floor of 1.2.
 - **Symmetry only mirrors vertices that already have a twin.** It keeps a
   symmetric model symmetric; it cannot restore lost symmetry.
 - Symmetry applies to component edits only, never object drags.
-- **Loop cut is NOT symmetry-aware.** It cuts a whole ring from one chosen
-  edge, so mirroring it means running it twice; left for later.
+- **Loop cut is the ONE op symmetry does not reach.** It cuts a whole ring
+  from one chosen edge and is a live slider op, so a mirrored pass would mean
+  a second op bar. Everything else in every component mode is covered.
 - **Region inset still walks only its FIRST rim loop.** Two disconnected
   patches inset as one and the second gets nothing — pre-existing, not new,
   but symmetry makes it easy to reach: pick Organic or Keep shape with a
@@ -253,12 +254,50 @@ closer per move, and a distance floor of 1.2.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
 
-## Symmetry-aware ops (v1.97)
+## Symmetry-aware ops (v1.97, completed v1.98)
 
-With symmetry on, Extrude, Inset and Bevel run over the selection **union its
-mirror**, once. `symExpand(obj)` adds the mirror elements to
+With symmetry on, every component op is mirrored. **How** depends on the op,
+and the difference is not a detail.
+
+| | ops | mechanism |
+|---|---|---|
+| **Union** | Extrude, Inset, Bevel, Split, Crease/Uncrease, Delete | `symExpand(obj)` adds the mirror to the selection |
+| **Relational** | Weld, Connect, Bridge | `runMirrored(obj, fn)` runs the op once per side |
+| **Neither yet** | Loop cut | see Watch out |
+
+**Union ops act on each element independently**, so adding the mirror to the
+selection is the whole job.
+
+**Relational ops act on the selection AS A GROUP** — weld melts it into one
+point, connect wires its members together, bridge joins one half to the
+other. Handing those the union is wrong, not merely imprecise: welding
+`{A,B}` together with `{A′,B′}` collapses all four onto the plane, and
+bridge’s own "exactly 2" guard fails outright on four. `runMirrored` runs
+the op on the selection, then again on the mirror.
+
+- The second pass **cannot reuse element ids** — the first pass rebuilds the
+  mesh and renumbers everything — so the mirrored side is remembered as
+  POSITIONS and looked up again afterwards, the same trick bevel and loop cut
+  already use for their own payloads.
+- `symQuietHistory` suppresses the first pass’s `pushHistory`, so **one Undo
+  takes back both sides**. One Undo leaving the model lopsided would be worse
+  than either state.
+- A selection that is **its own mirror** runs once, not twice.
+
+Measured: Delete on one face of a cube with symmetry on leaves **4 faces, not
+5**, in one undo step. Weld on two +X corners of a split cube goes **12 → 10**
+vertices, still fully symmetric, in one undo step. The same weld with a
+selection sitting on the plane runs once (10 → 9), and with symmetry off
+touches one side only (9 → 8).
+
+### The original design (Extrude, Inset, Bevel — v1.97)
+
+`symExpand(obj)` adds the mirror elements to
 `App.selectedElements` in place before the op starts, so the op itself needs
-no symmetry code and you can see what it is about to touch.
+no symmetry code and you can see what it is about to touch. Extrude, Inset
+and Bevel run over the selection **union its mirror**, once. `symExpand(obj)` adds the mirror elements to `App.selectedElements` in place
+before the op starts, so the op itself needs no symmetry code and you can see
+what it is about to touch.
 
 **Topology wants the union.** A region's rim is built from edges appearing
 exactly once, so a face and its mirror that MEET at the plane share that edge
