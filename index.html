@@ -116,12 +116,6 @@
   .spacer { flex: 1 1 auto; min-width: 8px; }
   .sep { width: 1px; align-self: stretch; background: var(--line); margin: 4px 4px; flex-shrink: 0; }
 
-  /* ---- Thumb zone: bottom-left, sized to a left thumb's natural sweep ---- */
-  #thumbZone {
-    position: absolute; z-index: 16;
-    left: env(safe-area-inset-left); bottom: env(safe-area-inset-bottom);
-  }
-
   /* Edge switches, pinned to the middle of the left edge where a thumb
      reaches them without moving the hand. Two halves, a knob that slides
      between them, and no text - the icon in each half says what that half
@@ -130,7 +124,8 @@
   /* Object / Component, back to a single round button in the bottom-left
      corner - opposite Help, with Undo/Redo between them. */
   #hubBtn {
-    position: absolute; left: var(--edge-l); bottom: calc(var(--bar-cy) - 28px);
+    position: absolute; z-index: 16;
+    left: var(--edge-l); bottom: calc(var(--bar-cy) - 28px);
     width: 56px; height: 56px; min-height: 56px; padding: 0;
     border-radius: 50%; justify-content: center;
     background: var(--accent); color: var(--on-accent); border: none;
@@ -563,6 +558,9 @@
   #helpCard {
     background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-md);
     padding: 16px; width: min(360px, 100%); max-height: 80vh; overflow-y: auto;
+    /* Keep the scroll inside the card - without this, reaching either end
+       hands the gesture to whatever is behind. */
+    overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
     box-shadow: 0 12px 32px rgb(var(--shadow) / .3);
   }
   .help-row {
@@ -602,7 +600,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99b</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99c</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -619,9 +617,15 @@
     <div id="vignette"></div>
     <div id="selectBox"></div>
     <svg id="lassoSvg"><polyline id="lassoPath" /></svg>
-    <div id="thumbZone">
-      <button id="hubBtn" title="Object/Component - tap to switch"></button>
-    </div>
+    <!-- Was wrapped in #thumbZone until v1.99c. That wrapper applied
+         env(safe-area-inset-*) itself, and --edge-l / --bar-cy apply it
+         again to the button inside - so on any phone with a home indicator
+         the inset landed TWICE and the hub sat a full inset (~34px) above
+         Undo/Redo and Help. On a desktop both insets are 0, so the row
+         measured as perfectly aligned and the bug was invisible. Every
+         other control had already been moved out of that wrapper for its
+         own reasons; this was the last one left in it. -->
+    <button id="hubBtn" title="Object/Component - tap to switch"></button>
 
     <!-- Two-position switches on the left edge, stacked and centred as a
          GROUP. Tap the half you want or swipe toward it - both work without
@@ -637,18 +641,12 @@
       <div class="sp-half" data-v="off"><span class="ic"></span></div>
     </div>
 
-    <!-- A sibling of thumbZone, not a child of it - same reason as quickRow:
-         this needs real viewport coordinates to bloom at an arbitrary touch
-         point, and thumbZone's own corner-anchored box isn't that. -->
+    <!-- Anchored to the viewport, not to any corner box: this blooms at an
+         arbitrary touch point and needs real viewport coordinates. -->
     <div id="touchToolRing"></div>
 
-    <!-- A sibling of thumbZone, not a child of it - same reason as quickRow
-         below: this needs real viewport coordinates to position itself
-         against the gizmo, and thumbZone's own corner isn't that. -->
-
-    <!-- A sibling of thumbZone, not a child of it - this needs the full
-         viewport width to centre against, and thumbZone itself is sized only
-         by its own corner, not the screen. -->
+    <!-- Anchored to the viewport for the same reason: this needs the full
+         viewport width to centre against. -->
     <div id="quickRow">
       <button id="btnUndo" title="Undo (Ctrl+Z)">⤺</button>
       <button id="btnRedo" title="Redo (Ctrl+Shift+Z)">⤻</button>
@@ -6183,8 +6181,15 @@ function shrinkSelection() {
    inside the app. Horizontal scrolling in the toolbars is still allowed. */
 
 document.addEventListener('touchmove', (ev) => {
+  /* #helpCard is here because it SCROLLS. It was missing, so every touchmove
+     inside it was cancelled and the card could not be scrolled on a phone at
+     all - the content was there, and there was no way to reach it. A mouse
+     wheel worked fine, which is why this survived a desktop check. Anything
+     added to this app that scrolls has to be named here too.
+
+     #hubBtn replaces #thumbZone, which no longer exists. */
   if (ev.target && ev.target.closest &&
-      ev.target.closest('#topBar, #drawer, #inspector, #opBar, #thumbZone, #symPill')) return; // let the UI work
+      ev.target.closest('#topBar, #drawer, #inspector, #opBar, #hubBtn, #symPill, #helpCard')) return;
   if (ev.cancelable) ev.preventDefault();
 }, { passive: false });
 

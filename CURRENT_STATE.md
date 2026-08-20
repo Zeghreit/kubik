@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **v1.99b**
+- Version at time of writing: **v1.99c**
 - Debug: append `?debug=1`. Tap picks log a `[pick] ...` line explaining why
   a tap resolved as it did, every mesh edit logs a `[winding] ...` line (see
   Winding audit), and `window.__kubik` exposes the live app (see Testing
@@ -38,6 +38,13 @@ v1.85d.
   The CSS looked right and the row looked wrong, because a row of round
   buttons is read by its centres. Anything added to that row measures from
   `--bar-cy` too.
+- **`#thumbZone` is gone (v1.99c), and must not come back around one
+  button.** It applied `env(safe-area-inset-*)` itself while `--edge-l` and
+  `--bar-cy` applied it AGAIN to the button inside it, so on any phone with
+  a home indicator the hub sat a full inset (~34px) above Undo/Redo and
+  Help. Every edge-anchored control now measures from the `--edge-*` scale
+  and nothing else. The four bottom buttons all take `#viewport` as their
+  offsetParent; if one ever doesn't, suspect this.
 - **Nothing else.** There is no rail of toggles down either edge — See-
   through, Floor grid, Aim assist, Snap, Add Cube and Tap/Box/Lasso select
   all live in the world ring.
@@ -530,6 +537,20 @@ Three traps, all of which cost real time:
   ~1s.** A transitioned property reads its START value forever, so
   `getComputedStyle` lied about a slider knob for several rounds, and
   hold-vs-tap timing cannot be told apart. **Check `document.hidden` FIRST.**
+- **A desktop check CANNOT see a safe-area bug.** `env(safe-area-inset-*)`
+  is 0 in a desktop browser, so anything that mishandles it measures as
+  perfect. The hub button's double inset shipped twice this way, and both
+  times the numbers said the row was aligned. To test it, override the
+  `--edge-*` custom properties with a simulated inset (34px is about an
+  iPhone home indicator) and re-measure. That reproduced a -34px centre gap
+  in one call, after two rounds of failing to find it by looking.
+- **A cached `_test.html` will happily answer questions about the PREVIOUS
+  build.** Add a changing query string. One measurement run here was scored
+  against the old file before that was spotted.
+- **Anything that scrolls must be named in the `touchmove` allow-list.**
+  That handler cancels touchmove everywhere else to stop the page moving
+  under the app, so an unlisted scrollable is unreachable by finger while
+  working perfectly with a mouse wheel. The Help card shipped this way.
 - **The ring's hold timer runs off the rAF loop, which a hidden tab stops
   DEAD** - not clamped, stopped. Pressing and waiting longer does not help;
   the ring never blooms at all. `__kubik` exposes `bloomToolRing`,
