@@ -511,7 +511,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.85b</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.85c</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -3855,27 +3855,38 @@ function refreshElementColors(obj) {
   const lines = obj.mesh.userData.edgeLines;
   const overlays = obj.mesh.userData.faceOverlays;
   const topo = obj.mesh.userData.topo;
-  if (App.mode === 'vertex' && points) {
+  /* Both vertex and edge colours are refreshed every time, not just the
+     active mode's - they're now both on screen in any component mode, so
+     the inactive one would otherwise sit there showing a stale selection
+     from whenever you last used it. Only the matching mode paints the
+     selection colour; the other renders entirely unselected. */
+  if (points) {
     const col = points.geometry.attributes.color.array;
-    for (let l = 0; l < topo.logicalCount; l++) setCol(col, l, App.selectedElements.has(l) ? SELECT_COLOR : UNSELECT_VERT_COLOR);
+    const showSel = App.mode === 'vertex';
+    for (let l = 0; l < topo.logicalCount; l++) {
+      setCol(col, l, (showSel && App.selectedElements.has(l)) ? SELECT_COLOR : UNSELECT_VERT_COLOR);
+    }
     points.geometry.attributes.color.needsUpdate = true;
   }
-  if (App.mode === 'edge' && lines) {
+  if (lines) {
     const col = lines.geometry.attributes.color.array;
     const creases = obj.mesh.userData.creases || {};
     const hasCreases = Object.keys(creases).length > 0;
+    const showSel = App.mode === 'edge';
     topo.edges.forEach((e, i) => {
       let c = UNSELECT_EDGE_COLOR;
       // Creased edges read at a glance, so you can see what a smooth
       // subdivision will hold sharp before you run it.
       if (hasCreases && creases[creaseKeyFor(logicalPos(obj, e[0]), logicalPos(obj, e[1]))]) c = CREASE_COLOR;
-      if (App.selectedElements.has(i)) c = SELECT_COLOR;
+      if (showSel && App.selectedElements.has(i)) c = SELECT_COLOR;
       setCol(col, i * 2, c); setCol(col, i * 2 + 1, c);
     });
     lines.geometry.attributes.color.needsUpdate = true;
   }
   if (App.mode === 'face' && overlays) {
     overlays.forEach((o, i) => { o.visible = App.selectedElements.has(i); });
+  } else if (overlays) {
+    overlays.forEach(o => { o.visible = false; });
   }
 }
 
@@ -3885,8 +3896,18 @@ function setActiveObjectHelpersVisible(obj, mode) {
   if (!obj) return;
   ensureHelpers(obj);
   const p = obj.mesh.userData.vertexPoints, l = obj.mesh.userData.edgeLines, ov = obj.mesh.userData.faceOverlays;
-  if (p) p.visible = mode === 'vertex';
-  if (l) l.visible = mode === 'edge';
+  /* Show vertices AND edges in any component mode, not only the one that's
+     active. They used to appear only in their own mode, which made the very
+     first tap impossible: to enter vertex mode you have to tap a vertex, but
+     nothing on screen showed where the vertices were. You were aiming blind
+     at a 40px target, and the type lock meant clearing the selection left
+     you in the same mode with the same problem.
+
+     Seeing what you can select is the point - the tap priority
+     (vertex > edge > face) then does the rest. */
+  const inComponentMode = mode === 'vertex' || mode === 'edge' || mode === 'face';
+  if (p) p.visible = inComponentMode;
+  if (l) l.visible = inComponentMode;
   if (ov) ov.forEach(o => o.visible = false);
 }
 
