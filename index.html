@@ -511,7 +511,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.83</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.84</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1388,13 +1388,19 @@ function ensureHelpers(obj) {
    recompiles every material in the scene over and over. */
 function refreshXrayMode() {
   if (!App.objects) return;
-  const side = App.xraySelection ? THREE.DoubleSide : THREE.FrontSide;
   const wantDepth = !App.xraySelection;
   App.objects.forEach(o => {
     if (!o || !o.mesh) return;
     const p = o.mesh.userData.vertexPoints, l = o.mesh.userData.edgeLines;
     if (p && p.material && p.material.depthTest !== wantDepth) p.material.depthTest = wantDepth;
     if (l && l.material && l.material.depthTest !== wantDepth) l.material.depthTest = wantDepth;
+    /* A negative-scale object (what Mirror produces) has reversed winding,
+       so culling front faces would hide exactly the half you want to see.
+       Those stay DoubleSide regardless of the toggle - correctness first,
+       and it's a transient state that Mirror bakes away on merge anyway. */
+    o.mesh.updateMatrixWorld();
+    const mirrored = o.mesh.matrixWorld.determinant() < 0;
+    const side = (App.xraySelection || mirrored) ? THREE.DoubleSide : THREE.FrontSide;
     const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
     mats.forEach(m => {
       if (m && m.side !== side) { m.side = side; m.needsUpdate = true; }
@@ -4680,7 +4686,14 @@ function groupFacesCamera(obj, gi) {
   _fnAC.subVectors(_fnC, _fnA);
   _fnN.crossVectors(_fnAB, _fnAC);          // CCW winding = outward normal
   _fnV.subVectors(camera.position, _fnA);
-  return _fnN.dot(_fnV) > 0;
+  /* A mirrored object carries a negative scale, and a negative-determinant
+     transform reverses the handedness of the cross product - so the normal
+     points inward and every front face would read as back-facing. Mirror
+     produces exactly such objects, which is why symmetry work broke when
+     this test was introduced. */
+  obj.mesh.updateMatrixWorld();
+  const flip = obj.mesh.matrixWorld.determinant() < 0 ? -1 : 1;
+  return _fnN.dot(_fnV) * flip > 0;
 }
 
 function vertexVisible(obj, l) {
