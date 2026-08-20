@@ -511,7 +511,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.76</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.77</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -4590,14 +4590,42 @@ function pickObjectAt(ev) {
   return null;
 }
 
-function pickVertexOnActive(ev) {
+/* How far off a vertex or edge a tap can land and still count, in world
+   units, scaled so it stays roughly constant on screen as you zoom.
+
+   The cap is the important part. This used to be an uncapped
+   camDist * 0.018, which grows forever - zoomed out to camDist 20 the band
+   around each edge swallowed all but 8% of a cube face, and past ~28 a face
+   became literally unselectable because every point on it was within reach
+   of an edge. Limiting it to a fraction of the selection's own size means
+   the catch radius can never grow large enough to eat the thing it sits on,
+   however far away the camera gets. */
+const OFF_MODE_PICK_BIAS = 0.55;   // other modes catch narrower than the current one
+
+function pickThreshold() {
+  const camDist = camera.position.distanceTo(orbit.target);
+  const scaled = Math.max(camDist * 0.018, 0.05);
+  /* Measured from the object being picked, not from selectionRadius() -
+     that one returns 0 when nothing is selected yet, which is precisely
+     the moment you're making your first tap. Falling back to a fixed 0.5
+     there would cap a large object's threshold far too tightly and a tiny
+     object's not at all. */
+  const obj = findObject(App.activeObjectId);
+  let objR = 0.5;
+  if (obj) {
+    const size = new THREE.Box3().setFromObject(obj.mesh).getSize(new THREE.Vector3());
+    objR = Math.max(size.x, size.y, size.z) * 0.5 || 0.5;
+  }
+  return Math.min(scaled, objR * 0.22);
+}
+
+function pickVertexOnActive(ev, bias = 1) {
   const obj = findObject(App.activeObjectId);
   if (!obj) return -1;
   const ndc = ndcFromEvent(ev);
   raycaster.setFromCamera(ndc, camera);
   const ray = raycaster.ray;
-  const camDist = camera.position.distanceTo(orbit.target);
-  const threshold = Math.max(camDist * 0.018, 0.05);
+  const threshold = pickThreshold() * bias;
   const topo = obj.mesh.userData.topo;
   const pa = obj.mesh.geometry.attributes.position;
   let best = -1, bestD = threshold * threshold;
@@ -4611,14 +4639,13 @@ function pickVertexOnActive(ev) {
   return best;
 }
 
-function pickEdgeOnActive(ev) {
+function pickEdgeOnActive(ev, bias = 1) {
   const obj = findObject(App.activeObjectId);
   if (!obj) return -1;
   const ndc = ndcFromEvent(ev);
   raycaster.setFromCamera(ndc, camera);
   const ray = raycaster.ray;
-  const camDist = camera.position.distanceTo(orbit.target);
-  const threshold = Math.max(camDist * 0.018, 0.05);
+  const threshold = pickThreshold() * bias;
   const topo = obj.mesh.userData.topo;
   const pa = obj.mesh.geometry.attributes.position;
   let best = -1, bestD = threshold * threshold;
@@ -4638,9 +4665,18 @@ function pickEdgeOnActive(ev) {
    camera-scaled distance threshold; face falls back to an exact raycast
    against the mesh, so it always catches a tap that missed both. */
 function pickComponentOnActive(ev) {
-  const v = pickVertexOnActive(ev);
+  /* Vertex still outranks edge outranks face, so tapping a corner picks the
+     corner - but the mode you're ALREADY in gets a wider catch radius than
+     the others. Without that bias the priority was absolute, and in Face
+     mode every tap near an edge returned the edge and switched you out of
+     Face mode. Measured on a unit cube: only 67% of a face was reachable at
+     normal zoom, 8% zoomed out, and none at all past a certain distance.
+
+     Same hysteresis idea as the axis lock - it should take a deliberate tap
+     to leave the mode you're working in, and a sloppy one to stay. */
+  const v = pickVertexOnActive(ev, App.mode === 'vertex' ? 1 : OFF_MODE_PICK_BIAS);
   if (v >= 0) return { type: 'vertex', index: v };
-  const e = pickEdgeOnActive(ev);
+  const e = pickEdgeOnActive(ev, App.mode === 'edge' ? 1 : OFF_MODE_PICK_BIAS);
   if (e >= 0) return { type: 'edge', index: e };
   const f = pickFaceOnActive(ev);
   if (f >= 0) return { type: 'face', index: f };
