@@ -280,6 +280,11 @@ closer per move, and a distance floor of 1.2.
   only.** Measured on a cube at t = 0.25: loop at x = +0.25, model no longer
   symmetric. Fixing it means also cutting at the plane-mirrored position,
   which doubles the loop count and so needs a design call, not just code.
+  **That call was made at v1.99d: leave it.** Tested in use and it does not
+  get in the way — the case needs a ring parallel to the mirror axis AND the
+  slider moved off centre, and the default lands on the plane. Doubling the
+  loop count to rescue it would change what the slider means for every other
+  ring, which is a worse trade. Accepted limitation, not an open bug.
 - **Region inset still walks only its FIRST rim loop.** Two disconnected
   patches inset as one and the second gets nothing — pre-existing, not new,
   but symmetry makes it easy to reach: pick Organic or Keep shape with a
