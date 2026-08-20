@@ -120,8 +120,12 @@
      between them, and no text - the icon in each half says what that half
      means. The STACK is centred, not each switch, or the group sits
      visibly high. */
+  /* Bottom-left, so the mode switch sits opposite Help across the bottom
+     of the screen and Undo/Redo splits the difference between them. The
+     stack grows UPWARD from there, which puts the switch you touch most
+     nearest the thumb and the rarer Symmetry decision above it. */
   #edgeSwitches {
-    position: absolute; left: var(--edge-l); top: 50%; transform: translateY(-50%);
+    position: absolute; left: var(--edge-l); bottom: var(--edge-b);
     z-index: 16; display: flex; flex-direction: column; gap: var(--gap);
   }
   .edge-switch {
@@ -186,8 +190,13 @@
      down the left at 20px, 10px and 14px was the most visible inconsistency
      in the app - and it sat on the edge the thumb lives on, so it was on
      screen constantly. */
+  /* Bottom centre. They were top-left, which is the furthest point on the
+     screen from a thumb - a correction you reach for mid-mistake should be
+     the easiest thing to hit, not the hardest. Clears #opBar, which starts
+     166px up. */
   #quickRow {
-    position: absolute; left: var(--edge-l); top: var(--edge);
+    position: absolute; left: 50%; transform: translateX(-50%);
+    bottom: var(--edge-b);
     display: flex; gap: var(--gap); z-index: 13;
   }
   #quickRow button {
@@ -358,8 +367,19 @@
      transform tools next to it now, not to the view settings it was
      grouped with. */
 
+  /* ViewHelper always draws a 128x128 square anchored in a corner of its
+     element - `dim` is a fixed constant in the library, not a setting. This
+     box was 96px, so 32px of the helper was clipped off two sides, which is
+     why it looked cut at every camera angle.
+
+     So the box is exactly 128 and the SCALE does the enlarging. That also
+     keeps clicks accurate: handleClick offsets by (offsetWidth - dim),
+     which is now zero, and then measures getBoundingClientRect - which
+     includes the transform. Box and helper agree at any scale. */
   #viewCube {
-    position: absolute; top: 2px; right: var(--edge-r); width: 96px; height: 96px;
+    position: absolute; top: var(--edge); right: var(--edge-r);
+    width: 128px; height: 128px;
+    transform: scale(1.5); transform-origin: top right;
     z-index: 12; cursor: pointer; touch-action: none;
   }
   #viewCube canvas { display: block; width: 100%; height: 100%; }
@@ -452,7 +472,9 @@
   #btnHelp {
     position: absolute; right: var(--edge-r); bottom: var(--edge-b); z-index: 13;
     width: 44px; height: 44px; min-height: 44px; padding: 0; border-radius: 50%;
-    background: var(--panel2); border: 1px solid var(--accent); color: var(--accent);
+    /* Greyed rather than accented: it is the least urgent thing on screen,
+       and wearing the accent made it read as a primary action. */
+    background: var(--panel2); border: 1px solid var(--line); color: var(--text-dim);
     font-size: 18px; font-weight: 700; justify-content: center;
   }
 
@@ -509,7 +531,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.90</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.91</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -862,8 +884,11 @@ const viewCubeEl = document.getElementById('viewCube');
 /* The view cube renders through its own renderer and canvas, kept separate
    from the main viewport - sharing one caused blank frames on iPhone. */
 const cubeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-cubeRenderer.setPixelRatio(pixelRatio);
-cubeRenderer.setSize(96, 96);
+/* The cube is drawn at 128 CSS px and displayed at 1.5x by the CSS above,
+   so its buffer is rendered 1.5x oversized to match - otherwise the corner
+   labels come back soft from being upscaled. */
+cubeRenderer.setPixelRatio(pixelRatio * 1.5);
+cubeRenderer.setSize(128, 128);
 viewCubeEl.appendChild(cubeRenderer.domElement);
 
 const viewHelper = new ViewHelper(camera, viewCubeEl);
@@ -926,7 +951,9 @@ const THEMES = {
     shadow: 0.16,
     exposure: 1.0,
     vignette: '16 14 10',
-    select: 0x2F6F9F, vert: 0x6E6558, edge: 0x8A806F, crease: 0xC46A3A,
+    // Selection wears the SAME blue as the accent on every button and
+    // outline, so "this is chosen" means one colour across the whole app.
+    select: 0x3C6E93, vert: 0x6E6558, edge: 0x8A806F, crease: 0xC46A3A,
     material: 0x514A3B, swatch: '#514a3b'
   },
   dark: {
@@ -941,7 +968,7 @@ const THEMES = {
     shadow: 0.42,
     exposure: 1.1,
     vignette: '0 0 0',
-    select: 0xffc21a, vert: 0x8b93a3, edge: 0x656d80, crease: 0xff7a45,
+    select: 0x5b8cff, vert: 0x8b93a3, edge: 0x656d80, crease: 0xff7a45,
     material: 0x303338, swatch: '#303338'
   }
 };
@@ -5390,10 +5417,22 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   const px = ev.clientX, py = ev.clientY;
   if (directCandidate) {
     toolRingTimer = setTimeout(() => { toolRingTimer = null; bloomToolRing(px, py); }, TOOL_RING_HOLD_MS);
-  } else if (App.selectDrag === 'off') {
-    // Not while Box or Lasso is armed - there the press IS the gesture.
+  } else {
+    /* v1.91: this used to be skipped while Box or Lasso was armed, on the
+       theory that there the press IS the gesture. That made a dead end -
+       the ring is the ONLY way back to Tap select now that the rails are
+       gone, so choosing Lasso meant you could never choose anything else.
+
+       Holding still does nothing useful in a region drag anyway: any real
+       travel cancels the timer, so a genuine box or lasso is untouched, and
+       a deliberate hold abandons the region and blooms the ring instead. */
     toolRingTimer = setTimeout(() => {
       toolRingTimer = null;
+      if (boxDrag) {
+        boxDrag = null;
+        selectBoxEl.style.display = 'none';
+        lassoSvgEl.style.display = 'none';
+      }
       bloomToolRing(px, py, HUB_TOOLS_WORLD);
     }, WORLD_RING_HOLD_MS);
   }
