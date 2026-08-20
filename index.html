@@ -511,7 +511,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.81</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.82</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -4724,7 +4724,71 @@ function distPxToSegment(p, a, b) {
 
 /* Tries vertex, then edge, then face - the priority you'd expect when your
    thumb is bigger than the thing you're aiming at. */
+const PICK_DEBUG = location.search.includes('debug=1');
+
+// Reports exactly why a tap resolved the way it did. Only runs with ?debug=1,
+// so it costs nothing normally - and it settles questions that reasoning
+// about this code has repeatedly got wrong.
+function pickDebug(ev, chosen) {
+  if (!PICK_DEBUG) return;
+  const obj = findObject(App.activeObjectId);
+  if (!obj) { console.log('[pick] no active object'); return; }
+  const tap = pointerPx(ev);
+  const topo = obj.mesh.userData.topo;
+  const pa = obj.mesh.geometry.attributes.position;
+
+  let vBest = Infinity, vOcc = null;
+  for (let l = 0; l < topo.logicalCount; l++) {
+    const ai = topo.logicalGroups[l][0];
+    const p = new THREE.Vector3(pa.getX(ai), pa.getY(ai), pa.getZ(ai));
+    obj.mesh.localToWorld(p);
+    const s = worldToScreenPx(p);
+    if (!s) continue;
+    const d = s.distanceTo(tap);
+    if (d < vBest) { vBest = d; vOcc = isPointOccluded(p, obj); }
+  }
+  let eBest = Infinity;
+  topo.edges.forEach(e => {
+    const a = topo.logicalGroups[e[0]][0], b = topo.logicalGroups[e[1]][0];
+    const pA = new THREE.Vector3(pa.getX(a), pa.getY(a), pa.getZ(a)); obj.mesh.localToWorld(pA);
+    const pB = new THREE.Vector3(pa.getX(b), pa.getY(b), pa.getZ(b)); obj.mesh.localToWorld(pB);
+    const sA = worldToScreenPx(pA), sB = worldToScreenPx(pB);
+    if (!sA || !sB) return;
+    const d = distPxToSegment(tap, sA, sB);
+    if (d < eBest) eBest = d;
+  });
+
+  raycaster.setFromCamera(ndcFromEvent(ev), camera);
+  const hits = raycaster.intersectObject(obj.mesh, false);
+  const faceHit = hits.length ? hits[0].faceIndex : -1;
+  let mappedGroup = -1;
+  if (faceHit >= 0) {
+    for (const fg of topo.faceGroups) {
+      if (faceHit >= fg.triStart && faceHit < fg.triStart + fg.triCount) { mappedGroup = fg.groupIndex; break; }
+    }
+  }
+  const mat = Array.isArray(obj.mesh.material) ? obj.mesh.material[0] : obj.mesh.material;
+  console.log('[pick]',
+    'mode=' + App.mode,
+    'sel=' + App.selectedElements.size,
+    'xray=' + App.xraySelection,
+    'side=' + (mat ? (mat.side === THREE.FrontSide ? 'Front' : mat.side === THREE.DoubleSide ? 'Double' : 'Back') : '?'),
+    '| vtx=' + vBest.toFixed(1) + 'px' + (vOcc ? '(occluded)' : ''),
+    'edge=' + eBest.toFixed(1) + 'px',
+    '| rayHits=' + hits.length,
+    'tri=' + faceHit,
+    'group=' + mappedGroup,
+    'groups=' + topo.faceGroups.length,
+    '=> ' + (chosen ? chosen.type + '#' + chosen.index : 'NOTHING'));
+}
+
 function pickComponentOnActive(ev) {
+  const r = pickComponentOnActiveInner(ev);
+  pickDebug(ev, r);
+  return r;
+}
+
+function pickComponentOnActiveInner(ev) {
   /* Once something is selected, the type is LOCKED: only that same type can
      be picked until you tap empty space to clear. Overlapping catch zones
      then can't interfere at all, because there's nothing to arbitrate
