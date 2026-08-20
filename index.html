@@ -511,7 +511,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.85</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.85a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1592,17 +1592,31 @@ function weldVerticesOp(obj, logicalIds) {
 // itself, which callers treat as "keep it on the plane".
 function buildSymmetryMap(obj, axis) {
   const topo = obj.mesh.userData.topo;
-  const key = (v) => Math.round(v.x * 1e4) + '_' + Math.round(v.y * 1e4) + '_' + Math.round(v.z * 1e4);
-  const byPos = new Map();
-  for (let l = 0; l < topo.logicalCount; l++) byPos.set(key(logicalPos(obj, l)), l);
+  if (!topo || !topo.logicalCount) return new Map();
+
+  /* Nearest-within-tolerance rather than an exact rounded-key lookup. The
+     key version needed two vertices to agree to 0.0001 in every coordinate,
+     so the tiniest drift from an earlier edit silently produced no partners
+     at all - and symmetry then did nothing, with no way to tell it apart
+     from working. Tolerance scales with the object so it holds for large
+     and small models alike. */
+  const pts = [];
+  for (let l = 0; l < topo.logicalCount; l++) pts.push(logicalPos(obj, l));
+  const size = new THREE.Box3().setFromPoints(pts).getSize(new THREE.Vector3());
+  const tol = Math.max(size.x, size.y, size.z, 1) * 1e-3;
+  const tol2 = tol * tol;
 
   const map = new Map();
+  const m = new THREE.Vector3();
   for (let l = 0; l < topo.logicalCount; l++) {
-    const p = logicalPos(obj, l);
-    const m = p.clone();
+    m.copy(pts[l]);
     m[axis] = -m[axis];
-    const partner = byPos.get(key(m));
-    if (partner !== undefined) map.set(l, partner);
+    let best = -1, bestD = tol2;
+    for (let k = 0; k < pts.length; k++) {
+      const d = m.distanceToSquared(pts[k]);
+      if (d < bestD) { bestD = d; best = k; }
+    }
+    if (best >= 0) map.set(l, best);
   }
   return map;
 }
