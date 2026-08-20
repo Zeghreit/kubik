@@ -511,7 +511,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.82</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.83</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -4634,39 +4634,72 @@ function pointerPx(ev) {
   return new THREE.Vector2(ev.clientX - r.left, ev.clientY - r.top);
 }
 
-/* Is this world point hidden behind the object's own surface?
+/* Whether a vertex or edge is on the side of the object facing you.
 
-   Screen-space picking made a real problem visible: a vertex on the FAR
-   side of a cube projects to the same pixels as the near face you're
-   aiming at, so tapping the middle of a face could return an edge or
-   vertex sitting behind it. Culling fixed how it looks; this fixes what
-   you can hit, so the two agree.
+   This replaces a raycast-based occlusion test. Raycasting through the
+   object's own surface is fiddly - it depends on material.side, on an
+   epsilon to avoid self-hits, and on the ray reliably striking the surface
+   between camera and point. Testing the FACE NORMALS instead is direct and
+   deterministic: a vertex belongs to the visible side if any face touching
+   it turns toward the camera. That is precisely what back-face culling
+   means, so picking and rendering now agree by construction.
 
-   In see-through mode every point is fair game, which is the whole point
-   of that mode. */
-// Slack so a point sitting exactly ON the surface isn't judged to be behind
-// it by floating-point noise. Declared before use - a const referenced from
-// a function that runs earlier in the file would be fine, but this one is
-// read by isPointOccluded which sits directly below, so keep the order plain.
-const OCCLUSION_EPS = 0.01;
-const _occRay = new THREE.Raycaster();
-
-function isPointOccluded(worldP, obj) {
-  if (App.xraySelection) return false;
-  const dir = new THREE.Vector3().subVectors(worldP, camera.position);
-  const dist = dir.length();
-  if (dist < 1e-6) return false;
-  dir.divideScalar(dist);
-  _occRay.set(camera.position, dir);
-  _occRay.near = 0;
-  _occRay.far = dist - OCCLUSION_EPS;   // stop just short of the point itself
-  if (_occRay.far <= 0) return false;
-  /* Raycasting respects material.side, and in solid mode the mesh is
-     FrontSide - which is exactly what we want here: only a front-facing
-     surface genuinely stands between the camera and the point. A back face
-     wouldn't hide anything from this viewpoint anyway. */
-  return _occRay.intersectObject(obj.mesh, false).length > 0;
+   In see-through mode everything is reachable, which is that mode's job. */
+function ensureAdjacency(obj) {
+  const topo = obj.mesh.userData.topo;
+  if (topo.vertAdj) return topo.vertAdj;
+  const adj = new Map();
+  topo.faceGroups.forEach(fg => {
+    fg.logicalVerts.forEach(l => {
+      if (!adj.has(l)) adj.set(l, []);
+      adj.get(l).push(fg.groupIndex);
+    });
+  });
+  topo.vertAdj = adj;   // connectivity, not positions - safe to cache per topo
+  return adj;
 }
+
+const _fnA = new THREE.Vector3(), _fnB = new THREE.Vector3(), _fnC = new THREE.Vector3();
+const _fnAB = new THREE.Vector3(), _fnAC = new THREE.Vector3();
+const _fnN = new THREE.Vector3(), _fnV = new THREE.Vector3();
+
+function groupFacesCamera(obj, gi) {
+  const topo = obj.mesh.userData.topo;
+  const fg = topo.faceGroups[gi] && topo.faceGroups[gi].groupIndex === gi
+    ? topo.faceGroups[gi]
+    : topo.faceGroups.find(f => f.groupIndex === gi);
+  if (!fg) return true;
+  const geo = obj.mesh.geometry;
+  const idx = geo.index, pa = geo.attributes.position;
+  const t = fg.triStart * 3;
+  const ia = idx.getX(t), ib = idx.getX(t + 1), ic = idx.getX(t + 2);
+  _fnA.set(pa.getX(ia), pa.getY(ia), pa.getZ(ia)); obj.mesh.localToWorld(_fnA);
+  _fnB.set(pa.getX(ib), pa.getY(ib), pa.getZ(ib)); obj.mesh.localToWorld(_fnB);
+  _fnC.set(pa.getX(ic), pa.getY(ic), pa.getZ(ic)); obj.mesh.localToWorld(_fnC);
+  _fnAB.subVectors(_fnB, _fnA);
+  _fnAC.subVectors(_fnC, _fnA);
+  _fnN.crossVectors(_fnAB, _fnAC);          // CCW winding = outward normal
+  _fnV.subVectors(camera.position, _fnA);
+  return _fnN.dot(_fnV) > 0;
+}
+
+function vertexVisible(obj, l) {
+  if (App.xraySelection) return true;
+  const adj = ensureAdjacency(obj).get(l);
+  if (!adj || !adj.length) return true;
+  return adj.some(gi => groupFacesCamera(obj, gi));
+}
+
+function edgeVisible(obj, e) {
+  if (App.xraySelection) return true;
+  const adj = ensureAdjacency(obj);
+  const a = adj.get(e[0]) || [], b = adj.get(e[1]) || [];
+  // The faces this edge actually borders are the ones both ends share.
+  const shared = a.filter(g => b.indexOf(g) !== -1);
+  if (!shared.length) return true;
+  return shared.some(gi => groupFacesCamera(obj, gi));
+}
+
 
 function pickVertexOnActive(ev, bias = 1) {
   const obj = findObject(App.activeObjectId);
@@ -4683,7 +4716,7 @@ function pickVertexOnActive(ev, bias = 1) {
     const s = worldToScreenPx(p);
     if (!s) continue;
     const d = s.distanceTo(tap);
-    if (d < bestD && !isPointOccluded(p, obj)) { bestD = d; best = l; }
+    if (d < bestD && vertexVisible(obj, l)) { bestD = d; best = l; }
   }
   return best;
 }
@@ -4704,9 +4737,7 @@ function pickEdgeOnActive(ev, bias = 1) {
     if (!sA || !sB) return;
     const d = distPxToSegment(tap, sA, sB);
     if (d >= bestD) return;
-    // An edge counts as visible if either end is - a silhouette edge with
-    // one end tucked behind the surface should still be grabbable.
-    if (isPointOccluded(pA, obj) && isPointOccluded(pB, obj)) return;
+    if (!edgeVisible(obj, e)) return;
     bestD = d; best = i;
   });
   return best;
@@ -4745,7 +4776,7 @@ function pickDebug(ev, chosen) {
     const s = worldToScreenPx(p);
     if (!s) continue;
     const d = s.distanceTo(tap);
-    if (d < vBest) { vBest = d; vOcc = isPointOccluded(p, obj); }
+    if (d < vBest) { vBest = d; vOcc = !vertexVisible(obj, l); }
   }
   let eBest = Infinity;
   topo.edges.forEach(e => {
