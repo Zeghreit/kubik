@@ -53,6 +53,13 @@
     --edge-l: calc(14px + env(safe-area-inset-left));
     --edge-r: calc(14px + env(safe-area-inset-right));
     --edge-b: calc(14px + env(safe-area-inset-bottom));
+    /* The centre line of the bottom button row, measured from the bottom
+       edge. #hubBtn is 56px and Undo/Redo/Help are 44px, so a shared
+       `bottom` lined up their bottom EDGES and left the hub's centre 6px
+       high - the CSS looked right and the row looked wrong, because a row
+       of round buttons is read by its centres. Both sizes now measure from
+       this one line. Anything added to the row should do the same. */
+    --bar-cy: calc(var(--edge-b) + 22px);   /* 44 / 2 */
     --gap: 8px;
     --r-sm: 6px;    /* small controls, inputs, swatches */
     --r-md: 12px;   /* buttons, panels, cards */
@@ -123,7 +130,7 @@
   /* Object / Component, back to a single round button in the bottom-left
      corner - opposite Help, with Undo/Redo between them. */
   #hubBtn {
-    position: absolute; left: var(--edge-l); bottom: var(--edge-b);
+    position: absolute; left: var(--edge-l); bottom: calc(var(--bar-cy) - 28px);
     width: 56px; height: 56px; min-height: 56px; padding: 0;
     border-radius: 50%; justify-content: center;
     background: var(--accent); color: var(--on-accent); border: none;
@@ -177,6 +184,26 @@
     box-shadow: 0 4px 14px rgb(var(--shadow) / .14);
   }
   .hub-item .ic { font-size: 17px; line-height: 1; }
+
+  /* Help card: a quick start you can follow once, then a glossary you come
+     back to. Terms carry the same icon() glyph the real button draws, so
+     what you read here matches what is on screen. */
+  .help-sec { margin-top: 16px; }
+  .help-sec-title {
+    font-size: 11px; font-weight: 700; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--accent);
+    padding-bottom: 5px; margin-bottom: 7px; border-bottom: 1px solid var(--line);
+  }
+  .help-lead { font-size: 12px; color: var(--text-dim); margin-bottom: 9px; line-height: 1.45; }
+  .help-row { display: flex; gap: 9px; align-items: flex-start; padding: 4px 0; font-size: 12px; }
+  .help-row .ic { flex: 0 0 20px; color: var(--accent); line-height: 1; padding-top: 1px; }
+  .help-row .num {
+    flex: 0 0 19px; height: 19px; border-radius: 50%; background: var(--accent);
+    color: var(--on-accent); font-size: 11px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .help-row .term { flex: 0 0 96px; font-weight: 600; color: var(--text); }
+  .help-row .desc { flex: 1 1 auto; color: var(--text-dim); line-height: 1.45; }
   .hub-item .tx { font-size: 8px; color: var(--text-dim); letter-spacing: .02em; }
   /* Two different things, deliberately different looks: .on means the
      toggle is currently switched on, .active means your finger is over it
@@ -184,6 +211,29 @@
   .hub-item.on { background: var(--accent-dim); color: var(--accent); }
   .hub-item.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
   .hub-item.active .tx { color: var(--on-accent); opacity: .85; }
+
+  /* ONE label, for the highlighted item only.
+
+     "Tool labels in the ring" is in CURRENT_STATE's deliberately-absent
+     list: labels on every item read wider than they measured and pushed
+     the icons into each other. That failure needed MANY labels at once.
+     This is one, for the item under your finger, in its own element that
+     no icon's layout depends on - so the overlap cannot come back by
+     construction. It sits OUTSIDE the ring, pushed radially outward, so it
+     never covers the icons and never sits under your thumb.
+
+     pointer-events: none for the same load-bearing reason the ring itself
+     has it - the ring picks by ANGLE, and anything here that could take a
+     pointer would break the release. */
+  #ringLabel {
+    position: absolute; transform: translate(-50%, 50%);
+    padding: 5px 11px; border-radius: var(--r-pill);
+    background: var(--accent); color: var(--on-accent);
+    font-size: 12px; font-weight: 600; letter-spacing: .01em;
+    white-space: nowrap; pointer-events: none; display: none;
+    box-shadow: 0 4px 14px rgb(var(--shadow) / .18);
+  }
+  #ringLabel.show { display: block; }
 
   /* Under the drawer button, top-left - out from under the thumb entirely,
      since they're corrections rather than the main action loop. Only left
@@ -552,7 +602,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99b</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -627,15 +677,7 @@
           <span>How Kubik works</span>
           <button id="helpClose" title="Close"></button>
         </div>
-        <div id="helpButtons"></div>
-        <div id="helpGestures">
-          <div>Tap to select, tap empty space to clear</div>
-          <div>Drag the selection to move, rotate or scale</div>
-          <div>Two fingers, tap: switch Move / Rotate / Scale</div>
-          <div>Three fingers, tap: switch Free / Axis</div>
-          <div>Press and hold the selection: tools bloom at your finger</div>
-          <div>One finger on empty space: orbit &middot; pinch: zoom</div>
-        </div>
+        <div id="helpBody"></div>
       </div>
     </div>
 
@@ -7899,7 +7941,14 @@ function bloomToolRing(x, y, tools, pointerId) {
      them above the canvas and all of them happy to swallow a release that
      was meant for a tool. Capture makes the question moot: every move and
      the up belong to the canvas until the ring closes. */
-  toolRingActive = { x: cx, y: cy, tools, itemEls, hoveredIndex: -1, pointerId };
+  /* The label lives inside the ring container so it shares the same origin
+     as the items, and is rebuilt with them - `innerHTML = ''` above would
+     wipe a persistent one anyway. */
+  const labelEl = document.createElement('div');
+  labelEl.id = 'ringLabel';
+  touchToolRingEl.appendChild(labelEl);
+
+  toolRingActive = { x: cx, y: cy, tools, itemEls, hoveredIndex: -1, pointerId, radius: R, labelEl };
   if (pointerId !== undefined) {
     try { renderer.domElement.setPointerCapture(pointerId); } catch (e) { /* fine without it */ }
   }
@@ -7941,7 +7990,41 @@ function updateToolRingHover(ev) {
   if (hovered !== toolRingActive.hoveredIndex) {
     toolRingActive.hoveredIndex = hovered;
     toolRingActive.itemEls.forEach((it, i) => it.el.classList.toggle('active', i === hovered));
+    placeRingLabel(hovered);
   }
+}
+
+/* Puts the name of the highlighted tool just outside the ring, on that
+   item's own bearing. Nothing shows until something is highlighted - the
+   ring is still icon-only at rest.
+
+   The clamp is not decoration. The ring is already kept `R + 30` from the
+   viewport edge, but a label adds its own width beyond that, so a long name
+   on an item near the left or right pole would run off screen. Measure the
+   placed element and slide it back inside rather than guessing at text
+   width, which is what the earlier label attempt got wrong. */
+const RING_LABEL_GAP_PX = 16;
+
+function placeRingLabel(idx) {
+  if (!toolRingActive) return;
+  const lab = toolRingActive.labelEl;
+  if (!lab) return;
+  if (idx < 0) { lab.classList.remove('show'); return; }
+
+  const it = toolRingActive.itemEls[idx];
+  lab.textContent = it.tool.label;
+  const R = toolRingActive.radius + TOOL_RING_ITEM / 2 + RING_LABEL_GAP_PX;
+  const x = Math.cos(it.angle) * R;
+  lab.style.left = x + 'px';
+  lab.style.bottom = Math.sin(it.angle) * R + 'px';
+  lab.classList.add('show');
+
+  const vp = viewportEl.getBoundingClientRect();
+  const lr = lab.getBoundingClientRect();
+  let shift = 0;
+  if (lr.left < vp.left + 8) shift = (vp.left + 8) - lr.left;
+  else if (lr.right > vp.right - 8) shift = (vp.right - 8) - lr.right;
+  if (shift) lab.style.left = (x + shift) + 'px';
 }
 
 function closeToolRing(run) {
@@ -8035,18 +8118,154 @@ scrimEl.addEventListener('click', () => setDrawerOpen(false));
    exact same icon() calls and glyph names the real buttons already render
    with, so what you read here matches what you see on screen. */
 const helpOverlayEl = document.getElementById('helpOverlay');
-const HELP_BUTTONS = [
-  ['undo', 'Undo'], ['redo', 'Redo'],
-  ['object', 'Hub - tap to switch Object / Component'],
-  ['mirror', 'Symmetry - mirror while you edit'],
-  ['eye', 'Selection: solid or see-through'],
-  ['grid', 'Floor grid'], ['camera', 'Smart camera framing'], ['snap', 'Snap to steps'],
-  ['free', 'Tap to select'], ['box', 'Drag a box to select'], ['lasso', 'Draw a lasso to select']
+/* Follow the quick start once, then come back to the glossary. The old card
+   was eleven icon/name pairs and six gesture lines, which named the controls
+   without saying what any of them DO - and it had gone stale besides, still
+   listing "Smart camera framing" for an icon that has meant Aim assist since
+   the smart camera was removed. Anything added here should say what the
+   thing does, not just that it exists. */
+const HELP_QUICKSTART = [
+  'Hold on empty space until the ring blooms, slide to Add Cube, lift.',
+  'Tap the round button, bottom-left, to go from Object to Component.',
+  'Tap a face. Tap empty space if you want to start again.',
+  'Hold on that face - its own tools bloom. Slide to Extrude, lift.',
+  'Drag the new face to place it. Undo is bottom-centre.',
+  'Tap the left half of the Symmetry pill, under the view cube, and every edit mirrors as you make it.',
+  'Menu, top-left: Save keeps the project, Export writes glTF, OBJ or STL.'
 ];
+
+const HELP_SECTIONS = [
+  {
+    title: 'Getting around',
+    lead: 'The viewport is the whole app. Nothing sits on top of it that you did not ask for.',
+    rows: [
+      [null, 'Orbit', 'One finger dragged on empty space.'],
+      [null, 'Zoom', 'Pinch, or the scroll wheel.'],
+      [null, 'Pan', 'Two fingers dragged together.'],
+      [null, 'View cube', 'Top-right. Tap a face to bring the camera square onto it.'],
+      [null, 'Double tap', 'On empty space, frames what you have. While a tool is open, cancels it.']
+    ]
+  },
+  {
+    title: 'Selecting',
+    lead: 'Vertices and edges are measured in screen pixels, not in 3D - so whatever looks nearest your finger is what you get, at any zoom.',
+    rows: [
+      [null, 'Tap', 'Picks the nearest visible thing. Tap empty space to clear.'],
+      [null, 'Type lock', 'Once something is selected, only that kind can be picked until you clear. A tap that gets refused says so rather than doing nothing.'],
+      ['free', 'Tap select', 'Plain tapping. The default.'],
+      ['box', 'Box select', 'Drag a rectangle. Chosen from the world ring.'],
+      ['lasso', 'Lasso select', 'Draw the shape freehand. Same ring.'],
+      [null, 'Double tap, Face', 'Selects a strip of faces across the mesh. Which way it runs comes from the edge nearest your tap.'],
+      [null, 'Double tap, Edge', 'Selects the whole edge loop. Tap one edge first, then double-tap another within a second and a half, and you get the shortest run of edges between the two instead.'],
+      ['eye', 'See-through', 'Lets the selection show through the surface.'],
+      ['camera', 'Aim assist', 'After a vertex or edge tap, eases the camera in until neighbours are far enough apart to tell apart. It runs after the pick, so it only ever makes the NEXT tap easier.']
+    ]
+  }
+];
+
+HELP_SECTIONS.push(
+  {
+    title: 'Moving, rotating, scaling',
+    lead: 'There is no gizmo. You grab what is selected and drag it, and the same drag does whichever of the three the current tool is set to.',
+    rows: [
+      [null, 'Two-finger tap', 'Cycles Move / Rotate / Scale. The readout at the top says which.'],
+      [null, 'Three-finger tap', 'Switches Free / Axis.'],
+      [null, 'Axis', 'The axis is decided from the first few pixels of the drag and held until you lift, so a curving gesture cannot wander onto another one.'],
+      [null, 'Free rotate', 'Takes its axis from the direction you swipe, fixed at the start of the drag.'],
+      [null, 'Free scale', 'Reads the axes as they appear on screen, so depth is reachable. A drag that matches no axis scales everything evenly.'],
+      ['snap', 'Snap', 'Moves in steps instead of running smooth.']
+    ]
+  },
+  {
+    title: 'The two rings',
+    lead: 'Press and hold, and tools bloom under your finger. What you get depends on what was under it.',
+    rows: [
+      [null, 'On your selection', 'About a third of a second. Gives you that selection\'s own tools.'],
+      [null, 'On empty space', 'About half a second. Gives you Add Cube and the view toggles. It waits longer because pressing on the background and pausing is also how a careful orbit starts, so the gesture has to prove itself first.'],
+      [null, 'Choosing', 'Slide toward an icon - its name appears beside it - and lift. The ring picks by direction, so you never have to land on the icon itself.'],
+      [null, 'Backing out', 'Slide back to the middle and lift, and nothing runs. Moving your finger before the ring opens cancels it: that was a drag.']
+    ]
+  },
+  {
+    title: 'Shaping',
+    lead: 'Component mode, from the ring on your selection. Several of these open a bar with a slider - set it, then confirm.',
+    rows: [
+      ['extrude', 'Extrude', 'Pulls the selected faces or edges out into new geometry. Faces that touch each other come out as one piece rather than separate stubs.'],
+      ['inset', 'Inset', 'Shrinks a face inside its own outline, leaving a border around the edge.'],
+      ['bevel', 'Bevel', 'Replaces a sharp edge with a narrow flat face. More segments rounds it off.'],
+      ['loop', 'Loop', 'Cuts new edge rings across the mesh, running perpendicular to the edge you picked. Count sets how many; slide moves them off centre.'],
+      ['split', 'Split', 'Puts a midpoint on each selected edge.'],
+      ['bridge', 'Bridge', 'Joins two separate selections with new faces spanning between them.'],
+      ['connect', 'Connect', 'Runs a new edge between selected vertices.'],
+      ['weld', 'Weld', 'Merges the selected vertices into a single one.'],
+      ['crease', 'Crease', 'Marks an edge to stay sharp when the surface is smoothed. Uncrease takes it back.'],
+      ['shade', 'Shade', 'Flat or smooth shading for the selected faces.'],
+      ['del', 'Delete', 'Removes the selection.']
+    ]
+  },
+  {
+    title: 'Whole objects',
+    lead: 'Object mode, from the same ring.',
+    rows: [
+      ['dupe', 'Duplicate', 'Copies the object and sets the copy beside it.'],
+      ['subdiv', 'Subdivide', 'Divides every face and smooths the result. Creased edges stay sharp.'],
+      ['color', 'Material', 'Cycles the finish of the selection.'],
+      ['bevel', 'Fillet', 'Previews rounded edges over the whole object without changing the mesh.'],
+      ['centre', 'Centre', 'Puts the selection back where new objects appear - centred, resting on the floor.'],
+      ['join', 'Join', 'Merges two or more selected objects into one.']
+    ]
+  }
+);
+
+HELP_SECTIONS.push(
+  {
+    title: 'Symmetry and Mirror',
+    lead: 'Symmetry is a mode you leave switched on while you work. Mirror is a one-off action.',
+    rows: [
+      ['mirror', 'Symmetry', 'The pill under the view cube. Left half on, right half off - tap a half or swipe toward it.'],
+      [null, 'The plane', 'Captured the moment you switch symmetry on, at the middle of the object\'s bounding box on the chosen axis, and it travels with the object. Switching it off and on again re-reads it.'],
+      [null, 'What mirrors', 'Component edits. Shaping tools take in the mirror of your selection and run once across both halves, so nothing is built at the seam. Dragging a whole object does not mirror.'],
+      [null, 'The catch', 'Symmetry pairs up vertices that already have a twin. It keeps a symmetric model symmetric; it cannot put back symmetry that has been lost.'],
+      ['mirror', 'Mirror', 'With symmetry off, mirrors across the world plane. With it on, across the captured one. If that plane cuts through the object, Mirror keeps the half you are looking at and rebuilds the other from it, leaving an edge loop exactly on the plane.']
+    ]
+  },
+  {
+    title: 'Keeping your work',
+    rows: [
+      ['undo', 'Undo / Redo', 'Bottom-centre. Every edit is a step.'],
+      ['save', 'Save', 'Writes the whole scene to a file you can open again.'],
+      ['load', 'Load', 'Opens one back up.'],
+      ['file_export', 'Export', 'glTF, OBJ or STL, for taking the model somewhere else.'],
+      ['grid', 'Floor grid', 'The reference grid. Off is sometimes easier to read.']
+    ]
+  }
+);
+
+function helpRow(r) {
+  const [ic, term, desc] = r;
+  return '<div class="help-row">' +
+    '<span class="ic">' + (ic ? icon(ic, 17) : '') + '</span>' +
+    '<span class="term">' + term + '</span>' +
+    '<span class="desc">' + desc + '</span>' +
+    '</div>';
+}
+
 function openHelp() {
-  document.getElementById('helpButtons').innerHTML = HELP_BUTTONS.map(([name, label]) =>
-    '<div class="help-row"><span class="ic">' + icon(name, 18) + '</span><span>' + label + '</span></div>'
-  ).join('');
+  const quick = '<div class="help-sec">' +
+    '<div class="help-sec-title">Quick start</div>' +
+    HELP_QUICKSTART.map((s, i) =>
+      '<div class="help-row"><span class="num">' + (i + 1) + '</span>' +
+      '<span class="desc">' + s + '</span></div>').join('') +
+    '</div>';
+
+  const rest = HELP_SECTIONS.map(sec =>
+    '<div class="help-sec">' +
+    '<div class="help-sec-title">' + sec.title + '</div>' +
+    (sec.lead ? '<div class="help-lead">' + sec.lead + '</div>' : '') +
+    sec.rows.map(helpRow).join('') +
+    '</div>').join('');
+
+  document.getElementById('helpBody').innerHTML = quick + rest;
   helpOverlayEl.classList.add('show');
 }
 function closeHelp() { helpOverlayEl.classList.remove('show'); }
@@ -8629,6 +8848,12 @@ if (PICK_DEBUG) {
     runMirrored, markElements, resolveElements, symExpand,
     edgeLoopSelection, decideLoopCutFlip, loopCutTrial, applyPendingOp,
     captureObjectState, restoreObjectState, cancelPendingOp,
+    /* The ring, driveable without waiting on the hold timer. That timer runs
+       off the rAF loop, which a BACKGROUNDED TAB freezes outright - so a
+       harness that presses and waits gets no bloom at all, however long it
+       waits. Calling these directly sidesteps the whole question. */
+    bloomToolRing, updateToolRingHover, closeToolRing, placeRingLabel,
+    currentHubTools, HUB_TOOLS_WORLD,
     /* The op entry points, so a harness can run the REAL tool the ring
        runs instead of reimplementing it. Still nothing new - every one of
        these is already one tap away. */

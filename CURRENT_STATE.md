@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **v1.99a**
+- Version at time of writing: **v1.99b**
 - Debug: append `?debug=1`. Tap picks log a `[pick] ...` line explaining why
   a tap resolved as it did, every mesh edit logs a `[winding] ...` line (see
   Winding audit), and `window.__kubik` exposes the live app (see Testing
@@ -31,7 +31,13 @@ v1.85d.
   **Top-right** view cube.
 - **Under the view cube**: the Symmetry pill, a horizontal two-state switch.
 - **Bottom-left**: the round Object/Component button.
-  **Bottom-centre**: Undo/Redo. **Bottom-right**: Help, greyed.
+  **Bottom-centre**: Undo/Redo. **Bottom-right**: Help.
+- **The bottom row is aligned on CENTRES, via `--bar-cy`.** The hub is 56px
+  and the other three are 44px, so the shared `bottom: var(--edge-b)` they
+  all used lined up their bottom EDGES and left the hub's centre 6px high.
+  The CSS looked right and the row looked wrong, because a row of round
+  buttons is read by its centres. Anything added to that row measures from
+  `--bar-cy` too.
 - **Nothing else.** There is no rail of toggles down either edge — See-
   through, Floor grid, Aim assist, Snap, Add Cube and Tap/Box/Lasso select
   all live in the world ring.
@@ -196,8 +202,14 @@ closer per move, and a distance floor of 1.2.
 - **The transform gizmo.** Iterated for many versions, removed once direct
   dragging worked. Tagged `v1.57-handles`.
 - **The fixed-corner fan menu.** Replaced by the press-and-hold ring.
-- **Tool labels in the ring.** Icon-only; labels read wider than they
-  measured and caused overlap bugs.
+- **A label on EVERY ring item.** They read wider than they measured and
+  pushed the icons into each other. Still absent, and should stay absent.
+  **This is NOT the hover label shipped in v1.99b** - that is ONE label, for
+  the item under your finger, in its own element that no icon's layout
+  depends on, sitting outside the ring. The overlap failure needed many
+  labels at once, so it cannot return this way. Measured at the ring centre
+  and at both edges: never overlaps any icon, and the clamp keeps it on
+  screen. Do not delete the hover label thinking it is this entry.
 - **Two-ring bloom menus.** Hover picks by angle only, so an outer ring is
   unreachable by construction.
 - **Smart camera.** Drifted the view to a three-quarter angle after every
@@ -518,6 +530,11 @@ Three traps, all of which cost real time:
   ~1s.** A transitioned property reads its START value forever, so
   `getComputedStyle` lied about a slider knob for several rounds, and
   hold-vs-tap timing cannot be told apart. **Check `document.hidden` FIRST.**
+- **The ring's hold timer runs off the rAF loop, which a hidden tab stops
+  DEAD** - not clamped, stopped. Pressing and waiting longer does not help;
+  the ring never blooms at all. `__kubik` exposes `bloomToolRing`,
+  `updateToolRingHover`, `closeToolRing` and `HUB_TOOLS_WORLD` so a harness
+  can drive the ring directly and skip the question.
 - **Synthetic pointer events make OrbitControls throw** `setPointerCapture:
   No active pointer`. Harmless and unreachable with a real finger — filter
   the console by stack, not by count.
@@ -538,6 +555,22 @@ symmetry-aware ops. Each has its own section above; nothing here is pending.
 - **Acknowledging the moment an op lands.** An extrude currently just
   happens, with no feedback. For something whose identity is a fidget that is
   a real gap.
+
+## Help (v1.99b)
+
+Quick start, then a glossary grouped by task: Getting around, Selecting,
+Moving/rotating/scaling, The two rings, Shaping, Whole objects, Symmetry and
+Mirror, Keeping your work. 58 rows, built from `HELP_QUICKSTART` and
+`HELP_SECTIONS` and rendered with the same `icon()` calls the real buttons
+use, so the glyphs cannot drift from the app.
+
+It replaced eleven icon/name pairs and six gesture lines that named the
+controls without saying what any of them DID - and that had gone stale
+besides, still offering "Smart camera framing" for an icon that has meant
+Aim assist since the smart camera was removed at v1.87. **Rows say what the
+thing does.** Anything added here should do the same, and note that
+double-tap alone does four different things depending on mode, none of which
+the old card mentioned.
 
 ## Open threads
 
