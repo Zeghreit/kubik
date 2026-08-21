@@ -620,7 +620,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.7c</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.7d</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -10181,7 +10181,7 @@ const HELP_QUICKSTART = [
   'Hold on that face - its own tools bloom. Slide to Extrude, lift.',
   'Drag the new face to place it. Undo is bottom-centre.',
   'Tap the left half of the Symmetry pill, under the view cube, and every edit mirrors as you make it.',
-  'Menu, top-left: Save keeps the project, Export writes glTF, OBJ or STL.'
+  'Menu, top-left: Models saves the scene in the browser, Files downloads it or exports glTF, OBJ or STL.'
 ];
 
 const HELP_SECTIONS = [
@@ -10201,7 +10201,7 @@ const HELP_SECTIONS = [
     lead: 'Vertices and edges are measured in screen pixels, not in 3D - so whatever looks nearest your finger is what you get, at any zoom.',
     rows: [
       [null, 'Tap', 'Picks the nearest visible thing. Tap empty space to clear.'],
-      [null, 'What a tap picks', 'Vertex first, then edge, then face - whatever is nearest your finger of the highest kind in reach. Landing on a different kind than you were working in moves you into it.'],
+      [null, 'What a tap picks', 'Whichever is nearest your finger. A vertex wins a tie, because a vertex sits ON its edges - aim at a corner and you get the corner, aim along an edge and you get the edge. Landing on a different kind than you were working in moves you into it.'],
       [null, 'Type lock', 'Once something is selected, only that kind can be picked until you tap empty space to clear. A tap that gets refused says so rather than doing nothing.'],
       ['free', 'Tap select', 'Plain tapping. The default.'],
       ['box', 'Box select', 'Drag a rectangle. Chosen from the world ring.'],
@@ -10247,12 +10247,17 @@ HELP_SECTIONS.push(
       ['loop', 'Loop', 'Cuts new edge rings across the mesh, running perpendicular to the edge you picked. Count sets how many; slide moves them off centre.'],
       ['knife', 'Knife', 'Cut by hand. Press and slide to place a point - it snaps to a corner, or slides along an edge, or sits anywhere on a face - then lift. Green dots are your points, the yellow line is the cut. Back removes the last one, OK cuts. Each run has to cross a face from one side to the other; a cut that stops in the middle of a face has nothing to split and is skipped.'],
       ['split', 'Split', 'Puts a midpoint on each selected edge.'],
-      ['bridge', 'Bridge', 'Joins two separate selections with new faces spanning between them.'],
+      ['bridge', 'Bridge', 'Joins two selections with a band of new faces. The bar counts SECTIONS - more of them subdivide the bridge along its length - and Curved, offered from two sections up, leaves each end the way that end was already going instead of running straight across. Two faces pointing the same way cannot always be joined without the bridge folding through itself; the bar says so while it does.'],
+      ['cap', 'Cap hole', 'Closes an opening. In Edge mode, select any part of a hole\'s rim and only that hole is capped; from anywhere else, every hole in the object. A rim that no single flat face can close is refused and reported rather than quietly making the mesh worse.'],
       ['connect', 'Connect', 'Runs a new edge between selected vertices.'],
       ['weld', 'Weld', 'Merges the selected vertices into a single one.'],
+      ['grow', 'Grow', 'Widens the selection to everything touching it.'],
+      ['shrink', 'Shrink', 'Pulls the selection back in from its border.'],
       ['crease', 'Crease', 'Marks an edge to stay sharp when the surface is smoothed. Uncrease takes it back.'],
+      ['flipnorm', 'Flip normals', 'Turns the selected faces inside out.'],
       ['shade', 'Shade', 'Flat or smooth shading for the selected faces.'],
-      ['del', 'Delete', 'Removes the selection.']
+      [null, 'Delete, faces', 'Cuts the faces away and leaves a hole. This is how you make one.'],
+      ['del', 'Delete, vertices and edges', 'DISSOLVES rather than cuts: the faces close over what was removed instead of going with it. Dissolving an edge merges the two faces it separated; dissolving a vertex merges the ring of faces around it. The vertices inside a dissolved run go too - the two ends of a partial run stay, since they still join edges that survive.']
     ]
   },
   {
@@ -10260,11 +10265,16 @@ HELP_SECTIONS.push(
     lead: 'Object mode, from the same ring.',
     rows: [
       ['dupe', 'Duplicate', 'Copies the object and sets the copy beside it.'],
-      ['subdiv', 'Subdivide', 'Divides every face and smooths the result. Creased edges stay sharp.'],
+      ['subdiv', 'Subdivide', 'Divides every face. Smooth rounds the shape as it goes, Keep shape holds the silhouette, and the counter sets how many times. Creased edges stay sharp. Every level multiplies the face count by four, so the counter stops low on purpose.'],
       ['color', 'Material', 'Cycles the finish of the selection.'],
-      ['bevel', 'Fillet', 'Previews rounded edges over the whole object without changing the mesh.'],
+      ['bevel', 'Fillet', 'Previews rounded edges over the whole object without changing the mesh. Shape and width live in the drawer.'],
+      ['flipnorm', 'Flip normals', 'Turns the whole object inside out - the quick fix for a model that imported or mirrored the wrong way round.'],
+      ['flip', 'Flip', 'Mirrors the object in place along the symmetry axis, without leaving a copy behind.'],
+      ['separate', 'Separate', 'Splits an object into one object per loose piece.'],
+      ['join', 'Join', 'Merges two or more selected objects into one.'],
+      ['cap', 'Cap holes', 'Closes every opening in the selected objects.'],
       ['centre', 'Centre', 'Puts the selection back where new objects appear - centred, resting on the floor.'],
-      ['join', 'Join', 'Merges two or more selected objects into one.']
+      ['del', 'Delete', 'Removes the selected objects.']
     ]
   }
 );
@@ -10282,12 +10292,26 @@ HELP_SECTIONS.push(
     ]
   },
   {
+    title: 'The drawer',
+    lead: 'Hamburger, top-left. Everything here is a setting or a list - the tools all live in the rings.',
+    rows: [
+      [null, 'Scene', 'Every object in the scene. Tap one to make it active.'],
+      [null, 'Appearance', 'Theme, and the colour of whatever is selected.'],
+      [null, 'Editing', 'Exact transform values, Clear creases, drag sensitivity, and which axis symmetry uses.'],
+      ['snap', 'Snap step', 'How far one snapped step moves, turns and scales. Snap itself is toggled from the world ring.'],
+      ['bevel', 'Fillet', 'Flat or Round, and how wide - the settings the Fillet preview uses.'],
+      [null, 'Models', 'Save the scene into the browser under a name, and open it again later. Survives closing the tab.'],
+      [null, 'Files', 'Download and open a .json of the whole scene, and export .glb, .obj or .stl.']
+    ]
+  },
+  {
     title: 'Keeping your work',
     rows: [
       ['undo', 'Undo / Redo', 'Bottom-centre. Every edit is a step.'],
-      ['save', 'Save', 'Writes the whole scene to a file you can open again.'],
-      ['load', 'Load', 'Opens one back up.'],
-      ['file_export', 'Export', 'glTF, OBJ or STL, for taking the model somewhere else.'],
+      [null, 'Models vs Files', 'Two different places, on purpose. Models keeps the scene inside the browser under a name; Files writes it to disk. That is why the drawer says Save under one and Download under the other.'],
+      ['save', 'Download .json', 'Writes the whole scene to a file you can open again.'],
+      ['load', 'Open .json', 'Reads one back in.'],
+      ['file_export', 'Export', 'glTF, OBJ or STL, for taking the model somewhere else. An export is a one-way trip - it carries the shape, not the scene.'],
       ['grid', 'Floor grid', 'The reference grid. Off is sometimes easier to read.']
     ]
   }
