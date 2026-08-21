@@ -620,7 +620,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.7b</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.7c</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -3445,13 +3445,49 @@ function bridgeEdgesOp(obj, logicalPairs, segments, curved) {
     };
   }
 
+  /* WHICH WAY ROUND the strip goes, from the faces that already own these
+     rim edges.
+
+     Two faces sharing an edge traverse it in opposite directions - that is
+     what makes them agree - so a strip laid along a rim must run against the
+     face on the other side of it. bridgeEdgesOp had no such rule: it wound
+     every quad the same way regardless, so whether a bridge came out facing
+     the right way depended on which end of the chain the walk started from.
+
+     The report is the proof: two mirrored cubes, the same two-edge bridge,
+     correct on one side and inside out on the other - the mirror runs its
+     rim the other way round, so the one fixed winding opposed one face and
+     agreed with the other.
+
+     TWO knobs, and both are needed. Flipping the quad fixes the A end but
+     flips the B end with it; reversing B's chain then fixes B without
+     disturbing A. Measured with only the first: two of four mirrored edge
+     pairs still came back with 5 reversed faces. */
+  const dirTaken = new Set();
+  allLoops.forEach(lp => {
+    for (let i = 0; i < lp.length; i++) {
+      dirTaken.add(L.logicalOf[lp[i]] + '_' + L.logicalOf[lp[(i + 1) % lp.length]]);
+    }
+  });
+  const runs = (u, v) => dirTaken.has(L.logicalOf[u] + '_' + L.logicalOf[v]);
+
+  // Unflipped, the wall runs a0 -> a1 and b1 -> b0. Each has to be the
+  // direction its own rim face does NOT use.
+  let flip = rowA.length > 1 && runs(rowA[0], rowA[1]);
+  if (rowB.length > 1) {
+    const bLegOK = flip ? !runs(rowB[0], rowB[1]) : !runs(rowB[1], rowB[0]);
+    if (!bLegOK) rowB.reverse();
+  }
+
   const rings = bridgeRings(ed, rowA, rowB, segs, curve);
 
   const added = [];
   for (let r = 0; r + 1 < rings.length; r++) {
     const r0 = rings[r], r1 = rings[r + 1];
     for (let i = 0; i + 1 < r0.length; i++) {
-      const quad = [r0[i], r0[i + 1], r1[i + 1], r1[i]];
+      const quad = flip
+        ? [r0[i + 1], r0[i], r1[i], r1[i + 1]]
+        : [r0[i], r0[i + 1], r1[i + 1], r1[i]];
       ed.groups.push({ triangles: polygonTriangles(ed, quad) });
       mats.push((mats[0] || mats[0]).clone());
       added.push(quad);

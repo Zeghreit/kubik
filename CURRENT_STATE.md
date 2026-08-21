@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **a2.7b**
+- Version at time of writing: **a2.7c**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1159,6 +1159,22 @@ report. There is also no per-quad "point it away from the tube axis" test any
 more: it guessed outwardness from a made-up axis, said nothing at all when
 the band was flat, and was free to flip single quads out of agreement with
 their neighbours.
+
+**An EDGE-run bridge takes its winding from the rim too (a2.7c).** Two faces
+sharing an edge traverse it in opposite directions - that is what makes them
+agree - so a strip laid along a rim has to run against the face on the other
+side of it. `bridgeEdgesOp` had no such rule at all: it wound every quad the
+same way regardless, so whether a bridge came out facing the right way
+depended on which end of the chain the walk started from. The bug report is
+the proof, and it is a good one: two mirrored cubes, the same two-edge
+bridge, correct on one side and inside out on the other - the mirror runs its
+rim the other way round, so one fixed winding opposed one face and agreed
+with the other.
+
+TWO knobs, and both are needed. Flipping the quad fixes the A end but flips
+the B end with it; reversing B's chain then fixes B without disturbing A.
+Measured with only the first: two of four mirrored edge pairs still came back
+with 5 reversed faces. With both: all four clean.
 
 **An order-reversing pairing is forced, so the connectors look crossed, and
 that is fine** — a tube is allowed to be an arch. What is NOT fine is the
