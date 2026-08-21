@@ -5,7 +5,11 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **v1.99k**
+- Version at time of writing: **a2.0**
+- **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
+  the pre-2.0 list below. The clean **2.0** is claimed at release and not
+  before. Fixes still take a letter (`a2.0a`); new work takes a number
+  (`a2.1`).
 - Debug: append `?debug=1`. Tap picks log a `[pick] ...` line explaining why
   a tap resolved as it did, every mesh edit logs a `[winding] ...` line (see
   Winding audit), and `window.__kubik` exposes the live app (see Testing
@@ -275,6 +279,34 @@ audits as ok:* the audit measures whether neighbours agree with each other,
 not whether the surface faces outward, and a fully inverted object is
 perfectly self-consistent. Global inversion is something you see, not
 something the audit can catch.
+
+**Cap holes** (face ring and object ring). Closes open boundaries. Works on
+whichever object you are editing in any mode, because a hole belongs to the
+mesh rather than to the selection, and the moment you want it is right after
+deleting a face.
+
+A face's boundary loop is DIRECTED, and two faces sharing an edge traverse
+it in opposite directions — that is what makes their normals agree. So an
+edge traversed in only ONE direction has nothing on its other side: it is
+rim. `auditWinding` already counted exactly this as `boundary`; Cap uses the
+same fact to fix rather than to report. It also hands the new face its
+winding for free — fill the rim with its REVERSE and the cap necessarily
+agrees with the surface around it, with nothing to guess.
+
+Two things it got wrong first, both caught by measuring rather than reading:
+
+- **A vertex can have more than one outgoing rim edge.** Delete two opposite
+  faces of a cube and the rims share corners. Recording only the first
+  outgoing edge per vertex stitched two rims into one bogus loop. The walk
+  now consumes directed EDGES, never marking vertices visited, because a
+  vertex shared by two rims must be walked through twice.
+- **Not every rim can be closed by one flat face.** Delete three faces in a
+  strip and the rim wraps around the block: non-planar, self-overlapping in
+  projection, so ear-clipping emits crossing triangles. Measured boundary 8
+  before, **10 after** — it made the mesh worse while reporting success. Cap
+  now caps, re-counts the open edges, and **puts the mesh back if the number
+  did not fall**, saying the opening is not flat enough. Measured across
+  seven cases: six reach boundary 0, the impossible one is left untouched.
 
 **Separate** (object ring). The inverse of Join: one object per CONNECTED
 piece. Connected, not spatially near — two cubes that overlap but share no
@@ -687,11 +719,8 @@ priority order — ask before assuming which comes first.
 
 **1. Two missing ops, both called essential.**
 
-- **Cap / fill hole.** After deleting a face there is no way to close the
-  gap. Half of this already exists: `auditWinding` counts boundary edges
-  (used by exactly one face), so detection is solved — the work is walking
-  those into loops and building an n-gon per loop, wound to agree with the
-  neighbouring face.
+- ~~**Cap / fill hole.**~~ **SHIPPED at a2.0** — see "Cap holes" above,
+  including the two ways it was wrong first.
 - **Hand cut (knife).** Tap-drag along an edge to drop a start point, then
   the next, and so on; OK applies the cut. **This is the largest single item
   on the list and it introduces a new INTERACTION CLASS** — every op today
@@ -743,6 +772,14 @@ plus the three exports).
 
 Open question: Symmetry AXIS lives in the drawer while the Symmetry SWITCH
 is now top-left. Two halves of one control in opposite corners.
+
+**3b. After the drawer, but before icons — materials.** Zeghreit wants the
+material settings reworked and moved into **their own drawer on the RIGHT
+side**, mirroring the tools drawer on the left. Explicitly scheduled after
+everything else already planned, so do not start it early. Note today's
+material controls are split across three places: the Colour picker in the
+drawer, the Material tool in the object ring (which cycles finish), and
+Shade in three separate rings.
 
 **4. Icons and design polish.** Zeghreit has feedback that the icons are
 confusing and wants every icon to reflect its function. A brainstorm and

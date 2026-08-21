@@ -616,7 +616,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99k</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.0</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -2179,6 +2179,98 @@ function separateObject(obj) {
     made.push(part);
   }
   return made.length > 1 ? made : null;
+}
+
+/* Finds the open boundaries of a mesh and closes each one with a face.
+
+   A face's boundary loop is DIRECTED - it runs a->b->c round the outline in
+   winding order. Two faces sharing an edge traverse it in opposite
+   directions, which is exactly what makes their normals agree. So an edge
+   traversed in only ONE direction has nothing on its other side: it is the
+   rim of a hole. That is the same fact `auditWinding` already counts as
+   `boundary`, used here to fix rather than to report.
+
+   It also hands the new face its winding for free. Walking the rim a->b and
+   filling with the REVERSE gives a face that traverses every shared edge
+   the opposite way to its neighbour, so the cap comes out facing the same
+   way as the surface around it with nothing to guess. */
+function fillHolesOp(obj) {
+  const mesh = obj.mesh;
+  const ed = toEditable(mesh);
+  const L = edLogical(ed);
+  const mats = Array.isArray(mesh.material) ? mesh.material : (mesh.material = [mesh.material]);
+
+  const seen = new Set();
+  ed.groups.forEach((g, gi) => {
+    const lp = getGroupBoundaryLoopAttr(ed, gi).map(a => L.logicalOf[a]);
+    for (let i = 0; i < lp.length; i++) seen.add(lp[i] + '_' + lp[(i + 1) % lp.length]);
+  });
+
+  /* Directed edges whose reverse never appears are open rim. A vertex can
+     have MORE THAN ONE outgoing rim edge - delete three faces of a cube and
+     the remainder has two separate holes meeting at shared corners - so
+     this keeps every one. Recording just the first (which it did at first)
+     stitched the two rims into one bogus loop, and capping that made the
+     mesh WORSE while reporting success: boundary edges went 8 -> 10. */
+  const outEdges = new Map();
+  const remaining = new Set();
+  seen.forEach(k => {
+    const [a, b] = k.split('_').map(Number);
+    if (seen.has(b + '_' + a)) return;
+    if (!outEdges.has(a)) outEdges.set(a, []);
+    outEdges.get(a).push(b);
+    remaining.add(k);
+  });
+  if (!remaining.size) return 0;
+
+  // Any logical vertex's position, for copying into the new face.
+  const anyAttr = new Map();
+  for (let a = 0; a < L.logicalOf.length; a++) {
+    if (!anyAttr.has(L.logicalOf[a])) anyAttr.set(L.logicalOf[a], a);
+  }
+
+  /* Walk by consuming directed EDGES, not by marking vertices visited. A
+     vertex shared by two rims must be walked through twice - once for each
+     - and a vertex-visited set makes that impossible by construction. */
+  const holes = [];
+  while (remaining.size) {
+    const first = remaining.values().next().value;
+    const [start, second] = first.split('_').map(Number);
+    remaining.delete(first);
+    const loop = [start];
+    let cur = second, closed = false;
+    for (let guard = 0; guard < 100000; guard++) {
+      if (cur === start) { closed = true; break; }
+      loop.push(cur);
+      const outs = (outEdges.get(cur) || []).filter(b => remaining.has(cur + '_' + b));
+      if (!outs.length) break;          // rim runs off - not a closed hole
+      remaining.delete(cur + '_' + outs[0]);
+      cur = outs[0];
+    }
+    if (closed && loop.length >= 3) holes.push(loop);
+  }
+  if (!holes.length) return 0;
+
+  holes.forEach(loop => {
+    // Reversed, so the cap disagrees with the rim's direction and therefore
+    // agrees with the rim's normals.
+    const rev = loop.slice().reverse();
+    const idx = rev.map(l => {
+      const a = anyAttr.get(l);
+      const ni = ed.positions.length / 3;
+      ed.positions.push(ed.positions[a * 3], ed.positions[a * 3 + 1], ed.positions[a * 3 + 2]);
+      return ni;
+    });
+    // Ear-clipping, not a fan: a hole left by deleting several faces is very
+    // often concave, and a fan would emit triangles outside it.
+    const tris = polygonTriangles(ed, idx);
+    if (!tris.length) return;
+    mats.push((mats[0] || mats[mats.length - 1]).clone());
+    ed.groups.push({ triangles: tris });
+  });
+
+  rebuildFromEditable(obj, ed);
+  return holes.length;
 }
 
 function cloneObjectInto(obj, name) {
@@ -4556,6 +4648,59 @@ function flipNormalsSelection() {
   if (!n) { toast('Nothing to flip'); return; }
   ensureHelpers(obj);
   finishMeshEdit(obj, 'Flipped ' + n + ' face(s)');
+}
+
+/* Works on whichever object you are editing, in any mode - a hole is a
+   property of the whole mesh, not of the selection, and the moment you want
+   it is right after deleting a face, which happens in Face mode. */
+function fillHolesSelection() {
+  const targets = App.mode === 'object'
+    ? Array.from(App.selectedObjectIds).map(findObject).filter(Boolean)
+    : [findObject(App.activeObjectId)].filter(Boolean);
+  if (!targets.length) { toast('Select an object first'); return; }
+
+  /* Cap, then CHECK, and put it back if it did not help.
+
+     A rim is not always something a flat face can close. Delete three faces
+     of a cube in a strip and the remaining rim is a single loop that wraps
+     around the block - non-planar, and self-overlapping once projected, so
+     ear-clipping emits crossing triangles and the mesh ends up with MORE
+     open edge than it started with. Measured: boundary 8 before, 10 after.
+
+     Rather than guess at planarity up front, do the work and count the open
+     edges. Fewer means it helped; the same or more means this opening is
+     not one a single face can close, and saying so beats quietly making the
+     model worse while reporting success. */
+  let filled = 0, objs = 0, refused = 0;
+  targets.forEach(obj => {
+    ensureHelpers(obj);
+    const before = auditWinding(obj).boundary;
+    const snap = captureObjectState(obj);
+    const n = fillHolesOp(obj);
+    if (!n) return;
+    ensureHelpers(obj);
+    if (auditWinding(obj).boundary >= before) {
+      restoreObjectState(obj, snap);
+      ensureHelpers(obj);
+      refused++;
+      return;
+    }
+    filled += n;
+    objs++;
+  });
+  if (!filled) {
+    toast(refused ? 'That opening is not flat enough to cap with one face'
+                  : 'No open holes to cap');
+    return;
+  }
+
+  const msg = 'Capped ' + filled + ' hole' + (filled === 1 ? '' : 's');
+  if (App.mode !== 'object' && targets.length === 1) { finishMeshEdit(targets[0], msg); return; }
+  hideRadialMenu();
+  refreshUI();
+  refreshGizmoAttachment();
+  pushHistory();
+  toast(msg + (objs > 1 ? ' on ' + objs + ' objects' : ''));
 }
 
 function subdivideSelection(mode) {
@@ -8134,6 +8279,8 @@ const ICON = {
   separate: '<path d="M9 4H4v16h5"/><path d="M15 4h5v16h-5"/><path d="M12 5v3M12 10.5v3M12 16v3"/>',
   // A dashed axis with the shape turned over across it.
   flip: '<path d="M12 2v20" stroke-dasharray="3 3"/><path d="M4 8l6 4-6 4z"/><path d="M20 8l-6 4 6 4z"/>',
+  // An outline with its gap closed by a patch.
+  cap: '<path d="M4 20V4h16v16z"/><path d="M9 9h6v6H9z" stroke-dasharray="2 2"/>',
   mirror:  '<path d="M12 2v20"/><path d="M9 6L4 12l5 6z"/><path d="M15 6l5 6-5 6z"/>',
   object:  '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/>',
   vertex:  '<path d="M5 5h14v14H5z"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/>',
@@ -8220,6 +8367,7 @@ const HUB_TOOLS_FACE = [
   { key: 'inset', icon: 'inset', label: 'Inset', ring: 0, run: insetSelection },
   { key: 'bridge', icon: 'bridge', label: 'Bridge', ring: 0, run: bridgeSelection },
   { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', ring: 1, run: flipNormalsSelection },
+  { key: 'cap', icon: 'cap', label: 'Cap holes', ring: 1, run: fillHolesSelection },
   { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', ring: 1, run: toggleShading },
   { key: 'delete', icon: 'del', label: 'Delete', ring: 1, run: deleteSelection }
 ];
@@ -8237,6 +8385,7 @@ const HUB_TOOLS_OBJECT_BASE = [
   { key: 'fillet', icon: 'bevel', label: 'Fillet', ring: 1, run: toggleFilletPreview },
   { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', ring: 1, run: flipNormalsSelection },
   { key: 'separate', icon: 'separate', label: 'Separate', ring: 1, run: separateSelection },
+  { key: 'cap', icon: 'cap', label: 'Cap holes', ring: 1, run: fillHolesSelection },
   { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', ring: 1, run: toggleShading }
 ];
 // Join only means something with more than one object selected, matching
