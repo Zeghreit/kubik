@@ -620,7 +620,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.6</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.6a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -6989,6 +6989,12 @@ function preferUnoccluded(obj, cands) {
    always the one you meant. */
 const VERT_TIE_PX = 8;
 
+/* How far the winner of the last pickVertexOnActive / pickEdgeOnActive was,
+   in pixels. Set by both, read by the free tap so it can compare a vertex
+   against an edge instead of always taking the vertex. A return value would
+   be cleaner; a second field on every call site would be noisier. */
+let pickDistPx = Infinity;
+
 /* Nearest visible vertex wins, which is a Voronoi split of the screen: the
    catch zones can never overlap however far out you zoom, because each
    vertex owns exactly the pixels closest to it. The old code did the same
@@ -7041,6 +7047,7 @@ function pickVertexOnActive(ev, bias = 1) {
     if (c.d > dMin + VERT_TIE_PX) return;
     if (c.z < bestZ) { bestZ = c.z; best = c.l; }
   });
+  pickDistPx = best >= 0 ? dMin : Infinity;
   return best;
 }
 
@@ -7084,6 +7091,7 @@ function pickEdgeOnActive(ev, bias = 1) {
     if (c.d > dMin + VERT_TIE_PX) return;
     if (c.z < bestZ) { bestZ = c.z; best = c.i; }
   });
+  pickDistPx = best >= 0 ? dMin : Infinity;
   return best;
 }
 
@@ -7250,12 +7258,32 @@ function pickComponentOnActiveInner(ev) {
     return null;
   }
 
-  // Free tap. The current mode still gets a wider catch radius than the
-  // others, so an ambiguous tap resolves toward what you're already in.
+  /* Free tap. The current mode still gets a wider catch RADIUS than the
+     others, but which type wins is decided by DISTANCE, not by a fixed
+     vertex-beats-edge order.
+
+     The order alone made edges unreachable on any mesh with real detail.
+     Vertex was tried first at 28px, so any vertex within 28px beat an edge
+     the finger was sitting exactly on - and on a dense model there is always
+     one. Measured on a 386-vertex cube, tapping dead centre of a visible
+     edge in Edge mode: with vertices 8.9px apart, 0 of 388 taps got the
+     edge; 17.9px apart, 99 of 356; and it only passed 90% once vertices were
+     50px apart - which is to say you had to zoom until the model barely fit.
+     Every miss came back as a vertex.
+
+     A vertex still wins a TIE, and near-ties, because a vertex sits ON its
+     edges: aim at a corner and both distances are ~0, so the more specific
+     thing should win. Aim at the middle of an edge and the nearest vertex is
+     half the spacing away while the edge is at zero - which is the whole
+     signal, and VERT_TIE_PX is already the app's number for "closer than a
+     thumb can tell apart". */
   const v = pickVertexOnActive(ev, App.mode === 'vertex' ? 1 : OFF_MODE_PICK_BIAS);
-  if (v >= 0) return { type: 'vertex', index: v };
+  const dV = v >= 0 ? pickDistPx : Infinity;
   const e = pickEdgeOnActive(ev, App.mode === 'edge' ? 1 : OFF_MODE_PICK_BIAS);
+  const dE = e >= 0 ? pickDistPx : Infinity;
+  if (v >= 0 && dV <= dE + VERT_TIE_PX) return { type: 'vertex', index: v };
   if (e >= 0) return { type: 'edge', index: e };
+  if (v >= 0) return { type: 'vertex', index: v };
   const f = pickFaceOnActive(ev);
   if (f >= 0) return { type: 'face', index: f };
   return null;

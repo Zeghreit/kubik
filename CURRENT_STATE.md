@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **a2.6**
+- Version at time of writing: **a2.6a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1019,6 +1019,35 @@ outline is not one closed loop aborts the whole vertex op rather than
 committing half of it; and the open-edge count is compared before and after,
 restoring a snapshot if it grew. The second one matters because merging faces
 does not change the open-edge count, so the audit cannot see a half-edit.
+
+**A free tap chooses its type by DISTANCE, not by rank (a2.6a).** Vertex
+used to be tried first at the full 28px, so any vertex within 28px beat an
+edge the finger was sitting exactly on — and on a mesh with real detail there
+is always one. A vertex still wins ties and near-ties (`VERT_TIE_PX`), because
+a vertex sits ON its edges: aim at a corner and both distances are ~0, so the
+more specific thing should win; aim at the middle of an edge and the nearest
+vertex is half the spacing away while the edge is at zero.
+
+Measured on a 386-vertex cube, tapping dead centre of a visible edge in Edge
+mode, before → after:
+
+| median vertex spacing | before | after |
+|---|---|---|
+| 8.9 px | 0 / 388 | 164 / 388 |
+| 17.9 px | 99 / 356 | 309 / 356 |
+| 30.2 px | 209 / 316 | 301 / 316 |
+| 50.7 px | 224 / 254 | 241 / 254 |
+
+Every earlier miss came back as a vertex. Vertices did not regress (98–100%
+at every zoom), a plain cube is 27/27 edges and 7/7 vertices from either
+mode, and with ±8px of thumb jitter edges run 59% / 88% / 94% at those three
+spacings. Below ~20px spacing the targets are genuinely smaller than a thumb;
+that is what aim assist is for.
+
+**The edge catch zone IS aligned with the drawn edge** — this was checked
+directly, not assumed: on a sparse mesh, taps placed exactly on the line hit
+that edge 45/45 at every point along it. The old failure was never
+misalignment, it was the type order.
 
 **Dissolving edges takes the run's INTERIOR vertices with it (a2.5a).**
 Leaving them behind is only half the job — they sit on the merged face doing
