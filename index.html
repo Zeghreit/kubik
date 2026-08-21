@@ -130,6 +130,10 @@
     left: var(--edge-l); bottom: var(--edge-b);
     width: 56px; height: 56px; min-height: 56px; padding: 0;
     border-radius: 50%; justify-content: center;
+    /* It gained a press-and-hold-and-slide in a2.3. Without this the
+       browser can claim the drag as a scroll or a text selection and
+       fire pointercancel mid-slide, closing the ring on nothing. */
+    touch-action: none;
     background: var(--accent); color: var(--on-accent); border: none;
     box-shadow: 0 6px 18px rgb(var(--shadow) / .16);
   }
@@ -616,7 +620,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.2</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.3</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -6780,7 +6784,7 @@ document.addEventListener('touchmove', (ev) => {
 
      #hubBtn replaces #thumbZone, which no longer exists. */
   if (ev.target && ev.target.closest &&
-      ev.target.closest('#topBar, #drawer, #inspector, #opBar, #hubBtn, #symPill, #helpCard')) return;
+      ev.target.closest('#topBar, #drawer, #inspector, #opBar, #symPill, #helpCard')) return;
   if (ev.cancelable) ev.preventDefault();
 }, { passive: false });
 
@@ -6807,7 +6811,7 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   if (activePointers.size > 1) {
     if (directDrag) { directDrag = null; dragCtx = null; axisGuide.visible = false; }
     clearToolRingTimer();
-    closeToolRing(false);
+    if (toolRingActive && toolRingActive.owner !== 'hub') closeToolRing(false);
     directCandidate = null;
     orbit.enabled = true;
     return;
@@ -6833,7 +6837,8 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   clearToolRingTimer();
   const px = ev.clientX, py = ev.clientY, pid = ev.pointerId;
   if (directCandidate) {
-    toolRingTimer = setTimeout(() => { toolRingTimer = null; bloomToolRing(px, py, null, pid); }, TOOL_RING_HOLD_MS);
+    toolRingTimer = setTimeout(() => { toolRingTimer = null;
+      bloomToolRing(px, py, null, pid, { x: px, y: py }); }, TOOL_RING_HOLD_MS);
   } else {
     /* v1.91: this used to be skipped while Box or Lasso was armed, on the
        theory that there the press IS the gesture. That made a dead end -
@@ -6850,7 +6855,7 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
         selectBoxEl.style.display = 'none';
         lassoSvgEl.style.display = 'none';
       }
-      bloomToolRing(px, py, HUB_TOOLS_WORLD, pid);
+      bloomToolRing(px, py, HUB_TOOLS_WORLD, pid, { x: px, y: py });
     }, WORLD_RING_HOLD_MS);
   }
 
@@ -6873,7 +6878,10 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
     clearToolRingTimer();
   }
   if (activePointers.size > 1) return;   // camera gesture - hands off
-  if (toolRingActive) { updateToolRingHover(ev); return; }
+  // Not the mode ring's: that one is driven by the button that opened it,
+  // which holds its own pointer capture. A second finger on the canvas
+  // must not steer it.
+  if (toolRingActive && toolRingActive.owner !== 'hub') { updateToolRingHover(ev); return; }
   if (directDrag) { updateDirectDrag(ev); return; }
 
   // A candidate becomes a real drag only once the finger has travelled far
@@ -6912,7 +6920,7 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
   // fires must cancel it outright, or a bloom would appear over a finger
   // that's already lifted.
   clearToolRingTimer();
-  if (toolRingActive) {
+  if (toolRingActive && toolRingActive.owner !== 'hub') {
     // Still has to run - it's what removes this pointer from the tracker.
     // Skipping it would leak the pointer and corrupt every tap gesture
     // after this one; its tap/pinch verdict just isn't relevant here.
@@ -6945,7 +6953,10 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
     boxDrag = null;
     selectBoxEl.style.display = 'none';
     lassoSvgEl.style.display = 'none';
-    orbit.enabled = true;
+    // Not while a ring is still open - a second finger can finish a box
+    // drag while the mode ring is up, and re-enabling here would hand the
+    // camera back underneath it.
+    orbit.enabled = !toolRingActive;
 
     if (isLasso ? moved > 3 : moved > 6) {
       pointerDown = null;
@@ -7337,7 +7348,8 @@ function handleTap(ev) {
      it was reported. */
   if (!pick && pickBlockedBy) {
     toast('That\u2019s ' + (pickBlockedBy === 'edge' ? 'an ' : 'a ') + pickBlockedBy +
-          ' \u2014 ' + App.mode + ' is locked. Tap empty space first.');
+          ' \u2014 ' + App.mode + ' is locked. Hold the mode button to switch to '
+          + pickBlockedBy + ', or tap empty space to clear.');
     return;
   }
 
@@ -8671,6 +8683,9 @@ function clearToolRingTimer() {
    so neither group ever touches the other and the poles stay free for
    whatever claims them. */
 function toolRingAngles(tools) {
+  // A set that knows where it wants to sit says so. Used by the mode
+  // ring, which blooms from a corner and has half a circle of screen.
+  if (tools.every(t => typeof t.deg === 'number')) return tools.map(t => t.deg);
   const halved = tools.some(t => t.half);
   if (!halved) return tools.map((t, i) => 90 - (i / tools.length) * 360);
 
@@ -8696,9 +8711,23 @@ function minAngularGapDeg(anglesDeg) {
   return Math.max(best, 1);
 }
 
-function bloomToolRing(x, y, tools, pointerId) {
+/* `aim` is where the GESTURE starts, in client coords, when that isn't
+   the same place the ring gets drawn. The ring is kept clear of the
+   viewport edge (see the clamp below), so a ring bloomed from a button in
+   the bottom-left corner lands a good 100px away from the finger that
+   opened it - which put the finger outside the dead zone before it had
+   moved at all, highlighted whatever item lay on that bearing, and RAN it
+   on a lift-in-place. Drawing and aiming are two different points and the
+   code now says so. Omitted by every canvas caller, where the finger is
+   the centre and the two coincide. */
+function bloomToolRing(x, y, tools, pointerId, aim) {
   tools = tools || currentHubTools();
   if (!tools.length) return;
+
+  // Never two rings at once. Whoever blooms last owns the element, so an
+  // older ring left standing would be closed by the next release with its
+  // items already gone from the DOM.
+  if (toolRingActive) closeToolRing(false);
 
   const anglesDeg = toolRingAngles(tools);
 
@@ -8761,7 +8790,10 @@ function bloomToolRing(x, y, tools, pointerId) {
   labelEl.id = 'ringLabel';
   touchToolRingEl.appendChild(labelEl);
 
-  toolRingActive = { x: cx, y: cy, tools, itemEls, hoveredIndex: -1, pointerId, radius: R, labelEl };
+  toolRingActive = { x: cx, y: cy, tools, itemEls, hoveredIndex: -1, pointerId, radius: R, labelEl,
+                     owner: null,
+                     aimX: aim ? aim.x - rect.left : cx,
+                     aimY: aim ? aim.y - rect.top : cy };
   if (pointerId !== undefined) {
     try { renderer.domElement.setPointerCapture(pointerId); } catch (e) { /* fine without it */ }
   }
@@ -8772,8 +8804,10 @@ function bloomToolRing(x, y, tools, pointerId) {
 function updateToolRingHover(ev) {
   if (!toolRingActive) return;
   const rect = viewportEl.getBoundingClientRect();
-  const dx = (ev.clientX - rect.left) - toolRingActive.x;
-  const dy = (ev.clientY - rect.top) - toolRingActive.y;
+  // Measured from where the gesture STARTED, which is the ring centre for
+  // every canvas ring and the button for the mode ring.
+  const dx = (ev.clientX - rect.left) - toolRingActive.aimX;
+  const dy = (ev.clientY - rect.top) - toolRingActive.aimY;
   const dist = Math.hypot(dx, dy);
 
   let hovered = -1;
@@ -8900,6 +8934,25 @@ function wireEdgeSwitch(el, onPick, axis) {
   el.addEventListener('pointercancel', () => { press = null; });
 }
 
+/* What a HOLD on the mode button blooms. Not tools - MODES, which is why
+   this is its own set rather than another branch of currentHubTools():
+   these change what a tap MEANS rather than doing anything to the model.
+   Same priority order the pickers use, vertex before edge before face,
+   with Object first because it's the one you leave the others for.
+
+   The bearings are fixed rather than spread round the whole circle. This
+   ring blooms from the bottom-LEFT corner button, where a thumb has a few
+   pixels of glass below it and none to the left - an item placed straight
+   down could not be reached at all on a phone, however hard you slid. So
+   the four sit across the quarter-turn from due right to due left, every
+   one of them an outward slide into open screen. */
+const HUB_TOOLS_MODE = [
+  { key: 'm_object', icon: 'object', label: 'Object', deg: 180, on: () => App.mode === 'object', run: () => setMode('object') },
+  { key: 'm_vertex', icon: 'vertex', label: 'Vertex', deg: 120, on: () => App.mode === 'vertex', run: () => setMode('vertex') },
+  { key: 'm_edge',   icon: 'edge',   label: 'Edge',   deg: 60,  on: () => App.mode === 'edge',   run: () => setMode('edge') },
+  { key: 'm_face',   icon: 'face',   label: 'Face',   deg: 0,   on: () => App.mode === 'face',   run: () => setMode('face') }
+];
+
 function setObjComponentMode(want) {
   const isObj = App.mode === 'object';
   if (want === 'object' && !isObj) setMode('object');
@@ -8907,8 +8960,110 @@ function setObjComponentMode(want) {
   else refreshObjComponentBtn();   // already there - just re-settle the knob
 }
 
-hubBtnEl.addEventListener('pointerdown', (ev) => ev.stopPropagation());
-hubBtnEl.addEventListener('click', (ev) => { ev.stopPropagation(); toggleObjComponentMode(); });
+/* The mode button: a tap toggles Object/Component as it always did, a
+   HOLD blooms a ring of all four modes.
+
+   Until now the component sub-type was decided entirely by whatever your
+   first free tap happened to land on, and then LOCKED there. A tap on the
+   model almost always finds a face, so the lock usually settled on Face -
+   and from then on vertices were unreachable until you cleared and got
+   luckier. Reported as "I cannot select a vertex no matter how close or
+   far I zoom", and reported correctly: there was no way to ASK for
+   vertices. Guessing intent from how near the tap fell was measured and
+   does not work (see the note above pickComponentOnActiveInner). Saying
+   what you want does.
+
+   Driven from the button rather than the canvas, so the pointer is
+   captured HERE and bloomToolRing is called with no pointer id - letting
+   it capture the canvas instead would send every move to handlers this
+   button never hears from. */
+/* ONE pointer owns this gesture from press to release. A 56px button under
+   a thumb picks up a second finger easily, and a shared timer meant the
+   second press cancelled the first one's hold and re-armed its own - so the
+   first finger's lift read as a tap, toggled the mode, and killed the ring
+   before it ever bloomed. */
+let hubHoldTimer = null;
+let hubHoldPid = null;
+
+function hubHoldCancel() {
+  if (hubHoldTimer) { clearTimeout(hubHoldTimer); hubHoldTimer = null; }
+}
+
+function hubHoldEnd(ev, run) {
+  hubHoldCancel();
+  hubHoldPid = null;
+  try { hubBtnEl.releasePointerCapture(ev.pointerId); } catch (e) { /* already gone */ }
+  // Only ever the ring THIS button opened. The canvas can have one of its
+  // own up at the same time, and closing that one from here would fire Add
+  // Cube or Lasso select when the user asked for a mode.
+  if (toolRingActive && toolRingActive.owner === 'hub') { closeToolRing(run); return true; }
+  return false;
+}
+
+hubBtnEl.addEventListener('pointerdown', (ev) => {
+  ev.stopPropagation();
+  if (hubHoldPid !== null) {
+    /* A press whose end we never saw. A pointer CAN vanish without a
+       release - the page is hidden mid-press, the pointer is destroyed by
+       the platform - and a stale owner would make this button inert for the
+       rest of the session. If nothing is actually holding the capture any
+       more, the old gesture is dead: clear it and take the press. */
+    let live = false;
+    try { live = hubBtnEl.hasPointerCapture(hubHoldPid); } catch (e) { live = false; }
+    if (live) return;
+    hubHoldCancel();
+    hubHoldPid = null;
+  }
+  /* A right press has its own context menu, which on some platforms opens
+     on the press and swallows the release - that would strand the ring open
+     with the camera disabled and no gesture left to close it. */
+  if (ev.pointerType === 'mouse' && (ev.button !== 0 || !ev.isPrimary)) return;
+  ev.preventDefault();
+  hubHoldPid = ev.pointerId;
+  try { hubBtnEl.setPointerCapture(ev.pointerId); } catch (e) { /* fine without it */ }
+  const ax = ev.clientX, ay = ev.clientY;
+  hubHoldTimer = setTimeout(() => {
+    hubHoldTimer = null;
+    const r = hubBtnEl.getBoundingClientRect();
+    // Drawn at the button, aimed from the thumb - see bloomToolRing.
+    bloomToolRing(r.left + r.width / 2, r.top + r.height / 2, HUB_TOOLS_MODE,
+                  undefined, { x: ax, y: ay });
+    if (toolRingActive) toolRingActive.owner = 'hub';
+  }, TOOL_RING_HOLD_MS);
+});
+
+hubBtnEl.addEventListener('pointermove', (ev) => {
+  if (ev.pointerId !== hubHoldPid) return;
+  if (toolRingActive && toolRingActive.owner === 'hub') updateToolRingHover(ev);
+});
+
+hubBtnEl.addEventListener('pointerup', (ev) => {
+  if (ev.pointerId !== hubHoldPid) return;
+  ev.stopPropagation();
+  const wasTap = hubHoldTimer !== null;   // lifted before the ring bloomed
+  if (!hubHoldEnd(ev, true) && wasTap) toggleObjComponentMode();
+});
+
+hubBtnEl.addEventListener('pointercancel', (ev) => {
+  if (ev.pointerId !== hubHoldPid) return;
+  hubHoldEnd(ev, false);
+});
+
+// Capture torn away without a release of any kind. hubHoldEnd() clears
+// hubHoldPid BEFORE it releases, so our own release can't re-enter here.
+hubBtnEl.addEventListener('lostpointercapture', (ev) => {
+  if (ev.pointerId !== hubHoldPid) return;
+  hubHoldEnd(ev, false);
+});
+
+/* Keyboard only. Cancelling pointerdown suppresses the compatibility MOUSE
+   events but NOT the click, so a pointer-driven click would toggle a second
+   time; detail 0 is how a keyboard activation reports itself. Without this
+   the button - a real <button> - became unreachable by Tab + Enter. */
+hubBtnEl.addEventListener('click', (ev) => {
+  ev.stopPropagation();
+  if (ev.detail === 0) toggleObjComponentMode();
+});
 
 // The pill is horizontal, so the axis is x: swipe left/right, or tap a half.
 wireEdgeSwitch(symPillEl, (first) => setSymmetry(first), 'x');
@@ -8939,7 +9094,7 @@ const helpOverlayEl = document.getElementById('helpOverlay');
    thing does, not just that it exists. */
 const HELP_QUICKSTART = [
   'Hold on empty space until the ring blooms, slide to Add Cube, lift.',
-  'Tap the round button, bottom-left, to go from Object to Component.',
+  'Tap the round button, bottom-left, to go from Object to Component. Hold it to pick Vertex, Edge or Face.',
   'Tap a face. Tap empty space if you want to start again.',
   'Hold on that face - its own tools bloom. Slide to Extrude, lift.',
   'Drag the new face to place it. Undo is bottom-centre.',
@@ -8964,7 +9119,8 @@ const HELP_SECTIONS = [
     lead: 'Vertices and edges are measured in screen pixels, not in 3D - so whatever looks nearest your finger is what you get, at any zoom.',
     rows: [
       [null, 'Tap', 'Picks the nearest visible thing. Tap empty space to clear.'],
-      [null, 'Type lock', 'Once something is selected, only that kind can be picked until you clear. A tap that gets refused says so rather than doing nothing.'],
+      [null, 'Choosing a type', 'Hold the round button, bottom-left, and a ring of Object / Vertex / Edge / Face blooms. Picking one clears the selection and aims every tap at that kind.'],
+      [null, 'Type lock', 'Once something is selected, only that kind can be picked until you clear. A refused tap says so, and says which button to hold.'],
       ['free', 'Tap select', 'Plain tapping. The default.'],
       ['box', 'Box select', 'Drag a rectangle. Chosen from the world ring.'],
       ['lasso', 'Lasso select', 'Draw the shape freehand. Same ring.'],
@@ -9538,9 +9694,11 @@ window.addEventListener('resize', onResize);
     activePointers.delete(ev.pointerId);
     if (activePointers.size === 0) { tapArmed = false; tapPeakCount = 0; }
     // A lost pointer mid-hold must not leave a bloom stuck open with no
-    // finger left to slide it or lift it.
+    // finger left to slide it or lift it. The mode ring is not ours to
+    // close: a touch on the CANVAS fires pointerleave the moment it lifts,
+    // which would kill a ring the button is still holding open.
     clearToolRingTimer();
-    closeToolRing(false);
+    if (toolRingActive && toolRingActive.owner !== 'hub') closeToolRing(false);
     directCandidate = null;
   });
 });
@@ -9591,8 +9749,8 @@ function refreshObjComponentBtn() {
     // The button shows the mode you are IN, same as it always did.
     hubBtnEl.innerHTML = icon(isObj ? 'object' : App.mode, 24);
     hubBtnEl.title = isObj
-      ? 'Object mode - tap to edit components'
-      : 'Component mode (' + App.mode + ') - tap to edit whole objects';
+      ? 'Object mode - tap to edit components, hold to pick a type'
+      : 'Component mode (' + App.mode + ') - tap for objects, hold to change type';
   }
 
   if (symPillEl) {
@@ -9706,7 +9864,7 @@ if (PICK_DEBUG) {
        harness that presses and waits gets no bloom at all, however long it
        waits. Calling these directly sidesteps the whole question. */
     bloomToolRing, updateToolRingHover, closeToolRing, placeRingLabel,
-    currentHubTools, HUB_TOOLS_WORLD,
+    currentHubTools, HUB_TOOLS_WORLD, HUB_TOOLS_MODE,
     /* The pickers, callable with a plain {clientX, clientY}. Driving these
        directly beats dispatching synthetic taps: a BACKGROUNDED TAB reports
        a stale canvas rect, so a tap aimed at a projected point lands

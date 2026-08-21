@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **a2.2**
+- Version at time of writing: **a2.3**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -38,7 +38,8 @@ v1.85d.
   the top-left empty and the top-right crowded - the cube is a 128px
   object with its own presence, and a pill beneath it read as part of
   the cube rather than as its own control.
-- **Bottom-left**: the round Object/Component button.
+- **Bottom-left**: the round mode button. A TAP toggles Object and
+  Component; a HOLD blooms the mode ring (Object / Vertex / Edge / Face).
   **Bottom-centre**: Undo/Redo. **Bottom-right**: Help.
 - **The bottom row aligns on BOTTOM EDGES.** All four take a plain
   `bottom: var(--edge-b)`, and `--edge-b` is 4px against the 14px the other
@@ -180,12 +181,40 @@ start; mouse and pen keep 6px. A thumb rolls further than 6px as it presses
 and lifts, so ordinary taps were being discarded as camera drags.
 
 **The type lock.** Once something is selected, only that component type can
-be picked until you tap empty space. It removes catch-zone ambiguity by
-construction — and it must NEVER be silent. A refused tap used to hit
-neither branch of `handleTap` (the object under the finger IS the active
-object, so nothing to switch to; not empty space, so nothing to clear) and
-simply evaporated. It now probes what was actually under the finger and
-says so.
+be picked until you clear. It removes catch-zone ambiguity by construction
+— and it must NEVER be silent. A refused tap used to hit neither branch of
+`handleTap` (the object under the finger IS the active object, so nothing
+to switch to; not empty space, so nothing to clear) and simply evaporated.
+It now probes what was actually under the finger and says so.
+
+**The mode ring (a2.3) is what makes the lock liveable.** Hold the bottom-
+left button and Object / Vertex / Edge / Face bloom; picking one sets the
+mode and clears the selection. Before it, the sub-type was decided purely
+by whatever your first free tap landed on — and a tap on the model almost
+always finds a FACE, so the lock usually settled on Face and vertices
+became unreachable. Reported, correctly, as "I cannot select a vertex no
+matter how close or far I zoom": there was no way to ASK for vertices.
+
+**Do not try to infer intent from proximity instead.** Measured at a2.2a:
+the closest face-centre to its nearest visible vertex is 25.2px on a plain
+cube, 6.1px subdivided once, 0.8px twice, 0.5px three times. By 96 faces a
+face's own centre IS a vertex to within a pixel — the distributions overlap
+completely, and a threshold generous enough to catch a deliberate vertex
+tap on a cube refused 32 of 48 face centres on a subdivided one. Saying
+what you want beats guessing it.
+
+**Rings are DRAWN where they fit and AIMED from the finger.**
+`bloomToolRing` keeps a ring `R + 30` inside the viewport, so one bloomed
+near an edge — or from the corner mode button — lands well away from the
+finger that opened it. Hover used to be measured from the drawn centre,
+which put the finger outside the dead zone before it had moved: the first
+pixel of jitter highlighted whatever lay on that bearing, and lifting in
+place RAN it. The optional `aim` argument separates the two, and all three
+callers pass it. A set may also name its own bearings with `deg`, which the
+mode ring uses — it blooms from a corner, so an item placed straight down
+could not be reached at all on a phone. The mode ring is also tagged
+`owner: 'hub'`: the canvas handlers must never close a ring they did not
+open, since a touch on the canvas fires `pointerleave` the moment it lifts.
 
 **Back-facing components are rejected by face normal**, so picking agrees
 with back-face culling. Mirrored (negative-determinant) objects are
@@ -915,9 +944,6 @@ you can leave switched on while modelling.
   symmetry plane from geometry buys most of what it would have.
 - New cubes should spawn at world centre even if they overlap. Currently
   they offset in a grid pattern.
-- No deliberate way to switch component type — you must successfully tap the
-  type you want. The type-lock toast now explains the refusal, which may be
-  enough.
 - Gesture-driven modelling tools (extrude on two-finger tap, etc.).
 - `_verify.py` is gitignored, matching the `_`-prefix convention, so it
   lives on one machine only. Consider committing it. Note it CANNOT catch an
