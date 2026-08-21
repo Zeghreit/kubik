@@ -679,21 +679,91 @@ smoothly, nothing sticking, nothing silently failing. That is why v1.99 has
 run to eleven letters rather than becoming 2.0. Do not bump the major
 version without being asked.
 
-**Next, pick one:**
+### The pre-2.0 list, as agreed with Zeghreit
+
+Gathered over several sessions and written down because it is more than
+anyone can hold in their head. Roughly in the order it was decided, NOT in
+priority order — ask before assuming which comes first.
+
+**1. Two missing ops, both called essential.**
+
+- **Cap / fill hole.** After deleting a face there is no way to close the
+  gap. Half of this already exists: `auditWinding` counts boundary edges
+  (used by exactly one face), so detection is solved — the work is walking
+  those into loops and building an n-gon per loop, wound to agree with the
+  neighbouring face.
+- **Hand cut (knife).** Tap-drag along an edge to drop a start point, then
+  the next, and so on; OK applies the cut. **This is the largest single item
+  on the list and it introduces a new INTERACTION CLASS** — every op today
+  is select-then-run or select-then-slider, and nothing builds a multi-tap
+  path with its own pending state. The geometry is less frightening than the
+  interaction: it decomposes into "split an edge at an arbitrary t" (today
+  `splitEdgeAt` only splits at the midpoint) plus `connectVerticesOp`, which
+  already joins two vertices sharing a face by splitting that face. Design
+  this before building it.
+
+**2. Reachability — working code with no way in on a phone.**
+
+- `clearAllCreases`: zero callers anywhere.
+- `growSelection` / `shrinkSelection`: keyboard `]` and `[` ONLY, and a
+  phone has no keyboard. They belong in the component rings; the vertex
+  ring has three items and room to spare.
+- `subdivideSelection('keep')`: zero callers, only `'smooth'` is wired.
+  Best fixed with a Smooth / Keep-shape chooser, the pattern Mirror uses.
+
+**3. The drawer, rearranged.** Three of these are factual errors, not taste:
+
+- Two notes LIE. "Grid, Aim assist and Snap moved under the axis cube" —
+  they are in the world ring. "Turn symmetry on with the button under the
+  axis cube" — that pill moved to the TOP-LEFT at v1.99d.
+- **"Gizmo speed"** names a gizmo that was removed at v1.57 and sits in the
+  do-not-rebuild list. It is the drag-speed multiplier (`App.sensitivity`).
+- **Two buttons both say "Save"** — Models→Save writes to browser storage,
+  File→Save downloads a `.json`. Rename the second to Download.
+- Colour is filed under "Precision", where it has no business being.
+- "View" is a section header wrapping a single Theme button.
+
+New settings to add, all of which are hard-coded constants today:
+
+- **Snap step.** `SNAP_MOVE` 0.25, `SNAP_ROTATE` 15°, `SNAP_SCALE` 0.1 —
+  the toggle is in the world ring but the amounts cannot be changed.
+- **Fillet settings, matching Bevel's.** Bevel already offers Flat / Round,
+  a width slider and segments. Fillet has `App.filletRadius = 0.04` and
+  `FILLET_ANGLE` with NO UI at all — it is on or off. Give it the same
+  profile and width controls so the two read as the same idea.
+- **Clear creases**, which is rare cleanup and belongs here rather than in
+  a ring.
+- **Start over** — there is no way to clear the scene short of deleting
+  objects one at a time. Zeghreit has not confirmed he wants this.
+
+Proposed sections: **Model** (object list, Start over) · **Appearance**
+(Theme, Colour) · **Editing** (Values, Drag speed, Symmetry axis, Snap step,
+Fillet, Clear creases) · **Models** (unchanged) · **Files** (Download/Open
+plus the three exports).
+
+Open question: Symmetry AXIS lives in the drawer while the Symmetry SWITCH
+is now top-left. Two halves of one control in opposite corners.
+
+**4. Icons and design polish.** Zeghreit has feedback that the icons are
+confusing and wants every icon to reflect its function. A brainstorm and
+some research were agreed for this, deliberately AFTER the tool set stops
+moving — no point drawing icons for a ring that is still changing.
+
+**5. Still open from before, not yet scheduled:**
 
 - **Acknowledging the moment an op lands.** An extrude just happens, with no
   feedback. For something whose identity is a fidget this is the largest
   remaining gap, and it is half of what "alive" was meant to mean.
-- **More primitives** — cylinder, sphere, plane. Still in the original v1
-  spec and never built. Note this is a DESIGN question, not three
-  constructor calls: Add Cube owns a pole of the world ring alone, as the
-  one item that makes rather than toggles, and four add-items would wreck
-  that. Probably a hold on Add to choose the shape.
+- **More primitives** — cylinder, sphere, plane, from the original v1 spec.
+  A DESIGN question, not three constructor calls: Add Cube owns a pole of
+  the world ring alone as the one item that makes rather than toggles, and
+  four add-items would wreck that. Probably a hold on Add to pick a shape.
 - **The `|| mirrored` DoubleSide clause.** Now that Flip and Mirror-Apart
-  bake instead of scaling, work out whether anything still needs it. If not,
-  picking and rendering would agree everywhere with no special case left.
-- **The object ring is getting full** — ten items plus Join. It has not been
-  judged on a phone since Flip and Separate joined it.
+  bake instead of scaling, find out whether anything still needs it. If not,
+  picking and rendering agree everywhere with no special case left.
+- **The object ring is getting full** — ten items plus Join, and it has not
+  been judged by thumb since Flip and Separate joined it.
+
 
 ## Help (v1.99b)
 
