@@ -616,7 +616,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.0a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.1</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -731,20 +731,24 @@
       </div>
 
       <div class="drawer-sec">
-        <div class="drawer-title">View</div>
+        <div class="drawer-title">Appearance</div>
         <div class="drawer-row">
           <button id="btnTheme" title="Switch theme">Theme</button>
+          <span class="label">Colour</span>
+          <input type="color" id="colorPicker" value="#303338" />
         </div>
-        <div class="drawer-note">Grid, Aim assist and Snap moved under the axis cube.</div>
+        <div class="drawer-note">See-through, Floor grid, Aim assist and Snap are in the
+          ring that blooms when you press and hold on empty space.</div>
       </div>
 
       <div class="drawer-sec">
-        <div class="drawer-title">Precision</div>
+        <div class="drawer-title">Editing</div>
         <div class="drawer-row">
           <button id="btnInspector" title="Type exact transform values">⌗ Values</button>
+          <button id="btnClearCreases" title="Remove every crease on this object">Clear creases</button>
         </div>
         <div class="drawer-row">
-          <span class="label">Gizmo speed</span>
+          <span class="label">Drag speed</span>
           <input type="range" id="sensSlider" min="0.2" max="1.5" step="0.05" value="0.7" />
           <span class="label" id="sensValue">0.70</span>
         </div>
@@ -756,11 +760,46 @@
             <button data-sym="z">Z</button>
           </div>
         </div>
-        <div class="drawer-note">Turn symmetry on with the button under the axis cube.</div>
+        <div class="drawer-note">Symmetry itself is the pill at the top left, under the menu.</div>
+      </div>
+
+      <div class="drawer-sec">
+        <div class="drawer-title">Snap step</div>
         <div class="drawer-row">
-          <span class="label">Color</span>
-          <input type="color" id="colorPicker" value="#303338" />
+          <span class="label">Move</span>
+          <input type="range" id="snapMove" min="0.05" max="1" step="0.05" value="0.25" />
+          <span class="label" id="snapMoveVal">0.25</span>
         </div>
+        <div class="drawer-row">
+          <span class="label">Rotate</span>
+          <input type="range" id="snapRot" min="5" max="90" step="5" value="15" />
+          <span class="label" id="snapRotVal">15°</span>
+        </div>
+        <div class="drawer-row">
+          <span class="label">Scale</span>
+          <input type="range" id="snapScale" min="0.05" max="0.5" step="0.05" value="0.1" />
+          <span class="label" id="snapScaleVal">0.10</span>
+        </div>
+        <div class="drawer-note">Snapping is switched on in the world ring; these are the
+          amounts it lands on.</div>
+      </div>
+
+      <div class="drawer-sec">
+        <div class="drawer-title">Fillet</div>
+        <div class="drawer-row">
+          <span class="label">Shape</span>
+          <div class="group" id="filletProfileGroup">
+            <button data-prof="flat">Flat</button>
+            <button data-prof="round">Round</button>
+          </div>
+        </div>
+        <div class="drawer-row">
+          <span class="label">Width</span>
+          <input type="range" id="filletWidth" min="0.01" max="0.3" step="0.01" value="0.04" />
+          <span class="label" id="filletWidthVal">0.04</span>
+        </div>
+        <div class="drawer-note">A preview only - it rounds what you see without changing
+          the mesh. Switch it on with Fillet in the object ring.</div>
       </div>
 
       <div class="drawer-sec">
@@ -775,10 +814,13 @@
       </div>
 
       <div class="drawer-sec">
-        <div class="drawer-title">File</div>
+        <div class="drawer-title">Files</div>
+        <!-- "Download" and "Open", not "Save" and "Load": Models above also has
+             a Save, and two buttons with the same word doing different things
+             (browser storage vs a file on disk) is the drawer's worst label. -->
         <div class="drawer-row">
-          <button id="btnSave">Save</button>
-          <label class="btn fileBtn">Load<input type="file" id="fileLoad" accept="application/json" /></label>
+          <button id="btnSave">Download .json</button>
+          <label class="btn fileBtn">Open .json<input type="file" id="fileLoad" accept="application/json" /></label>
         </div>
         <div class="drawer-row">
           <button id="btnExportGlb" title="Export glTF binary">.glb</button>
@@ -992,6 +1034,19 @@ const App = {
   theme: 'dark',
   fillet: false,
   filletRadius: 0.04,
+  /* Fillet had a fixed radius and no shape at all - on or off - while Bevel
+     right next to it offered Flat/Round, a width and segments. They are the
+     same idea applied two ways, so they now take the same settings.
+     bevelEdgesOp already accepted segments and profile; fillet simply never
+     passed them. */
+  filletProfile: 'round',
+  filletSegments: 2,
+  /* Snapping could be switched on but never adjusted: the amounts were
+     module constants. Rotation is held in DEGREES because that is what the
+     control shows and what anyone thinks in; it is converted where used. */
+  snapMove: 0.25,
+  snapRotate: 15,
+  snapScale: 0.1,
   sensitivity: 0.7,   // transform speed multiplier, tunable in the drawer
   // Default off: selection reads as solid with the edge overlay resting on
   // its visible surface. On, the overlay ignores depth and shows the hidden
@@ -2948,7 +3003,7 @@ function findSharpEdges(ed) {
 }
 
 // Returns a mesh with rounded edges, or null if there was nothing to round.
-function buildFilletedMesh(obj, radius) {
+function buildFilletedMesh(obj, radius, segments, profile) {
   const src = obj.mesh;
   const srcMats = Array.isArray(src.material) ? src.material : [src.material];
   const temp = new THREE.Mesh(src.geometry.clone(), srcMats.map(m => m.clone()));
@@ -2958,7 +3013,7 @@ function buildFilletedMesh(obj, radius) {
   try {
     const sharp = findSharpEdges(toEditable(temp));
     if (!sharp.length) return null;
-    if (!bevelEdgesOp(wrapper, sharp, radius)) return null;
+    if (!bevelEdgesOp(wrapper, sharp, radius, segments || 1, profile || 'flat')) return null;
   } catch (err) {
     console.error('fillet preview failed', err);
     return null;
@@ -2986,7 +3041,7 @@ function refreshFillets() {
   App.objects.forEach(obj => {
     clearFillet(obj);
     if (!App.fillet) return;
-    const preview = buildFilletedMesh(obj, App.filletRadius);
+    const preview = buildFilletedMesh(obj, App.filletRadius, App.filletSegments, App.filletProfile);
     if (!preview) return;
     preview.castShadow = true;
     preview.receiveShadow = true;
@@ -5801,7 +5856,7 @@ function updateDirectDrag(ev) {
       const t = axisParamFromPointer(ev, d.origin, d.axis.dir);
       if (t === null) return;
       let amount = t - d.startParam;
-      if (App.snap) amount = Math.round(amount / SNAP_MOVE) * SNAP_MOVE;
+      if (App.snap) amount = Math.round(amount / App.snapMove) * App.snapMove;
       offset = d.axis.dir.clone().multiplyScalar(amount);
     } else {
       const hit = new THREE.Vector3();
@@ -5809,9 +5864,9 @@ function updateDirectDrag(ev) {
       if (!raycaster.ray.intersectPlane(d.plane, hit)) return;
       offset.subVectors(hit, d.startHit);
       if (App.snap) {
-        offset.x = Math.round(offset.x / SNAP_MOVE) * SNAP_MOVE;
-        offset.y = Math.round(offset.y / SNAP_MOVE) * SNAP_MOVE;
-        offset.z = Math.round(offset.z / SNAP_MOVE) * SNAP_MOVE;
+        offset.x = Math.round(offset.x / App.snapMove) * App.snapMove;
+        offset.y = Math.round(offset.y / App.snapMove) * App.snapMove;
+        offset.z = Math.round(offset.z / App.snapMove) * App.snapMove;
       }
     }
     d.accum = offset.clone();
@@ -5850,7 +5905,7 @@ function updateDirectDrag(ev) {
       const sign = d.axis.dir.dot(camDir) >= 0 ? 1 : -1;
 
       let ang = d.totalAngle * sign * THREE.MathUtils.clamp(s * 1.4, 0.3, 2);
-      if (App.snap) ang = Math.round(ang / SNAP_ROTATE) * SNAP_ROTATE;
+      if (App.snap) ang = Math.round(ang / THREE.MathUtils.degToRad(App.snapRotate)) * THREE.MathUtils.degToRad(App.snapRotate);
       local = new THREE.Matrix4().makeRotationAxis(d.axis.dir.clone().normalize(), ang);
 
     } else {
@@ -5879,7 +5934,7 @@ function updateDirectDrag(ev) {
          instead of adding more of it. */
       const along = px * d.freeRotDirX + py * d.freeRotDirY;
       let ang = (along / 150) * THREE.MathUtils.clamp(ROTATE_BASE * s * 4, 0.02, 2);
-      if (App.snap) ang = Math.round(ang / SNAP_ROTATE) * SNAP_ROTATE;
+      if (App.snap) ang = Math.round(ang / THREE.MathUtils.degToRad(App.snapRotate)) * THREE.MathUtils.degToRad(App.snapRotate);
       local = new THREE.Matrix4().makeRotationAxis(d.freeRotAxis, ang);
     }
     applyDeltaToSelection(new THREE.Matrix4().multiplyMatrices(T, new THREE.Matrix4().multiplyMatrices(local, Tinv)));
@@ -5938,7 +5993,7 @@ function updateDirectDrag(ev) {
       const curR = Math.max(1, Math.hypot((ev.clientX - rect.left) - pc.x, (ev.clientY - rect.top) - pc.y));
       f = Math.pow(curR / startR, THREE.MathUtils.clamp(s * 1.4, 0.3, 2));
     }
-    if (App.snap) f = Math.round(f / SNAP_SCALE) * SNAP_SCALE;
+    if (App.snap) f = Math.round(f / App.snapScale) * App.snapScale;
     f = Math.max(MIN_SCALE_FACTOR, f);   // floor without abs, so it can't rebound
     const v = scaleAxis
       ? new THREE.Vector3(scaleAxis.dir.x ? f : 1, scaleAxis.dir.y ? f : 1, scaleAxis.dir.z ? f : 1)
@@ -7450,10 +7505,6 @@ function duplicateSelection() {
 /* ---------------- Snapping ----------------
    Applied to the gizmo, so dragging lands on clean values. Vertex/edge/face
    drags read App.snap directly, so they snap too. */
-
-const SNAP_MOVE = 0.25;
-const SNAP_ROTATE = Math.PI / 12; // 15 degrees
-const SNAP_SCALE = 0.1;
 
 // Kept as a no-op so its call sites don't need touching: the new gizmo reads
 // App.snap directly while dragging rather than being configured up front.
@@ -9002,6 +9053,46 @@ function toggleFilletPreview() {
 
 const sensSliderEl = document.getElementById('sensSlider');
 const sensValueEl = document.getElementById('sensValue');
+/* One helper for all four sliders. Each writes straight into App and shows
+   its own value, so what the drawer reads is always what the app is using -
+   there is no second copy of these numbers to drift. */
+function wireSetting(id, valueId, key, format, after) {
+  const el = document.getElementById(id), out = document.getElementById(valueId);
+  if (!el) return;
+  const show = () => { if (out) out.textContent = format(App[key]); };
+  el.value = App[key];
+  show();
+  el.addEventListener('input', () => {
+    const v = parseFloat(el.value);
+    if (Number.isFinite(v)) App[key] = v;
+    show();
+    if (after) after();
+  });
+}
+wireSetting('snapMove', 'snapMoveVal', 'snapMove', v => v.toFixed(2));
+wireSetting('snapRot', 'snapRotVal', 'snapRotate', v => Math.round(v) + '\u00b0');
+wireSetting('snapScale', 'snapScaleVal', 'snapScale', v => v.toFixed(2));
+// Fillet is a live preview, so changing its width has to rebuild it.
+wireSetting('filletWidth', 'filletWidthVal', 'filletRadius', v => v.toFixed(2),
+  () => { if (App.fillet) refreshFillets(); });
+
+const filletProfileEl = document.getElementById('filletProfileGroup');
+if (filletProfileEl) {
+  const paint = () => filletProfileEl.querySelectorAll('button').forEach(b =>
+    b.classList.toggle('active', b.dataset.prof === App.filletProfile));
+  filletProfileEl.querySelectorAll('button').forEach(b => {
+    b.addEventListener('click', () => {
+      App.filletProfile = b.dataset.prof;
+      paint();
+      if (App.fillet) refreshFillets();
+    });
+  });
+  paint();
+}
+
+document.getElementById('btnClearCreases').addEventListener('click', clearAllCreases);
+
+
 sensSliderEl.addEventListener('input', () => {
   App.sensitivity = parseFloat(sensSliderEl.value) || 0.7;
   sensValueEl.textContent = App.sensitivity.toFixed(2);

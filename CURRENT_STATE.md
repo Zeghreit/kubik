@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **a2.0a**
+- Version at time of writing: **a2.1**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -752,11 +752,13 @@ priority order — ask before assuming which comes first.
 - `clearAllCreases`: zero callers anywhere.
 - `growSelection` / `shrinkSelection`: keyboard `]` and `[` ONLY, and a
   phone has no keyboard. They belong in the component rings; the vertex
-  ring has three items and room to spare.
+  ring has three items and room to spare. STILL OPEN after a2.1 — the
+  drawer was the wrong home for them, so they were left alone.
 - `subdivideSelection('keep')`: zero callers, only `'smooth'` is wired.
   Best fixed with a Smooth / Keep-shape chooser, the pattern Mirror uses.
 
-**3. The drawer, rearranged.** Three of these are factual errors, not taste:
+**3. ~~The drawer, rearranged.~~ SHIPPED at a2.1** — see "The drawer"
+above. What it fixed, for the record:
 
 - Two notes LIE. "Grid, Aim assist and Snap moved under the axis cube" —
   they are in the world ring. "Turn symmetry on with the button under the
@@ -778,8 +780,9 @@ New settings to add, all of which are hard-coded constants today:
   profile and width controls so the two read as the same idea.
 - **Clear creases**, which is rare cleanup and belongs here rather than in
   a ring.
-- **Start over** — there is no way to clear the scene short of deleting
-  objects one at a time. Zeghreit has not confirmed he wants this.
+- **Start over** — NOT built. There is still no way to clear the scene short
+  of deleting objects one at a time. Flagged as Zeghreit's call because it is
+  destructive, and he has not said either way. Ask before adding it.
 
 Proposed sections: **Model** (object list, Start over) · **Appearance**
 (Theme, Colour) · **Editing** (Values, Drag speed, Symmetry axis, Snap step,
@@ -833,6 +836,45 @@ Aim assist since the smart camera was removed at v1.87. **Rows say what the
 thing does.** Anything added here should do the same, and note that
 double-tap alone does four different things depending on mode, none of which
 the old card mentioned.
+
+## The drawer (a2.1)
+
+Seven sections: **Scene** (object list) · **Appearance** (Theme, Colour) ·
+**Editing** (Values, Clear creases, Drag speed, Symmetry axis) · **Snap
+step** · **Fillet** · **Models** · **Files**.
+
+Its job is unchanged: things set once or used rarely, reachable with the
+other hand without crowding the viewport. Tools stay in the rings.
+
+What the rearrangement fixed, three of which were plain errors rather than
+taste:
+
+- **Two notes sent you to the wrong corner.** One said Grid, Aim assist and
+  Snap were "under the axis cube" — they are in the world ring. The other
+  said to switch symmetry on there too; that pill moved to the top-left at
+  v1.99d.
+- **"Gizmo speed" named a gizmo that was removed at v1.57** and sits in the
+  do-not-rebuild list. It is the drag-speed multiplier, and says so now.
+- **Two buttons both said "Save"** — one writing to browser storage, one
+  downloading a file. Files now says **Download .json** and **Open .json**,
+  so exactly one control in the drawer is called Save.
+- Colour moved out of "Precision", which is now Editing.
+
+**Snap amounts and fillet shape stopped being constants.** Both were fixed
+values with a toggle and no way to change them. `App.snapMove`,
+`App.snapRotate` (held in DEGREES, converted where used) and `App.snapScale`
+replace the old module constants; `App.filletProfile` and
+`App.filletSegments` join `filletRadius`.
+
+Fillet was nearly free: `bevelEdgesOp` already took `segments` and `profile`
+with defaults, and `buildFilletedMesh` simply never passed them. Fillet and
+Bevel are the same idea applied two ways and now take the same settings.
+Measured: flat/1 segment 44 triangles, round/2 92, round/4 188.
+
+**The drawer is now tall enough to need scrolling on a phone.** It works
+because `.drawer-body` is `overflow-y: auto` AND `#drawer` is named in the
+touchmove allow-list. Anything added here must keep both true — an unlisted
+scrollable works with a mouse wheel and is dead to a finger.
 
 ## Open threads
 
