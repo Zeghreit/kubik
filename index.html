@@ -616,7 +616,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99g</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99h</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -2334,6 +2334,33 @@ function windingAudit(id) {
 // is essential: separateGroupVertices gives each group private copies, so
 // looking a corner up by position could return a neighbouring face's vertex
 // instead and the extrude would rebuild the wrong polygon.
+/* Reverses the winding of faces, which is what "which way does this surface
+   face" comes down to: a triangle wound counter-clockwise from where you
+   stand faces you, and the same triangle wound the other way faces away.
+
+   This is the manual remedy for exactly what auditWinding reports. Since
+   v1.79 the app culls back faces, so a reversed face is invisible from the
+   side you are looking at and solid from the other - the classic "hole in
+   my model that moves when I orbit". Extrude on an edge and bridge can both
+   produce them, and until now there was no way to fix one by hand.
+
+   Passing no group list flips the whole object. */
+function flipNormalsOp(obj, groupIndices) {
+  const ed = toEditable(obj.mesh);
+  const only = groupIndices ? new Set(groupIndices) : null;
+  let n = 0;
+  ed.groups.forEach((g, gi) => {
+    if (only && !only.has(gi)) return;
+    // Swapping any two corners reverses the winding; the third stays put so
+    // the triangle keeps its shape and only its handedness changes.
+    g.triangles = g.triangles.map(t => [t[0], t[2], t[1]]);
+    n++;
+  });
+  if (!n) return 0;
+  rebuildFromEditable(obj, ed);
+  return n;
+}
+
 function getGroupBoundaryLoopAttr(ed, groupIndex) {
   const tris = ed.groups[groupIndex].triangles;
   const count = new Map();
@@ -4412,6 +4439,43 @@ function finishMeshEdit(obj, message) {
 // own inset; otherwise the selection is treated as one patch and only its
 // outer rim moves.
 // Object mode: split every face of the selected objects.
+/* One tool, two scopes, decided by the mode you are already in - the same
+   bargain Extrude and Shade make. In Face mode it flips what you selected;
+   in Object mode it flips everything in the selected objects, which is the
+   quick fix for a whole model that imported or mirrored inside-out. */
+function flipNormalsSelection() {
+  if (App.mode === 'object') {
+    const ids = Array.from(App.selectedObjectIds);
+    if (!ids.length) { toast('Select an object to flip'); return; }
+    let done = 0, faces = 0;
+    ids.forEach(id => {
+      const o = findObject(id);
+      if (!o) return;
+      const n = flipNormalsOp(o, null);
+      if (n) { ensureHelpers(o); done++; faces += n; }
+    });
+    if (!done) { toast('Nothing to flip'); return; }
+    hideRadialMenu();
+    refreshUI();
+    refreshGizmoAttachment();
+    pushHistory();
+    toast('Flipped ' + faces + ' face(s) on ' + done + ' object(s)');
+    return;
+  }
+
+  if (App.mode !== 'face') { toast('Flip normals works on faces or whole objects'); return; }
+  const obj = findObject(App.activeObjectId);
+  if (!obj || !App.selectedElements.size) { toast('Select a face to flip'); return; }
+  ensureHelpers(obj);
+  // Per-element, so the union with its mirror is exactly right. symExpand
+  // mutates the selection in place, the same way creaseSelection uses it.
+  symExpand(obj);
+  const n = flipNormalsOp(obj, Array.from(App.selectedElements));
+  if (!n) { toast('Nothing to flip'); return; }
+  ensureHelpers(obj);
+  finishMeshEdit(obj, 'Flipped ' + n + ' face(s)');
+}
+
 function subdivideSelection(mode) {
   if (App.mode !== 'object') { toast('Subdivide works in Object mode'); return; }
   const ids = Array.from(App.selectedObjectIds);
@@ -7789,6 +7853,8 @@ const ICON = {
   inset:   '<path d="M3 3h18v18H3z"/><path d="M7.5 7.5h9v9h-9z"/>',
   bevel:   '<path d="M4 20V8l4-4h12v12l-4 4z"/><path d="M4 8h12v12"/>',
   loop:    '<path d="M3 3h18v18H3z"/><path d="M12 3v18"/>',
+  // A surface with its arrow on one side, then on the other.
+  flipnorm: '<path d="M3 12h18"/><path d="M8 12V5"/><path d="M5 8l3-3 3 3"/><path d="M16 12v7"/><path d="M13 16l3 3 3-3"/>',
   mirror:  '<path d="M12 2v20"/><path d="M9 6L4 12l5 6z"/><path d="M15 6l5 6-5 6z"/>',
   object:  '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/>',
   vertex:  '<path d="M5 5h14v14H5z"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/>',
@@ -7874,6 +7940,7 @@ const HUB_TOOLS_FACE = [
   { key: 'extrude', icon: 'extrude', label: 'Extrude', ring: 0, run: extrudeSelection },
   { key: 'inset', icon: 'inset', label: 'Inset', ring: 0, run: insetSelection },
   { key: 'bridge', icon: 'bridge', label: 'Bridge', ring: 0, run: bridgeSelection },
+  { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', ring: 1, run: flipNormalsSelection },
   { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', ring: 1, run: toggleShading },
   { key: 'delete', icon: 'del', label: 'Delete', ring: 1, run: deleteSelection }
 ];
@@ -7888,6 +7955,7 @@ const HUB_TOOLS_OBJECT_BASE = [
   { key: 'subdivide', icon: 'subdiv', label: 'Subdivide', ring: 1, run: () => subdivideSelection('smooth') },
   { key: 'material', icon: 'color', label: 'Material', ring: 1, run: cycleMaterialFinish },
   { key: 'fillet', icon: 'bevel', label: 'Fillet', ring: 1, run: toggleFilletPreview },
+  { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', ring: 1, run: flipNormalsSelection },
   { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', ring: 1, run: toggleShading }
 ];
 // Join only means something with more than one object selected, matching
