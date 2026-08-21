@@ -616,7 +616,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99h</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99i</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -2097,6 +2097,88 @@ function combineObjectsInto(objs, name, dropOnPlane) {
   const merged = createObjectFromEditable(name, center, { positions, groups }, mats, smoothGroups);
   if (merged) merged.mesh.userData.finishes = finishes;
   return merged;
+}
+
+/* Which faces belong to the same connected piece. Two faces are in the same
+   shell if they share a LOGICAL vertex - logical, not attribute, because
+   every face owns private copies of its corners so that hard edges can have
+   their own normals. Comparing attribute indices would say a cube is six
+   loose quads. */
+function meshShells(ed) {
+  const L = edLogical(ed);
+  const vertGroups = new Map();
+  const groupVerts = ed.groups.map((g, gi) => {
+    const s = new Set();
+    g.triangles.forEach(t => t.forEach(a => s.add(L.logicalOf[a])));
+    s.forEach(l => {
+      if (!vertGroups.has(l)) vertGroups.set(l, []);
+      vertGroups.get(l).push(gi);
+    });
+    return s;
+  });
+
+  const comp = new Array(ed.groups.length).fill(-1);
+  let count = 0;
+  for (let gi = 0; gi < ed.groups.length; gi++) {
+    if (comp[gi] >= 0) continue;
+    const stack = [gi];
+    comp[gi] = count;
+    while (stack.length) {
+      const cur = stack.pop();
+      groupVerts[cur].forEach(l => (vertGroups.get(l) || []).forEach(other => {
+        if (comp[other] < 0) { comp[other] = count; stack.push(other); }
+      }));
+    }
+    count++;
+  }
+  return { comp: comp, count: count };
+}
+
+/* Splits one object into one object per connected piece. Returns null when
+   there is only one piece, so the caller can say so rather than silently
+   doing nothing. Materials, smooth-shading flags and finishes travel with
+   the faces that carried them. */
+function separateObject(obj) {
+  const ed = toEditable(obj.mesh);
+  const shells = meshShells(ed);
+  if (shells.count < 2) return null;
+
+  const srcMats = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
+  const srcSmooth = obj.mesh.userData.smoothGroups || {};
+  const srcFinish = obj.mesh.userData.finishes || {};
+  const made = [];
+
+  for (let c = 0; c < shells.count; c++) {
+    const groups = [], mats = [], smooth = {}, finishes = {};
+    // Each piece keeps only the vertices it actually uses, or the discarded
+    // ones linger as orphan dots in Vertex mode.
+    const seen = new Map(), compact = [];
+    const remap = v => {
+      if (!seen.has(v)) {
+        seen.set(v, compact.length / 3);
+        compact.push(ed.positions[v * 3], ed.positions[v * 3 + 1], ed.positions[v * 3 + 2]);
+      }
+      return seen.get(v);
+    };
+    ed.groups.forEach((g, gi) => {
+      if (shells.comp[gi] !== c) return;
+      const ngi = groups.length;
+      groups.push({ triangles: g.triangles.map(t => t.map(remap)) });
+      mats.push((srcMats[gi] || srcMats[0]).clone());
+      if (srcSmooth[gi]) smooth[ngi] = true;
+      if (srcFinish[gi]) finishes[ngi] = srcFinish[gi];
+    });
+    if (!groups.length) continue;
+
+    const part = createObjectFromEditable(obj.name + ' ' + (c + 1),
+      obj.mesh.position.clone(), { positions: compact, groups: groups }, mats, smooth);
+    if (!part) continue;
+    part.mesh.quaternion.copy(obj.mesh.quaternion);
+    part.mesh.scale.copy(obj.mesh.scale);
+    part.mesh.userData.finishes = finishes;
+    made.push(part);
+  }
+  return made.length > 1 ? made : null;
 }
 
 function cloneObjectInto(obj, name) {
@@ -7346,6 +7428,11 @@ function mirrorSelectedObjects(axis) {
   });
 
   App.selectedObjectIds = new Set(created);
+  /* Mirror REPLACES the object with a merged one, so the old id is gone.
+     Leaving activeObjectId pointing at it stranded the app: the merged
+     object was selected but not active, and every component tool refused
+     with "select an object" until you tapped it again. */
+  App.activeObjectId = created.length ? created[0] : null;
   detachAllGizmos();
   hideRadialMenu();
   refreshUI();
@@ -7385,6 +7472,44 @@ function centreSelectionToOrigin() {
   refreshGizmoAttachment();
   pushHistory();
   toast('Centred on the origin');
+}
+
+/* The inverse of Join. Join welds several objects into one; this takes one
+   object apart along the seams that were never actually joined - every run
+   of faces that shares no vertex with the rest becomes its own object.
+
+   Note it separates by CONNECTION, not by where things sit in space. Two
+   cubes that overlap but share no vertices are two pieces; two that were
+   bridged are one. That is the same question Join answered, asked backwards. */
+function separateSelection() {
+  if (App.mode !== 'object') { toast('Separate works in Object mode'); return; }
+  const ids = Array.from(App.selectedObjectIds);
+  if (!ids.length) { toast('Select an object to separate'); return; }
+
+  const created = [];
+  let split = 0;
+  ids.forEach(id => {
+    const obj = findObject(id);
+    if (!obj) return;
+    const parts = separateObject(obj);
+    if (!parts) { created.push(id); return; }   // one piece - leave it alone
+    removeObjects([obj]);
+    parts.forEach(p => created.push(p.id));
+    split++;
+  });
+
+  if (!split) {
+    toast(ids.length > 1 ? 'Those are each one connected piece' : 'That is one connected piece');
+    return;
+  }
+  App.selectedObjectIds = new Set(created);
+  App.activeObjectId = created.length ? created[0] : null;
+  detachAllGizmos();
+  hideRadialMenu();
+  refreshUI();
+  refreshGizmoAttachment();
+  pushHistory();
+  toast('Separated into ' + created.length + ' objects');
 }
 
 function joinSelection() {
@@ -7855,6 +7980,8 @@ const ICON = {
   loop:    '<path d="M3 3h18v18H3z"/><path d="M12 3v18"/>',
   // A surface with its arrow on one side, then on the other.
   flipnorm: '<path d="M3 12h18"/><path d="M8 12V5"/><path d="M5 8l3-3 3 3"/><path d="M16 12v7"/><path d="M13 16l3 3 3-3"/>',
+  // Two halves pulling apart, with the seam they parted along.
+  separate: '<path d="M9 4H4v16h5"/><path d="M15 4h5v16h-5"/><path d="M12 5v3M12 10.5v3M12 16v3"/>',
   mirror:  '<path d="M12 2v20"/><path d="M9 6L4 12l5 6z"/><path d="M15 6l5 6-5 6z"/>',
   object:  '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/>',
   vertex:  '<path d="M5 5h14v14H5z"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/>',
@@ -7956,6 +8083,7 @@ const HUB_TOOLS_OBJECT_BASE = [
   { key: 'material', icon: 'color', label: 'Material', ring: 1, run: cycleMaterialFinish },
   { key: 'fillet', icon: 'bevel', label: 'Fillet', ring: 1, run: toggleFilletPreview },
   { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', ring: 1, run: flipNormalsSelection },
+  { key: 'separate', icon: 'separate', label: 'Separate', ring: 1, run: separateSelection },
   { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', ring: 1, run: toggleShading }
 ];
 // Join only means something with more than one object selected, matching
