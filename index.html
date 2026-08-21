@@ -616,7 +616,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99e</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99f</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -5812,7 +5812,18 @@ function pickVertexOnActive(ev, bias = 1) {
   const topo = obj.mesh.userData.topo;
   const pa = obj.mesh.geometry.attributes.position;
 
-  let best = -1, bestD = Infinity, bestZ = Infinity;
+  /* TWO passes, and it has to be two. Collect every candidate, find the
+     closest in PIXELS, and only then let depth settle what is left.
+
+     The single-pass version compared each vertex against a RUNNING best and
+     then wrote `bestD = Math.min(bestD, d)`. Once a vertex won on depth the
+     recorded distance belonged to a vertex that had already lost, so every
+     later comparison was measured against the wrong number - and the answer
+     depended on the order vertices happened to be visited. A vertex 3px
+     from your thumb could lose to one 10px away. Measured at v1.99f: ~1% of
+     jittered taps resolved to the wrong vertex, which is the "something
+     near it got selected" half of the selection complaint. */
+  const cands = [];
   for (let l = 0; l < topo.logicalCount; l++) {
     const ai = topo.logicalGroups[l][0];
     const p = new THREE.Vector3(pa.getX(ai), pa.getY(ai), pa.getZ(ai));
@@ -5822,14 +5833,19 @@ function pickVertexOnActive(ev, bias = 1) {
     const d = s.distanceTo(tap);
     if (d > limit) continue;                 // outside the catch radius
     if (!vertexVisible(obj, l)) continue;
-    const z = p.distanceTo(camera.position);
-    // Inside the tie band the nearer-to-camera vertex wins; outside it,
-    // plain pixel distance decides as before.
-    const tied = Math.abs(d - bestD) <= VERT_TIE_PX;
-    if (best < 0 || (tied ? z < bestZ : d < bestD)) {
-      best = l; bestD = Math.min(bestD, d); bestZ = z;
-    }
+    cands.push({ l: l, d: d, z: p.distanceTo(camera.position) });
   }
+  if (!cands.length) return -1;
+
+  let dMin = Infinity;
+  cands.forEach(c => { if (c.d < dMin) dMin = c.d; });
+  // Everything within the tie band of the closest is the same spot as far
+  // as a thumb is concerned; of those, the nearest to the camera is meant.
+  let best = -1, bestZ = Infinity;
+  cands.forEach(c => {
+    if (c.d > dMin + VERT_TIE_PX) return;
+    if (c.z < bestZ) { bestZ = c.z; best = c.l; }
+  });
   return best;
 }
 
@@ -5840,29 +5856,53 @@ function pickEdgeOnActive(ev, bias = 1) {
   const limit = PICK_RADIUS_PX * bias;
   const topo = obj.mesh.userData.topo;
   const pa = obj.mesh.geometry.attributes.position;
-  let best = -1, bestD = limit;
+  /* Edges had NO depth preference at all before v1.99f - purely nearest in
+     pixels - so wherever two edges crossed on screen, the FAR one won any
+     time it projected a hair closer to the thumb. "Nearest to the camera
+     wins" is supposed to hold everywhere, not just for vertices. */
+  const cands = [];
   topo.edges.forEach((e, i) => {
     const a = topo.logicalGroups[e[0]][0], b = topo.logicalGroups[e[1]][0];
     const pA = new THREE.Vector3(pa.getX(a), pa.getY(a), pa.getZ(a)); obj.mesh.localToWorld(pA);
     const pB = new THREE.Vector3(pa.getX(b), pa.getY(b), pa.getZ(b)); obj.mesh.localToWorld(pB);
     const sA = worldToScreenPx(pA), sB = worldToScreenPx(pB);
     if (!sA || !sB) return;
-    const d = distPxToSegment(tap, sA, sB);
-    if (d >= bestD) return;
+    const near = closestOnSegmentPx(tap, sA, sB);
+    if (near.d > limit) return;
     if (!edgeVisible(obj, e)) return;
-    bestD = d; best = i;
+    /* Depth where you actually aimed, not at the midpoint: an edge running
+       away from the camera is far nearer at one end than the other, and the
+       midpoint would misreport both. */
+    const zA = pA.distanceTo(camera.position), zB = pB.distanceTo(camera.position);
+    cands.push({ i: i, d: near.d, z: zA + (zB - zA) * near.t });
+  });
+  if (!cands.length) return -1;
+
+  let dMin = Infinity;
+  cands.forEach(c => { if (c.d < dMin) dMin = c.d; });
+  let best = -1, bestZ = Infinity;
+  cands.forEach(c => {
+    if (c.d > dMin + VERT_TIE_PX) return;
+    if (c.z < bestZ) { bestZ = c.z; best = c.i; }
   });
   return best;
 }
 
-// Pixel distance from a point to a projected segment.
-function distPxToSegment(p, a, b) {
+/* Pixel distance from a point to a projected segment, AND how far along it
+   the closest approach sits. The parameter is what lets an edge report the
+   depth at the spot you aimed at rather than at its midpoint. */
+function closestOnSegmentPx(p, a, b) {
   const ab = new THREE.Vector2().subVectors(b, a);
   const len2 = ab.lengthSq();
-  if (len2 < 1e-9) return p.distanceTo(a);
+  if (len2 < 1e-9) return { d: p.distanceTo(a), t: 0 };
   let t = new THREE.Vector2().subVectors(p, a).dot(ab) / len2;
   t = THREE.MathUtils.clamp(t, 0, 1);
-  return p.distanceTo(new THREE.Vector2(a.x + ab.x * t, a.y + ab.y * t));
+  return { d: p.distanceTo(new THREE.Vector2(a.x + ab.x * t, a.y + ab.y * t)), t: t };
+}
+
+// Kept for the callers that only care how far, not where.
+function distPxToSegment(p, a, b) {
+  return closestOnSegmentPx(p, a, b).d;
 }
 
 /* Tries vertex, then edge, then face - the priority you'd expect when your
