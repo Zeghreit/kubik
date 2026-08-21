@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **a2.5a**
+- Version at time of writing: **a2.6**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1037,6 +1037,51 @@ removed while the toast said "skipped 1".
 
 Verified on a cube: any one of 12 edges → 8v/11e/5f, any one of 8 vertices →
 7v/9e/4f, every one identical, Euler 2 and closed throughout.
+
+## The knife (a2.6)
+
+**Hand-cut geometry.** Pick Knife from the Edge or Face ring, press-slide-lift
+to place each point, OK to cut. A point snaps to a VERTEX within 16px, else
+slides along an EDGE, else sits anywhere on a FACE. Green dots are the points,
+the yellow line is the cut. Back pops the last point, Cancel drops the lot.
+
+**Nothing touches geometry until OK**, which is why the knife is NOT a
+pendingOp: there is nothing to re-run from a snapshot. Points are stored as
+LOCAL POSITIONS, not indices, so they survive anything that renumbers.
+
+**A cut is an outline split.** A face is a patch with an outline and an edge
+only exists where a face uses it once, so cutting a face means splitting its
+outline in two where the cut enters and leaves, and giving each half its own
+face. Points inside the face join both halves, which is how they end up ON
+the new edge instead of floating.
+
+**Which is why a cut cannot END inside a face.** A slit that does not reach
+the far side would need an edge with the same face on both sides, and this
+mesh cannot express that. Such a run is skipped and said so. ONE CUT PER FACE
+per operation, for the same don't-guess reason: a chain re-entering a face
+would need aiming at whichever half it landed in.
+
+**Splitting a RIM edge legitimately adds one open edge**, and the
+before/after open-edge guard has to know that or it reverts every honest cut
+on a face touching a hole - which made the knife useless on any open sheet.
+`applyKnifeOp` counts those splits from the outlines BEFORE the splice and
+returns `rimSplits`; the guard allows exactly that many.
+
+**The knife owns one pointer.** It takes orbit on every press and hands it
+back in `cancelKnife` and `applyKnife` rather than in the pointer handlers -
+a press that ends off-canvas never sees a pointerup, and that left the camera
+dead for the rest of the session. Lifting the first of two fingers does NOT
+place a point: orbiting mid-cut is the normal thing to do, and the old code
+committed a point aimed where that finger first landed.
+
+**`pushHistory` and `restoreDoc` abandon a cut in progress.** Both move the
+ground the points were aimed at, and the bar is DOM, so Undo is reachable the
+whole time a cut is being placed.
+
+Verified on a cube: edge to edge across one face 8/12/6 → 10/15/7; edge to
+face-interior to edge → 11/16/7 with the interior point a real vertex on the
+cut; a chain across two faces → 11/17/8, "Cut 2 faces"; corner to edge →
+9/14/7. Euler 2 and closed throughout, Undo restores.
 
 ## Open threads
 

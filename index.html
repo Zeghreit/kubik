@@ -620,7 +620,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.5a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.6</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1059,6 +1059,9 @@ const App = {
   xraySelection: false,
   aimAssist: true,    // ease the view in when vertex targets are crowded
   pendingOp: null,
+  // The knife's points while a cut is being placed. Not a pendingOp: it
+  // changes no geometry until OK, so there is nothing to re-run.
+  knife: null,
   symmetry: false,
   symmetryAxis: 'x',
   showInspector: false,
@@ -4366,6 +4369,195 @@ function splitEdgeAt(obj, edgeIndex) {
   rebuildFromEditable(obj, ed);
 }
 
+/* ---------------- Knife ----------------
+
+   Hand-cut geometry: place points along the surface, then OK. A point lands
+   on a VERTEX (snapped, so a cut that starts at a corner starts exactly
+   there), anywhere along an EDGE, or anywhere inside a FACE.
+
+   Nothing is touched until OK. The points are held against the mesh as it
+   is, so they stay valid however long you take, and Back is a pop off a
+   list rather than an undo of geometry.
+
+   What a cut IS, here: a face is a patch with an outline, and an edge only
+   exists where a face uses it once. So cutting a face means splitting its
+   outline in two at the points where the cut enters and leaves, and giving
+   each half its own face. The points in between - the ones inside the face -
+   join both halves, so they end up on the new edge rather than floating.
+
+   Which is also why a cut cannot END inside a face: a slit that does not
+   reach the far side leaves an edge with a face on both sides of it, and
+   this mesh cannot express that. Such a run is skipped and reported.
+
+   ONE CUT PER FACE per operation. A chain that enters the same face twice
+   would need the second cut to be re-aimed at whichever half it landed in,
+   and getting that wrong silently is worse than saying so. */
+
+const KNIFE_SNAP_PX = 16;      // this close to a corner and you meant the corner
+
+function applyKnifeOp(obj, pts) {
+  if (!pts || pts.length < 2) return { cuts: 0, skipped: 0 };
+  const ed = toEditable(obj.mesh);
+  const L = edLogical(ed);
+  const mats = (Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material]).slice();
+  const smooth = { ...(obj.mesh.userData.smoothGroups || {}) };
+  const fin = { ...(obj.mesh.userData.finishes || {}) };
+
+  /* CANONICAL indices first. separateGroupVertices gives every face private
+     copies of its corners, so two faces meeting at a corner name it with
+     different numbers and no outline can be compared with another. Welding
+     them costs nothing - the rebuild re-splits per group anyway - and it is
+     what lets a point placed on a shared edge land in BOTH neighbours. */
+  const canon = a => L.logicalGroups[L.logicalOf[a]][0];
+  ed.groups.forEach(g => { g.triangles = g.triangles.map(t => [canon(t[0]), canon(t[1]), canon(t[2])]); });
+
+  const pkey = (x, y, z) => Math.round(x * 1e4) + '_' + Math.round(y * 1e4) + '_' + Math.round(z * 1e4);
+  const byPos = new Map();
+  for (let i = 0; i < ed.positions.length / 3; i++) {
+    const k = pkey(ed.positions[i * 3], ed.positions[i * 3 + 1], ed.positions[i * 3 + 2]);
+    if (!byPos.has(k)) byPos.set(k, canon(i));
+  }
+  const addPos = p => { const i = ed.positions.length / 3; ed.positions.push(p.x, p.y, p.z); return i; };
+
+  // 1. Every point becomes one attribute index. Edge points also record
+  //    themselves against their edge, so the outlines can be respliced.
+  const splitsByEdge = new Map();
+  const idxOf = pts.map(pt => {
+    if (pt.kind === 'vertex') {
+      const i = byPos.get(pkey(pt.p.x, pt.p.y, pt.p.z));
+      return i === undefined ? -1 : i;
+    }
+    if (pt.kind === 'face') return addPos(pt.p);
+    const a = byPos.get(pkey(pt.a.x, pt.a.y, pt.a.z));
+    const b = byPos.get(pkey(pt.b.x, pt.b.y, pt.b.z));
+    if (a === undefined || b === undefined) return -1;
+    const ai = addPos(pt.p);
+    const k = edgeKey(a, b);
+    // t runs a -> b; the key is min -> max, so flip it when they disagree.
+    if (!splitsByEdge.has(k)) splitsByEdge.set(k, []);
+    splitsByEdge.get(k).push({ t: a < b ? pt.t : 1 - pt.t, ai });
+    return ai;
+  });
+  if (idxOf.some(i => i < 0)) return { cuts: 0, skipped: pts.length, stale: true };
+  splitsByEdge.forEach(list => list.sort((x, y) => x.t - y.t));
+
+  /* How many open edges this cut will legitimately ADD. Splitting an edge
+     that only one face uses - the rim of a hole, or any edge of a flat
+     sheet - turns one open edge into two without tearing anything. The
+     safety check downstream compares open-edge counts, so without this it
+     reads every honest rim cut as damage and reverts it: the knife was
+     unusable on any face touching a hole, and on an open sheet entirely.
+     Counted from the outlines BEFORE the splice, while an edge still has
+     the neighbours it was placed against. */
+  let rimSplits = 0;
+  if (splitsByEdge.size) {
+    const useCount = new Map();
+    ed.groups.forEach((g, gi) => {
+      const lp = getGroupBoundaryLoopAttr(ed, gi);
+      for (let i = 0; i < lp.length; i++) {
+        const k = edgeKey(lp[i], lp[(i + 1) % lp.length]);
+        useCount.set(k, (useCount.get(k) || 0) + 1);
+      }
+    });
+    splitsByEdge.forEach((list, k) => { if ((useCount.get(k) || 0) === 1) rimSplits += list.length; });
+  }
+
+  // 2. Splice those points into every outline that runs along their edge.
+  //    BOTH neighbours, or the two faces would disagree about where the
+  //    corner is and leave a crack down the shared edge.
+  if (splitsByEdge.size) {
+    ed.groups.forEach((g, gi) => {
+      const loop = getGroupBoundaryLoopAttr(ed, gi);
+      if (loop.length < 3) return;
+      const out = [];
+      let changed = false;
+      for (let i = 0; i < loop.length; i++) {
+        const u = loop[i], v = loop[(i + 1) % loop.length];
+        out.push(u);
+        const list = splitsByEdge.get(edgeKey(u, v));
+        if (!list) continue;
+        changed = true;
+        (u < v ? list : list.slice().reverse()).forEach(sp => out.push(sp.ai));
+      }
+      if (changed) {
+        const tris = polygonTriangles(ed, out);
+        if (tris.length) g.triangles = tris;
+      }
+    });
+  }
+
+  // 3. Which faces each point can be cut on.
+  const outlines = ed.groups.map((g, gi) => getGroupBoundaryLoopAttr(ed, gi));
+  const facesOf = pts.map((pt, i) => {
+    if (pt.kind === 'face') return [pt.g];
+    const ai = idxOf[i];
+    const list = [];
+    outlines.forEach((lp, gi) => { if (lp.indexOf(ai) >= 0) list.push(gi); });
+    return list;
+  });
+
+  /* 4. Split the chain into RUNS, each of which crosses one face from its
+        outline to its outline. Points inside a face can only ever be in the
+        middle of a run - a run that ends on one is a slit, and is skipped. */
+  const runs = [];
+  let skipped = 0;
+  let i = 0;
+  while (i < pts.length - 1) {
+    let common = facesOf[i].filter(f => facesOf[i + 1].indexOf(f) >= 0);
+    let j = i + 1;
+    while (j < pts.length - 1 && pts[j].kind === 'face') {
+      const next = common.filter(f => facesOf[j + 1].indexOf(f) >= 0);
+      if (!next.length) break;
+      common = next; j++;
+    }
+    if (common.length && pts[i].kind !== 'face' && pts[j].kind !== 'face') {
+      runs.push({ f: common[0], from: i, to: j });
+    } else skipped++;
+    i = j;
+  }
+
+  // 5. Cut. Walking the outline both ways from entry to exit gives the two
+  //    halves; the in-between points join them, so they land on the new edge.
+  const cutDone = new Set();
+  let cuts = 0;
+  runs.forEach(run => {
+    if (cutDone.has(run.f)) { skipped++; return; }
+    const loop = outlines[run.f];
+    const i0 = loop.indexOf(idxOf[run.from]), i1 = loop.indexOf(idxOf[run.to]);
+    if (i0 < 0 || i1 < 0 || i0 === i1) { skipped++; return; }
+    const walk = (from, to) => {
+      const r = [];
+      let k = from;
+      for (let n = 0; n <= loop.length; n++) { r.push(loop[k]); if (k === to) break; k = (k + 1) % loop.length; }
+      return r;
+    };
+    const mid = [];
+    for (let m = run.from + 1; m < run.to; m++) mid.push(idxOf[m]);
+    const sideA = walk(i0, i1), sideB = walk(i1, i0);
+    // Neighbours on the outline with nothing in between: that cut is an edge
+    // this face already has, and taking it would leave a two-sided sliver.
+    if (!mid.length && (sideA.length < 3 || sideB.length < 3)) { skipped++; return; }
+    const triA = polygonTriangles(ed, sideA.concat(mid.slice().reverse()));
+    const triB = polygonTriangles(ed, sideB.concat(mid));
+    if (!triA.length || !triB.length) { skipped++; return; }
+    ed.groups[run.f].triangles = triA;
+    ed.groups.push({ triangles: triB });
+    const ni = ed.groups.length - 1;
+    mats.push((mats[run.f] || mats[0]).clone());
+    if (smooth[run.f]) smooth[ni] = true;
+    if (fin[run.f]) fin[ni] = fin[run.f];
+    cutDone.add(run.f);
+    cuts++;
+  });
+
+  if (!cuts) return { cuts: 0, skipped };
+  obj.mesh.material = mats;
+  obj.mesh.userData.smoothGroups = smooth;
+  obj.mesh.userData.finishes = fin;
+  rebuildFromEditable(obj, ed);
+  return { cuts, skipped, rimSplits };
+}
+
 /* ---------------- User-facing wrappers for the toolbar buttons ---------------- */
 
 /* ---------------- Live adjustable operations ----------------
@@ -4827,6 +5019,7 @@ document.getElementById('opOk').addEventListener('click', confirmPendingOp);
 document.getElementById('opCancel').addEventListener('click', cancelPendingOp);
 
 function confirmPendingOp() {
+  if (App.knife) { applyKnife(); return; }
   const op = App.pendingOp;
   if (!op) return;
   const label = OP_SPECS[op.kind].label;
@@ -4848,6 +5041,7 @@ function confirmPendingOp() {
 }
 
 function cancelPendingOp() {
+  if (App.knife) { cancelKnife(); return; }
   const op = App.pendingOp;
   if (!op) return;
   const obj = findObject(op.objId);
@@ -5548,6 +5742,8 @@ function hideAllHelpers() {
 }
 
 function setMode(mode) {
+  // A cut is aimed at one mesh in one mode; changing either abandons it.
+  if (App.knife) cancelKnife(true);
   App.mode = mode;
   if (mode !== 'object') App.lastComponentMode = mode;
   App.selectedElements.clear();
@@ -5979,6 +6175,235 @@ axisGuide.renderOrder = 998;
 axisGuide.visible = false;
 scene.add(axisGuide);
 gizmoStrokes.push(axisGuide);
+
+/* ---------------- Knife: what you see while cutting ----------------
+   Green dots for the points you have placed, a yellow line for the cut they
+   will make. Both live in the scene rather than on a screen overlay, so they
+   stay stuck to the surface if the camera moves, and both ignore depth - a
+   cut point on the far side of a fold is still a point you placed. */
+const knifeDotMat = new THREE.PointsMaterial({
+  size: VERTEX_DOT_PX * 3, color: 0x3ddc84, sizeAttenuation: false,
+  map: vertexDotTexture(), alphaTest: 0.4, transparent: true,
+  depthTest: false, depthWrite: false, fog: false
+});
+const knifeDots = new THREE.Points(new THREE.BufferGeometry(), knifeDotMat);
+knifeDots.renderOrder = 999;
+knifeDots.visible = false;
+knifeDots.frustumCulled = false;
+scene.add(knifeDots);
+
+const knifeLineMat = new LineMaterial({
+  color: 0xffd23d, linewidth: 2.5, worldUnits: false,
+  transparent: true, depthTest: false, depthWrite: false
+});
+knifeLineMat.resolution.set(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
+const knifeLine = new Line2(new LineGeometry().setPositions([0, 0, 0, 0, 0, 0]), knifeLineMat);
+knifeLine.renderOrder = 999;
+knifeLine.visible = false;
+knifeLine.frustumCulled = false;
+scene.add(knifeLine);
+gizmoStrokes.push(knifeLine);   // so a resize keeps the line's width honest
+
+/* Where a finger lands, in the knife's terms. Vertex first, then edge, then
+   the face surface - the same priority a tap already uses, with a tighter
+   radius for the vertex because here it is a SNAP: it means "exactly this
+   corner", not "near enough". */
+/* The op bar, borrowed the same way the extrude chooser borrows it: no
+   slider, no segments, a Back button where the grouping choices sit, and the
+   count in the label so you can see the cut growing. */
+function showKnifeBar() {
+  const el = document.getElementById('opGrouping');
+  el.innerHTML = '';
+  el.style.display = 'inline-flex';
+  const back = document.createElement('button');
+  back.textContent = 'Back';
+  back.title = 'Remove the last point';
+  back.addEventListener('click', () => {
+    if (!App.knife) return;
+    App.knife.points.pop();
+    refreshKnifePreview();
+    refreshKnifeBar();
+  });
+  el.appendChild(back);
+  ['opSlider', 'opValue', 'opSegments'].forEach(id => { document.getElementById(id).style.display = 'none'; });
+  document.getElementById('opOk').style.display = '';
+  opBarEl.classList.add('show');
+  refreshKnifeBar();
+}
+
+function refreshKnifeBar() {
+  if (!App.knife) return;
+  const n = App.knife.points.length;
+  document.getElementById('opLabel').textContent = 'Knife · ' + n + (n === 1 ? ' point' : ' points');
+}
+
+function hideKnifeBar() {
+  hideOpBar();
+  document.getElementById('opGrouping').style.display = 'none';
+  knifeDots.visible = false;
+  knifeLine.visible = false;
+}
+
+function startKnife() {
+  if (App.pendingOp) return;
+  if (App.mode === 'object') { toast('Knife cuts a mesh - switch to Component mode'); return; }
+  const obj = findObject(App.activeObjectId);
+  if (!obj) { toast('Tap an object first'); return; }
+  ensureHelpers(obj);
+  App.knife = { objId: obj.id, points: [], live: null };
+  App.selectedElements.clear();
+  refreshElementColors(obj);
+  refreshKnifePreview();
+  showKnifeBar();
+  refreshUI();
+  hideRadialMenu();
+  toast('Tap along the surface to place points, then OK');
+}
+
+function cancelKnife(quiet) {
+  if (!App.knife) return;
+  App.knife = null;
+  // Whatever ends a cut hands the camera back. The knife takes orbit away on
+  // every press, and a press that ends off-canvas never sees a pointerup -
+  // so leaving this to the pointer handlers left the camera dead for the
+  // rest of the session with no gesture able to revive it.
+  orbit.enabled = true;
+  hideKnifeBar();
+  refreshUI();
+  if (!quiet) toast('Knife cancelled');
+}
+
+function applyKnife() {
+  const k = App.knife;
+  if (!k) return;
+  const obj = findObject(k.objId);
+  App.knife = null;
+  orbit.enabled = true;      // see cancelKnife
+  hideKnifeBar();
+  if (!obj || k.points.length < 2) { refreshUI(); toast('A cut needs at least two points'); return; }
+  ensureHelpers(obj);
+
+  /* Checked, not trusted, exactly like Cap holes and Dissolve: a cut that
+     ear-clipping cannot close leaves MORE open edge than it found. */
+  const before = auditWinding(obj).boundary;
+  const snap = captureObjectState(obj);
+  const r = applyKnifeOp(obj, k.points);
+  if (!r.cuts) {
+    refreshUI();
+    toast(r.stale
+      ? 'The mesh changed under the cut - try again'
+      : 'Nothing to cut - a run has to cross one face from edge to edge');
+    return;
+  }
+  ensureHelpers(obj);
+  // + rimSplits, because splitting a rim edge SHOULD add one open edge.
+  if (auditWinding(obj).boundary > before + (r.rimSplits || 0)) {
+    restoreObjectState(obj, snap);
+    ensureHelpers(obj);
+    refreshUI();
+    toast('That cut would tear the mesh open - left it alone');
+    return;
+  }
+  finishMeshEdit(obj, r.skipped
+    ? 'Cut ' + r.cuts + ', skipped ' + r.skipped
+    : 'Cut ' + r.cuts + (r.cuts === 1 ? ' face' : ' faces'));
+}
+
+function knifeResolve(ev) {
+  const obj = findObject(App.knife && App.knife.objId);
+  if (!obj) return null;
+  const topo = obj.mesh.userData.topo;
+
+  const v = pickVertexOnActive(ev, KNIFE_SNAP_PX / PICK_RADIUS_PX);
+  if (v >= 0) return { kind: 'vertex', p: logicalPos(obj, v) };
+
+  const ei = pickEdgeOnActive(ev);
+  if (ei >= 0 && topo.edges[ei]) {
+    const [la, lb] = topo.edges[ei];
+    const a = logicalPos(obj, la), b = logicalPos(obj, lb);
+    obj.mesh.updateMatrixWorld();
+    const sA = worldToScreenPx(a.clone().applyMatrix4(obj.mesh.matrixWorld));
+    const sB = worldToScreenPx(b.clone().applyMatrix4(obj.mesh.matrixWorld));
+    if (sA && sB) {
+      const near = closestOnSegmentPx(pointerPx(ev), sA, sB);
+      return { kind: 'edge', a, b, t: near.t, p: a.clone().lerp(b, near.t) };
+    }
+  }
+
+  const g = pickFaceOnActive(ev);
+  if (g >= 0) {
+    raycaster.setFromCamera(ndcFromEvent(ev), camera);
+    const hits = raycaster.intersectObject(obj.mesh, false);
+    if (hits.length) return { kind: 'face', g, p: obj.mesh.worldToLocal(hits[0].point.clone()) };
+  }
+  return null;
+}
+
+/* Press to aim, slide to place, lift to commit - so a point can be nudged
+   along its edge before you let go of it, which on a phone is the difference
+   between a cut where you meant it and a cut a thumb-width away. */
+function knifePointerDown(ev) {
+  App.knife.pid = ev.pointerId;
+  App.knife.live = knifeResolve(ev);
+  refreshKnifePreview();
+}
+
+function knifePointerMove(ev) {
+  // Only the finger that started the gesture. A second one is the camera's.
+  if (App.knife.pid !== ev.pointerId) return;
+  // Resolve even if the press started on empty space: a tap a pixel off the
+  // silhouette should be rescuable by sliding onto the model rather than
+  // being dead the moment it lands.
+  const r = knifeResolve(ev);
+  if (r) App.knife.live = r;
+  refreshKnifePreview();
+}
+
+function knifePointerUp() {
+  const live = App.knife.live;
+  App.knife.live = null;
+  App.knife.pid = null;
+  if (live) App.knife.points.push(live);
+  else toast('Nothing under that tap');
+  refreshKnifePreview();
+  refreshKnifeBar();
+}
+
+// The points, in world space, including the one under the finger right now.
+function knifeWorldPoints() {
+  const k = App.knife;
+  if (!k) return [];
+  const obj = findObject(k.objId);
+  if (!obj) return [];
+  obj.mesh.updateMatrixWorld();
+  const list = k.points.slice();
+  if (k.live) list.push(k.live);
+  return list.map(pt => pt.p.clone().applyMatrix4(obj.mesh.matrixWorld));
+}
+
+function refreshKnifePreview() {
+  // Same pixel-ratio rule the vertex dots use, and read fresh in case the
+  // window moved to a screen with a different one.
+  knifeDotMat.size = vertexDotSize() * 3;
+  const w = knifeWorldPoints();
+  if (!w.length) { knifeDots.visible = false; knifeLine.visible = false; return; }
+  const flat = [];
+  w.forEach(p => flat.push(p.x, p.y, p.z));
+  knifeDots.geometry.dispose();
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(flat, 3));
+  knifeDots.geometry = g;
+  knifeDots.visible = true;
+  // Line2 needs two points; one placed point is a dot and nothing else.
+  if (w.length >= 2) {
+    knifeLine.geometry.dispose();
+    knifeLine.geometry = new LineGeometry().setPositions(flat);
+    knifeLine.visible = true;
+  } else {
+    knifeLine.visible = false;
+  }
+}
+
 
 /* Where the current selection sits on screen: its points, and the segments
    joining them. Measured only against SELECTED components, so an unselected
@@ -7112,10 +7537,17 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     if (directDrag) { directDrag = null; dragCtx = null; axisGuide.visible = false; }
     clearToolRingTimer();
     closeToolRing(false);
+    // The camera is taking over, so the half-placed point is not a point.
+    if (App.knife) { App.knife.live = null; App.knife.pid = null; refreshKnifePreview(); }
     directCandidate = null;
     orbit.enabled = true;
     return;
   }
+
+  /* The knife owns every single-finger gesture while it is open: press to
+     aim, slide to place, lift to commit. Two fingers still reach the camera,
+     because the bail-out above runs first. */
+  if (App.knife) { orbit.enabled = false; knifePointerDown(ev); return; }
 
   pointerDown = { x: ev.clientX, y: ev.clientY, t: performance.now(), overGizmo: false };
 
@@ -7178,6 +7610,7 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
     clearToolRingTimer();
   }
   if (activePointers.size > 1) return;   // camera gesture - hands off
+  if (App.knife) { knifePointerMove(ev); return; }
   if (toolRingActive) { updateToolRingHover(ev); return; }
   if (directDrag) { updateDirectDrag(ev); return; }
 
@@ -7217,6 +7650,22 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
   // fires must cancel it outright, or a bloom would appear over a finger
   // that's already lifted.
   clearToolRingTimer();
+  if (App.knife) {
+    /* Only the finger that started the cut commits a point, and only if it
+       is the last one down. Lift the first of two fingers after orbiting to
+       see the far side and the old code committed a point aimed where that
+       finger FIRST landed, before the camera moved - which is constant,
+       because orbiting mid-cut is the normal thing to do. Read before
+       trackPointerUp, which is what removes this pointer. */
+    const solo = App.knife.pid === ev.pointerId && activePointers.size === 1;
+    trackPointerUp(ev);
+    if (solo) knifePointerUp();
+    else { App.knife.live = null; App.knife.pid = null; refreshKnifePreview(); }
+    orbit.enabled = true;
+    pointerDown = null;
+    directCandidate = null;
+    return;
+  }
   if (toolRingActive) {
     // Still has to run - it's what removes this pointer from the tracker.
     // Skipping it would leak the pointer and corrupt every tap gesture
@@ -8388,6 +8837,12 @@ function serializeDoc() {
 }
 
 function restoreDoc(doc, opts = {}) {
+  /* A cut in progress is aimed at the mesh AS IT IS. Undo rebuilds every
+     mesh under it, and the points - stored as local positions - would then
+     resolve against geometry the user never aimed at, while the green dots
+     and the yellow line went on hanging in space over the reverted model.
+     Abandon it rather than let OK cut somewhere nobody chose. */
+  if (App.knife) cancelKnife(true);
   // Undo is about shape. Colour, finish and the current selection are carried
   // across untouched, so stepping back through geometry never quietly repaints
   // your model or drops what you had picked.
@@ -8497,6 +8952,9 @@ function pushHistory() {
      step as the first - otherwise one Undo leaves the model lopsided, which
      is worse than either state. */
   if (symQuietHistory) return;
+  // Same reason as restoreDoc: this is the funnel every committed edit goes
+  // through, and any of them moves the ground the cut was aimed at.
+  if (App.knife) cancelKnife(true);
   if (App.fillet) refreshFillets();
   scheduleAutosave();
   const doc = serializeDoc();
@@ -8779,6 +9237,7 @@ const ICON = {
   flip: '<path d="M12 2v20" stroke-dasharray="3 3"/><path d="M4 8l6 4-6 4z"/><path d="M20 8l-6 4 6 4z"/>',
   // An outline with its gap closed by a patch.
   cap: '<path d="M4 20V4h16v16z"/><path d="M9 9h6v6H9z" stroke-dasharray="2 2"/>',
+  knife: '<path d="M20 3l-8 8 3 3 5-5z"/><path d="M12 11l-8 8 2 2 8-8"/>',
   // Outward arrows: the selection reaching further.
   grow: '<path d="M9 9h6v6H9z"/><path d="M6 6l-3-3M18 6l3-3M6 18l-3 3M18 18l3 3"/><path d="M3 7V3h4M21 7V3h-4M3 17v4h4M21 17v4h-4"/>',
   // The same arrows turned inward.
@@ -8864,6 +9323,7 @@ const HUB_TOOLS_EDGE = [
   { key: 'loopcut', icon: 'loop', label: 'Loop', ring: 1, run: edgeLoopSelection },
   { key: 'split', icon: 'split', label: 'Split', ring: 1, run: splitSelection },
   { key: 'cap', icon: 'cap', label: 'Cap hole', ring: 1, run: fillHolesSelection },
+  { key: 'knife', icon: 'knife', label: 'Knife', ring: 1, run: startKnife },
   { key: 'grow', icon: 'grow', label: 'Grow', ring: 1, run: growSelection },
   { key: 'shrink', icon: 'shrink', label: 'Shrink', ring: 1, run: shrinkSelection },
   { key: 'crease', icon: 'crease', label: 'Crease', ring: 1, run: () => creaseSelection(true) },
@@ -8878,6 +9338,7 @@ const HUB_TOOLS_FACE = [
   { key: 'bridge', icon: 'bridge', label: 'Bridge', ring: 0, run: bridgeSelection },
   { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', ring: 1, run: flipNormalsSelection },
   { key: 'cap', icon: 'cap', label: 'Cap holes', ring: 1, run: fillHolesSelection },
+  { key: 'knife', icon: 'knife', label: 'Knife', ring: 1, run: startKnife },
   { key: 'grow', icon: 'grow', label: 'Grow', ring: 1, run: growSelection },
   { key: 'shrink', icon: 'shrink', label: 'Shrink', ring: 1, run: shrinkSelection },
   { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', ring: 1, run: toggleShading },
@@ -9376,6 +9837,7 @@ HELP_SECTIONS.push(
       ['inset', 'Inset', 'Shrinks a face inside its own outline, leaving a border around the edge.'],
       ['bevel', 'Bevel', 'Replaces a sharp edge with a narrow flat face. More segments rounds it off.'],
       ['loop', 'Loop', 'Cuts new edge rings across the mesh, running perpendicular to the edge you picked. Count sets how many; slide moves them off centre.'],
+      ['knife', 'Knife', 'Cut by hand. Press and slide to place a point - it snaps to a corner, or slides along an edge, or sits anywhere on a face - then lift. Green dots are your points, the yellow line is the cut. Back removes the last one, OK cuts. Each run has to cross a face from one side to the other; a cut that stops in the middle of a face has nothing to split and is skipped.'],
       ['split', 'Split', 'Puts a midpoint on each selected edge.'],
       ['bridge', 'Bridge', 'Joins two separate selections with new faces spanning between them.'],
       ['connect', 'Connect', 'Runs a new edge between selected vertices.'],
