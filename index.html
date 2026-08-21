@@ -620,7 +620,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.3a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.3b</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -6430,7 +6430,7 @@ function pickDebug(ev, chosen) {
   const topo = obj.mesh.userData.topo;
   const pa = obj.mesh.geometry.attributes.position;
 
-  let vBest = Infinity, vOcc = null;
+  let vBest = Infinity, vOcc = null, vAt = null;
   for (let l = 0; l < topo.logicalCount; l++) {
     const ai = topo.logicalGroups[l][0];
     const p = new THREE.Vector3(pa.getX(ai), pa.getY(ai), pa.getZ(ai));
@@ -6438,7 +6438,7 @@ function pickDebug(ev, chosen) {
     const s = worldToScreenPx(p);
     if (!s) continue;
     const d = s.distanceTo(tap);
-    if (d < vBest) { vBest = d; vOcc = !vertexVisible(obj, l); }
+    if (d < vBest) { vBest = d; vOcc = !vertexVisible(obj, l); vAt = s; }
   }
   let eBest = Infinity;
   topo.edges.forEach(e => {
@@ -6473,6 +6473,25 @@ function pickDebug(ev, chosen) {
     'group=' + mappedGroup,
     'groups=' + topo.faceGroups.length,
     '=> ' + (chosen ? chosen.type + '#' + chosen.index : 'NOTHING'));
+
+  /* The same line ON SCREEN, because a phone has no console and every
+     remaining question about picking is a phone question. dx/dy are the
+     OFFSET from your thumb to where the picker thinks the nearest vertex
+     is: tap a dot squarely and both should be near zero. If dy comes back
+     around -25 then the catch zone sits that far ABOVE the dot you can
+     see, which is precisely the "I have to tap higher than the vertex"
+     report - and it would be invisible to any harness that computes its
+     own tap positions the same way the picker does. */
+  const vpR = viewportEl.getBoundingClientRect();
+  const cvR = renderer.domElement.getBoundingClientRect();
+  toast('vtx ' + vBest.toFixed(0) + 'px'
+      + (vAt ? ' dx' + (vAt.x - tap.x).toFixed(0) + ' dy' + (vAt.y - tap.y).toFixed(0) : '')
+      + (vOcc ? ' occl' : '')
+      + ' · edge ' + eBest.toFixed(0)
+      + ' · ray ' + hits.length
+      + ' · dpr' + (window.devicePixelRatio || 1).toFixed(1)
+      + ' · off ' + (cvR.left - vpR.left).toFixed(0) + ',' + (cvR.top - vpR.top).toFixed(0)
+      + ' · ' + (chosen ? chosen.type : 'NONE'));
 }
 
 function pickComponentOnActive(ev) {
