@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **a2.6a**
+- Version at time of writing: **a2.7**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1111,6 +1111,53 @@ Verified on a cube: edge to edge across one face 8/12/6 → 10/15/7; edge to
 face-interior to edge → 11/16/7 with the interior point a real vertex on the
 cut; a chain across two faces → 11/17/8, "Cut 2 faces"; corner to edge →
 9/14/7. Euler 2 and closed throughout, Undo restores.
+
+## Bridge in sections (a2.7)
+
+**Bridge is a live op now**, with a section stepper and a Straight/Curved
+choice, and every change re-runs it from the snapshot. One section is the old
+single band of quads; more sections insert that many rings in between.
+STRAIGHT interpolates each pair of matching corners along a line. CURVED
+leaves each end the way that end was already going and eases into the other —
+a Hermite whose tangents are the ends' own outward directions. Two faces
+pointing AT each other come out straight either way, because their tangents
+already run along the join; the curve only shows when the ends disagree,
+which is when you asked for it. `minSegments: 2` on the Curved option keeps
+it off the bar until there is something between the ends to bend, and
+`stepSegments` falls the mode back when it goes away.
+
+For an edge-run bridge the "outward direction" is NOT the surface normal —
+that points off the sheet, and a bridge leaving an open rim straight upward
+continues nothing. It is the direction that lies IN the neighbouring face and
+points away from it, so the normal component is projected back out.
+
+**Ring pairing direction comes from the two faces' NORMALS, not from
+distance.** Each face is wound about its own outward normal, so two faces
+looking at each other wind oppositely in space and B must be reversed; two
+faces pointing the same way must not be. The old code reversed
+unconditionally, which on the same-way case paired every corner with the one
+diagonally opposite: the walls crossed and every ring in between collapsed
+onto the twist. Measured — two box tops bridged in two sections gave 2 new
+vertices where there should have been 4, and the winding audit was perfectly
+happy, because a twisted tube is still closed. One band hid it; sections made
+it plain. Bearing around the joining axis cannot decide it either: for two
+coplanar tops the axis lies IN both faces and all four corners collapse onto
+two bearings. Distance is still fine for the ROTATION, which is a choice
+among same-handed pairings and has a clear minimum.
+
+**Symmetry no longer goes through `runMirrored`.** The mirrored elements are
+captured with `markElements` when the op begins and re-found with
+`resolveElements` inside every re-run, after the primary pass has renumbered
+the mesh — so the bar previews both sides while you change the count, and
+`confirmPendingOp` pushes ONE undo entry covering both (which is what
+`symQuietHistory` used to fake). Both the "no pairs here" and the "could not
+find the mirrored side" answers still have to be said out loud; a silent
+half-symmetric result is indistinguishable from symmetry being off.
+
+Verified: sections 1–12 on faces and edges, both modes, watertight and Euler
+2 every time; the curve lifts the middle rings to 1.1 and 1.3 above two box
+tops at 0.5 while Straight keeps them flat; symmetry bridges both pairs in
+one re-run (4 cubes, Euler 8 → 4).
 
 ## Open threads
 

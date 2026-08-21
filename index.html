@@ -620,7 +620,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.6a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.7</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -3091,10 +3091,100 @@ function bestRingOffset(ed, ringA, ringB) {
     for (let i = 0; i < n; i++) cost += vecAt(ed, ringA[i]).distanceToSquared(vecAt(ed, ringB[(i + k) % n]));
     if (cost < bestCost) { bestCost = cost; best = k; }
   }
-  return best;
+  return { k: best, cost: bestCost };
 }
 
-function bridgeFacesOp(obj, groupIndices) {
+/* Which way round B goes, and by how much it is rotated.
+
+   DIRECTION comes from the two faces' own normals, because that is what it
+   actually depends on. Each face is wound about its own outward normal, so
+   two faces LOOKING AT each other - the classic bridge across a hole - wind
+   in opposite senses in space and B has to be reversed. Two faces pointing
+   the SAME way, the ordinary "join these two boxes along the top", wind the
+   same way and B must not be.
+
+   The old code reversed unconditionally. The result on the same-way case was
+   that every corner paired with the one diagonally opposite: the walls
+   crossed and every ring in between collapsed onto the twist. Measured, two
+   box tops bridged in two sections gave 2 new vertices where there should
+   have been 4 - and the winding audit was perfectly happy, because a twisted
+   tube is still closed. One band hid it; sections made it plain.
+
+   Nearest-corner DISTANCE cannot decide direction. Two boxes half a unit
+   apart are each a unit wide, so outer-corner-to-inner-corner is genuinely
+   the shorter hop while still being the crossed one - measured, it picked
+   the twist. Bearing around the joining axis cannot decide it either: for
+   two coplanar tops the axis lies IN both faces, so all four corners of a
+   ring collapse onto two bearings and there is nothing to tell apart.
+
+   Distance is fine for the ROTATION, which is a choice among same-handed
+   pairings and has a clear minimum. Only the flip needed a better question.
+   Nearly perpendicular faces are the one genuinely ambiguous case, and there
+   the cheaper pairing is as good an answer as any. */
+function matchRings(ed, ringA, loopB) {
+  const fwd = loopB.slice(), rev = loopB.slice().reverse();
+  const nA = loopNormal(ed, ringA), nB = loopNormal(ed, loopB);
+  const dot = (nA.lengthSq() > 1e-12 && nB.lengthSq() > 1e-12)
+    ? nA.normalize().dot(nB.normalize()) : 0;
+
+  if (dot < -0.1) return { ring: rev, k: bestRingOffset(ed, ringA, rev).k };
+  if (dot > 0.1) return { ring: fwd, k: bestRingOffset(ed, ringA, fwd).k };
+
+  const f = bestRingOffset(ed, ringA, fwd), r = bestRingOffset(ed, ringA, rev);
+  return f.cost < r.cost ? { ring: fwd, k: f.k } : { ring: rev, k: r.k };
+}
+
+/* ---------------- Bridge in sections ----------------
+
+   One section is the old behaviour: a single band of quads straight from one
+   ring to the other. More sections insert that many rings in between, which
+   is what lets the bridge bend.
+
+   STRAIGHT interpolates each pair of matching corners along a line, so the
+   extra rings just subdivide the same tube.
+
+   CURVED leaves each end the way that end was already going and eases into
+   the other: a Hermite curve whose tangents are the two ends' own outward
+   directions. Two faces pointing AT each other come out straight anyway,
+   because there the tangents already run along the join - the curve only
+   shows when the ends disagree, which is exactly when you wanted one. With a
+   single section there is nothing between the ends to bend, so the option is
+   offered only from two up. */
+
+const BRIDGE_TANGENT = 0.8;   // how hard the curve leaves each end
+
+function hermitePoint(a, b, t0, t1, t) {
+  const t2 = t * t, t3 = t2 * t;
+  const h00 = 2 * t3 - 3 * t2 + 1, h10 = t3 - 2 * t2 + t;
+  const h01 = -2 * t3 + 3 * t2, h11 = t3 - t2;
+  return new THREE.Vector3(
+    h00 * a.x + h10 * t0.x + h01 * b.x + h11 * t1.x,
+    h00 * a.y + h10 * t0.y + h01 * b.y + h11 * t1.y,
+    h00 * a.z + h10 * t0.z + h01 * b.z + h11 * t1.z
+  );
+}
+
+/* The rings between two matched rims. Returns every ring including the two
+   originals, so the caller only has to wall the gaps. */
+function bridgeRings(ed, rowA, rowB, segs, curve) {
+  const rings = [rowA];
+  for (let sIdx = 1; sIdx < segs; sIdx++) {
+    const t = sIdx / segs;
+    const row = [];
+    for (let i = 0; i < rowA.length; i++) {
+      const a = vecAt(ed, rowA[i]), b = vecAt(ed, rowB[i]);
+      const p = curve ? hermitePoint(a, b, curve.t0, curve.t1, t) : a.clone().lerp(b, t);
+      const ni = ed.positions.length / 3;
+      ed.positions.push(p.x, p.y, p.z);
+      row.push(ni);
+    }
+    rings.push(row);
+  }
+  rings.push(rowB);
+  return rings;
+}
+
+function bridgeFacesOp(obj, groupIndices, segments, curved) {
   if (groupIndices.length !== 2) return { ok: false, why: 'Select exactly 2 faces to bridge' };
   const mesh = obj.mesh;
   const ed = toEditable(mesh);
@@ -3108,29 +3198,52 @@ function bridgeFacesOp(obj, groupIndices) {
     return { ok: false, why: 'Both faces need the same number of sides (' + loopA.length + ' vs ' + loopB.length + ')' };
   }
 
-  // Both faces point outwards, so one ring runs the opposite way round to the
-  // other. Reversing B makes the two agree before they're paired up.
+  // Which way B runs, and where it starts, is measured rather than assumed -
+  // see matchRings.
   const ringA = loopA.slice();
-  const ringB = loopB.slice().reverse();
-  const k = bestRingOffset(ed, ringA, ringB);
+  const match = matchRings(ed, ringA, loopB);
+  const ringB = match.ring, k = match.k;
   const n = ringA.length;
 
   const centreA = new THREE.Vector3(); ringA.forEach(i => centreA.add(vecAt(ed, i))); centreA.divideScalar(n);
   const centreB = new THREE.Vector3(); ringB.forEach(i => centreB.add(vecAt(ed, i))); centreB.divideScalar(n);
-  const axisMid = centreA.clone().add(centreB).multiplyScalar(0.5);
+
+  // B, walked in A's order, so the two rings can be interpolated corner for
+  // corner instead of only quad by quad.
+  const rowB = [];
+  for (let i = 0; i < n; i++) rowB.push(ringB[(i + k) % n]);
+
+  const segs = Math.max(1, Math.round(segments || 1));
+  let curve = null;
+  if (curved && segs >= 2) {
+    /* Each end's OWN outward normal. loopB still runs the way face B is
+       wound, so its normal points out of B; the bridge arrives there moving
+       the other way, hence the minus. */
+    const d = centreA.distanceTo(centreB) * BRIDGE_TANGENT;
+    curve = {
+      t0: loopNormal(ed, ringA).multiplyScalar(d),
+      t1: loopNormal(ed, loopB).multiplyScalar(-d)
+    };
+  }
+  const rings = bridgeRings(ed, ringA, rowB, segs, curve);
 
   const walls = [];
-  for (let i = 0; i < n; i++) {
-    const a0 = ringA[i], a1 = ringA[(i + 1) % n];
-    const b0 = ringB[(i + k) % n], b1 = ringB[(i + 1 + k) % n];
-    let quad = [a0, a1, b1, b0];
-
-    // Point the wall away from the middle of the tube.
-    const c = new THREE.Vector3();
-    quad.forEach(v => c.add(vecAt(ed, v)));
-    c.divideScalar(4);
-    if (loopNormal(ed, quad).dot(c.clone().sub(axisMid)) < 0) quad = [a0, b0, b1, a1];
-    walls.push(quad);
+  for (let r = 0; r + 1 < rings.length; r++) {
+    const r0 = rings[r], r1 = rings[r + 1];
+    // The middle of THIS band, not of the whole tube: a curved bridge bends
+    // away from its own chord and a single global centre would flip the
+    // walls at the far end.
+    const axisMid = loopCentroid(ed, r0).add(loopCentroid(ed, r1)).multiplyScalar(0.5);
+    for (let i = 0; i < n; i++) {
+      const a0 = r0[i], a1 = r0[(i + 1) % n];
+      const b0 = r1[i], b1 = r1[(i + 1) % n];
+      let quad = [a0, a1, b1, b0];
+      const c = new THREE.Vector3();
+      quad.forEach(v => c.add(vecAt(ed, v)));
+      c.divideScalar(4);
+      if (loopNormal(ed, quad).dot(c.clone().sub(axisMid)) < 0) quad = [a0, b0, b1, a1];
+      walls.push(quad);
+    }
   }
 
   // The two capping faces are inside the tube now, so they go.
@@ -3197,7 +3310,7 @@ function edgeChains(ed, pairs) {
   return chains;
 }
 
-function bridgeEdgesOp(obj, logicalPairs) {
+function bridgeEdgesOp(obj, logicalPairs, segments, curved) {
   const mesh = obj.mesh;
   const ed = toEditable(mesh);
   const mats = Array.isArray(mesh.material) ? mesh.material : (mesh.material = [mesh.material]);
@@ -3219,12 +3332,68 @@ function bridgeEdgesOp(obj, logicalPairs) {
   if (pa.distanceToSquared(qa) + pz.distanceToSquared(qz) >
       pa.distanceToSquared(qz) + pz.distanceToSquared(qa)) cB = cB.slice().reverse();
 
+  const rowA = cA.map(attrFor), rowB = cB.map(attrFor);
+  const segs = Math.max(1, Math.round(segments || 1));
+
+  /* Where a rim "was going". Not the surface normal - that points off the
+     sheet, and a bridge that leaves an open edge straight upward is not
+     continuing anything. The direction that continues the surface is the one
+     that lies IN the neighbouring face and points away from it, so the
+     normal component is taken back out. With nothing adjacent there is no
+     surface to continue and the straight chord is the honest answer. */
+  /* Every group's outline, once. leaveDir used to walk them all itself and
+     then walk the matching ones AGAIN, twice per bridge and twice more for
+     the mirrored pass - four full scans of the mesh on every press of the
+     section stepper, in a live op. Fine on a cube, a stall on anything
+     subdivided, and only in Curved mode, which is why it measured clean. */
+  const allLoops = ed.groups.map((g, gi) => getGroupBoundaryLoopAttr(ed, gi));
+
+  const leaveDir = (row, otherCentre) => {
+    const here = loopCentroid(ed, row);
+    const fallback = otherCentre.clone().sub(here);
+    const touching = new Set();
+    const rowSet = new Set(row.map(a => L.logicalOf[a]));
+    allLoops.forEach((loopAttr, gi) => {
+      let hits = 0;
+      loopAttr.forEach(a => { if (rowSet.has(L.logicalOf[a])) hits++; });
+      if (hits >= 2) touching.add(gi);
+    });
+    if (!touching.size) return fallback.normalize();
+    const fc = new THREE.Vector3(), nrm = new THREE.Vector3();
+    touching.forEach(gi => {
+      fc.add(loopCentroid(ed, allLoops[gi]));
+      nrm.add(loopNormal(ed, allLoops[gi]));
+    });
+    fc.divideScalar(touching.size);
+    const out = here.clone().sub(fc);
+    if (nrm.lengthSq() > 1e-12) {
+      nrm.normalize();
+      out.addScaledVector(nrm, -out.dot(nrm));   // stay in the surface
+    }
+    return out.lengthSq() > 1e-12 ? out.normalize() : fallback.normalize();
+  };
+
+  let curve = null;
+  if (curved && segs >= 2) {
+    const ca = loopCentroid(ed, rowA), cb = loopCentroid(ed, rowB);
+    const d = ca.distanceTo(cb) * BRIDGE_TANGENT;
+    curve = {
+      t0: leaveDir(rowA, cb).multiplyScalar(d),
+      t1: leaveDir(rowB, ca).multiplyScalar(-d)
+    };
+  }
+
+  const rings = bridgeRings(ed, rowA, rowB, segs, curve);
+
   const added = [];
-  for (let i = 0; i + 1 < cA.length; i++) {
-    const quad = [attrFor(cA[i]), attrFor(cA[i + 1]), attrFor(cB[i + 1]), attrFor(cB[i])];
-    ed.groups.push({ triangles: polygonTriangles(ed, quad) });
-    mats.push((mats[0] || mats[0]).clone());
-    added.push(quad);
+  for (let r = 0; r + 1 < rings.length; r++) {
+    const r0 = rings[r], r1 = rings[r + 1];
+    for (let i = 0; i + 1 < r0.length; i++) {
+      const quad = [r0[i], r0[i + 1], r1[i + 1], r1[i]];
+      ed.groups.push({ triangles: polygonTriangles(ed, quad) });
+      mats.push((mats[0] || mats[0]).clone());
+      added.push(quad);
+    }
   }
   if (!added.length) return { ok: false, why: 'Nothing to bridge' };
 
@@ -4625,6 +4794,18 @@ const OP_SPECS = {
       { key: 'keep', label: 'Keep shape' }
     ]
   },
+  /* No amount either - what the stepper counts is how many bands of quads
+     the bridge is made of. Curved needs somewhere to bend, so it is offered
+     only from two sections up; `minSegments` takes it off the bar until
+     there is. */
+  bridge: {
+    label: 'Bridge', min: 0, max: 1, step: 1, start: 0,
+    segments: true, maxSegments: 12, noAmount: true,
+    options: [
+      { key: 'straight', label: 'Straight' },
+      { key: 'curve', label: 'Curved', minSegments: 2 }
+    ]
+  },
   loopcut: {
     // The amount is a slide position along the ring, 0..1, centred at 0.5.
     // With several loops it shifts the whole evenly-spaced set toward one
@@ -4854,6 +5035,40 @@ function applyPendingOp() {
       }
     }
 
+  } else if (op.kind === 'bridge') {
+    const segs = Math.max(1, op.segments || 1);
+    const curved = op.groupMode === 'curve';
+    const run = sel => (op.payload.mode === 'face'
+      ? bridgeFacesOp(obj, sel, segs, curved)
+      : bridgeEdgesOp(obj, sel, segs, curved));
+    ensureHelpers(obj);
+    const res = run(op.payload.mode === 'face' ? op.payload.groups : op.payload.pairs);
+    op.lastWhy = res.ok ? null : res.why;
+    ensureHelpers(obj);
+
+    /* The mirrored side, in the SAME re-run, so the bar previews both while
+       you change the count. It rides as MARKS rather than indices because
+       the first pass deletes and appends faces and renumbers everything
+       after it - the same reason the loop cut carries coordinates. */
+    /* A silent half-symmetric result is indistinguishable from symmetry
+       being off, which is the one thing this app refuses to do. The reason
+       is stashed rather than toasted, because this runs again on every press
+       of the section stepper - bridgeSelection says it once. */
+    if (res.ok && op.payload.marks) {
+      const back = resolveElements(obj, op.payload.marks);
+      let m;
+      if (!back.size) {
+        m = { ok: false, why: 'could not find the mirrored side after the first pass' };
+      } else {
+        const topoNow = obj.mesh.userData.topo;
+        m = run(op.payload.mode === 'face'
+          ? Array.from(back)
+          : Array.from(back).map(ei => topoNow.edges[ei]).filter(Boolean).map(e => [e[0], e[1]]));
+        ensureHelpers(obj);
+      }
+      op.symWhy = m.ok ? null : 'Symmetry: ' + m.why;
+    }
+
   } else if (op.kind === 'inset') {
     if (op.groupMode === 'each') {
       op.payload.groups.forEach(gi => {
@@ -4932,7 +5147,8 @@ function availableOpOptions(op) {
   // Only face ops carry a `groups` payload; ops without one (loopcut) have no
   // "several selected" notion, so nothing is filtered out for them.
   const many = !op.payload.groups || op.payload.groups.length > 1;
-  return spec.options.filter(o => many || !o.needsMultiple);
+  const segs = op.segments || 1;
+  return spec.options.filter(o => (many || !o.needsMultiple) && !(o.minSegments && segs < o.minSegments));
 }
 
 function refreshOpGrouping() {
@@ -5009,6 +5225,15 @@ function stepSegments(delta) {
   if (n === App.pendingOp.segments) return;
   App.pendingOp.segments = n;
   document.getElementById('opSegValue').textContent = n;
+  /* The choices can depend on the count - Bridge only offers Curved once
+     there is something between the ends to bend. Re-render them, and if the
+     one that was active has just gone away, fall back rather than leaving
+     the op running a mode with no button. */
+  const opts = availableOpOptions(App.pendingOp);
+  if (opts.length && !opts.some(o => o.key === App.pendingOp.groupMode)) {
+    App.pendingOp.groupMode = opts[0].key;
+  }
+  refreshOpGrouping();
   applyPendingOp();
 }
 document.getElementById('opSegMinus').addEventListener('click', () => stepSegments(-1));
@@ -5351,39 +5576,66 @@ function clearAllCreases() {
 
 // Joins two selections with new faces: two faces become a tube, two runs of
 // edges become a sheet.
+/* Bridge is a live op now: the section count and the straight/curved choice
+   are dialled in on the bar and every change re-runs from the snapshot.
+
+   It joins one half of the selection to the other and guards on "exactly 2",
+   so the union of a pair and its mirror - four - would fail that guard
+   outright. That is why the mirrored side travels as its own marked set to
+   be bridged in a second pass, rather than being folded into the selection. */
 function bridgeSelection() {
   const obj = findObject(App.activeObjectId);
   if (!obj) { toast('Select an object first'); return; }
-  runMirrored(obj, bridgeSelectionOnce);
-}
-
-/* Bridge joins one half of the selection to the other, and guards on
-   "exactly 2". The union of a pair and its mirror is four, which would fail
-   that guard outright. One pass per side. */
-function bridgeSelectionOnce() {
-  const obj = findObject(App.activeObjectId);
-  if (!obj) return;
+  if (App.pendingOp || App.knife) return;
   ensureHelpers(obj);
 
-  let res;
+  let payload;
   if (App.mode === 'face') {
     if (App.selectedElements.size !== 2) { toast('Select exactly 2 faces to bridge'); return; }
-    res = bridgeFacesOp(obj, Array.from(App.selectedElements));
+    payload = { mode: 'face', groups: Array.from(App.selectedElements) };
   } else if (App.mode === 'edge') {
     const topo = obj.mesh.userData.topo;
     const pairs = Array.from(App.selectedElements)
       .map(ei => topo.edges[ei]).filter(Boolean).map(e => [e[0], e[1]]);
     if (pairs.length < 2) { toast('Select two runs of edges to bridge'); return; }
-    res = bridgeEdgesOp(obj, pairs);
+    payload = { mode: 'edge', pairs };
   } else {
     toast('Bridge works in Edge or Face mode');
     return;
   }
 
-  if (!res.ok) { toast(res.why); return; }
-  ensureHelpers(obj);
-  App.selectedElements = new Set();
-  finishMeshEdit(obj, 'Bridged (' + res.count + ' faces)');
+  payload.marks = null;
+  if (App.symmetry) {
+    const m = mirrorOfSelection(obj, Array.from(App.selectedElements));
+    // null means no symmetry map at all, which is not the same as "the
+    // selection is its own mirror" and must not be swallowed.
+    if (m === null) toast('Symmetry found no pairs here - working on one side only');
+    else {
+      const other = new Set(Array.from(m).filter(e => !App.selectedElements.has(e)));
+      if (other.size) payload.marks = markElements(obj, other);
+    }
+  }
+
+  beginPendingOp('bridge', obj, payload);
+
+  /* A selection this op will refuse every time gets its reason and no bar.
+     The first apply has already run by now, so the answer is known - and it
+     is a real answer from the op rather than a second guess at its rules. */
+  const op = App.pendingOp;
+  if (op && op.lastWhy) {
+    const why = op.lastWhy;
+    App.pendingOp = null;
+    hideOpBar();
+    restoreObjectState(obj, op.state);
+    ensureHelpers(obj);
+    App.selectedElements = new Set(op.selectionBefore);
+    setActiveObjectHelpersVisible(obj, App.mode);
+    refreshElementColors(obj);
+    refreshUI();
+    toast(why);
+    return;
+  }
+  if (op && op.symWhy) toast(op.symWhy);
 }
 
 function insetSelection() {
