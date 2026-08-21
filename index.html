@@ -620,7 +620,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.4</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.5</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1397,14 +1397,25 @@ function computeTopology(geometry) {
     faceGroups.push({ groupIndex: gi, triStart, triCount: triCnt, logicalVerts: Array.from(set), materialIndex: g.materialIndex ?? gi });
   });
 
-  // Expose an edge only if it's a genuine boundary/crease (touched by triangles
-  // from more than one face group, or only one triangle total) - this hides the
-  // internal diagonal that splits each quad face into two triangles.
+  /* An edge is EXPOSED when it lies on some face's outline, which is to say
+     when there is a face whose triangles use it exactly ONCE. Used twice by
+     the same face, it is that face's internal triangulation and invisible.
+
+     The old test was `occs.length === 2 && one group` - internal only when
+     the edge had exactly two occurrences in total. That misses the case
+     where the same line is an internal diagonal of TWO neighbouring faces at
+     once: four occurrences, two per face, no face with a single use, and yet
+     it was drawn and selectable as an edge. Rare with quads, routine as soon
+     as an n-gon is retriangulated - dissolving a cube corner hit it on four
+     of eight corners, each time adding phantom edges across faces that had
+     no business having any. */
   const edges = [];
   edgeOcc.forEach((occs, key) => {
-    const groupsInvolved = new Set(occs.map(o => o.groupIndex));
-    const isInternalDiagonal = occs.length === 2 && groupsInvolved.size === 1;
-    if (!isInternalDiagonal) {
+    const perGroup = new Map();
+    occs.forEach(o => perGroup.set(o.groupIndex, (perGroup.get(o.groupIndex) || 0) + 1));
+    let onSomeOutline = false;
+    perGroup.forEach(n => { if (n === 1) onSomeOutline = true; });
+    if (onSomeOutline) {
       const [a, b] = key.split('_').map(Number);
       edges.push([a, b]);
     }
@@ -1749,34 +1760,260 @@ function deleteFaceGroups(obj, groupIndices) {
   return applyTriangleRemoval(obj, (tri, gi) => gset.has(gi));
 }
 
-function deleteEdgesOp(obj, logicalEdgePairs) {
-  const topo = obj.mesh.userData.topo;
-  const keys = new Set(logicalEdgePairs.map(([a, b]) => edgeKey(a, b)));
-  // A face's *triangle fan* only touches a given boundary edge in one of its
-  // triangles, so checking triangles directly would delete half a quad and
-  // leave the other half dangling. Check the face's outer loop instead, and
-  // remove the whole face if any of its boundary edges match.
-  const groupsToRemove = new Set();
-  topo.faceGroups.forEach(fg => {
-    const loop = groupLogicalLoop(obj, fg.groupIndex);
-    for (let i = 0; i < loop.length; i++) {
-      if (keys.has(edgeKey(loop[i], loop[(i + 1) % loop.length]))) { groupsToRemove.add(fg.groupIndex); break; }
-    }
-  });
-  return applyTriangleRemoval(obj, (tri, gi) => groupsToRemove.has(gi));
+/* ---------------- Dissolve ----------------
+
+   Deleting an EDGE used to delete both faces touching it, and deleting a
+   VERTEX deleted every face around it. That is a hole where the user asked
+   for one fewer edge - "delete this edge" reads as "make these two faces
+   one", not "cut a window in my model". Face delete still cuts; that is the
+   tool for making a hole.
+
+   The whole trick is that a face here is a GROUP of triangles, and
+   computeTopology only exposes an edge when its two triangles belong to
+   DIFFERENT groups (otherwise it is the internal diagonal of a quad). So
+   dissolving an edge is not a geometric operation at all: concatenate the
+   two groups' triangles into one group and the edge stops being a boundary,
+   which is to say it stops existing. No retriangulation, no new vertices,
+   not a single position touched.
+
+   A vertex needs one more step, because merging the fan around it leaves it
+   sitting INSIDE the merged face, still drawn and still selectable. So the
+   merged face is rebuilt from its own outline, which no longer mentions
+   that corner. */
+
+function makeUnionFind(n) {
+  const parent = new Int32Array(n);
+  for (let i = 0; i < n; i++) parent[i] = i;
+  const find = (i) => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+  return { find, union: (a, b) => { a = find(a); b = find(b); if (a !== b) parent[b] = a; } };
 }
 
-function deleteVerticesOp(obj, logicalIds) {
-  const topo = obj.mesh.userData.topo;
-  const lset = new Set(logicalIds);
-  // Same reasoning as deleteEdgesOp: use each face's full vertex set (which
-  // already covers every triangle in its fan) rather than checking triangles
-  // one at a time, so a touched face is removed whole.
-  const groupsToRemove = new Set();
-  topo.faceGroups.forEach(fg => {
-    if (fg.logicalVerts.some(l => lset.has(l))) groupsToRemove.add(fg.groupIndex);
+/* Rewrites ed.groups so every set of groups sharing a root becomes one
+   group, and carries the material and smooth flag across with it. The
+   merged face takes the FIRST member's material - there is no blending a
+   material, and the alternative (refusing to dissolve between two
+   materials) would be a surprising place to stop. */
+function mergeFaceGroups(ed, L, mats, smooth, fin, find) {
+  const order = [], byRoot = new Map();
+  ed.groups.forEach((g, gi) => {
+    const r = find(gi);
+    if (!byRoot.has(r)) { byRoot.set(r, []); order.push(r); }
+    byRoot.get(r).push(gi);
   });
-  return applyTriangleRemoval(obj, (tri, gi) => groupsToRemove.has(gi));
+  const groups = [], newMats = [], newSmooth = {}, newFin = {}, merged = [];
+  order.forEach((r, ni) => {
+    const members = byRoot.get(r);
+    const tris = [];
+    members.forEach(gi => ed.groups[gi].triangles.forEach(t => tris.push(t)));
+    /* WELD the merged face's corners onto one attribute index per position.
+       separateGroupVertices hands every face its own private copy of each
+       corner, so two faces that met along an edge hold FOUR different
+       indices for its two ends. Concatenating their triangles without this
+       leaves the shared edge uncancelled - the face's outline comes back as
+       a figure of eight and the winding audit reports two new open edges,
+       which is exactly how this failed the first time it ran: dissolve one
+       edge of a cube, boundary 0 -> 2, and the safety check correctly threw
+       the whole edit away. Untouched faces are left alone; the rebuild
+       re-splits everything per group anyway. */
+    if (members.length > 1) {
+      for (let i = 0; i < tris.length; i++) {
+        tris[i] = [L.logicalGroups[L.logicalOf[tris[i][0]]][0],
+                   L.logicalGroups[L.logicalOf[tris[i][1]]][0],
+                   L.logicalGroups[L.logicalOf[tris[i][2]]][0]];
+      }
+    }
+    if (members.length > 1) merged.push(ni);
+    groups.push({ triangles: tris });
+    newMats.push(mats[members[0]]);
+    if (members.some(gi => smooth && smooth[gi])) newSmooth[ni] = true;
+    /* userData.finishes is the THIRD thing keyed by group index, after the
+       material array and smoothGroups, and it is easy to forget - every
+       other renumbering op in this file carries it and this one did not.
+       Left behind, its keys point at faces that have moved or no longer
+       exist, and the next op to read finishes[gi] hands the record to the
+       wrong face. First member that has one wins, same rule as material. */
+    if (fin) {
+      const from = members.find(gi => fin[gi]);
+      if (from !== undefined) newFin[ni] = fin[from];
+    }
+  });
+  ed.groups = groups;
+  return { mats: newMats, smooth: newSmooth, fin: newFin, merged };
+}
+
+/* Would any merged face stop being a face? A face is a patch with an
+   outline; merge every face of a closed cube and the result has no outline
+   at all - the mesh still LOOKS like a cube and the winding audit is
+   perfectly happy (nothing was torn), but there is not one edge left to
+   select and no way back except Undo. Measured: dissolve all 12 edges of a
+   cube and you get 1 face, 0 edges. Refusing costs nothing here, because
+   this runs before anything is rebuilt. */
+function mergesStillFaces(ed, L, merged) {
+  return merged.every(ni => trisOutlineLogical(L, ed.groups[ni].triangles).length >= 3);
+}
+
+/* The outline of a pile of triangles, in LOGICAL ids.
+
+   It cannot be done in attribute indices, which is what
+   getGroupBoundaryLoopAttr does: separateGroupVertices gives every face its
+   own private copy of each corner, so two faces that meet along an edge
+   hold four different attribute indices for its two ends. Their shared edge
+   would never cancel and the "outline" would come back as a figure of
+   eight. Welding by position first is the whole point.
+
+   Returns [] unless the boundary is exactly ONE closed loop - a merged face
+   with an island or a pinch point is not something a single outline can
+   describe, and quietly retriangulating from a partial walk would delete
+   the rest of it. */
+function trisOutlineLogical(L, tris) {
+  const directed = [], count = new Map();
+  tris.forEach(t => {
+    const a = L.logicalOf[t[0]], b = L.logicalOf[t[1]], c = L.logicalOf[t[2]];
+    [[a, b], [b, c], [c, a]].forEach(([x, y]) => {
+      directed.push([x, y]);
+      const k = edgeKey(x, y);
+      count.set(k, (count.get(k) || 0) + 1);
+    });
+  });
+  const boundary = directed.filter(([x, y]) => count.get(edgeKey(x, y)) === 1);
+  if (boundary.length < 3) return [];
+  const next = new Map();
+  boundary.forEach(([x, y]) => next.set(x, y));
+  const start = boundary[0][0];
+  const loop = [start];
+  let cur = start;
+  for (let i = 0; i < boundary.length; i++) {
+    const n = next.get(cur);
+    if (n === undefined || n === start) break;
+    loop.push(n); cur = n;
+  }
+  return loop.length === boundary.length ? loop : [];
+}
+
+// Which face groups sit on each exposed edge, keyed logically.
+function groupsByEdge(ed, L) {
+  const byEdge = new Map();
+  ed.groups.forEach((g, gi) => {
+    const lp = getGroupBoundaryLoopAttr(ed, gi).map(a => L.logicalOf[a]);
+    for (let i = 0; i < lp.length; i++) {
+      const k = edgeKey(lp[i], lp[(i + 1) % lp.length]);
+      if (!byEdge.has(k)) byEdge.set(k, new Set());
+      byEdge.get(k).add(gi);
+    }
+  });
+  return byEdge;
+}
+
+/* Melts each selected edge, leaving the two faces it separated as one.
+
+   An edge with only ONE face beside it is an open rim: there is nothing to
+   merge into, and the only way to honour "delete this edge" would be to
+   delete that face - which is the behaviour this replaces. It is counted as
+   skipped and reported rather than guessed at. Same for a non-manifold edge
+   with three or more faces on it: there is no single answer. */
+function dissolveEdgesOp(obj, logicalEdgePairs) {
+  const ed = toEditable(obj.mesh);
+  const L = edLogical(ed);
+  const mats = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
+  const smooth = obj.mesh.userData.smoothGroups || {};
+  const byEdge = groupsByEdge(ed, L);
+
+  const uf = makeUnionFind(ed.groups.length);
+  let done = 0, skipped = 0;
+  logicalEdgePairs.forEach(([a, b]) => {
+    const gs = byEdge.get(edgeKey(a, b));
+    if (!gs || gs.size !== 2) { skipped++; return; }
+    const pair = Array.from(gs);
+    uf.union(pair[0], pair[1]);
+    done++;
+  });
+  if (!done) return { done: 0, skipped };
+
+  const out = mergeFaceGroups(ed, L, mats, smooth, obj.mesh.userData.finishes, uf.find);
+  if (!mergesStillFaces(ed, L, out.merged)) return { done: 0, skipped, closed: true };
+  obj.mesh.material = out.mats;
+  obj.mesh.userData.smoothGroups = out.smooth;
+  obj.mesh.userData.finishes = out.fin;
+  rebuildFromEditable(obj, ed);
+  return { done, skipped };
+}
+
+/* Melts each selected vertex, leaving the ring of faces around it as one
+   face with that corner gone.
+
+   Two steps, and the second is the one that actually removes the vertex:
+   merge every face touching it, then rebuild the merged face from its own
+   outline. A corner that was interior never appears in that outline, so it
+   simply stops being part of the mesh; a corner on an open rim is filtered
+   out of the outline explicitly.
+
+   A vertex with only one face on it is skipped: dissolving it would have to
+   either leave the face with a bite out of it or delete the face. */
+function dissolveVerticesOp(obj, logicalIds) {
+  const ed = toEditable(obj.mesh);
+  const L = edLogical(ed);
+  const mats = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
+  const smooth = obj.mesh.userData.smoothGroups || {};
+  const lset = new Set(logicalIds);
+
+  const byVert = new Map();
+  ed.groups.forEach((g, gi) => {
+    const seen = new Set();
+    g.triangles.forEach(t => t.forEach(a => seen.add(L.logicalOf[a])));
+    seen.forEach(l => {
+      if (!lset.has(l)) return;
+      if (!byVert.has(l)) byVert.set(l, []);
+      byVert.get(l).push(gi);
+    });
+  });
+
+  const uf = makeUnionFind(ed.groups.length);
+  let done = 0, skipped = 0;
+  byVert.forEach(gs => {
+    if (gs.length < 2) { skipped++; return; }
+    for (let i = 1; i < gs.length; i++) uf.union(gs[0], gs[i]);
+    done++;
+  });
+  if (!done) return { done: 0, skipped };
+
+  const out = mergeFaceGroups(ed, L, mats, smooth, obj.mesh.userData.finishes, uf.find);
+  if (!mergesStillFaces(ed, L, out.merged)) return { done: 0, skipped, closed: true };
+
+  /* Only the vertices actually being dissolved. Filtering by the whole
+     SELECTION instead would remove the ones just reported as skipped: pick
+     an interior vertex and a lone corner together, and the corner is quietly
+     dropped from its face's outline while the toast says "skipped 1". */
+  const doing = new Set();
+  byVert.forEach((gs, l) => { if (gs.length >= 2) doing.add(l); });
+
+  /* Retriangulate into a scratch list and only commit if EVERY touched face
+     came back. A face whose outline is not one closed loop - a pinch vertex
+     where two cones meet, an island - cannot be rebuilt, and writing the
+     others anyway leaves the faces merged with the vertex still sitting in
+     them: half an edit, and one the open-edge audit cannot see, because
+     merging faces does not change the open-edge count. Nothing has touched
+     obj.mesh yet, so backing out here is free.
+
+     Positions were never touched, so the logical map still holds. */
+  const rebuilt = new Array(ed.groups.length).fill(null);
+  for (let i = 0; i < ed.groups.length; i++) {
+    const g = ed.groups[i];
+    if (!g.triangles.some(t => t.some(a => doing.has(L.logicalOf[a])))) continue;
+    const loop = trisOutlineLogical(L, g.triangles);
+    if (!loop.length) return { done: 0, skipped, torn: true };
+    const kept = loop.filter(l => !doing.has(l));
+    if (kept.length < 3) return { done: 0, skipped, torn: true };
+    const tris = polygonTriangles(ed, kept.map(l => L.logicalGroups[l][0]));
+    if (!tris.length) return { done: 0, skipped, torn: true };
+    rebuilt[i] = tris;
+  }
+  rebuilt.forEach((tris, i) => { if (tris) ed.groups[i].triangles = tris; });
+
+  obj.mesh.material = out.mats;
+  obj.mesh.userData.smoothGroups = out.smooth;
+  obj.mesh.userData.finishes = out.fin;
+  rebuildFromEditable(obj, ed);
+  return { done, skipped };
 }
 
 // Merges 2+ selected vertices into one, at their average position. Any
@@ -4119,13 +4356,16 @@ function captureObjectState(obj) {  const ed = toEditable(obj.mesh);
     positions: ed.positions.slice(),
     groups: ed.groups.map(g => ({ triangles: g.triangles.map(t => t.slice()) })),
     mats,
-    smooth: { ...(obj.mesh.userData.smoothGroups || {}) }
+    smooth: { ...(obj.mesh.userData.smoothGroups || {}) },
+    // Also keyed by group index, so a revert has to put it back too.
+    finishes: { ...(obj.mesh.userData.finishes || {}) }
   };
 }
 
 function restoreObjectState(obj, st) {
   obj.mesh.material = st.mats.map(m => m.clone());
   obj.mesh.userData.smoothGroups = { ...st.smooth };
+  if (st.finishes) obj.mesh.userData.finishes = { ...st.finishes };
   rebuildFromEditable(obj, {
     positions: st.positions.slice(),
     groups: st.groups.map(g => ({ triangles: g.triangles.map(t => t.slice()) }))
@@ -7529,10 +7769,52 @@ function deleteSelection() {
   symExpand(obj);
   const topo = obj.mesh.userData.topo;
 
-  let survived;
-  if (App.mode === 'vertex') survived = deleteVerticesOp(obj, Array.from(App.selectedElements));
-  else if (App.mode === 'edge') survived = deleteEdgesOp(obj, Array.from(App.selectedElements).map(ei => topo.edges[ei]));
-  else survived = deleteFaceGroups(obj, Array.from(App.selectedElements));
+  /* Vertex and Edge delete DISSOLVE - the faces close over what was removed
+     instead of going with it. Face delete still cuts, because that is the
+     tool for making a hole.
+
+     Checked, not trusted. An outline that ear-clipping cannot close cleanly
+     would leave MORE open edge than it found, so the open-edge count is
+     compared before and after and the whole edit is put back if it grew.
+     Same guard, and the same reason, as Cap holes. */
+  if (App.mode === 'vertex' || App.mode === 'edge') {
+    const before = auditWinding(obj).boundary;
+    const snap = captureObjectState(obj);
+    const r = App.mode === 'edge'
+      ? dissolveEdgesOp(obj, Array.from(App.selectedElements).map(ei => topo.edges[ei]).filter(Boolean))
+      : dissolveVerticesOp(obj, Array.from(App.selectedElements));
+
+    if (!r.done) {
+      toast(r.torn
+        ? 'That face has no single outline to rebuild — left it alone'
+        : r.closed
+        ? 'That would leave a face with no edges at all — left it alone'
+        : (App.mode === 'edge'
+            ? 'Nothing to dissolve — an edge needs a face on both sides'
+            : 'Nothing to dissolve — a vertex needs more than one face'));
+      return;
+    }
+    ensureHelpers(obj);
+    if (auditWinding(obj).boundary > before) {
+      restoreObjectState(obj, snap);
+      ensureHelpers(obj);
+      toast('That would tear the mesh open — left it alone');
+      return;
+    }
+
+    App.selectedElements.clear();
+    setActiveObjectHelpersVisible(obj, App.mode);
+    toast(r.skipped
+      ? 'Dissolved ' + r.done + ', skipped ' + r.skipped
+      : 'Dissolved ' + r.done);
+    hideRadialMenu();
+    refreshUI();
+    refreshGizmoAttachment();
+    pushHistory();
+    return;
+  }
+
+  const survived = deleteFaceGroups(obj, Array.from(App.selectedElements));
 
   App.selectedElements.clear();
 

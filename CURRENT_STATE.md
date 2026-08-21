@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **a2.4**
+- Version at time of writing: **a2.5**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -446,6 +446,12 @@ otherwise the inspector reports the position the object was reflected FROM.
   then stuck on a cached build reading "you shipped nothing". Fixed a2.3a to
   match the ELEMENT and compare its text. **Never encode the version format
   there again.**
+- **THREE things are keyed by face-group index**, not one: the `material[]`
+  array, `userData.smoothGroups`, and `userData.finishes`. Any op that
+  renumbers groups must carry all three, and `captureObjectState` must
+  snapshot all three or a revert puts the geometry back and leaves them
+  shifted. Dissolve shipped carrying two of them and a reviewer caught the
+  third. Grep `finishes` before you renumber anything.
 - **A silent no-op is the worst failure mode.** It is indistinguishable from
   a broken app. Several bugs here were "the code correctly decided to do
   nothing and told no one": the type lock, `avgDir` cancelling to zero,
@@ -972,6 +978,55 @@ not at all on the phone this app is built for.
 Fillet previews rounded edges without changing the mesh. The op-bar preview
 above is a preview of the real result; this would be a display-only smooth
 you can leave switched on while modelling.
+
+## Delete, and what dissolve means (a2.5)
+
+**Face delete cuts. Vertex and edge delete DISSOLVE.** Deleting an edge used
+to delete both faces touching it, and deleting a vertex deleted the whole fan
+around it — a hole where the user asked for one fewer edge. Now the faces
+close over what was removed. Face delete is unchanged, because that is the
+tool for making a hole.
+
+**The trick is that a face is a GROUP of triangles.** `computeTopology` only
+exposes an edge when some face uses it exactly once, so dissolving an edge is
+not a geometric operation at all: concatenate the two groups' triangles into
+one group and the edge stops being on any outline, which is to say it stops
+existing. No retriangulation, no new vertices, not one position touched. A
+vertex needs one more step, because merging its fan leaves it sitting INSIDE
+the merged face, still drawn and still selectable — so that face is rebuilt
+from its own outline, which no longer mentions the corner.
+
+**Merged corners must be welded first.** `separateGroupVertices` gives every
+face private copies of its corners, so two faces meeting along an edge hold
+four different attribute indices for its two ends. Concatenate without
+welding and the shared edge never cancels: the outline comes back a figure of
+eight and the winding audit reports two new open edges. Measured on the first
+run — dissolve one edge of a cube, boundary 0 → 2, and the safety check
+correctly threw the whole edit away.
+
+**The edge-exposure rule was wrong and dissolve found it.** It used to read
+"internal iff exactly two occurrences in exactly one group". That misses a
+line that is an internal diagonal of TWO neighbouring faces at once — four
+occurrences, no face using it singly — which is routine as soon as an n-gon
+is retriangulated. Four of a cube's eight corners came back with phantom
+edges and Euler 0 or 1. The rule is now "exposed iff some group uses it
+exactly once", which also makes `topo.edges` agree with `groupsByEdge`.
+
+**Three guards, all of which have fired:** a merge that would leave a face
+with no outline at all is refused before anything is rebuilt (dissolve all 12
+edges of a cube → 1 face, 0 edges, and no way back but Undo); a face whose
+outline is not one closed loop aborts the whole vertex op rather than
+committing half of it; and the open-edge count is compared before and after,
+restoring a snapshot if it grew. The second one matters because merging faces
+does not change the open-edge count, so the audit cannot see a half-edit.
+
+**Only what was actually dissolved is filtered out.** Vertices reported as
+skipped must not be dropped from the outlines of the faces being rebuilt —
+select an interior vertex and a lone corner together and the corner was being
+removed while the toast said "skipped 1".
+
+Verified on a cube: any one of 12 edges → 8v/11e/5f, any one of 8 vertices →
+7v/9e/4f, every one identical, Euler 2 and closed throughout.
 
 ## Open threads
 
