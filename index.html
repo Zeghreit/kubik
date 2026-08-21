@@ -6481,6 +6481,17 @@ function pickComponentOnActive(ev) {
    by handleTap and cleared on the next pick. */
 let pickBlockedBy = null;
 
+/* MEASURED, a2.2a: proximity cannot tell "aiming at a vertex" from "aiming
+   at a face", so the type lock cannot pre-empt on distance. Closest
+   face-centre to its nearest visible vertex, in screen pixels: plain cube
+   25.2, subdivided once 6.1, twice 0.8, three times 0.5. By 96 faces a
+   face's own centre IS a vertex to within a pixel. A threshold generous
+   enough to catch a deliberate vertex tap on a cube refused 32 of 48 face
+   centres on a 96-face mesh - it made faces unselectable, which is worse
+   than the bug it was meant to fix. Do not try this again with a smaller
+   number; the distributions overlap completely. The way out is a deliberate
+   way to CHANGE type, not a cleverer guess at intent. */
+
 function pickComponentOnActiveInner(ev) {
   pickBlockedBy = null;
   /* Once something is selected, the type is LOCKED: only that same type can
