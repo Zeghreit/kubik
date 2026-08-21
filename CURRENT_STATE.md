@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **a2.3a**
+- Version at time of writing: **a2.4**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -38,8 +38,8 @@ v1.85d.
   the top-left empty and the top-right crowded - the cube is a 128px
   object with its own presence, and a pill beneath it read as part of
   the cube rather than as its own control.
-- **Bottom-left**: the round mode button. A TAP toggles Object and
-  Component; a HOLD blooms the mode ring (Object / Vertex / Edge / Face).
+- **Bottom-left**: the round Object/Component button. A plain tap toggle.
+  a2.3 gave it a press-and-hold mode ring; a2.4 removed it again.
   **Bottom-centre**: Undo/Redo. **Bottom-right**: Help.
 - **The bottom row aligns on BOTTOM EDGES.** All four take a plain
   `bottom: var(--edge-b)`, and `--edge-b` is 4px against the 14px the other
@@ -180,22 +180,38 @@ the viewport, so there is always somewhere left to orbit from).
 start; mouse and pen keep 6px. A thumb rolls further than 6px as it presses
 and lifts, so ordinary taps were being discarded as camera drags.
 
-**THE MODE DECIDES WHAT A TAP PICKS, and nothing else ever changes it.**
-Vertices in Vertex mode, edges in Edge, faces in Face — with or without a
-selection. A tap that finds nothing of that type probes the others and says
-what it found; it must NEVER be silent (a refused tap hits neither branch of
-`handleTap` — the object under the finger IS the active object, so nothing
-to switch to; not empty space, so nothing to clear — and simply evaporates).
+**Two rules, in this order.** WITH A SELECTION the type is LOCKED: only that
+same type can be picked until you tap empty space to clear. It removes
+catch-zone ambiguity by construction, and it must NEVER be silent — a
+refused tap hits neither branch of `handleTap` (the object under the finger
+IS the active object, so nothing to switch to; not empty space, so nothing
+to clear) and simply evaporates, so it probes what was actually there and
+says so. WITH NOTHING SELECTED the tap is FREE: vertex, then edge, then
+face, and it moves you into whichever it found.
 
-**The "free first tap" is gone (a2.3a) and must not come back.** Until then
-a tap with nothing selected tried vertex, then edge, then face, and quietly
-moved you into whichever it found. That was the real "I can't select a
-vertex" bug, and it survived the a2.3 mode ring: you would choose Vertex
-deliberately, tap slightly off a corner where no vertex sits within 28px,
-get the face underneath — and be silently moved into Face mode, so every
-tap after that was a face too. One sloppy tap threw away a deliberate
-choice. `switchToComponentType()` existed only to do this and has been
-deleted.
+**a2.3–a2.3a tried the opposite and it was reverted at a2.4, by request.**
+The theory was that the free tap is what makes vertices unreachable: tap a
+little off a corner, find no vertex within 28px, get the face underneath and
+be moved into Face mode, with every tap after that a face. So a2.3 added a
+press-and-hold mode ring on the bottom-left button and a2.3a made the mode
+sticky. It worked, but declaring a type before every tap is a tax on all
+taps to fix a minority, and the ring and the sticky mode are both gone.
+
+**If "I can't select a vertex" returns, this is where it lives** — and the
+fix is a bigger vertex catch radius or a better tie-break, NOT a mode you
+set by hand. Do not reach for proximity either: measured at a2.2a, the
+closest face-centre to its nearest visible vertex is 25.2px on a plain cube,
+6.1px subdivided once, 0.8px twice, 0.5px three times. By 96 faces a face's
+own centre IS a vertex to within a pixel — the distributions overlap
+completely, and a threshold generous enough to catch a deliberate vertex tap
+on a cube refused 32 of 48 face centres on a subdivided one.
+
+**A harness cannot see an aiming bug.** Every test here computes its tap
+positions with `worldToScreenPx`, the same function the picker uses, so any
+offset between the DRAWN dot and the PICKED point cancels out and the sweep
+comes back 59/60 with the bug untouched. `?debug=1` toasts the pick line
+(nearest-vertex distance, signed dx/dy to it, DPR, viewport-vs-canvas rect
+offset) precisely so a phone can report what no harness here can measure.
 
 **The mode ring (a2.3) is what makes the lock liveable.** Hold the bottom-
 left button and Object / Vertex / Edge / Face bloom; picking one sets the
@@ -213,6 +229,10 @@ completely, and a threshold generous enough to catch a deliberate vertex
 tap on a cube refused 32 of 48 face centres on a subdivided one. Saying
 what you want beats guessing it.
 
+**No deliberate way to switch component type** — you must successfully tap
+the type you want, or clear and tap again. This was solved at a2.3 and
+un-solved at a2.4 on purpose; see above before rebuilding it.
+
 **Rings are DRAWN where they fit and AIMED from the finger.**
 `bloomToolRing` keeps a ring `R + 30` inside the viewport, so one bloomed
 near an edge — or from the corner mode button — lands well away from the
@@ -220,11 +240,8 @@ finger that opened it. Hover used to be measured from the drawn centre,
 which put the finger outside the dead zone before it had moved: the first
 pixel of jitter highlighted whatever lay on that bearing, and lifting in
 place RAN it. The optional `aim` argument separates the two, and all three
-callers pass it. A set may also name its own bearings with `deg`, which the
-mode ring uses — it blooms from a corner, so an item placed straight down
-could not be reached at all on a phone. The mode ring is also tagged
-`owner: 'hub'`: the canvas handlers must never close a ring they did not
-open, since a touch on the canvas fires `pointerleave` the moment it lifts.
+callers pass it. (The per-set `deg` bearings and the `owner` tag went
+with the mode ring at a2.4.)
 
 **Back-facing components are rejected by face normal**, so picking agrees
 with back-face culling. Mirrored (negative-determinant) objects are
