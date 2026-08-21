@@ -620,7 +620,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.5</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.5a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1904,6 +1904,34 @@ function groupsByEdge(ed, L) {
   return byEdge;
 }
 
+/* Rebuilds every face that uses one of these corners from its own outline,
+   with the corners left out - which is what actually REMOVES a vertex, as
+   opposed to merely burying it inside a merged face where it stays drawn
+   and selectable.
+
+   All or nothing. A face whose outline is not one closed loop cannot be
+   rebuilt, and writing the others anyway leaves half an edit that no audit
+   can see: merging faces does not change the open-edge count. It works on a
+   scratch list and reports failure without having touched anything, so the
+   caller can back out for free. */
+function rebuildFacesWithout(ed, L, kill) {
+  if (!kill.size) return true;
+  const rebuilt = new Array(ed.groups.length).fill(null);
+  for (let i = 0; i < ed.groups.length; i++) {
+    const g = ed.groups[i];
+    if (!g.triangles.some(t => t.some(a => kill.has(L.logicalOf[a])))) continue;
+    const loop = trisOutlineLogical(L, g.triangles);
+    if (!loop.length) return false;
+    const kept = loop.filter(l => !kill.has(l));
+    if (kept.length < 3) return false;
+    const tris = polygonTriangles(ed, kept.map(l => L.logicalGroups[l][0]));
+    if (!tris.length) return false;
+    rebuilt[i] = tris;
+  }
+  rebuilt.forEach((tris, i) => { if (tris) ed.groups[i].triangles = tris; });
+  return true;
+}
+
 /* Melts each selected edge, leaving the two faces it separated as one.
 
    An edge with only ONE face beside it is an open rim: there is nothing to
@@ -1919,18 +1947,34 @@ function dissolveEdgesOp(obj, logicalEdgePairs) {
   const byEdge = groupsByEdge(ed, L);
 
   const uf = makeUnionFind(ed.groups.length);
+  const runCount = new Map();
   let done = 0, skipped = 0;
   logicalEdgePairs.forEach(([a, b]) => {
     const gs = byEdge.get(edgeKey(a, b));
     if (!gs || gs.size !== 2) { skipped++; return; }
     const pair = Array.from(gs);
     uf.union(pair[0], pair[1]);
+    runCount.set(a, (runCount.get(a) || 0) + 1);
+    runCount.set(b, (runCount.get(b) || 0) + 1);
     done++;
   });
   if (!done) return { done: 0, skipped };
 
+  /* The vertices INSIDE the run go too. Dissolving an edge and leaving its
+     corners behind is only half the job - they sit on the merged face doing
+     nothing, still drawn and still selectable, and a dissolved edge loop
+     leaves a whole ring of them.
+
+     Inside means "used by two or more of the dissolved edges". The two ENDS
+     of a partial run are used by one, and they stay: they are still junctions
+     of edges that survive, and removing them would be a different edit than
+     the one asked for. A closed loop has no ends, so all of it goes. */
+  const killVerts = new Set();
+  runCount.forEach((n, l) => { if (n >= 2) killVerts.add(l); });
+
   const out = mergeFaceGroups(ed, L, mats, smooth, obj.mesh.userData.finishes, uf.find);
   if (!mergesStillFaces(ed, L, out.merged)) return { done: 0, skipped, closed: true };
+  if (!rebuildFacesWithout(ed, L, killVerts)) return { done: 0, skipped, torn: true };
   obj.mesh.material = out.mats;
   obj.mesh.userData.smoothGroups = out.smooth;
   obj.mesh.userData.finishes = out.fin;
@@ -1986,28 +2030,8 @@ function dissolveVerticesOp(obj, logicalIds) {
   const doing = new Set();
   byVert.forEach((gs, l) => { if (gs.length >= 2) doing.add(l); });
 
-  /* Retriangulate into a scratch list and only commit if EVERY touched face
-     came back. A face whose outline is not one closed loop - a pinch vertex
-     where two cones meet, an island - cannot be rebuilt, and writing the
-     others anyway leaves the faces merged with the vertex still sitting in
-     them: half an edit, and one the open-edge audit cannot see, because
-     merging faces does not change the open-edge count. Nothing has touched
-     obj.mesh yet, so backing out here is free.
-
-     Positions were never touched, so the logical map still holds. */
-  const rebuilt = new Array(ed.groups.length).fill(null);
-  for (let i = 0; i < ed.groups.length; i++) {
-    const g = ed.groups[i];
-    if (!g.triangles.some(t => t.some(a => doing.has(L.logicalOf[a])))) continue;
-    const loop = trisOutlineLogical(L, g.triangles);
-    if (!loop.length) return { done: 0, skipped, torn: true };
-    const kept = loop.filter(l => !doing.has(l));
-    if (kept.length < 3) return { done: 0, skipped, torn: true };
-    const tris = polygonTriangles(ed, kept.map(l => L.logicalGroups[l][0]));
-    if (!tris.length) return { done: 0, skipped, torn: true };
-    rebuilt[i] = tris;
-  }
-  rebuilt.forEach((tris, i) => { if (tris) ed.groups[i].triangles = tris; });
+  // Positions were never touched, so the logical map still holds.
+  if (!rebuildFacesWithout(ed, L, doing)) return { done: 0, skipped, torn: true };
 
   obj.mesh.material = out.mats;
   obj.mesh.userData.smoothGroups = out.smooth;

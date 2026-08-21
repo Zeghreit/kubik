@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **a2.5**
+- Version at time of writing: **a2.5a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1019,6 +1019,16 @@ outline is not one closed loop aborts the whole vertex op rather than
 committing half of it; and the open-edge count is compared before and after,
 restoring a snapshot if it grew. The second one matters because merging faces
 does not change the open-edge count, so the audit cannot see a half-edit.
+
+**Dissolving edges takes the run's INTERIOR vertices with it (a2.5a).**
+Leaving them behind is only half the job — they sit on the merged face doing
+nothing, still drawn and still selectable, and a dissolved edge loop leaves a
+whole ring of them. Interior means "used by two or more of the dissolved
+edges". The two ENDS of a partial run are used by one and they stay: they are
+still junctions of edges that survive. A closed loop has no ends, so all of it
+goes. Measured: loop-cut a cube (12v/20e/10f), dissolve the whole ring of 4 →
+back to a clean 8/12/6 with every mid vertex gone; dissolve 3 of the 4 →
+10v/15e/7f with exactly the two ends left; dissolve one edge → both ends stay.
 
 **Only what was actually dissolved is filtered out.** Vertices reported as
 skipped must not be dropped from the outlines of the faces being rebuilt —
