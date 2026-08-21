@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **a2.0**
+- Version at time of writing: **a2.0a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -280,10 +280,15 @@ not whether the surface faces outward, and a fully inverted object is
 perfectly self-consistent. Global inversion is something you see, not
 something the audit can catch.
 
-**Cap holes** (face ring and object ring). Closes open boundaries. Works on
-whichever object you are editing in any mode, because a hole belongs to the
-mesh rather than to the selection, and the moment you want it is right after
-deleting a face.
+**Cap holes** (edge, face and object rings). Closes open boundaries.
+
+**In Edge mode a selection NAMES the hole.** Select its rim and only that
+hole is capped — one edge of it is enough, so you never have to select the
+whole loop to say which one you meant, though a double-tap edge loop hands
+you the whole rim anyway. This is the use Zeghreit asked for and it is the
+main way in. With nothing selected, or in any other mode, every hole in the
+object is fair game, because a hole belongs to the mesh rather than to the
+selection.
 
 A face's boundary loop is DIRECTED, and two faces sharing an edge traverse
 it in opposite directions — that is what makes their normals agree. So an
@@ -307,6 +312,17 @@ Two things it got wrong first, both caught by measuring rather than reading:
   now caps, re-counts the open edges, and **puts the mesh back if the number
   did not fall**, saying the opening is not flat enough. Measured across
   seven cases: six reach boundary 0, the impossible one is left untouched.
+
+**A selection can outlive what it points at, and that used to crash the
+app.** `refreshGizmoAttachment` did `topo.edges[ei].forEach(...)` with no
+guard. Any op that rebuilds the mesh renumbers every element, so an id left
+over from before is not merely stale, it is out of range — and the throw
+took the whole app down rather than losing one highlight. Cap holes found
+it because it consumes the very edges you selected, but every rebuilding op
+could have hit it. All three branches are guarded now, and Cap clears the
+consumed selection rather than leaving ids pointing at whatever happens to
+sit at those numbers afterwards.
+
 
 **Separate** (object ring). The inverse of Join: one object per CONNECTED
 piece. Connected, not spatially near — two cubes that overlap but share no

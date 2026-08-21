@@ -616,7 +616,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.0</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.0a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -2194,7 +2194,7 @@ function separateObject(obj) {
    filling with the REVERSE gives a face that traverses every shared edge
    the opposite way to its neighbour, so the cap comes out facing the same
    way as the surface around it with nothing to guess. */
-function fillHolesOp(obj) {
+function fillHolesOp(obj, onlyEdges) {
   const mesh = obj.mesh;
   const ed = toEditable(mesh);
   const L = edLogical(ed);
@@ -2251,7 +2251,17 @@ function fillHolesOp(obj) {
   }
   if (!holes.length) return 0;
 
-  holes.forEach(loop => {
+  /* Given a set of selected edges, cap only the holes those edges sit on.
+     Touching ONE rim edge is enough to name a hole - you should not have to
+     select the whole loop to say which one you meant, and a double-tap edge
+     loop select happens to give you the whole rim anyway. */
+  const targets = (onlyEdges && onlyEdges.size)
+    ? holes.filter(loop => loop.some((a, i) =>
+        onlyEdges.has(edgeKey(a, loop[(i + 1) % loop.length]))))
+    : holes;
+  if (!targets.length) return 0;
+
+  targets.forEach(loop => {
     // Reversed, so the cap disagrees with the rim's direction and therefore
     // agrees with the rim's normals.
     const rev = loop.slice().reverse();
@@ -2270,7 +2280,7 @@ function fillHolesOp(obj) {
   });
 
   rebuildFromEditable(obj, ed);
-  return holes.length;
+  return targets.length;
 }
 
 function cloneObjectInto(obj, name) {
@@ -4671,12 +4681,27 @@ function fillHolesSelection() {
      edges. Fewer means it helped; the same or more means this opening is
      not one a single face can close, and saying so beats quietly making the
      model worse while reporting success. */
-  let filled = 0, objs = 0, refused = 0;
+  /* In Edge mode a selection NAMES the hole you meant. Select its rim - one
+     edge of it is enough, and a double-tap edge loop gives you the whole
+     thing - and only that hole is capped. With nothing selected, or in any
+     other mode, every hole in the object is fair game. */
+  let onlyEdges = null;
+  if (App.mode === 'edge' && App.selectedElements.size && targets.length === 1) {
+    const topo = targets[0].mesh.userData.topo;
+    onlyEdges = new Set();
+    App.selectedElements.forEach(ei => {
+      const e = topo.edges[ei];
+      if (e) onlyEdges.add(edgeKey(e[0], e[1]));
+    });
+  }
+
+  let filled = 0, objs = 0, refused = 0, hadHoles = false;
   targets.forEach(obj => {
     ensureHelpers(obj);
     const before = auditWinding(obj).boundary;
+    if (before) hadHoles = true;
     const snap = captureObjectState(obj);
-    const n = fillHolesOp(obj);
+    const n = fillHolesOp(obj, onlyEdges);
     if (!n) return;
     ensureHelpers(obj);
     if (auditWinding(obj).boundary >= before) {
@@ -4689,10 +4714,16 @@ function fillHolesSelection() {
     objs++;
   });
   if (!filled) {
-    toast(refused ? 'That opening is not flat enough to cap with one face'
-                  : 'No open holes to cap');
+    if (refused) toast('That opening is not flat enough to cap with one face');
+    else if (onlyEdges && hadHoles) toast('Those edges are not on an open hole');
+    else toast('No open holes to cap');
     return;
   }
+
+  /* The rim you selected has just been consumed - those edges still exist
+     but every id was renumbered by the rebuild, so keeping them would point
+     the selection at whatever now happens to sit at those numbers. */
+  App.selectedElements.clear();
 
   const msg = 'Capped ' + filled + ' hole' + (filled === 1 ? '' : 's');
   if (App.mode !== 'object' && targets.length === 1) { finishMeshEdit(targets[0], msg); return; }
@@ -5272,9 +5303,23 @@ function refreshGizmoAttachment() {
       const topo = obj.mesh.userData.topo;
       const pa = obj.mesh.geometry.attributes.position;
       const logicalIds = new Set();
-      if (App.mode === 'vertex') App.selectedElements.forEach(l => logicalIds.add(l));
-      if (App.mode === 'edge') App.selectedElements.forEach(ei => { topo.edges[ei].forEach(l => logicalIds.add(l)); });
-      if (App.mode === 'face') App.selectedElements.forEach(gi => { topo.faceGroups[gi].logicalVerts.forEach(l => logicalIds.add(l)); });
+      /* Guarded, because a selection can outlive the thing it points at. Any
+         op that rebuilds the mesh renumbers everything, so an element id
+         left over from before is not just stale but out of range - and an
+         unguarded `topo.edges[ei].forEach` throws, which took the whole app
+         down rather than losing one highlight. Cap holes found this; every
+         other rebuilding op could have. */
+      if (App.mode === 'vertex') App.selectedElements.forEach(l => {
+        if (topo.logicalGroups[l]) logicalIds.add(l);
+      });
+      if (App.mode === 'edge') App.selectedElements.forEach(ei => {
+        const e = topo.edges[ei];
+        if (e) e.forEach(l => logicalIds.add(l));
+      });
+      if (App.mode === 'face') App.selectedElements.forEach(gi => {
+        const fg = topo.faceGroups[gi];
+        if (fg && fg.logicalVerts) fg.logicalVerts.forEach(l => logicalIds.add(l));
+      });
 
       const center = new THREE.Vector3();
       logicalIds.forEach(l => {
@@ -8356,6 +8401,7 @@ const HUB_TOOLS_EDGE = [
   { key: 'bridge', icon: 'bridge', label: 'Bridge', ring: 0, run: bridgeSelection },
   { key: 'loopcut', icon: 'loop', label: 'Loop', ring: 1, run: edgeLoopSelection },
   { key: 'split', icon: 'split', label: 'Split', ring: 1, run: splitSelection },
+  { key: 'cap', icon: 'cap', label: 'Cap hole', ring: 1, run: fillHolesSelection },
   { key: 'crease', icon: 'crease', label: 'Crease', ring: 1, run: () => creaseSelection(true) },
   { key: 'uncrease', icon: 'uncrease', label: 'Uncrease', ring: 1, run: () => creaseSelection(false) },
   { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', ring: 1, run: toggleShading },
