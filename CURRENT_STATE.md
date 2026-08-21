@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **v1.99d**
+- Version at time of writing: **v1.99k**
 - Debug: append `?debug=1`. Tap picks log a `[pick] ...` line explaining why
   a tap resolved as it did, every mesh edit logs a `[winding] ...` line (see
   Winding audit), and `window.__kubik` exposes the live app (see Testing
@@ -122,9 +122,16 @@ pixel distance to the projected point/line. The 3D version failed in a way
 no threshold fixes: an edge viewed at 5° claimed 69% of a face.
 
 **Nearest visible wins**, which is a Voronoi split of the screen, so catch
-zones can never overlap however far you zoom out. Vertices projecting
-within `VERT_TIE_PX` (8px) of each other are a tie, settled by DEPTH — the
-one nearest the camera is the one you meant.
+zones can never overlap however far you zoom out. The rule in one sentence:
+**we pick the nearest thing you can see.** It is applied in TWO PASSES —
+find the closest candidate in pixels, then let depth settle everything
+within `VERT_TIE_PX` (8px) of it. Two passes is not a style preference; see
+"Why selection felt broken" below for what one pass did.
+
+Edges use the same rule, taking depth at the point along the edge you aimed
+at rather than at its midpoint, since an edge running away from the camera
+is far nearer at one end. Faces need none of this — `pickFaceOnActive`
+raycasts, so it already picks the nearest thing the renderer would draw.
 
 **Marker size and target size are separate numbers, deliberately.**
 
@@ -196,6 +203,51 @@ the default framing, 61px at camera distance 12, 42px at 18, 30px at 26. A
 Bounded so it cannot run away: one nudge per 700ms, never more than 3×
 closer per move, and a distance floor of 1.2.
 
+## Why selection felt broken (v1.99e-g)
+
+The complaint was "sometimes I tap right on something and nothing selects,
+sometimes something near it gets selected" — and it happened whether or not
+anything was already selected, which rules out the type lock and the grab
+path, since both are inert on a fresh tap.
+
+**Three plausible causes were on the table and measurement killed all
+three.** The picker is fine: aiming exactly at a vertex hit it 860/860 times
+across 72 camera angles, and with realistic thumb jitter it agreed with
+ground truth on 2892 of 2922 taps and **returned NOTHING on zero of them.**
+A picker that never comes up empty cannot be why taps come up empty.
+
+So the tap was never reaching it. The only gate above it is
+
+    if (moved > tapSlopPx(ev) || wasOverGizmo) return;
+
+a bare return with no feedback. A thumb rolls well past 12px pressing and
+lifting, and the tap was silently discarded — while the camera still
+orbited a hair, which is what read as "at some angles". **The same fix had
+been made once before, 6 → 12, and under-shot.** Now 22.
+
+Three real defects turned up alongside it, all small, all now fixed:
+
+| | was | measured |
+|---|---|---|
+| Tie-break compared against a RUNNING best and wrote `bestD = Math.min(...)`, so the recorded distance belonged to a vertex that had already lost — order-dependent, and a vertex 3px from the thumb could lose to one 10px away | v1.99f | 1.03% of jittered taps wrong |
+| Edges had **no depth preference at all**, purely nearest-in-pixels | v1.99f | — |
+| `groupFacesCamera` judged a face by its FIRST TRIANGLE, used a strict `dot > 0` that failed exactly edge-on, and called `updateMatrixWorld()` AFTER transforming every point | v1.99g | 0.44% of face tests disagreed |
+| No occlusion test at all — a vertex facing you but hidden behind a fold stayed a candidate | v1.99g | the last 0.14% |
+
+Wrong picks went 1.03% → 0.14% → **0%**, empty returns stayed at zero
+throughout, at 0.47ms per tap including the ray casting.
+
+**The occlusion test can only BREAK TIES, never refuse the last candidate
+standing.** An occlusion test is the easiest way to reintroduce "nothing
+happened", which is the failure mode this whole strand existed to remove.
+See-through is exempt by definition.
+
+**Known cost of the 22px slop:** a deliberate orbit under 22px now also
+registers as a tap, so nudging the camera over empty space clears the
+selection. If that ever becomes the worse annoyance the answer is NOT a
+smaller number, it is a time test — a quick stab and a slow drag are
+different gestures at the same distance.
+
 ## Rendering
 
 - **Active object's wireframe at `FRAME_ACTIVE` (2.0), others at
@@ -212,6 +264,44 @@ closer per move, and a distance floor of 1.2.
   phone screen and swallowing every tap that started there, which read as
   selection and dragging being broken. **128 is the only size that neither
   clips nor over-claims.**
+
+## Object tools added v1.99h-k
+
+**Flip normals** (face ring and object ring). Reverses face winding — the
+manual remedy for what `auditWinding` reports. Face mode flips the
+selection, Object mode flips everything in the selected objects. Per-element,
+so symmetry expands one face to two. *A whole object flipped once still
+audits as ok:* the audit measures whether neighbours agree with each other,
+not whether the surface faces outward, and a fully inverted object is
+perfectly self-consistent. Global inversion is something you see, not
+something the audit can catch.
+
+**Separate** (object ring). The inverse of Join: one object per CONNECTED
+piece. Connected, not spatially near — two cubes that overlap but share no
+vertices are two pieces, two that were bridged are one. The shell walk
+compares LOGICAL vertices, because every face owns private copies of its
+corners for hard-edge normals and comparing attribute indices would report
+a plain cube as six loose quads. Says so when there is only one piece.
+
+**Flip** (object ring, beside Mirror). Reflects an object where it stands.
+Same plane rule as Mirror, so the Symmetry pill governs both: off flips
+across the world axis (which moves an off-centre object to the other side),
+on flips across the object's own captured plane (which does not move it).
+
+**Mirror now asks Joined or Apart**, one tap on the op bar's grouping row,
+Joined leading. The choice cannot be deferred: the halves come out welded
+at the seam, so Separate sees one connected piece and correctly refuses.
+
+**Baking beats negative scale.** Flip and Mirror-Apart bake the reflection
+into the geometry and reverse the winding rather than giving the object a
+negative scale. A negative determinant reverses triangle handedness, which
+is exactly why mirrored objects are forced to render `DoubleSide` — and
+that DoubleSide clause is the last place picking and rendering still
+disagree. Anything that keeps a mirrored copy around should bake.
+
+Baking moves the geometry but not the ORIGIN, so `recentreObjectOrigin`
+slides the geometry onto its own centre and moves the transform to match —
+otherwise the inspector reports the position the object was reflected FROM.
 
 ## Deliberately absent — do not rebuild these
 
@@ -583,13 +673,27 @@ Three traps, all of which cost real time:
 extrude grouping default, the winding audit, the symmetry plane, Mirror, and
 symmetry-aware ops. Each has its own section above; nothing here is pending.
 
+**2.0 is being held back deliberately.** Zeghreit is saving the number for a
+release that is "alive and flawless" — everything already present working
+smoothly, nothing sticking, nothing silently failing. That is why v1.99 has
+run to eleven letters rather than becoming 2.0. Do not bump the major
+version without being asked.
+
 **Next, pick one:**
 
+- **Acknowledging the moment an op lands.** An extrude just happens, with no
+  feedback. For something whose identity is a fidget this is the largest
+  remaining gap, and it is half of what "alive" was meant to mean.
 - **More primitives** — cylinder, sphere, plane. Still in the original v1
-  spec and never built.
-- **Acknowledging the moment an op lands.** An extrude currently just
-  happens, with no feedback. For something whose identity is a fidget that is
-  a real gap.
+  spec and never built. Note this is a DESIGN question, not three
+  constructor calls: Add Cube owns a pole of the world ring alone, as the
+  one item that makes rather than toggles, and four add-items would wreck
+  that. Probably a hold on Add to choose the shape.
+- **The `|| mirrored` DoubleSide clause.** Now that Flip and Mirror-Apart
+  bake instead of scaling, work out whether anything still needs it. If not,
+  picking and rendering would agree everywhere with no special case left.
+- **The object ring is getting full** — ten items plus Join. It has not been
+  judged on a phone since Flip and Separate joined it.
 
 ## Help (v1.99b)
 
@@ -617,6 +721,10 @@ the old card mentioned.
   type you want. The type-lock toast now explains the refusal, which may be
   enough.
 - Gesture-driven modelling tools (extrude on two-finger tap, etc.).
-- Minor: the Object/Component button's alignment against Help.
 - `_verify.py` is gitignored, matching the `_`-prefix convention, so it
-  lives on one machine only. Consider committing it.
+  lives on one machine only. Consider committing it. Note it CANNOT catch an
+  undefined reference — a name that does not exist passes `node --check` and
+  throws at runtime. Grep for any identifier you introduce.
+- The op sweep and the picking harness that produced the numbers above live
+  only in a browser console. Turning them into a committed self-test is the
+  obvious way to make "flawless" checkable rather than hoped for.
