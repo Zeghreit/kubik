@@ -616,7 +616,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99j</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99k</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -7387,6 +7387,36 @@ function activeMirrorPlane(obj, axis) {
   return new THREE.Plane().setFromNormalAndCoplanarPoint(n, pt);
 }
 
+/* Moves an object's ORIGIN to the middle of its own geometry without moving
+   the object: every local position shifts by -centre, and the transform
+   shifts by the same amount carried into world space. Needed after any op
+   that bakes a transform into the vertices, since the origin is left
+   wherever it was and every number the inspector shows is then measured
+   from the wrong place. */
+function recentreObjectOrigin(obj) {
+  const ed = toEditable(obj.mesh);
+  if (!ed.positions.length) return;
+  let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < ed.positions.length; i += 3) {
+    for (let k = 0; k < 3; k++) {
+      const v = ed.positions[i + k];
+      if (v < lo[k]) lo[k] = v;
+      if (v > hi[k]) hi[k] = v;
+    }
+  }
+  const c = [0, 1, 2].map(k => (lo[k] + hi[k]) / 2);
+  if (Math.abs(c[0]) < 1e-9 && Math.abs(c[1]) < 1e-9 && Math.abs(c[2]) < 1e-9) return;
+  for (let i = 0; i < ed.positions.length; i += 3) {
+    ed.positions[i] -= c[0]; ed.positions[i + 1] -= c[1]; ed.positions[i + 2] -= c[2];
+  }
+  rebuildFromEditable(obj, ed);
+  // Scale first, then rotate: that is the order the transform applies them.
+  const d = new THREE.Vector3(c[0] * obj.mesh.scale.x, c[1] * obj.mesh.scale.y, c[2] * obj.mesh.scale.z)
+    .applyQuaternion(obj.mesh.quaternion);
+  obj.mesh.position.add(d);
+  obj.mesh.updateMatrixWorld(true);
+}
+
 /* Flip: reflects an object across a plane IN PLACE, baking the reflection
    into the geometry rather than into the transform.
 
@@ -7416,7 +7446,7 @@ function flipObjectInPlace(obj, plane) {
   rebuildFromEditable(obj, ed);
 }
 
-function mirrorSelectedObjects(axis) {
+function mirrorSelectedObjects(axis, apart) {
   if (App.mode !== 'object') { toast('Mirror works in Object mode'); return; }
   const ids = Array.from(App.selectedObjectIds);
   if (!ids.length) { toast('Select an object to mirror'); return; }
@@ -7446,6 +7476,31 @@ function mirrorSelectedObjects(axis) {
       if (cut) { keep = cut; cutCount++; }
     }
 
+    /* APART keeps the copy as its own object. It is built by cloning and
+       then baking the reflection in, NOT by mirrorObject's negative scale -
+       a copy you are going to keep and go on editing should not carry the
+       negative-determinant transform that forces DoubleSide rendering
+       forever after. The merged path can still use the cheap version,
+       because combineObjectsInto bakes and re-winds it immediately. */
+    if (apart) {
+      const twin = cloneObjectInto(keep, src.name + ' mirror');
+      twin.mesh.position.copy(keep.mesh.position);
+      twin.mesh.quaternion.copy(keep.mesh.quaternion);
+      twin.mesh.scale.copy(keep.mesh.scale);
+      flipObjectInPlace(twin, plane);
+      /* Baking the reflection leaves the twin's ORIGIN where the original's
+         was, so the inspector would report the position it was reflected
+         FROM - 1.2 for an object plainly sitting at -1.2. Slide the geometry
+         back onto its own centre and move the transform to match, so the
+         object does not budge but its numbers describe where it is. */
+      recentreObjectOrigin(twin);
+      ensureHelpers(twin);
+      if (cut) removeObjects([src]);   // the bisected half replaced it
+      ensureHelpers(keep);
+      created.push(keep.id, twin.id);
+      return;   // cutCount was already counted above if we bisected
+    }
+
     const half = mirrorObject(keep, plane);
     const merged = combineObjectsInto([keep, half], src.name + ' sym', plane);
     if (merged) {
@@ -7471,9 +7526,10 @@ function mirrorSelectedObjects(axis) {
   const where = App.symmetry
     ? 'the symmetry plane (' + axis.toUpperCase() + ')'
     : 'world ' + axis.toUpperCase() + '=0';
+  const how = apart ? ' - kept apart' : '';
   toast(cutCount
-    ? 'Cut at ' + where + ' - kept the half facing you, mirrored it'
-    : 'Mirrored across ' + where);
+    ? 'Cut at ' + where + ' - kept the half facing you, mirrored it' + how
+    : 'Mirrored across ' + where + how);
 }
 
 /* Turns the selected objects over where they stand. Mirror makes a second
@@ -7504,6 +7560,40 @@ function flipSelectedObjects(axis) {
   toast('Flipped across ' + (App.symmetry
     ? 'the symmetry plane (' + axis.toUpperCase() + ')'
     : 'world ' + axis.toUpperCase() + '=0'));
+}
+
+/* Joined or Apart, asked the way Extrude asks about grouping: one tap on the
+   op bar's grouping row, committing instantly, no dialog and no OK button.
+
+   Joined leads because it is what Mirror has always done and what is
+   usually wanted - the v1.94 lesson about putting the joined option first.
+   Apart is not reachable afterwards: the halves come out welded at the
+   seam, so Separate sees one connected piece and correctly refuses to
+   split them. The choice genuinely has to be made here. */
+function showMirrorChooser(axis) {
+  const el = document.getElementById('opGrouping');
+  const opts = [
+    ['joined', 'Joined', 'One object, welded along the seam'],
+    ['apart', 'Apart', 'Two objects, the copy kept separate']
+  ];
+  el.innerHTML = '';
+  el.style.display = 'inline-flex';
+  opts.forEach(([key, label, tip]) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.title = tip;
+    b.addEventListener('click', () => {
+      hideOpBar();
+      mirrorSelectedObjects(axis, key === 'apart');
+    });
+    el.appendChild(b);
+  });
+  document.getElementById('opLabel').textContent = 'Mirror';
+  document.getElementById('opSlider').style.display = 'none';
+  document.getElementById('opValue').style.display = 'none';
+  document.getElementById('opSegments').style.display = 'none';
+  document.getElementById('opOk').style.display = 'none';
+  opBarEl.classList.add('show');
 }
 
 /* Puts the selection back where new objects appear: centred on X and Z,
@@ -8136,7 +8226,7 @@ const HUB_TOOLS_FACE = [
 
 const HUB_TOOLS_OBJECT_BASE = [
   { key: 'duplicate', icon: 'dupe', label: 'Duplicate', ring: 0, run: duplicateSelection },
-  { key: 'mirror', icon: 'mirror', label: 'Mirror', ring: 0, run: () => mirrorSelectedObjects(App.symmetryAxis) },
+  { key: 'mirror', icon: 'mirror', label: 'Mirror', ring: 0, run: () => showMirrorChooser(App.symmetryAxis) },
   { key: 'flip', icon: 'flip', label: 'Flip', ring: 0, run: () => flipSelectedObjects(App.symmetryAxis) },
   { key: 'centre', icon: 'centre', label: 'Centre', ring: 0, run: centreSelectionToOrigin },
   { key: 'delete', icon: 'del', label: 'Delete', ring: 0, run: deleteSelection },
