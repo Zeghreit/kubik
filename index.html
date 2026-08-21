@@ -616,7 +616,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99f</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99g</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -5743,6 +5743,15 @@ function ensureAdjacency(obj) {
 const _fnA = new THREE.Vector3(), _fnB = new THREE.Vector3(), _fnC = new THREE.Vector3();
 const _fnAB = new THREE.Vector3(), _fnAC = new THREE.Vector3();
 const _fnN = new THREE.Vector3(), _fnV = new THREE.Vector3();
+const _fnTri = new THREE.Vector3(), _fnCen = new THREE.Vector3();
+
+/* How far PAST edge-on a face may be and still count as facing you. A face
+   exactly side-on used to fail a strict `dot > 0` and take its vertices out
+   of reach, which is angle-dependent by construction. Being generous here
+   costs almost nothing - the worst case is that a nearly-invisible face
+   stays pickable for one more degree - while being strict costs a pick the
+   user can plainly see they should have got. */
+const FACE_SILHOUETTE_EPS = 0.02;   // ~1.1 degrees
 
 function groupFacesCamera(obj, gi) {
   const topo = obj.mesh.userData.topo;
@@ -5752,23 +5761,47 @@ function groupFacesCamera(obj, gi) {
   if (!fg) return true;
   const geo = obj.mesh.geometry;
   const idx = geo.index, pa = geo.attributes.position;
-  const t = fg.triStart * 3;
-  const ia = idx.getX(t), ib = idx.getX(t + 1), ic = idx.getX(t + 2);
-  _fnA.set(pa.getX(ia), pa.getY(ia), pa.getZ(ia)); obj.mesh.localToWorld(_fnA);
-  _fnB.set(pa.getX(ib), pa.getY(ib), pa.getZ(ib)); obj.mesh.localToWorld(_fnB);
-  _fnC.set(pa.getX(ic), pa.getY(ic), pa.getZ(ic)); obj.mesh.localToWorld(_fnC);
-  _fnAB.subVectors(_fnB, _fnA);
-  _fnAC.subVectors(_fnC, _fnA);
-  _fnN.crossVectors(_fnAB, _fnAC);          // CCW winding = outward normal
-  _fnV.subVectors(camera.position, _fnA);
+  /* BEFORE localToWorld, not after. This used to run at the end of the
+     function, so every point was transformed by the PREVIOUS frame's
+     matrix - stale for exactly one frame after any transform, which is the
+     frame right after you finish dragging something. */
+  obj.mesh.updateMatrixWorld();
   /* A mirrored object carries a negative scale, and a negative-determinant
      transform reverses the handedness of the cross product - so the normal
      points inward and every front face would read as back-facing. Mirror
      produces exactly such objects, which is why symmetry work broke when
      this test was introduced. */
-  obj.mesh.updateMatrixWorld();
   const flip = obj.mesh.matrixWorld.determinant() < 0 ? -1 : 1;
-  return _fnN.dot(_fnV) * flip > 0;
+
+  /* EVERY triangle of the face, not just the first. A quad is only planar
+     until someone drags one of its corners - after that, bevel, subdivide
+     or any freehand move leaves faces whose first triangle points somewhere
+     the face as a whole does not. Summing the cross products area-weights
+     them for free, so the big triangle decides. */
+  _fnN.set(0, 0, 0);
+  _fnCen.set(0, 0, 0);
+  let n = 0;
+  for (let t = 0; t < fg.triCount; t++) {
+    const b = (fg.triStart + t) * 3;
+    const ia = idx.getX(b), ib = idx.getX(b + 1), ic = idx.getX(b + 2);
+    _fnA.set(pa.getX(ia), pa.getY(ia), pa.getZ(ia)); obj.mesh.localToWorld(_fnA);
+    _fnB.set(pa.getX(ib), pa.getY(ib), pa.getZ(ib)); obj.mesh.localToWorld(_fnB);
+    _fnC.set(pa.getX(ic), pa.getY(ic), pa.getZ(ic)); obj.mesh.localToWorld(_fnC);
+    _fnAB.subVectors(_fnB, _fnA);
+    _fnAC.subVectors(_fnC, _fnA);
+    _fnTri.crossVectors(_fnAB, _fnAC);      // CCW winding = outward normal
+    _fnN.add(_fnTri);
+    _fnCen.add(_fnA).add(_fnB).add(_fnC);
+    n += 3;
+  }
+  if (!n) return true;
+  _fnCen.divideScalar(n);
+  _fnV.subVectors(camera.position, _fnCen);
+
+  // Normalised, so the epsilon means an angle rather than an area.
+  const nl = _fnN.length(), vl = _fnV.length();
+  if (nl < 1e-12 || vl < 1e-12) return true;
+  return (_fnN.dot(_fnV) * flip) / (nl * vl) > -FACE_SILHOUETTE_EPS;
 }
 
 function vertexVisible(obj, l) {
@@ -5788,6 +5821,42 @@ function edgeVisible(obj, e) {
   return shared.some(gi => groupFacesCamera(obj, gi));
 }
 
+
+/* Is this point hidden behind the object's own surface? The facing test
+   alone cannot tell: a vertex can point straight at you and still sit
+   behind a fold, a nub or the far wall of an L-shape, and it stays a
+   candidate the whole time.
+
+   Used ONLY to break ties, never to refuse the last candidate standing -
+   see the callers. A picker that can come back empty is the exact failure
+   mode this whole strand of work exists to remove, and an occlusion test is
+   the easiest way to reintroduce it. */
+const _occDir = new THREE.Vector3();
+function pointOccluded(obj, p) {
+  _occDir.subVectors(p, camera.position);
+  const dist = _occDir.length();
+  if (dist < 1e-6) return false;
+  _occDir.divideScalar(dist);
+  raycaster.set(camera.position, _occDir);
+  const hits = raycaster.intersectObject(obj.mesh, false);
+  if (!hits.length) return false;
+  /* The surface the point sits ON is always a hit at essentially its own
+     distance, so the tolerance scales with the object rather than being a
+     fixed number that means different things at different sizes. */
+  const geo = obj.mesh.geometry;
+  if (!geo.boundingSphere) geo.computeBoundingSphere();
+  const r = geo.boundingSphere ? geo.boundingSphere.radius : 1;
+  return hits[0].distance < dist - Math.max(r * 1e-3, 1e-4);
+}
+
+/* Drops candidates you cannot actually see - but only while at least one
+   survives. See-through is exempt by definition: there, seeing through the
+   model is the point, so everything visible on screen stays selectable. */
+function preferUnoccluded(obj, cands) {
+  if (cands.length < 2 || App.xraySelection) return cands;
+  const seen = cands.filter(c => !pointOccluded(obj, c.p));
+  return seen.length ? seen : cands;
+}
 
 /* Two vertices that land within this many pixels of each other are, as far
    as a thumb is concerned, the same spot. When that happens pixel distance
@@ -5823,7 +5892,7 @@ function pickVertexOnActive(ev, bias = 1) {
      from your thumb could lose to one 10px away. Measured at v1.99f: ~1% of
      jittered taps resolved to the wrong vertex, which is the "something
      near it got selected" half of the selection complaint. */
-  const cands = [];
+  let cands = [];
   for (let l = 0; l < topo.logicalCount; l++) {
     const ai = topo.logicalGroups[l][0];
     const p = new THREE.Vector3(pa.getX(ai), pa.getY(ai), pa.getZ(ai));
@@ -5833,9 +5902,10 @@ function pickVertexOnActive(ev, bias = 1) {
     const d = s.distanceTo(tap);
     if (d > limit) continue;                 // outside the catch radius
     if (!vertexVisible(obj, l)) continue;
-    cands.push({ l: l, d: d, z: p.distanceTo(camera.position) });
+    cands.push({ l: l, d: d, z: p.distanceTo(camera.position), p: p });
   }
   if (!cands.length) return -1;
+  cands = preferUnoccluded(obj, cands);
 
   let dMin = Infinity;
   cands.forEach(c => { if (c.d < dMin) dMin = c.d; });
@@ -5860,7 +5930,7 @@ function pickEdgeOnActive(ev, bias = 1) {
      pixels - so wherever two edges crossed on screen, the FAR one won any
      time it projected a hair closer to the thumb. "Nearest to the camera
      wins" is supposed to hold everywhere, not just for vertices. */
-  const cands = [];
+  let cands = [];
   topo.edges.forEach((e, i) => {
     const a = topo.logicalGroups[e[0]][0], b = topo.logicalGroups[e[1]][0];
     const pA = new THREE.Vector3(pa.getX(a), pa.getY(a), pa.getZ(a)); obj.mesh.localToWorld(pA);
@@ -5874,9 +5944,13 @@ function pickEdgeOnActive(ev, bias = 1) {
        away from the camera is far nearer at one end than the other, and the
        midpoint would misreport both. */
     const zA = pA.distanceTo(camera.position), zB = pB.distanceTo(camera.position);
-    cands.push({ i: i, d: near.d, z: zA + (zB - zA) * near.t });
+    // The same spot along the edge that decided the depth, for the same
+    // reason - an edge is often hidden at one end and plain at the other.
+    cands.push({ i: i, d: near.d, z: zA + (zB - zA) * near.t,
+                 p: pA.clone().lerp(pB, near.t) });
   });
   if (!cands.length) return -1;
+  cands = preferUnoccluded(obj, cands);
 
   let dMin = Infinity;
   cands.forEach(c => { if (c.d < dMin) dMin = c.d; });
