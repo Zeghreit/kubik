@@ -616,7 +616,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99d</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99e</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -5145,7 +5145,20 @@ const DIRECT_DECIDE_PX = 15;   // ... and before the axis question is settled
    wider allowance; the mouse keeps its precision. Pen counts as a mouse. */
 const DIRECT_START_TOUCH_PX = 8;
 const TAP_SLOP_PX = 6;
-const TAP_SLOP_TOUCH_PX = 12;
+/* 12 at first, and it was still too tight - the same complaint came back as
+   "sometimes I tap right on it and nothing selects". MEASURED at v1.99e
+   before touching it, because the obvious suspects were all wrong: the
+   picker itself is fine. Aiming exactly at a vertex hit it 860/860 times,
+   and with realistic thumb jitter it still agreed with ground truth on
+   2892 of 2922 taps and returned NOTHING on zero of them. A picker that
+   never comes up empty cannot be the reason taps come up empty - so the
+   tap was never reaching it, and this line is the only gate above it.
+   Raised to 22. The cost is real and worth knowing: a deliberate small
+   orbit under 22px now also registers as a tap, so nudging the camera over
+   empty space clears the selection. If that turns out to be the worse
+   annoyance, the fix is not a smaller number but a time test - a quick
+   stab and a slow drag are different gestures at the same distance. */
+const TAP_SLOP_TOUCH_PX = 22;
 const isTouchEvent = (ev) => ev.pointerType === 'touch';
 const dragStartPx = (ev) => (isTouchEvent(ev) ? DIRECT_START_TOUCH_PX : DIRECT_START_PX);
 const tapSlopPx = (ev) => (isTouchEvent(ev) ? TAP_SLOP_TOUCH_PX : TAP_SLOP_PX);
@@ -8880,6 +8893,13 @@ if (PICK_DEBUG) {
        waits. Calling these directly sidesteps the whole question. */
     bloomToolRing, updateToolRingHover, closeToolRing, placeRingLabel,
     currentHubTools, HUB_TOOLS_WORLD,
+    /* The pickers, callable with a plain {clientX, clientY}. Driving these
+       directly beats dispatching synthetic taps: a BACKGROUNDED TAB reports
+       a stale canvas rect, so a tap aimed at a projected point lands
+       nowhere and every pick reads as a miss - which looks exactly like a
+       catastrophic bug and is purely an artefact of the harness. */
+    pickVertexOnActive, pickEdgeOnActive, pickFaceOnActive, pickComponentOnActive,
+    groupFacesCamera, edgeVisible, ensureAdjacency, pointerPx,
     /* The op entry points, so a harness can run the REAL tool the ring
        runs instead of reimplementing it. Still nothing new - every one of
        these is already one tap away. */
