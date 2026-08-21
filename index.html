@@ -616,7 +616,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.1</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.2</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -4152,6 +4152,19 @@ const OP_SPECS = {
       { key: 'round', label: 'Round' }
     ]
   },
+  /* No amount at all - `noAmount` hides the slider outright, the way the
+     loop cut hides it in Even mode. What the stepper counts here is HOW MANY
+     TIMES to subdivide, and it is capped low on purpose: every level
+     multiplies the face count by four, so a cube at 4 levels is already
+     1536 faces and the default cap of 10 would be unusable on a phone. */
+  subdivide: {
+    label: 'Subdivide', min: 0, max: 1, step: 1, start: 0,
+    segments: true, maxSegments: 4, noAmount: true, multi: true,
+    options: [
+      { key: 'smooth', label: 'Smooth' },
+      { key: 'keep', label: 'Keep shape' }
+    ]
+  },
   loopcut: {
     // The amount is a slide position along the ring, 0..1, centred at 0.5.
     // With several loops it shifts the whole evenly-spaced set toward one
@@ -4288,6 +4301,14 @@ function beginPendingOp(kind, obj, payload) {
     selectionBefore: new Set(App.selectedElements),
     modeBefore: App.mode
   };
+  /* Object-mode ops act on the whole selection, not on one mesh, so they
+     snapshot every object they will touch. Component ops keep the single
+     `state` above and never look at this. */
+  if (spec.multi) {
+    App.pendingOp.multi = Array.from(App.selectedObjectIds)
+      .map(findObject).filter(Boolean)
+      .map(o => ({ objId: o.id, state: captureObjectState(o) }));
+  }
   // Default to the first mode that's actually offered for this selection.
   const opts = availableOpOptions(App.pendingOp);
   App.pendingOp.groupMode = opts.length ? opts[0].key : null;
@@ -4397,6 +4418,18 @@ function applyPendingOp() {
     });
     if (pairs.length) bevelEdgesOp(obj, pairs, op.amount, op.segments || 1, op.groupMode || 'flat');
     ensureHelpers(obj);
+
+  } else if (op.kind === 'subdivide') {
+    /* Re-run from the snapshot at the current count, exactly like every
+       other live op - which is what makes the stepper a PREVIEW of the
+       finished result rather than a number you apply blind. */
+    (op.multi || []).forEach(m => {
+      const o = findObject(m.objId);
+      if (!o) return;
+      restoreObjectState(o, m.state);
+      for (let i = 0; i < (op.segments || 1); i++) subdivideOp(o, op.groupMode || 'smooth');
+      ensureHelpers(o);
+    });
   }
 
   App.selectedElements = resultSelection;
@@ -4484,7 +4517,8 @@ function refreshOpGrouping() {
 function refreshOpAmountVisibility() {
   const op = App.pendingOp;
   if (!op) return;
-  const dead = op.kind === 'loopcut' && op.groupMode !== 'slide';
+  const spec = OP_SPECS[op.kind];
+  const dead = (spec && spec.noAmount) || (op.kind === 'loopcut' && op.groupMode !== 'slide');
   ['opSlider', 'opValue'].forEach(id => {
     document.getElementById(id).style.display = dead ? 'none' : '';
   });
@@ -4510,7 +4544,8 @@ function setPendingAmount(v) {
 opSliderEl.addEventListener('input', () => setPendingAmount(parseFloat(opSliderEl.value)));
 function stepSegments(delta) {
   if (!App.pendingOp) return;
-  const n = Math.max(1, Math.min(10, (App.pendingOp.segments || 1) + delta));
+  const cap = (OP_SPECS[App.pendingOp.kind] || {}).maxSegments || 10;
+  const n = Math.max(1, Math.min(cap, (App.pendingOp.segments || 1) + delta));
   if (n === App.pendingOp.segments) return;
   App.pendingOp.segments = n;
   document.getElementById('opSegValue').textContent = n;
@@ -4538,7 +4573,10 @@ function confirmPendingOp() {
   refreshUI();
   refreshGizmoAttachment();
   pushHistory();
-  toast(label + ' applied');
+  toast(op.kind === 'subdivide'
+    ? 'Subdivided \u00d7' + (op.segments || 1) +
+      (op.groupMode === 'keep' ? ', shape kept' : ', smoothed')
+    : label + ' applied');
 }
 
 function cancelPendingOp() {
@@ -4547,8 +4585,16 @@ function cancelPendingOp() {
   const obj = findObject(op.objId);
   App.pendingOp = null;
   hideOpBar();
+  if (op.multi) {
+    op.multi.forEach(m => {
+      const o = findObject(m.objId);
+      if (!o) return;
+      restoreObjectState(o, m.state);
+      ensureHelpers(o);
+    });
+  }
   if (obj) {
-    restoreObjectState(obj, op.state);
+    if (!op.multi) restoreObjectState(obj, op.state);
     ensureHelpers(obj);
     App.selectedElements = new Set(op.selectionBefore);
     setActiveObjectHelpersVisible(obj, App.mode);
@@ -4789,23 +4835,18 @@ function fillHolesSelection() {
   toast(msg + (objs > 1 ? ' on ' + objs + ' objects' : ''));
 }
 
-function subdivideSelection(mode) {
+/* Opens the op bar rather than committing on the spot. Both modes are
+   reachable now - 'keep' has existed and worked since subdivideOp was
+   written and simply had nothing calling it - and the stepper chooses how
+   many times, previewed live. */
+function subdivideSelection() {
   if (App.mode !== 'object') { toast('Subdivide works in Object mode'); return; }
   const ids = Array.from(App.selectedObjectIds);
   if (!ids.length) { toast('Select an object to subdivide'); return; }
-
-  let done = 0;
-  ids.forEach(id => {
-    const obj = findObject(id);
-    if (obj && subdivideOp(obj, mode)) { ensureHelpers(obj); done++; }
-  });
-  if (!done) { toast('Could not subdivide that'); return; }
-
-  hideRadialMenu();
-  refreshUI();
-  refreshGizmoAttachment();
-  pushHistory();
-  toast(mode === 'smooth' ? 'Subdivided and smoothed' : 'Subdivided, shape kept');
+  const obj = findObject(ids[0]);
+  if (!obj) { toast('Select an object to subdivide'); return; }
+  ensureHelpers(obj);
+  beginPendingOp('subdivide', obj, {});
 }
 
 // Edge mode: hold selected edges sharp through a smooth subdivision.
@@ -8377,6 +8418,10 @@ const ICON = {
   flip: '<path d="M12 2v20" stroke-dasharray="3 3"/><path d="M4 8l6 4-6 4z"/><path d="M20 8l-6 4 6 4z"/>',
   // An outline with its gap closed by a patch.
   cap: '<path d="M4 20V4h16v16z"/><path d="M9 9h6v6H9z" stroke-dasharray="2 2"/>',
+  // Outward arrows: the selection reaching further.
+  grow: '<path d="M9 9h6v6H9z"/><path d="M6 6l-3-3M18 6l3-3M6 18l-3 3M18 18l3 3"/><path d="M3 7V3h4M21 7V3h-4M3 17v4h4M21 17v4h-4"/>',
+  // The same arrows turned inward.
+  shrink: '<path d="M9 9h6v6H9z"/><path d="M3 3l3 3M21 3l-3 3M3 21l3-3M21 21l-3-3"/><path d="M6 2v4H2M18 2v4h4M6 22v-4H2M18 22v-4h4"/>',
   mirror:  '<path d="M12 2v20"/><path d="M9 6L4 12l5 6z"/><path d="M15 6l5 6-5 6z"/>',
   object:  '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/>',
   vertex:  '<path d="M5 5h14v14H5z"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/>',
@@ -8437,10 +8482,15 @@ const symPillEl = document.getElementById('symPill');
 // Bevel/Loop/Split/Crease are Edge-only, and Connect/Weld are Vertex-only.
 // Showing only what applies is what actually fixes "overpopulated" - a
 // shared list was showing Face-only tools while editing vertices and so on.
+/* Grow and Shrink live in all three component rings. They were reachable
+   only from the keyboard keys ] and [ - which is to say, not at all on the
+   phone this app is built for. */
 const HUB_TOOLS_VERTEX = [
   { key: 'connect', icon: 'connect', label: 'Connect', ring: 0, run: connectSelection },
   { key: 'weld', icon: 'weld', label: 'Weld', ring: 0, run: weldSelection },
-  { key: 'delete', icon: 'del', label: 'Delete', ring: 0, run: deleteSelection }
+  { key: 'delete', icon: 'del', label: 'Delete', ring: 0, run: deleteSelection },
+  { key: 'grow', icon: 'grow', label: 'Grow', ring: 1, run: growSelection },
+  { key: 'shrink', icon: 'shrink', label: 'Shrink', ring: 1, run: shrinkSelection },
 ];
 
 const HUB_TOOLS_EDGE = [
@@ -8453,6 +8503,8 @@ const HUB_TOOLS_EDGE = [
   { key: 'loopcut', icon: 'loop', label: 'Loop', ring: 1, run: edgeLoopSelection },
   { key: 'split', icon: 'split', label: 'Split', ring: 1, run: splitSelection },
   { key: 'cap', icon: 'cap', label: 'Cap hole', ring: 1, run: fillHolesSelection },
+  { key: 'grow', icon: 'grow', label: 'Grow', ring: 1, run: growSelection },
+  { key: 'shrink', icon: 'shrink', label: 'Shrink', ring: 1, run: shrinkSelection },
   { key: 'crease', icon: 'crease', label: 'Crease', ring: 1, run: () => creaseSelection(true) },
   { key: 'uncrease', icon: 'uncrease', label: 'Uncrease', ring: 1, run: () => creaseSelection(false) },
   { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', ring: 1, run: toggleShading },
@@ -8465,6 +8517,8 @@ const HUB_TOOLS_FACE = [
   { key: 'bridge', icon: 'bridge', label: 'Bridge', ring: 0, run: bridgeSelection },
   { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', ring: 1, run: flipNormalsSelection },
   { key: 'cap', icon: 'cap', label: 'Cap holes', ring: 1, run: fillHolesSelection },
+  { key: 'grow', icon: 'grow', label: 'Grow', ring: 1, run: growSelection },
+  { key: 'shrink', icon: 'shrink', label: 'Shrink', ring: 1, run: shrinkSelection },
   { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', ring: 1, run: toggleShading },
   { key: 'delete', icon: 'del', label: 'Delete', ring: 1, run: deleteSelection }
 ];
@@ -8477,7 +8531,7 @@ const HUB_TOOLS_OBJECT_BASE = [
   { key: 'delete', icon: 'del', label: 'Delete', ring: 0, run: deleteSelection },
   // Kept together as a group, in this order, since they're the four most
   // related to how the object actually looks.
-  { key: 'subdivide', icon: 'subdiv', label: 'Subdivide', ring: 1, run: () => subdivideSelection('smooth') },
+  { key: 'subdivide', icon: 'subdiv', label: 'Subdivide', ring: 1, run: subdivideSelection },
   { key: 'material', icon: 'color', label: 'Material', ring: 1, run: cycleMaterialFinish },
   { key: 'fillet', icon: 'bevel', label: 'Fillet', ring: 1, run: toggleFilletPreview },
   { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', ring: 1, run: flipNormalsSelection },

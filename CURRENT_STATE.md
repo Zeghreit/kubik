@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **a2.1**
+- Version at time of writing: **a2.2**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -754,8 +754,9 @@ priority order — ask before assuming which comes first.
   phone has no keyboard. They belong in the component rings; the vertex
   ring has three items and room to spare. STILL OPEN after a2.1 — the
   drawer was the wrong home for them, so they were left alone.
-- `subdivideSelection('keep')`: zero callers, only `'smooth'` is wired.
-  Best fixed with a Smooth / Keep-shape chooser, the pattern Mirror uses.
+- ~~`subdivideSelection('keep')`~~ and ~~Grow/Shrink~~ **SHIPPED at a2.2** —
+  see "Subdivide, and reachability" above. `clearAllCreases` shipped at a2.1
+  in the drawer. All three reachability gaps are closed.
 
 **3. ~~The drawer, rearranged.~~ SHIPPED at a2.1** — see "The drawer"
 above. What it fixed, for the record:
@@ -875,6 +876,38 @@ Measured: flat/1 segment 44 triangles, round/2 92, round/4 188.
 because `.drawer-body` is `overflow-y: auto` AND `#drawer` is named in the
 touchmove allow-list. Anything added here must keep both true — an unlisted
 scrollable works with a mouse wheel and is dead to a finger.
+
+## Subdivide, and reachability (a2.2)
+
+**Subdivide is a live op now**, not an immediate commit. It opens the op bar
+with a **Smooth / Keep shape** chooser and a **count**, and re-runs from the
+snapshot on every change — so the stepper is a PREVIEW of the finished
+result rather than a number you apply blind.
+
+- `noAmount` on the spec hides the slider outright, the way loop cut hides
+  it in Even mode. There is no amount here; the stepper counts LEVELS.
+- **Capped at 4** via `maxSegments`. Each level multiplies faces by four, so
+  a cube runs 6 → 24 → 96 → 384, and the shared default of 10 would be
+  unusable on a phone.
+- Pending ops were built around ONE object. Object-mode ops act on the whole
+  selection, so a spec marked `multi` also snapshots every selected object
+  into `op.multi`, and both apply and cancel walk that list. Component ops
+  keep the single `state` and never look at it.
+
+Both modes were always implemented; `keep` simply had nothing calling it.
+Measured on a cube — they are genuinely different, which was worth checking
+rather than assuming: `keep` holds the silhouette at exactly 1.0 at every
+level, `smooth` rounds it to 0.8785 by level 2, and the summed positions
+differ from level 1 (68 against 96).
+
+**Grow and Shrink are in all three component rings.** They existed and
+worked, reachable only from the keyboard keys `]` and `[` — which is to say
+not at all on the phone this app is built for.
+
+**Still wanted, not built:** a non-destructive *smooth preview*, the way
+Fillet previews rounded edges without changing the mesh. The op-bar preview
+above is a preview of the real result; this would be a display-only smooth
+you can leave switched on while modelling.
 
 ## Open threads
 
