@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **a2.7**
+- Version at time of writing: **a2.7a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1130,6 +1130,38 @@ For an edge-run bridge the "outward direction" is NOT the surface normal —
 that points off the sheet, and a bridge leaving an open rim straight upward
 continues nothing. It is the direction that lies IN the neighbouring face and
 points away from it, so the normal component is projected back out.
+
+**The pairing and the wall winding are ONE decision (a2.7a).** There are
+exactly two consistent ways to wall a tube, and choosing one fixes the other:
+
+    FORM 1  walls [a0, a1, b1, b0], A forwards, B BACKWARDS
+    FORM 2  walls [a0, b0, b1, a1], A BACKWARDS, B forwards
+
+A wall stands in for a face being deleted, so it must traverse that face's
+outline the way the face did, or it disagrees with the side faces still using
+those edges. Form 1 is right when the faces LOOK AT each other, form 2 when
+they point the SAME way. a2.7 got half of it — it chose the pairing from the
+normals and left the walls in form 1, so same-facing bridges came out with 5
+reversed faces and 4 conflicting edges. That was the "bridge flips normals"
+report. There is also no per-quad "point it away from the tube axis" test any
+more: it guessed outwardness from a made-up axis, said nothing at all when
+the band was flat, and was free to flip single quads out of agreement with
+their neighbours.
+
+**An order-reversing pairing is forced, so the connectors look crossed, and
+that is fine** — a tube is allowed to be an arch. What is NOT fine is the
+rotation where two connectors run head-on and share a midpoint, because a
+ring landing exactly there welds two corners and goes non-manifold.
+`chooseRingOffset` refuses such a rotation; when every rotation does it (two
+coplanar tops), `bridgeRings` nudges that one ring a thousandth off the
+meeting point instead. Measured: with neither guard, every EVEN section count
+on two box tops came back non-manifold.
+
+**Bridging two faces that point the same way can still fold through itself**
+at some section counts — the geometry has no better answer, so the op bar
+says `Bridge · folds over` while it does, live, with the count under your
+thumb. Faces that look at each other, the ordinary case, are clean at every
+count in both modes.
 
 **Ring pairing direction comes from the two faces' NORMALS, not from
 distance.** Each face is wound about its own outward normal, so two faces

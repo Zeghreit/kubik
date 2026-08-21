@@ -620,7 +620,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.7</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.7a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -3083,6 +3083,45 @@ function loopNormal(ed, loop) {
 
 // Which way round to pair two rings so the connection doesn't spiral: try
 // every rotation and keep the one with the least total travel.
+/* Where B starts, given which way it runs. Cheapest pairing, EXCEPT that a
+   rotation whose connectors meet in the middle is refused outright.
+
+   Joining two faces that point the same way needs an order-reversing
+   correspondence - that is forced, and it is why the connectors look
+   crossed. Fine in itself; a tube is allowed to be an arch. What is not fine
+   is the rotation where two connectors are exact opposites, because then
+   their midpoints are the SAME POINT: an even section count drops a ring
+   right on it, the corners weld, and the mesh goes non-manifold. Measured on
+   two box tops: 2, 4 and 6 sections all came back non-manifold, straight and
+   curved alike, while 3 was clean by luck.
+
+   Comparing midpoints catches exactly that, and only that - a rotation whose
+   connectors merely pass near each other still wins on cost, because a tube
+   that crosses itself is a shape, while one that welds is a defect. */
+function chooseRingOffset(ed, ringA, ringB) {
+  const n = ringA.length;
+  let best = -1, bestCost = Infinity, fallback = 0, fallbackCost = Infinity;
+  for (let k = 0; k < n; k++) {
+    let cost = 0;
+    const mids = [];
+    for (let i = 0; i < n; i++) {
+      const a = vecAt(ed, ringA[i]), b = vecAt(ed, ringB[(i + k) % n]);
+      cost += a.distanceToSquared(b);
+      mids.push(a.clone().add(b).multiplyScalar(0.5));
+    }
+    if (cost < fallbackCost) { fallbackCost = cost; fallback = k; }
+    let welds = false;
+    for (let i = 0; i < n && !welds; i++) {
+      for (let j = i + 1; j < n; j++) {
+        if (mids[i].distanceToSquared(mids[j]) < 1e-8) { welds = true; break; }
+      }
+    }
+    if (!welds && cost < bestCost) { bestCost = cost; best = k; }
+  }
+  // Every rotation welds: nothing to choose between them, take the cheapest.
+  return best >= 0 ? best : fallback;
+}
+
 function bestRingOffset(ed, ringA, ringB) {
   const n = ringA.length;
   let best = 0, bestCost = Infinity;
@@ -3094,44 +3133,45 @@ function bestRingOffset(ed, ringA, ringB) {
   return { k: best, cost: bestCost };
 }
 
-/* Which way round B goes, and by how much it is rotated.
+/* How the two rims are matched up, and which way round the walls go.
 
-   DIRECTION comes from the two faces' own normals, because that is what it
-   actually depends on. Each face is wound about its own outward normal, so
-   two faces LOOKING AT each other - the classic bridge across a hole - wind
-   in opposite senses in space and B has to be reversed. Two faces pointing
-   the SAME way, the ordinary "join these two boxes along the top", wind the
-   same way and B must not be.
+   There are exactly TWO consistent ways to wall a tube, and the pairing and
+   the wall winding are not independent - picking one fixes the other.
 
-   The old code reversed unconditionally. The result on the same-way case was
-   that every corner paired with the one diagonally opposite: the walls
-   crossed and every ring in between collapsed onto the twist. Measured, two
-   box tops bridged in two sections gave 2 new vertices where there should
-   have been 4 - and the winding audit was perfectly happy, because a twisted
-   tube is still closed. One band hid it; sections made it plain.
+   A wall stands in for the faces being deleted, so it has to traverse each
+   one's outline the way that face did; otherwise it disagrees with the side
+   faces still using those edges and the mesh winds inconsistently.
 
-   Nearest-corner DISTANCE cannot decide direction. Two boxes half a unit
-   apart are each a unit wide, so outer-corner-to-inner-corner is genuinely
-   the shorter hop while still being the crossed one - measured, it picked
-   the twist. Bearing around the joining axis cannot decide it either: for
-   two coplanar tops the axis lies IN both faces, so all four corners of a
-   ring collapse onto two bearings and there is nothing to tell apart.
+     FORM 1  walls [a0, a1, b1, b0], A walked forwards, B walked BACKWARDS.
+     FORM 2  walls [a0, b0, b1, a1], A walked BACKWARDS, B walked forwards.
 
-   Distance is fine for the ROTATION, which is a choice among same-handed
-   pairings and has a clear minimum. Only the flip needed a better question.
-   Nearly perpendicular faces are the one genuinely ambiguous case, and there
-   the cheaper pairing is as good an answer as any. */
-function matchRings(ed, ringA, loopB) {
-  const fwd = loopB.slice(), rev = loopB.slice().reverse();
-  const nA = loopNormal(ed, ringA), nB = loopNormal(ed, loopB);
+   Both are correct; they differ in WHICH corner of A meets which corner of
+   B, and those two answers are reflections of each other.
+
+   Form 1 is right when the two faces LOOK AT each other - the classic bridge
+   across a hole - and form 2 when they point the SAME way, the ordinary
+   "join these two boxes along the top". Get that backwards and every corner
+   pairs with the one diagonally opposite: the walls cross, and an even
+   number of sections puts an intermediate ring exactly on the crossing,
+   where corners weld and the mesh goes non-manifold. Measured, bridging two
+   box tops: 2, 4 and 6 sections all came back non-manifold and 5 sections
+   came back with 4 conflicting edges and 6 open ones.
+
+   a2.7 got half of this: it chose the pairing by the normals and left the
+   walls in form 1, so the same-way case came out with 5 reversed faces - the
+   "bridge flips normals" report. The pairing and the winding have to move
+   together. */
+function matchRings(ed, loopA, loopB) {
+  const nA = loopNormal(ed, loopA), nB = loopNormal(ed, loopB);
   const dot = (nA.lengthSq() > 1e-12 && nB.lengthSq() > 1e-12)
-    ? nA.normalize().dot(nB.normalize()) : 0;
+    ? nA.clone().normalize().dot(nB.clone().normalize()) : 0;
 
-  if (dot < -0.1) return { ring: rev, k: bestRingOffset(ed, ringA, rev).k };
-  if (dot > 0.1) return { ring: fwd, k: bestRingOffset(ed, ringA, fwd).k };
-
-  const f = bestRingOffset(ed, ringA, fwd), r = bestRingOffset(ed, ringA, rev);
-  return f.cost < r.cost ? { ring: fwd, k: f.k } : { ring: rev, k: r.k };
+  if (dot > 0.1) {
+    const ringA = loopA.slice().reverse(), ringB = loopB.slice();
+    return { ringA, ringB, k: chooseRingOffset(ed, ringA, ringB), form: 2 };
+  }
+  const ringA = loopA.slice(), ringB = loopB.slice().reverse();
+  return { ringA, ringB, k: chooseRingOffset(ed, ringA, ringB), form: 1 };
 }
 
 /* ---------------- Bridge in sections ----------------
@@ -3167,17 +3207,40 @@ function hermitePoint(a, b, t0, t1, t) {
 /* The rings between two matched rims. Returns every ring including the two
    originals, so the caller only has to wall the gaps. */
 function bridgeRings(ed, rowA, rowB, segs, curve) {
+  const at = t => rowA.map((a0, i) => {
+    const a = vecAt(ed, a0), b = vecAt(ed, rowB[i]);
+    return curve ? hermitePoint(a, b, curve.t0, curve.t1, t) : a.clone().lerp(b, t);
+  });
+  const welds = pts => {
+    for (let i = 0; i < pts.length; i++) {
+      for (let j = i + 1; j < pts.length; j++) {
+        if (pts[i].distanceToSquared(pts[j]) < 1e-8) return true;
+      }
+    }
+    return false;
+  };
+
   const rings = [rowA];
   for (let sIdx = 1; sIdx < segs; sIdx++) {
     const t = sIdx / segs;
+    /* Joining two faces that point the same way needs an order-reversing
+       pairing - that is forced by the winding - so two of the connectors run
+       head-on into each other and share a midpoint. A ring landing exactly
+       there has two corners in one place, which welds and takes the mesh
+       non-manifold. Measured on two box tops: every EVEN section count broke,
+       because only an even count puts a ring at t = 0.5.
+
+       Nudging that one ring off the meeting point costs a thousandth of the
+       span and is invisible; refusing the count, or quietly shipping a
+       non-manifold mesh, both cost more. */
+    let pts = at(t);
+    if (welds(pts)) pts = at(t + 1e-3);
     const row = [];
-    for (let i = 0; i < rowA.length; i++) {
-      const a = vecAt(ed, rowA[i]), b = vecAt(ed, rowB[i]);
-      const p = curve ? hermitePoint(a, b, curve.t0, curve.t1, t) : a.clone().lerp(b, t);
+    pts.forEach(p => {
       const ni = ed.positions.length / 3;
       ed.positions.push(p.x, p.y, p.z);
       row.push(ni);
-    }
+    });
     rings.push(row);
   }
   rings.push(rowB);
@@ -3200,9 +3263,8 @@ function bridgeFacesOp(obj, groupIndices, segments, curved) {
 
   // Which way B runs, and where it starts, is measured rather than assumed -
   // see matchRings.
-  const ringA = loopA.slice();
-  const match = matchRings(ed, ringA, loopB);
-  const ringB = match.ring, k = match.k;
+  const match = matchRings(ed, loopA, loopB);
+  const ringA = match.ringA, ringB = match.ringB, k = match.k;
   const n = ringA.length;
 
   const centreA = new THREE.Vector3(); ringA.forEach(i => centreA.add(vecAt(ed, i))); centreA.divideScalar(n);
@@ -3219,9 +3281,12 @@ function bridgeFacesOp(obj, groupIndices, segments, curved) {
     /* Each end's OWN outward normal. loopB still runs the way face B is
        wound, so its normal points out of B; the bridge arrives there moving
        the other way, hence the minus. */
+    /* Each face's OWN outward normal, read from the ORIGINAL loops - ringA
+       may have been reversed to fix the winding, and that would silently
+       point the curve into the model instead of out of it. */
     const d = centreA.distanceTo(centreB) * BRIDGE_TANGENT;
     curve = {
-      t0: loopNormal(ed, ringA).multiplyScalar(d),
+      t0: loopNormal(ed, loopA).multiplyScalar(d),
       t1: loopNormal(ed, loopB).multiplyScalar(-d)
     };
   }
@@ -3230,19 +3295,16 @@ function bridgeFacesOp(obj, groupIndices, segments, curved) {
   const walls = [];
   for (let r = 0; r + 1 < rings.length; r++) {
     const r0 = rings[r], r1 = rings[r + 1];
-    // The middle of THIS band, not of the whole tube: a curved bridge bends
-    // away from its own chord and a single global centre would flip the
-    // walls at the far end.
-    const axisMid = loopCentroid(ed, r0).add(loopCentroid(ed, r1)).multiplyScalar(0.5);
+    /* No "point it away from the middle" test any more. The winding is
+       inherited from the faces this wall replaces - see matchRings - and it
+       is right by construction. The old test guessed outwardness from a made
+       -up tube axis, which says nothing at all when the band is flat, and it
+       was free to flip individual quads out of agreement with their
+       neighbours. That is where the reversed faces came from. */
     for (let i = 0; i < n; i++) {
-      const a0 = r0[i], a1 = r0[(i + 1) % n];
-      const b0 = r1[i], b1 = r1[(i + 1) % n];
-      let quad = [a0, a1, b1, b0];
-      const c = new THREE.Vector3();
-      quad.forEach(v => c.add(vecAt(ed, v)));
-      c.divideScalar(4);
-      if (loopNormal(ed, quad).dot(c.clone().sub(axisMid)) < 0) quad = [a0, b0, b1, a1];
-      walls.push(quad);
+      walls.push(match.form === 2
+        ? [r0[i], r1[i], r1[(i + 1) % n], r0[(i + 1) % n]]
+        : [r0[i], r0[(i + 1) % n], r1[(i + 1) % n], r1[i]]);
     }
   }
 
@@ -5067,6 +5129,19 @@ function applyPendingOp() {
         ensureHelpers(obj);
       }
       op.symWhy = m.ok ? null : 'Symmetry: ' + m.why;
+    }
+
+    /* Say it while the bar is open, not after OK. Two faces pointing the
+       SAME way cannot be joined by a tube that keeps both outward without
+       the surface turning over somewhere, so some counts fold the bridge
+       through itself. The count is right there under your thumb, so the
+       honest thing is to mark the ones that come out wrong and let you step
+       past them. */
+    if (res.ok) {
+      const w = auditWinding(obj);
+      op.badWinding = !w.ok;
+      const lab = document.getElementById('opLabel');
+      if (lab) lab.textContent = 'Bridge' + (op.badWinding ? ' \u00b7 folds over' : '');
     }
 
   } else if (op.kind === 'inset') {
