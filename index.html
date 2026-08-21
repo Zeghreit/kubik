@@ -620,7 +620,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.3</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.3a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -6498,55 +6498,38 @@ let pickBlockedBy = null;
 
 function pickComponentOnActiveInner(ev) {
   pickBlockedBy = null;
-  /* Once something is selected, the type is LOCKED: only that same type can
-     be picked until you tap empty space to clear. Overlapping catch zones
-     then can't interfere at all, because there's nothing to arbitrate
-     between - the ambiguity is removed by construction rather than tuned
-     down. Tap empty space and the next tap is free to choose again. */
-  const hasSelection = App.selectedElements.size > 0;
-  if (hasSelection) {
-    let idx = -1;
-    if (App.mode === 'vertex') idx = pickVertexOnActive(ev);
-    else if (App.mode === 'edge') idx = pickEdgeOnActive(ev);
-    else if (App.mode === 'face') idx = pickFaceOnActive(ev);
-    if (idx >= 0) return { type: App.mode, index: idx };
+  /* THE MODE DECIDES WHAT A TAP PICKS. Nothing else, ever.
 
-    /* Nothing of the locked type was close enough. Find out whether the tap
-       landed on something of ANOTHER type, because if it did, the lock is
-       the entire reason nothing happened - and this was landing in total
-       silence. Tapping the model in the wrong mode hits neither branch of
-       handleTap below: the object under the finger IS the active object, so
-       there's no object to switch to, and it isn't empty space, so there's
-       no selection to clear. The tap simply evaporated. */
-    if (App.mode !== 'vertex' && pickVertexOnActive(ev, OFF_MODE_PICK_BIAS) >= 0) pickBlockedBy = 'vertex';
-    else if (App.mode !== 'edge' && pickEdgeOnActive(ev, OFF_MODE_PICK_BIAS) >= 0) pickBlockedBy = 'edge';
-    else if (App.mode !== 'face' && pickFaceOnActive(ev) >= 0) pickBlockedBy = 'face';
-    return null;
-  }
+     Until a2.3a a tap with nothing selected was "free": it tried vertex,
+     then edge, then face, and quietly moved you into whichever it found.
+     That was the whole bug behind "I can't select a vertex". You are in
+     Vertex mode, you tap a little off a corner, there is no vertex within
+     28px but there is a face under your finger - so you got the face AND
+     were moved into Face mode, and every tap after that was a face. One
+     sloppy tap silently threw away a deliberate choice, and the app you
+     were using was no longer the app you asked for.
 
-  // Nothing selected yet, so the first tap is free to decide the type.
-  // The current mode still gets a wider catch radius than the others, so a
-  // tap that's ambiguous resolves toward what you're already working in.
-  const v = pickVertexOnActive(ev, App.mode === 'vertex' ? 1 : OFF_MODE_PICK_BIAS);
-  if (v >= 0) return { type: 'vertex', index: v };
-  const e = pickEdgeOnActive(ev, App.mode === 'edge' ? 1 : OFF_MODE_PICK_BIAS);
-  if (e >= 0) return { type: 'edge', index: e };
-  const f = pickFaceOnActive(ev);
-  if (f >= 0) return { type: 'face', index: f };
+     Now the mode is sticky and the ONLY thing that changes it is you:
+     the mode ring on the bottom-left button. Overlapping catch zones can
+     no longer interfere either, because there is nothing to arbitrate -
+     the ambiguity is removed by construction rather than tuned down. */
+  let idx = -1;
+  if (App.mode === 'vertex') idx = pickVertexOnActive(ev);
+  else if (App.mode === 'edge') idx = pickEdgeOnActive(ev);
+  else if (App.mode === 'face') idx = pickFaceOnActive(ev);
+  if (idx >= 0) return { type: App.mode, index: idx };
+
+  /* Nothing of this mode's type was close enough. Find out whether the tap
+     landed on something of ANOTHER type, because if it did, the mode is the
+     entire reason nothing happened - and this used to land in total
+     silence. Tapping the model in the wrong mode hits neither branch of
+     handleTap below: the object under the finger IS the active object, so
+     there's no object to switch to, and it isn't empty space, so there's no
+     selection to clear. The tap simply evaporated. */
+  if (App.mode !== 'vertex' && pickVertexOnActive(ev, OFF_MODE_PICK_BIAS) >= 0) pickBlockedBy = 'vertex';
+  else if (App.mode !== 'edge' && pickEdgeOnActive(ev, OFF_MODE_PICK_BIAS) >= 0) pickBlockedBy = 'edge';
+  else if (App.mode !== 'face' && pickFaceOnActive(ev) >= 0) pickBlockedBy = 'face';
   return null;
-}
-
-// A lighter version of setMode() for switching sub-type mid-tap: no radial
-// menu to hide (nothing's open mid-tap) and no double UI refresh, since the
-// caller adds the freshly-picked component right after this runs.
-function switchToComponentType(newType) {
-  App.mode = newType;
-  App.lastComponentMode = newType;
-  App.selectedElements.clear();
-  App.edgeAnchor = null;
-  hideAllHelpers();
-  const obj = findObject(App.activeObjectId);
-  if (obj) setActiveObjectHelpersVisible(obj, newType);
 }
 
 // The lower-left toggle: Object mode edits whole objects: Component mode
@@ -7348,13 +7331,12 @@ function handleTap(ev) {
      it was reported. */
   if (!pick && pickBlockedBy) {
     toast('That\u2019s ' + (pickBlockedBy === 'edge' ? 'an ' : 'a ') + pickBlockedBy +
-          ' \u2014 ' + App.mode + ' is locked. Hold the mode button to switch to '
-          + pickBlockedBy + ', or tap empty space to clear.');
+          ' \u2014 ' + App.mode + ' mode. Hold the mode button to switch.');
     return;
   }
 
   if (pick) {
-    if (pick.type !== App.mode) switchToComponentType(pick.type);
+    // pick.type is App.mode by construction now - see pickComponentOnActiveInner.
 
     // Remember a lone previously-selected edge: if the user now double-taps a
     // different edge, we join the two together into a continuous run.
@@ -9120,7 +9102,7 @@ const HELP_SECTIONS = [
     rows: [
       [null, 'Tap', 'Picks the nearest visible thing. Tap empty space to clear.'],
       [null, 'Choosing a type', 'Hold the round button, bottom-left, and a ring of Object / Vertex / Edge / Face blooms. Picking one clears the selection and aims every tap at that kind.'],
-      [null, 'Type lock', 'Once something is selected, only that kind can be picked until you clear. A refused tap says so, and says which button to hold.'],
+      [null, 'What a tap picks', 'Exactly what the mode says - vertices in Vertex mode, edges in Edge, faces in Face. Nothing changes it behind your back; a tap that lands on the wrong kind tells you so.'],
       ['free', 'Tap select', 'Plain tapping. The default.'],
       ['box', 'Box select', 'Drag a rectangle. Chosen from the world ring.'],
       ['lasso', 'Lasso select', 'Draw the shape freehand. Same ring.'],
@@ -9782,9 +9764,16 @@ async function checkForUpdate() {
   try {
     const res = await fetch(location.pathname, { cache: 'no-store' });
     const html = await res.text();
-    const m = html.match(/>v(\d+\.\d+)<\/span>/);
+    /* Read the brand span WHATEVER it says. This used to be
+       /&gt;v(\d+\.\d+)&lt;\/span&gt;/ - it assumed a leading "v" and two numeric
+       parts, so the day versions became "a2.0" it stopped matching anything
+       and the banner silently never appeared again. On an iOS Home Screen
+       app that banner is the ONLY way to find out a new version exists, so
+       a dead matcher reads exactly like "you shipped nothing". Never encode
+       the version FORMAT here; match the element and compare the text. */
+    const m = html.match(/class="brand"[^>]*>[^<]*<span[^>]*>([^<]+)<\/span>/);
     const mine = document.querySelector('.brand span');
-    if (m && mine && m[1] !== mine.textContent.replace('v', '')) showUpdateBanner(m[1]);
+    if (m && mine && m[1].trim() !== mine.textContent.trim()) showUpdateBanner(m[1].trim());
   } catch (err) { /* offline, or the fetch was blocked - stay quiet either way */ }
 }
 
@@ -9796,7 +9785,7 @@ function showUpdateBanner(newVersion) {
     'background:var(--accent); color:var(--on-accent); font:600 13px system-ui,sans-serif; ' +
     'padding:10px 14px; padding-top:calc(10px + env(safe-area-inset-top)); ' +
     'text-align:center; cursor:pointer;';
-  bar.textContent = 'Update to v' + newVersion + ' available - tap to reload';
+  bar.textContent = 'Update to ' + newVersion + ' available - tap to reload';
   bar.addEventListener('click', () => {
     // A cache-busted URL forces a real network fetch even where a plain
     // reload might not.

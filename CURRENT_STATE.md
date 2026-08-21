@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **a2.3**
+- Version at time of writing: **a2.3a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -180,12 +180,22 @@ the viewport, so there is always somewhere left to orbit from).
 start; mouse and pen keep 6px. A thumb rolls further than 6px as it presses
 and lifts, so ordinary taps were being discarded as camera drags.
 
-**The type lock.** Once something is selected, only that component type can
-be picked until you clear. It removes catch-zone ambiguity by construction
-— and it must NEVER be silent. A refused tap used to hit neither branch of
-`handleTap` (the object under the finger IS the active object, so nothing
-to switch to; not empty space, so nothing to clear) and simply evaporated.
-It now probes what was actually under the finger and says so.
+**THE MODE DECIDES WHAT A TAP PICKS, and nothing else ever changes it.**
+Vertices in Vertex mode, edges in Edge, faces in Face — with or without a
+selection. A tap that finds nothing of that type probes the others and says
+what it found; it must NEVER be silent (a refused tap hits neither branch of
+`handleTap` — the object under the finger IS the active object, so nothing
+to switch to; not empty space, so nothing to clear — and simply evaporates).
+
+**The "free first tap" is gone (a2.3a) and must not come back.** Until then
+a tap with nothing selected tried vertex, then edge, then face, and quietly
+moved you into whichever it found. That was the real "I can't select a
+vertex" bug, and it survived the a2.3 mode ring: you would choose Vertex
+deliberately, tap slightly off a corner where no vertex sits within 28px,
+get the face underneath — and be silently moved into Face mode, so every
+tap after that was a face too. One sloppy tap threw away a deliberate
+choice. `switchToComponentType()` existed only to do this and has been
+deleted.
 
 **The mode ring (a2.3) is what makes the lock liveable.** Hold the bottom-
 left button and Object / Vertex / Edge / Face bloom; picking one sets the
@@ -411,6 +421,14 @@ otherwise the inspector reports the position the object was reflected FROM.
   all" versus "picks the wrong thing" are different bugs with different
   causes. Three plausible fixes were shipped for a selection complaint
   before the symptom was named; naming it found the cause in one read.
+- **The update banner is the ONLY way an iOS Home Screen app learns a new
+  version exists** — no pull-to-refresh, no reload button. `checkForUpdate`
+  matched `/>v(\d+\.\d+)<\/span>/`, which assumed a leading "v" and two
+  numeric parts, so the day versions became `a2.0` it matched nothing and
+  the banner silently stopped appearing. Anyone on the Home Screen app was
+  then stuck on a cached build reading "you shipped nothing". Fixed a2.3a to
+  match the ELEMENT and compare its text. **Never encode the version format
+  there again.**
 - **A silent no-op is the worst failure mode.** It is indistinguishable from
   a broken app. Several bugs here were "the code correctly decided to do
   nothing and told no one": the type lock, `avgDir` cancelling to zero,
