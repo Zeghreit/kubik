@@ -616,7 +616,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99i</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">v1.99j</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -7369,6 +7369,53 @@ function removeObjects(objs) {
 // position-based welding treats them as one point - the seam behaves as solid
 // geometry rather than two loose shells. The faces lying flat on the plane are
 // dropped, since they'd otherwise be trapped inside the join.
+/* The plane Mirror and Flip both work across, in WORLD space. Symmetry OFF
+   means the world axis plane, which is what Mirror has always used; symmetry
+   ON means this object's own captured plane, so the two features agree. Both
+   callers ask the same question, so they ask it in one place. */
+function activeMirrorPlane(obj, axis) {
+  obj.mesh.updateMatrixWorld();
+  const n = new THREE.Vector3();
+  n[axis] = 1;
+  if (!App.symmetry) return new THREE.Plane(n, 0);
+  const pl = symmetryPlane(obj, axis);
+  // Normal matrix, not transformDirection: non-uniform scale skews normals.
+  n.applyMatrix3(new THREE.Matrix3().getNormalMatrix(obj.mesh.matrixWorld)).normalize();
+  const pt = new THREE.Vector3();
+  pt[axis] = pl.offset;
+  obj.mesh.localToWorld(pt);
+  return new THREE.Plane().setFromNormalAndCoplanarPoint(n, pt);
+}
+
+/* Flip: reflects an object across a plane IN PLACE, baking the reflection
+   into the geometry rather than into the transform.
+
+   Mirror does it the other way - it gives the copy a negative scale - and
+   that is precisely why mirrored objects are forced to render DoubleSide:
+   a negative-determinant transform reverses triangle handedness, so
+   front-face culling would hide the half you want to see. Baking avoids
+   the whole problem. The determinant stays positive, the object needs no
+   special rendering case, and reversing the winding here (the same swap
+   Flip Normals makes) keeps every face pointing out. */
+function flipObjectInPlace(obj, plane) {
+  const ed = toEditable(obj.mesh);
+  obj.mesh.updateMatrixWorld();
+  const M = obj.mesh.matrixWorld;
+  const toLocal = new THREE.Matrix4().copy(M).invert();
+  // local -> world -> reflected -> back to local, so the object does not move.
+  const T = new THREE.Matrix4().multiplyMatrices(toLocal,
+    new THREE.Matrix4().multiplyMatrices(mirrorMatrixForPlane(plane), M));
+
+  const p = new THREE.Vector3();
+  for (let i = 0; i < ed.positions.length; i += 3) {
+    p.set(ed.positions[i], ed.positions[i + 1], ed.positions[i + 2]).applyMatrix4(T);
+    ed.positions[i] = p.x; ed.positions[i + 1] = p.y; ed.positions[i + 2] = p.z;
+  }
+  // A reflection reverses handedness, so without this every face is inside-out.
+  ed.groups.forEach(g => { g.triangles = g.triangles.map(t => [t[0], t[2], t[1]]); });
+  rebuildFromEditable(obj, ed);
+}
+
 function mirrorSelectedObjects(axis) {
   if (App.mode !== 'object') { toast('Mirror works in Object mode'); return; }
   const ids = Array.from(App.selectedObjectIds);
@@ -7381,25 +7428,8 @@ function mirrorSelectedObjects(axis) {
     if (!src) return;
     src.mesh.updateMatrixWorld();
 
-    /* One plane, in world space, whichever kind it is. Symmetry OFF is the
-       world axis plane, as it always has been; symmetry ON is this object's
-       captured plane, so Mirror and symmetric editing agree. */
-    let plane;
-    if (App.symmetry) {
-      const pl = symmetryPlane(src, axis);
-      // Normal matrix, not transformDirection: non-uniform scale skews normals.
-      const n = new THREE.Vector3();
-      n[axis] = 1;
-      n.applyMatrix3(new THREE.Matrix3().getNormalMatrix(src.mesh.matrixWorld)).normalize();
-      const pt = new THREE.Vector3();
-      pt[axis] = pl.offset;
-      src.mesh.localToWorld(pt);
-      plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, pt);
-    } else {
-      const n = new THREE.Vector3();
-      n[axis] = 1;
-      plane = new THREE.Plane(n, 0);
-    }
+    // One plane, in world space, whichever kind it is - see activeMirrorPlane.
+    const plane = activeMirrorPlane(src, axis);
 
     /* If the plane CUTS the object, mirroring the whole thing just lays a
        second copy over the first - which is what it used to do, and it read
@@ -7444,6 +7474,36 @@ function mirrorSelectedObjects(axis) {
   toast(cutCount
     ? 'Cut at ' + where + ' - kept the half facing you, mirrored it'
     : 'Mirrored across ' + where);
+}
+
+/* Turns the selected objects over where they stand. Mirror makes a second
+   copy across a plane; Flip reflects the one you have and leaves it there.
+   Same plane rule as Mirror, so the Symmetry pill governs both: off flips
+   across the world axis, on flips across the object's own captured plane.
+   The toast names which, because the two look identical for a centred
+   object and completely different for one that has drifted. */
+function flipSelectedObjects(axis) {
+  if (App.mode !== 'object') { toast('Flip works in Object mode'); return; }
+  const ids = Array.from(App.selectedObjectIds);
+  if (!ids.length) { toast('Select an object to flip'); return; }
+
+  let done = 0;
+  ids.forEach(id => {
+    const obj = findObject(id);
+    if (!obj) return;
+    flipObjectInPlace(obj, activeMirrorPlane(obj, axis));
+    ensureHelpers(obj);
+    done++;
+  });
+  if (!done) { toast('Nothing to flip'); return; }
+
+  hideRadialMenu();
+  refreshUI();
+  refreshGizmoAttachment();
+  pushHistory();
+  toast('Flipped across ' + (App.symmetry
+    ? 'the symmetry plane (' + axis.toUpperCase() + ')'
+    : 'world ' + axis.toUpperCase() + '=0'));
 }
 
 /* Puts the selection back where new objects appear: centred on X and Z,
@@ -7982,6 +8042,8 @@ const ICON = {
   flipnorm: '<path d="M3 12h18"/><path d="M8 12V5"/><path d="M5 8l3-3 3 3"/><path d="M16 12v7"/><path d="M13 16l3 3 3-3"/>',
   // Two halves pulling apart, with the seam they parted along.
   separate: '<path d="M9 4H4v16h5"/><path d="M15 4h5v16h-5"/><path d="M12 5v3M12 10.5v3M12 16v3"/>',
+  // A dashed axis with the shape turned over across it.
+  flip: '<path d="M12 2v20" stroke-dasharray="3 3"/><path d="M4 8l6 4-6 4z"/><path d="M20 8l-6 4 6 4z"/>',
   mirror:  '<path d="M12 2v20"/><path d="M9 6L4 12l5 6z"/><path d="M15 6l5 6-5 6z"/>',
   object:  '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/>',
   vertex:  '<path d="M5 5h14v14H5z"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/>',
@@ -8075,6 +8137,7 @@ const HUB_TOOLS_FACE = [
 const HUB_TOOLS_OBJECT_BASE = [
   { key: 'duplicate', icon: 'dupe', label: 'Duplicate', ring: 0, run: duplicateSelection },
   { key: 'mirror', icon: 'mirror', label: 'Mirror', ring: 0, run: () => mirrorSelectedObjects(App.symmetryAxis) },
+  { key: 'flip', icon: 'flip', label: 'Flip', ring: 0, run: () => flipSelectedObjects(App.symmetryAxis) },
   { key: 'centre', icon: 'centre', label: 'Centre', ring: 0, run: centreSelectionToOrigin },
   { key: 'delete', icon: 'del', label: 'Delete', ring: 0, run: deleteSelection },
   // Kept together as a group, in this order, since they're the four most
