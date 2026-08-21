@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **a2.7a**
+- Version at time of writing: **a2.7b**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -232,6 +232,18 @@ what you want beats guessing it.
 **No deliberate way to switch component type** — you must successfully tap
 the type you want, or clear and tap again. This was solved at a2.3 and
 un-solved at a2.4 on purpose; see above before rebuilding it.
+
+**The ring's radius is capped by the SCREEN, not just by its item count
+(a2.7b).** `bloomToolRing` sizes itself from the tightest pair of items, which
+is unbounded: the Edge ring is thirteen tools and asks for ~192px, needing a
+444px-wide viewport before it fits at all. On a phone the centre clamp then
+had no legal position to clamp to, so it pinned to one side and half the ring
+hung off the right-hand edge. The radius is now `min(ideal, what fits)` and
+the centre falls back to the middle when even that is too big. Squeezing the
+icons is much the lesser problem: thirteen items on a 390px screen still sit
+~70px apart, and the ring picks by DIRECTION, so you never have to land on
+one. Measured on a 400x751 viewport: every ring fits entirely, from any
+corner.
 
 **Rings are DRAWN where they fit and AIMED from the finger.**
 `bloomToolRing` keeps a ring `R + 30` inside the viewport, so one bloomed

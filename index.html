@@ -620,7 +620,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.7a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.7b</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -9887,16 +9887,33 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
   // spreads out enough to keep real spacing. Every set lands at roughly the
   // same gap between icons regardless of how many there are or how they're
   // grouped.
+  const rect = viewportEl.getBoundingClientRect();
+
+  /* The ideal radius, from the tightest pair - and then whatever the SCREEN
+     will actually hold.
+
+     The ideal alone is unbounded: it grows with the item count, and the Edge
+     ring is thirteen tools. At that count it asks for ~192px, which needs a
+     444px-wide viewport before the ring even fits, so on a phone the clamp
+     below had no legal position to clamp to and half the ring hung off the
+     right-hand edge. Squeezing the icons closer together is the lesser
+     problem by a distance - they are still 70px apart at thirteen items on a
+     390px screen, and the ring picks by DIRECTION anyway, so you never have
+     to land on one. */
   const gap = THREE.MathUtils.degToRad(minAngularGapDeg(anglesDeg));
-  const R = Math.max(
+  const ideal = Math.max(
     TOOL_RING_MIN_R,
     (TOOL_RING_ITEM + TOOL_RING_GAP) / (2 * Math.sin(gap / 2))
   );
+  const fits = Math.min(rect.width, rect.height) / 2 - TOOL_RING_ITEM / 2 - 14;
+  const R = Math.max(TOOL_RING_MIN_R * 0.6, Math.min(ideal, fits));
 
-  const rect = viewportEl.getBoundingClientRect();
   const margin = R + 30;
-  const cx = THREE.MathUtils.clamp(x - rect.left, margin, rect.width - margin);
-  const cy = THREE.MathUtils.clamp(y - rect.top, margin, rect.height - margin);
+  // A viewport too small even for that keeps the ring centred rather than
+  // letting the clamp invert and throw it into a corner.
+  const place = (v, span) => (span < margin * 2 ? span / 2 : THREE.MathUtils.clamp(v, margin, span - margin));
+  const cx = place(x - rect.left, rect.width);
+  const cy = place(y - rect.top, rect.height);
 
   touchToolRingEl.innerHTML = '';
   touchToolRingEl.style.left = cx + 'px';
