@@ -664,7 +664,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.9b</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.10</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -9936,14 +9936,28 @@ function clearToolRingTimer() {
 function toolRingAngles(tools) {
   const halved = tools.some(t => t.half);
   if (!halved) {
-    /* Component rings sit on one shared 14-seat compass: a tool owns ONE
-       seat (0 = straight up, clockwise, 7 = straight down) and keeps it in
-       every ring it appears in - Delete is the same pull no matter which
-       component menu bloomed. Rings with fewer tools leave seats empty;
-       hover picks by nearest direction, so a gap costs nothing. A set
-       without seat fields (the empty-scene ring) keeps the even spread. */
-    if (tools.every(t => t.seat !== undefined))
-      return tools.map(t => 90 - (t.seat / 14) * 360);
+    /* Component rings share one compass: a tool's `seat` (0 = straight
+       up, clockwise, 7 = straight down) names the DIRECTION it should pull
+       toward in every ring it appears in. The ring itself stays a complete
+       circle - tools spread evenly with no gaps (a2.8 left the empty seats
+       as holes; a2.10 closes them) - laid out in seat order, and the whole
+       circle is rotated to the phase that minimises deviation from those
+       bearings. Same direction, not same place: Delete is always the
+       downward pull even though its exact angle shifts a little with the
+       ring's item count. A set without seat fields (the empty-scene ring)
+       keeps the plain even spread. */
+    if (tools.every(t => t.seat !== undefined)) {
+      const spacing = 360 / tools.length;
+      const order = tools.slice().sort((a, b) => a.seat - b.seat);
+      let sx = 0, sy = 0;
+      order.forEach((t, i) => {
+        const a = ((90 - (t.seat / 14) * 360) + i * spacing) * Math.PI / 180;
+        sx += Math.cos(a); sy += Math.sin(a);
+      });
+      const phase = Math.atan2(sy, sx) * 180 / Math.PI;
+      const angleOf = new Map(order.map((t, i) => [t, phase - i * spacing]));
+      return tools.map(t => angleOf.get(t));
+    }
     return tools.map((t, i) => 90 - (i / tools.length) * 360);
   }
 
