@@ -5370,6 +5370,7 @@ function confirmPendingOp() {
   refreshUI();
   refreshGizmoAttachment();
   pushHistory();
+  if (obj) spawnLandingPulse(obj);
   toast(op.kind === 'subdivide'
     ? 'Subdivided \u00d7' + (op.segments || 1) +
       (op.groupMode === 'keep' ? ', shape kept' : ', smoothed')
