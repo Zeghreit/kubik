@@ -664,7 +664,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.12a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.12b</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1093,6 +1093,21 @@ function engageOrtho() {
   const f = orthoFactor(camera.fov);
   const dir = camera.position.clone().sub(orbit.target);
   const teleDist = dir.length() * f;
+  /* Fog is banded by CAMERA distance (15..42, in the background colour),
+     so from ~27x further out the whole scene was 100% fogged - invisible,
+     while the fog-free helper lines still drew. Shift the band out by the
+     same amount the camera moved; every depth in the scene shifts by
+     exactly that, so the fade looks identical to the perspective view.
+     Restored below, and only onto the SAME fog object - a theme switch
+     mid-flat replaces the fog, and stale numbers must not land on it. */
+  if (scene.fog) {
+    const shift = teleDist - dir.length();
+    orthoView.fog = scene.fog;
+    orthoView.fogNear = scene.fog.near;
+    orthoView.fogFar = scene.fog.far;
+    scene.fog.near += shift;
+    scene.fog.far += shift;
+  }
   camera.position.copy(orbit.target).addScaledVector(dir, f);
   camera.fov = ORTHO_FOV;
   /* Near and far BOTH travel with the lens. Near: a 0.01 plane from ~27x
@@ -1114,6 +1129,10 @@ function disengageOrtho(silent) {
   camera.fov = orthoView.fov;
   camera.near = orthoView.near;
   camera.far = orthoView.far;
+  if (orthoView.fog && scene.fog === orthoView.fog) {
+    scene.fog.near = orthoView.fogNear;
+    scene.fog.far = orthoView.fogFar;
+  }
   camera.updateProjectionMatrix();
   orthoView = null;
   if (!silent) toast('Perspective view');
