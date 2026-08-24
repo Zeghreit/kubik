@@ -620,7 +620,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.7e</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.7f</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -9618,22 +9618,31 @@ const ICON = {
   scale:   '<path d="M4 4h7v7H4z"/><path d="M13 13h7v7h-7z"/><path d="M11 11l2 2"/>',
   extrude: '<path d="M5 20h14"/><path d="M12 16V5"/><path d="M8 9l4-4 4 4"/>',
   inset:   '<path d="M3 3h18v18H3z"/><path d="M7.5 7.5h9v9h-9z"/>',
-  bevel:   '<path d="M4 20V8l4-4h12v12l-4 4z"/><path d="M4 8h12v12"/>',
-  loop:    '<path d="M3 3h18v18H3z"/><path d="M12 3v18"/>',
+  // A block with its upper-right corner cut flat - one generous chamfer.
+  bevel:   '<path d="M4 20V4h8l8 8v8z"/>',
+  // Bevel's sibling: the same block, the same corner, rounded instead.
+  fillet:  '<path d="M4 20V4h8a8 8 0 0 1 8 8v8z"/>',
+  // An intact face with the cut being inserted: a dashed seam through it.
+  loop:    '<path d="M3 3h18v18H3z"/><path d="M12 3v2.8M12 10.6v2.8M12 18.2v2.8"/>',
   // A surface with its arrow on one side, then on the other.
   flipnorm: '<path d="M3 12h18"/><path d="M8 12V5"/><path d="M5 8l3-3 3 3"/><path d="M16 12v7"/><path d="M13 16l3 3 3-3"/>',
-  // Two halves pulling apart, with the seam they parted along.
-  separate: '<path d="M9 4H4v16h5"/><path d="M15 4h5v16h-5"/><path d="M12 5v3M12 10.5v3M12 16v3"/>',
+  // Two parts, already apart, and the dashed split between them.
+  // Staggered so the pair can't read as flip's mirrored triangles.
+  separate: '<path d="M2 3h6.5v6.5H2z"/><path d="M15.5 14.5h6.5V21h-6.5z"/><path d="M12 2.5v19" stroke-dasharray="3.2 4.7"/>',
   // A dashed axis with the shape turned over across it.
   flip: '<path d="M12 2v20" stroke-dasharray="3 3"/><path d="M4 8l6 4-6 4z"/><path d="M20 8l-6 4 6 4z"/>',
-  // An outline with its gap closed by a patch.
-  cap: '<path d="M4 20V4h16v16z"/><path d="M9 9h6v6H9z" stroke-dasharray="2 2"/>',
+  // An open cube - top face missing - and that face arriving as a solid
+  // lid: the patch that makes it watertight.
+  cap: '<path d="M4 10v6.5L12 21l8-4.5v-6.5"/><path d="M4 10l8 4.5 8-4.5"/><path d="M12 14.5V21"/><path d="M12 2.3l5.4 3.1-5.4 3.1-5.4-3.1z" fill="currentColor" stroke="currentColor"/>',
   knife: '<path d="M20 3l-8 8 3 3 5-5z"/><path d="M12 11l-8 8 2 2 8-8"/>',
   // Outward arrows: the selection reaching further.
   grow: '<path d="M9 9h6v6H9z"/><path d="M6 6l-3-3M18 6l3-3M6 18l-3 3M18 18l3 3"/><path d="M3 7V3h4M21 7V3h-4M3 17v4h4M21 17v4h-4"/>',
   // The same arrows turned inward.
   shrink: '<path d="M9 9h6v6H9z"/><path d="M3 3l3 3M21 3l-3 3M3 21l3-3M21 21l-3-3"/><path d="M6 2v4H2M18 2v4h4M6 22v-4H2M18 22v-4h4"/>',
   mirror:  '<path d="M12 2v20"/><path d="M9 6L4 12l5 6z"/><path d="M15 6l5 6-5 6z"/>',
+  // The one-shot Mirror ACTION: the pill's composition, but the result
+  // half arrives solid - a before-and-after, not a state.
+  mirroraction: '<path d="M12 2v20"/><path d="M9 6L4 12l5 6z"/><path d="M15 6l5 6-5 6z" fill="currentColor"/>',
   object:  '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/>',
   vertex:  '<path d="M5 5h14v14H5z"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/>',
   edge:    '<path d="M5 5h14v14H5z"/><path d="M5 19L19 5" stroke-width="3.2"/>',
@@ -9667,7 +9676,8 @@ const ICON = {
   crease:  '<path d="M3 18L12 6l9 12"/><circle cx="12" cy="6" r="1.8" fill="currentColor" stroke="none"/>',
   uncrease:'<path d="M3 18c4-6 14-6 18 0"/>',
   subdiv:  '<path d="M3 3h18v18H3z"/><path d="M12 3v18M3 12h18"/>',
-  bridge:  '<path d="M4 17V9M20 17V9"/><path d="M4 9h16"/><path d="M8 9v4M12 9v5M16 9v4"/>',
+  // Two solid edges and the band of new faces forming between them.
+  bridge:  '<path d="M5 4.5v15M19 4.5v15"/><rect x="5" y="9" width="14" height="6" fill="currentColor" opacity=".45" stroke="none"/>',
   symoff:  '<path d="M12 3v18" opacity=".45"/><path d="M9 7L5 12l4 5z" opacity=".45"/><path d="M15 7l4 5-4 5z" opacity=".45"/><path d="M4 20L20 4"/>',
   centre:  '<circle cx="12" cy="12" r="2.2"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5"/><circle cx="12" cy="12" r="7.5" stroke-dasharray="2.5 3"/>'
 };
@@ -9748,7 +9758,7 @@ const HUB_TOOLS_FACE = [
 
 const HUB_TOOLS_OBJECT_BASE = [
   { key: 'duplicate', icon: 'dupe', label: 'Duplicate', ring: 0, run: duplicateSelection },
-  { key: 'mirror', icon: 'mirror', label: 'Mirror', ring: 0, run: () => showMirrorChooser(App.symmetryAxis) },
+  { key: 'mirror', icon: 'mirroraction', label: 'Mirror', ring: 0, run: () => showMirrorChooser(App.symmetryAxis) },
   { key: 'flip', icon: 'flip', label: 'Flip', ring: 0, run: () => flipSelectedObjects(App.symmetryAxis) },
   // Delete takes the on-axis right seat as of a2.7e, swapped with Centre -
   // Delete is the single most universal action in this ring; Centre
@@ -9759,7 +9769,7 @@ const HUB_TOOLS_OBJECT_BASE = [
   // related to how the object actually looks.
   { key: 'subdivide', icon: 'subdiv', label: 'Subdivide', ring: 1, run: subdivideSelection },
   { key: 'material', icon: 'color', label: 'Material', ring: 1, run: cycleMaterialFinish },
-  { key: 'fillet', icon: 'bevel', label: 'Fillet', ring: 1, run: toggleFilletPreview },
+  { key: 'fillet', icon: 'fillet', label: 'Fillet', ring: 1, run: toggleFilletPreview },
   { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', ring: 1, run: flipNormalsSelection },
   { key: 'separate', icon: 'separate', label: 'Separate', ring: 1, run: separateSelection },
   { key: 'cap', icon: 'cap', label: 'Cap holes', ring: 1, run: fillHolesSelection },
