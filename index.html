@@ -620,7 +620,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.7f</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.8</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -9707,78 +9707,69 @@ const symPillEl = document.getElementById('symPill');
    only from the keyboard keys ] and [ - which is to say, not at all on the
    phone this app is built for. */
 const HUB_TOOLS_VERTEX = [
-  { key: 'connect', icon: 'connect', label: 'Connect', ring: 0, run: connectSelection },
-  { key: 'weld', icon: 'weld', label: 'Weld', ring: 0, run: weldSelection },
-  { key: 'delete', icon: 'del', label: 'Delete', ring: 0, run: deleteSelection },
-  { key: 'grow', icon: 'grow', label: 'Grow', ring: 1, run: growSelection },
-  { key: 'shrink', icon: 'shrink', label: 'Shrink', ring: 1, run: shrinkSelection },
+  { key: 'connect', icon: 'connect', label: 'Connect', seat: 0, ring: 0, run: connectSelection },
+  { key: 'weld', icon: 'weld', label: 'Weld', seat: 1, ring: 0, run: weldSelection },
+  { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 0, run: deleteSelection },
+  { key: 'grow', icon: 'grow', label: 'Grow', seat: 12, ring: 1, run: growSelection },
+  { key: 'shrink', icon: 'shrink', label: 'Shrink', seat: 13, ring: 1, run: shrinkSelection },
 ];
 
 const HUB_TOOLS_EDGE = [
-  // The first three declared land nearest the ring's one free on-axis seat
-  // (straight up from the press point, see the Bloom Ring Ergonomics doc) -
-  // kept, as of a2.7e, to the three edge-relevant members of the "four
-  // basic tools" hard-surface modelling keeps converging on: Extrude, Loop
-  // cut and Bevel (Inset is the fourth, and it's Face-only). Bridge held
-  // this seat before that - it earned it under the old two-radius layout
-  // ("near ring's shorter sweep crowded the icons together"), but that
-  // layout is gone, there's one ring now, and the crowding reason for
-  // keeping Loop out never re-applied to the new geometry.
-  { key: 'extrude', icon: 'extrude', label: 'Extrude', ring: 0, run: extrudeSelection },
-  { key: 'bevel', icon: 'bevel', label: 'Bevel', ring: 0, run: bevelSelection },
-  { key: 'loopcut', icon: 'loop', label: 'Loop', ring: 0, run: edgeLoopSelection },
-  { key: 'bridge', icon: 'bridge', label: 'Bridge', ring: 1, run: bridgeSelection },
-  { key: 'split', icon: 'split', label: 'Split', ring: 1, run: splitSelection },
-  { key: 'cap', icon: 'cap', label: 'Cap hole', ring: 1, run: fillHolesSelection },
-  { key: 'knife', icon: 'knife', label: 'Knife', ring: 1, run: startKnife },
-  { key: 'grow', icon: 'grow', label: 'Grow', ring: 1, run: growSelection },
-  { key: 'shrink', icon: 'shrink', label: 'Shrink', ring: 1, run: shrinkSelection },
-  { key: 'crease', icon: 'crease', label: 'Crease', ring: 1, run: () => creaseSelection(true) },
-  { key: 'uncrease', icon: 'uncrease', label: 'Uncrease', ring: 1, run: () => creaseSelection(false) },
-  { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', ring: 1, run: toggleShading },
-  { key: 'delete', icon: 'del', label: 'Delete', ring: 1, run: deleteSelection }
+  // Seats replace the a2.7e declaration-order ergonomics: the "four
+  // basics" hold the seats around straight-up (Extrude 0, Bevel 1 - which
+  // Fillet mirrors in the Object ring - and Loop 2; Inset takes 1 in the
+  // Face ring), Delete owns straight-down (7) in EVERY ring, and every
+  // tool shared with another ring keeps the same bearing there.
+  { key: 'extrude', icon: 'extrude', label: 'Extrude', seat: 0, ring: 0, run: extrudeSelection },
+  { key: 'bevel', icon: 'bevel', label: 'Bevel', seat: 1, ring: 0, run: bevelSelection },
+  { key: 'loopcut', icon: 'loop', label: 'Loop', seat: 2, ring: 0, run: edgeLoopSelection },
+  { key: 'knife', icon: 'knife', label: 'Knife', seat: 3, ring: 1, run: startKnife },
+  { key: 'split', icon: 'split', label: 'Split', seat: 4, ring: 1, run: splitSelection },
+  { key: 'bridge', icon: 'bridge', label: 'Bridge', seat: 5, ring: 1, run: bridgeSelection },
+  { key: 'cap', icon: 'cap', label: 'Cap hole', seat: 6, ring: 1, run: fillHolesSelection },
+  { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 1, run: deleteSelection },
+  { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 8, ring: 1, run: toggleShading },
+  { key: 'crease', icon: 'crease', label: 'Crease', seat: 10, ring: 1, run: () => creaseSelection(true) },
+  { key: 'uncrease', icon: 'uncrease', label: 'Uncrease', seat: 11, ring: 1, run: () => creaseSelection(false) },
+  { key: 'grow', icon: 'grow', label: 'Grow', seat: 12, ring: 1, run: growSelection },
+  { key: 'shrink', icon: 'shrink', label: 'Shrink', seat: 13, ring: 1, run: shrinkSelection }
 ];
 
 const HUB_TOOLS_FACE = [
-  { key: 'extrude', icon: 'extrude', label: 'Extrude', ring: 0, run: extrudeSelection },
-  { key: 'inset', icon: 'inset', label: 'Inset', ring: 0, run: insetSelection },
-  { key: 'bridge', icon: 'bridge', label: 'Bridge', ring: 0, run: bridgeSelection },
-  // Cap holes takes the ring's other free on-axis seat (straight down, ten
-  // items split evenly) as of a2.7e - swapped with Knife, which stays one
-  // slot over. Closing a shape is the more everyday need of the two; Knife
-  // is the more occasional, precision one.
-  { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', ring: 1, run: flipNormalsSelection },
-  { key: 'knife', icon: 'knife', label: 'Knife', ring: 1, run: startKnife },
-  { key: 'cap', icon: 'cap', label: 'Cap holes', ring: 1, run: fillHolesSelection },
-  { key: 'grow', icon: 'grow', label: 'Grow', ring: 1, run: growSelection },
-  { key: 'shrink', icon: 'shrink', label: 'Shrink', ring: 1, run: shrinkSelection },
-  { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', ring: 1, run: toggleShading },
-  { key: 'delete', icon: 'del', label: 'Delete', ring: 1, run: deleteSelection }
+  { key: 'extrude', icon: 'extrude', label: 'Extrude', seat: 0, ring: 0, run: extrudeSelection },
+  { key: 'inset', icon: 'inset', label: 'Inset', seat: 1, ring: 0, run: insetSelection },
+  { key: 'knife', icon: 'knife', label: 'Knife', seat: 3, ring: 1, run: startKnife },
+  { key: 'bridge', icon: 'bridge', label: 'Bridge', seat: 5, ring: 0, run: bridgeSelection },
+  { key: 'cap', icon: 'cap', label: 'Cap holes', seat: 6, ring: 1, run: fillHolesSelection },
+  { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 1, run: deleteSelection },
+  { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 8, ring: 1, run: toggleShading },
+  { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 9, ring: 1, run: flipNormalsSelection },
+  { key: 'grow', icon: 'grow', label: 'Grow', seat: 12, ring: 1, run: growSelection },
+  { key: 'shrink', icon: 'shrink', label: 'Shrink', seat: 13, ring: 1, run: shrinkSelection }
 ];
 
 const HUB_TOOLS_OBJECT_BASE = [
-  { key: 'duplicate', icon: 'dupe', label: 'Duplicate', ring: 0, run: duplicateSelection },
-  { key: 'mirror', icon: 'mirroraction', label: 'Mirror', ring: 0, run: () => showMirrorChooser(App.symmetryAxis) },
-  { key: 'flip', icon: 'flip', label: 'Flip', ring: 0, run: () => flipSelectedObjects(App.symmetryAxis) },
-  // Delete takes the on-axis right seat as of a2.7e, swapped with Centre -
-  // Delete is the single most universal action in this ring; Centre
-  // (re-origin a pivot that's drifted) is the more occasional one.
-  { key: 'delete', icon: 'del', label: 'Delete', ring: 0, run: deleteSelection },
-  { key: 'centre', icon: 'centre', label: 'Centre', ring: 0, run: centreSelectionToOrigin },
-  // Kept together as a group, in this order, since they're the four most
-  // related to how the object actually looks.
-  { key: 'subdivide', icon: 'subdiv', label: 'Subdivide', ring: 1, run: subdivideSelection },
-  { key: 'material', icon: 'color', label: 'Material', ring: 1, run: cycleMaterialFinish },
-  { key: 'fillet', icon: 'fillet', label: 'Fillet', ring: 1, run: toggleFilletPreview },
-  { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', ring: 1, run: flipNormalsSelection },
-  { key: 'separate', icon: 'separate', label: 'Separate', ring: 1, run: separateSelection },
-  { key: 'cap', icon: 'cap', label: 'Cap holes', ring: 1, run: fillHolesSelection },
-  { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', ring: 1, run: toggleShading }
+  // Fillet sits on Bevel's seat (1) on purpose - the same corner op, the
+  // same pull, one ring over. Separate takes Split's bearing (4) by the
+  // same logic. Cap (6), Delete (7), Shade (8) and Flip normals (9) keep
+  // their compass seats from the component rings.
+  { key: 'duplicate', icon: 'dupe', label: 'Duplicate', seat: 0, ring: 0, run: duplicateSelection },
+  { key: 'fillet', icon: 'fillet', label: 'Fillet', seat: 1, ring: 1, run: toggleFilletPreview },
+  { key: 'mirror', icon: 'mirroraction', label: 'Mirror', seat: 2, ring: 0, run: () => showMirrorChooser(App.symmetryAxis) },
+  { key: 'flip', icon: 'flip', label: 'Flip', seat: 3, ring: 0, run: () => flipSelectedObjects(App.symmetryAxis) },
+  { key: 'separate', icon: 'separate', label: 'Separate', seat: 4, ring: 1, run: separateSelection },
+  { key: 'centre', icon: 'centre', label: 'Centre', seat: 5, ring: 0, run: centreSelectionToOrigin },
+  { key: 'cap', icon: 'cap', label: 'Cap holes', seat: 6, ring: 1, run: fillHolesSelection },
+  { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 0, run: deleteSelection },
+  { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 8, ring: 1, run: toggleShading },
+  { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 9, ring: 1, run: flipNormalsSelection },
+  { key: 'subdivide', icon: 'subdiv', label: 'Subdivide', seat: 10, ring: 1, run: subdivideSelection },
+  { key: 'material', icon: 'color', label: 'Material', seat: 11, ring: 1, run: cycleMaterialFinish }
 ];
 // Join only means something with more than one object selected, matching
 // the old radial menu's own condition for showing it - appended live rather
 // than baked into the base array.
-const HUB_TOOL_JOIN = { key: 'join', icon: 'join', label: 'Join', ring: 1, run: joinSelection };
+const HUB_TOOL_JOIN = { key: 'join', icon: 'join', label: 'Join', seat: 12, ring: 1, run: joinSelection };
 
 const HUB_TOOLS_EMPTY = [
   { key: 'addcube', icon: 'object', label: 'Add Cube', ring: 0, run: addCubeAction },
@@ -9897,7 +9888,17 @@ function clearToolRingTimer() {
    whatever claims them. */
 function toolRingAngles(tools) {
   const halved = tools.some(t => t.half);
-  if (!halved) return tools.map((t, i) => 90 - (i / tools.length) * 360);
+  if (!halved) {
+    /* Component rings sit on one shared 14-seat compass: a tool owns ONE
+       seat (0 = straight up, clockwise, 7 = straight down) and keeps it in
+       every ring it appears in - Delete is the same pull no matter which
+       component menu bloomed. Rings with fewer tools leave seats empty;
+       hover picks by nearest direction, so a gap costs nothing. A set
+       without seat fields (the empty-scene ring) keeps the even spread. */
+    if (tools.every(t => t.seat !== undefined))
+      return tools.map(t => 90 - (t.seat / 14) * 360);
+    return tools.map((t, i) => 90 - (i / tools.length) * 360);
+  }
 
   const spread = (list, from) => list.map((t, i) => from + 180 * ((i + 1) / (list.length + 1)));
   const top = tools.filter(t => t.half === 'top');
