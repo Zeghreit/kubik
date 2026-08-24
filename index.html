@@ -664,7 +664,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.10</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.11</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -2124,6 +2124,51 @@ function weldVerticesOp(obj, logicalIds) {
   return true;
 }
 
+/* Merge by distance. The topology map already treats EXACT coincidence
+   (within 1e-4) as one vertex, so what this really catches is the
+   near-miss: imported models, hand-placed points, halves meeting with a
+   rounding error. Each cluster of selected vertices closer together than
+   MERGE_EPS snaps to its own centroid; clusters are found on a grid one
+   MERGE_EPS wide. Returns clusters merged, 0 for none, -1 when the whole
+   mesh degenerated (caller removes the object, as with Weld). */
+const MERGE_EPS = 0.01;
+function mergeVerticesOp(obj, logicalIds) {
+  const topo = obj.mesh.userData.topo;
+  const ed = toEditable(obj.mesh);
+  const mats = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
+
+  const clusters = new Map();
+  logicalIds.forEach(l => {
+    const p = logicalPos(obj, l);
+    const key = Math.round(p.x / MERGE_EPS) + '_' + Math.round(p.y / MERGE_EPS) + '_' + Math.round(p.z / MERGE_EPS);
+    if (!clusters.has(key)) clusters.set(key, []);
+    clusters.get(key).push({ l: l, p: p });
+  });
+
+  let merged = 0;
+  clusters.forEach(list => {
+    if (list.length < 2) return;
+    const c = new THREE.Vector3();
+    list.forEach(e => c.add(e.p));
+    c.divideScalar(list.length);
+    list.forEach(e => topo.logicalGroups[e.l].forEach(ai => {
+      ed.positions[ai * 3] = c.x; ed.positions[ai * 3 + 1] = c.y; ed.positions[ai * 3 + 2] = c.z;
+    }));
+    merged++;
+  });
+  if (!merged) return 0;
+
+  const same = (i, j) =>
+    Math.abs(ed.positions[i * 3] - ed.positions[j * 3]) < 1e-6 &&
+    Math.abs(ed.positions[i * 3 + 1] - ed.positions[j * 3 + 1]) < 1e-6 &&
+    Math.abs(ed.positions[i * 3 + 2] - ed.positions[j * 3 + 2]) < 1e-6;
+  const keptMats = removeTriangles(ed, mats, ([a, b, c]) => same(a, b) || same(b, c) || same(a, c));
+  if (!ed.groups.length) return -1;
+  obj.mesh.material = keptMats;
+  rebuildFromEditable(obj, ed);
+  return merged;
+}
+
 // Duplicates an object, mirrored across the world origin along one axis.
 // Mirroring the whole world-space matrix (position, rotation and scale
 // together) via a scale(-1) conjugation is what lets this work regardless of
@@ -2557,6 +2602,50 @@ function separateObject(obj) {
     made.push(part);
   }
   return made.length > 1 ? made : null;
+}
+
+/* Takes the SELECTED faces out of an object and stands them up as a new
+   object - Separate's hands-on sibling: you choose the piece instead of
+   connectivity choosing it. Materials, smoothing and finishes travel with
+   their faces; the source loses them exactly like a face-delete, hole and
+   all. */
+function detachFacesOp(obj, groupIndices) {
+  const ed = toEditable(obj.mesh);
+  const sel = new Set(groupIndices);
+  if (!sel.size || sel.size >= ed.groups.length) return null;
+
+  const srcMats = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
+  const srcSmooth = obj.mesh.userData.smoothGroups || {};
+  const srcFinish = obj.mesh.userData.finishes || {};
+
+  const groups = [], mats = [], smooth = {}, finishes = {};
+  const seen = new Map(), compact = [];
+  const remap = v => {
+    if (!seen.has(v)) {
+      seen.set(v, compact.length / 3);
+      compact.push(ed.positions[v * 3], ed.positions[v * 3 + 1], ed.positions[v * 3 + 2]);
+    }
+    return seen.get(v);
+  };
+  ed.groups.forEach((g, gi) => {
+    if (!sel.has(gi)) return;
+    const ngi = groups.length;
+    groups.push({ triangles: g.triangles.map(t => t.map(remap)) });
+    mats.push((srcMats[gi] || srcMats[0]).clone());
+    if (srcSmooth[gi]) smooth[ngi] = true;
+    if (srcFinish[gi]) finishes[ngi] = srcFinish[gi];
+  });
+  if (!groups.length) return null;
+
+  const part = createObjectFromEditable(obj.name + ' detached',
+    obj.mesh.position.clone(), { positions: compact, groups: groups }, mats, smooth);
+  if (!part) return null;
+  part.mesh.quaternion.copy(obj.mesh.quaternion);
+  part.mesh.scale.copy(obj.mesh.scale);
+  part.mesh.userData.finishes = finishes;
+
+  const survived = deleteFaceGroups(obj, Array.from(sel));
+  return { part: part, survived: survived };
 }
 
 /* Finds the open boundaries of a mesh and closes each one with a face.
@@ -8786,6 +8875,64 @@ function weldSelectionOnce() {
   pushHistory();
 }
 
+function mergeSelection() {
+  if (App.mode !== 'vertex') { toast('Merge works in Vertex mode'); return; }
+  const obj = findObject(App.activeObjectId);
+  if (!obj || App.selectedElements.size < 2) { toast('Select 2+ vertices to merge'); return; }
+  runMirrored(obj, mergeSelectionOnce);
+}
+
+// Like Weld, Merge is relational - the union of a group and its mirror must
+// not merge across the plane - so it runs once per side.
+function mergeSelectionOnce() {
+  const obj = findObject(App.activeObjectId);
+  if (!obj || App.selectedElements.size < 2) return;
+  const n = mergeVerticesOp(obj, App.selectedElements);
+  if (n === 0) { toast('Nothing shares a spot (within ' + MERGE_EPS + ')'); return; }
+  App.selectedElements.clear();
+  if (n === -1) {
+    disposeObject(obj);
+    App.objects = App.objects.filter(o => o.id !== obj.id);
+    App.activeObjectId = null;
+    detachAllGizmos();
+    toast('Merging collapsed the whole mesh - removed the object');
+  } else {
+    ensureHelpers(obj);
+    setActiveObjectHelpersVisible(obj, App.mode);
+    toast(n === 1 ? 'Merged 1 spot' : 'Merged ' + n + ' spots');
+  }
+  hideRadialMenu();
+  refreshUI();
+  refreshGizmoAttachment();
+  pushHistory();
+}
+
+function detachFacesSelection() {
+  if (App.mode !== 'face') { toast('Detach works in Face mode'); return; }
+  const obj = findObject(App.activeObjectId);
+  if (!obj || !App.selectedElements.size) { toast('Select faces to detach'); return; }
+  const total = Array.isArray(obj.mesh.material) ? obj.mesh.material.length : 1;
+  if (App.selectedElements.size >= total) { toast('That is every face - it is already its own object'); return; }
+  const r = detachFacesOp(obj, Array.from(App.selectedElements));
+  if (!r) { toast('Nothing to detach'); return; }
+  App.selectedElements.clear();
+  if (!r.survived) {
+    // Guarded against above; belt and braces if the source lost its last face.
+    disposeObject(obj);
+    App.objects = App.objects.filter(o => o.id !== obj.id);
+    App.activeObjectId = null;
+    detachAllGizmos();
+  } else {
+    ensureHelpers(obj);
+    setActiveObjectHelpersVisible(obj, App.mode);
+  }
+  hideRadialMenu();
+  refreshUI();
+  refreshGizmoAttachment();
+  pushHistory();
+  toast('Detached into ' + r.part.name);
+}
+
 function duplicateSelection() {
   if (App.mode !== 'object') { toast('Duplicate works in Object mode'); return; }
   const ids = Array.from(App.selectedObjectIds);
@@ -9719,6 +9866,11 @@ const ICON = {
   lasso:   '<path d="M12 4c-4 0-7 2.2-7 5c0 2 1.8 2.8 1.8 4.6c0 1.8-1.8 2-1.8 3.7c2.8 1 7.4 0.4 9.4-1.4c1.8-1.6 0.6-3.4 2.2-4.6c1.8-1.3 2.6-3 1-4.7C16.4 4.9 14.3 4 12 4z"/><circle cx="7.3" cy="17.7" r="1.3" fill="currentColor" stroke="none"/>',
   connect: '<circle cx="5" cy="19" r="2.2"/><circle cx="19" cy="5" r="2.2"/><path d="M6.6 17.4L17.4 6.6"/>',
   weld:    '<circle cx="7" cy="12" r="2.2"/><circle cx="17" cy="12" r="2.2"/><path d="M9.6 12h4.8"/><path d="M12 5v2M12 17v2"/>',
+  // Two ghost dots already gone, one solid vertex left: merge by distance.
+  merge:   '<circle cx="4.5" cy="12" r="2" opacity=".45"/><circle cx="19.5" cy="12" r="2" opacity=".45"/><path d="M7 12h2M17 12h-2" opacity=".45"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/>',
+  // A face with its corner taken out and the piece moved away - it is its
+  // own object now.
+  detach:  '<path d="M4 4h8v8h8v8H4z"/><rect x="15" y="1.5" width="7" height="7"/>',
   del:     '<path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/>',
   smooth:  '<path d="M3 15c4 0 5-8 9-8s5 8 9 8"/>',
   flat:    '<path d="M3 18h6l6-12h6"/>',
@@ -9764,6 +9916,7 @@ const symPillEl = document.getElementById('symPill');
 const HUB_TOOLS_VERTEX = [
   { key: 'connect', icon: 'connect', label: 'Connect', seat: 0, ring: 0, run: connectSelection },
   { key: 'weld', icon: 'weld', label: 'Weld', seat: 1, ring: 0, run: weldSelection },
+  { key: 'merge', icon: 'merge', label: 'Merge', seat: 2, ring: 0, run: mergeSelection },
   { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 0, run: deleteSelection },
   { key: 'grow', icon: 'grow', label: 'Grow', seat: 12, ring: 1, run: growSelection },
   { key: 'shrink', icon: 'shrink', label: 'Shrink', seat: 13, ring: 1, run: shrinkSelection },
@@ -9793,6 +9946,9 @@ const HUB_TOOLS_EDGE = [
 const HUB_TOOLS_FACE = [
   { key: 'extrude', icon: 'extrude', label: 'Extrude', seat: 0, ring: 0, run: extrudeSelection },
   { key: 'inset', icon: 'inset', label: 'Inset', seat: 1, ring: 0, run: insetSelection },
+  // Detach rides the same compass bearing as Split and Separate - seat 4
+  // is the "comes apart" direction across all rings.
+  { key: 'detach', icon: 'detach', label: 'Detach', seat: 4, ring: 1, run: detachFacesSelection },
   { key: 'knife', icon: 'knife', label: 'Knife', seat: 3, ring: 1, run: startKnife },
   { key: 'bridge', icon: 'bridge', label: 'Bridge', seat: 5, ring: 0, run: bridgeSelection },
   { key: 'cap', icon: 'cap', label: 'Cap holes', seat: 6, ring: 1, run: fillHolesSelection },
@@ -10409,10 +10565,12 @@ HELP_SECTIONS.push(
       ['loop', 'Loop', 'Cuts new edge rings across the mesh, running perpendicular to the edge you picked. Count sets how many; slide moves them off centre.'],
       ['knife', 'Knife', 'Cut by hand. Press and slide to place a point - it snaps to a corner, or slides along an edge, or sits anywhere on a face - then lift. Green dots are your points, the yellow line is the cut. Back removes the last one, OK cuts. Each run has to cross a face from one side to the other; a cut that stops in the middle of a face has nothing to split and is skipped.'],
       ['split', 'Split', 'Puts a midpoint on each selected edge.'],
+      ['detach', 'Detach', 'Lifts the selected faces out into a new object of their own. The source keeps the hole they leave behind.'],
       ['bridge', 'Bridge', 'Joins two selections with a band of new faces. The bar counts SECTIONS - more of them subdivide the bridge along its length - and Curved, offered from two sections up, leaves each end the way that end was already going instead of running straight across. Two faces pointing the same way cannot always be joined without the bridge folding through itself; the bar says so while it does.'],
       ['cap', 'Cap hole', 'Closes an opening. In Edge mode, select any part of a hole\'s rim and only that hole is capped; from anywhere else, every hole in the object. A rim that no single flat face can close is refused and reported rather than quietly making the mesh worse.'],
       ['connect', 'Connect', 'Runs a new edge between selected vertices.'],
       ['weld', 'Weld', 'Merges the selected vertices into a single one.'],
+      ['merge', 'Merge', 'Vertices sitting on almost the same spot become one. Select a cluster - or the whole object - and run it; only near-coincident points are affected.'],
       ['grow', 'Grow', 'Widens the selection to everything touching it.'],
       ['shrink', 'Shrink', 'Pulls the selection back in from its border.'],
       ['crease', 'Crease', 'Marks an edge to stay sharp when the surface is smoothed. Uncrease takes it back.'],
@@ -11151,6 +11309,7 @@ if (PICK_DEBUG) {
        these is already one tap away. */
     extrudeSelection, insetSelection, bevelSelection, splitSelection,
     creaseSelection, deleteSelection, weldSelection, connectSelection,
+    mergeSelection, detachFacesSelection, mergeVerticesOp, detachFacesOp,
     bridgeSelection, mirrorSelectedObjects,
     combineObjectsInto, removeObjects,
     // Screen-space spacing between visible vertices of the active object,
