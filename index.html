@@ -322,23 +322,29 @@
      Deliberately NOT a second drawer - it's a palette, not a settings
      panel, and the viewport stays the hero. ---- */
   #matFly {
-    position: fixed; right: var(--edge-r, 0px); top: 50%;
-    transform: translateY(-50%); z-index: 25;
-    display: flex; align-items: center;
+    position: absolute; right: var(--edge-r, 0px); top: 136px;
+    z-index: 25; display: flex; flex-direction: column; align-items: flex-end;
   }
   #matTab {
-    width: 30px; height: 64px; min-height: 0; padding: 0;
+    width: 30px; height: 56px; min-height: 0; padding: 0;
     border-radius: var(--r-md) 0 0 var(--r-md); border-right: none;
     justify-content: center; font-size: 20px; color: var(--text-dim);
+    transition: margin-right .22s ease;
+  }
+  /* Open, the switch slides clear of the screen edge - a full margin
+     further in, so a thumb reaches it without scraping the bezel - and
+     ends up centred over the 96px tray below it. */
+  #matFly.open #matTab {
+    margin-right: 33px; border-radius: var(--r-md);
+    border-right: 1px solid var(--line);
   }
   #matTray {
-    width: 0; opacity: 0; overflow: hidden;
-    transition: width .22s ease, opacity .22s ease;
+    width: 96px; max-height: 0; opacity: 0; overflow: hidden; margin-top: 6px;
+    transition: max-height .22s ease, opacity .22s ease;
     background: var(--panel); border: 1px solid var(--line); border-right: none;
     border-radius: var(--r-md) 0 0 var(--r-md);
   }
-  #matFly.open #matTray { width: 96px; opacity: 1; }
-  #matFly.open #matTab { border-radius: 0; border-left: none; }
+  #matFly.open #matTray { max-height: 60vh; opacity: 1; }
   #matTrayInner {
     display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px; overflow-x: hidden;
     max-height: 60vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
@@ -655,7 +661,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.9</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.9a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -727,8 +733,8 @@
     <!-- Materials: a slim tab centred on the right border. Tap rolls the
          tray of previews out, tap again rolls it back. -->
     <div id="matFly">
-      <div id="matTray"><div id="matTrayInner"></div></div>
       <button id="matTab" title="Materials">&#8249;</button>
+      <div id="matTray"><div id="matTrayInner"></div></div>
     </div>
 
     <div id="helpOverlay">
