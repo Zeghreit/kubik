@@ -664,7 +664,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.11</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.12</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1067,6 +1067,61 @@ viewCubeEl.appendChild(cubeRenderer.domElement);
 const viewHelper = new ViewHelper(camera, viewCubeEl);
 viewHelper.location = { top: 0, right: 0, bottom: 0, left: 0 };
 viewHelper.center = orbit.target; // shares the same object, stays in sync automatically
+
+/* ---------------- Tap-to-align + orthographic snap ----------------
+   The cube was display-only for its whole life. Now a tap on one of its
+   axis dots swings the camera to that view (the ViewHelper's own
+   animation), and when the swing lands the projection snaps to an
+   orthographic look. "Orthographic" is emulated with a LONG LENS: the same
+   PerspectiveCamera narrows to ORTHO_FOV while backing away by the exact
+   factor that keeps the framing identical. True enough to draft against -
+   and every raycast, drag and unproject in the file keeps working, where a
+   real second camera would need all of them taught about it. Any manual
+   orbit gesture puts the normal lens back. */
+const ORTHO_FOV = 2;
+let orthoView = null;    // { fov, near } while the flat view is engaged
+let cubeAligning = false;
+
+function orthoFactor(fromFov) {
+  return Math.tan(THREE.MathUtils.degToRad(fromFov / 2)) /
+         Math.tan(THREE.MathUtils.degToRad(ORTHO_FOV / 2));
+}
+
+function engageOrtho() {
+  if (orthoView) return;
+  orthoView = { fov: camera.fov, near: camera.near };
+  const f = orthoFactor(camera.fov);
+  const dir = camera.position.clone().sub(orbit.target);
+  camera.position.copy(orbit.target).addScaledVector(dir, f);
+  camera.fov = ORTHO_FOV;
+  // The long lens parks ~27x further out; a 0.01 near plane from there
+  // wastes all the depth precision. Restored on the way back.
+  camera.near = dir.length() * f * 0.05;
+  camera.updateProjectionMatrix();
+  toast('Orthographic view');
+}
+
+function disengageOrtho(silent) {
+  if (!orthoView) return;
+  const f = orthoFactor(orthoView.fov);
+  const dir = camera.position.clone().sub(orbit.target);
+  camera.position.copy(orbit.target).addScaledVector(dir, 1 / f);
+  camera.fov = orthoView.fov;
+  camera.near = orthoView.near;
+  camera.updateProjectionMatrix();
+  orthoView = null;
+  if (!silent) toast('Perspective view');
+}
+
+viewCubeEl.addEventListener('click', (ev) => {
+  /* The helper animates at the camera's CURRENT radius, so this works the
+     same from the normal lens and from the long one - a second tap while
+     already flat just swings to the new view and stays flat. */
+  if (viewHelper.handleClick(ev)) { cubeAligning = true; camAnim = null; }
+});
+
+// A finger orbiting the viewport is a deliberate turn: back to perspective.
+orbit.addEventListener('start', () => disengageOrtho());
 
 const raycaster = new THREE.Raycaster();
 
@@ -10572,6 +10627,7 @@ HELP_SECTIONS.push(
       ['weld', 'Weld', 'Merges the selected vertices into a single one.'],
       ['merge', 'Merge', 'Vertices sitting on almost the same spot become one. Select a cluster - or the whole object - and run it; only near-coincident points are affected.'],
       ['grow', 'Grow', 'Widens the selection to everything touching it.'],
+      [null, 'View cube', 'Tap a dot on the cube in the top-right corner and the camera swings to that view and goes orthographic - flat, no perspective, for lining things up. Orbit by hand and perspective comes back.'],
       ['shrink', 'Shrink', 'Pulls the selection back in from its border.'],
       ['crease', 'Crease', 'Marks an edge to stay sharp when the surface is smoothed. Uncrease takes it back.'],
       ['flipnorm', 'Flip normals', 'Turns the selected faces inside out.'],
@@ -10955,6 +11011,7 @@ let camAnim = null;
 function easeInOutCubic(t) { return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; }
 
 function animateCameraTo(targetPos, targetLookAt) {
+  disengageOrtho(true);   // flight paths are computed for the normal lens
   camAnim = {
     fromPos: camera.position.clone(), toPos: targetPos.clone(),
     fromTarget: orbit.target.clone(), toTarget: targetLookAt.clone(),
@@ -11142,6 +11199,7 @@ function animate() {
     if (t >= 1) camAnim = null;
   }
   if (viewHelper.animating) { viewHelper.update(delta); camAnim = null; }
+  else if (cubeAligning) { cubeAligning = false; engageOrtho(); }
   orbit.update();
   renderer.render(scene, camera);
   // Separate renderer - cannot affect the main viewport above.
@@ -11295,6 +11353,7 @@ if (PICK_DEBUG) {
        off the rAF loop, which a BACKGROUNDED TAB freezes outright - so a
        harness that presses and waits gets no bloom at all, however long it
        waits. Calling these directly sidesteps the whole question. */
+    engageOrtho, disengageOrtho, viewHelper,
     bloomToolRing, updateToolRingHover, closeToolRing, placeRingLabel,
     currentHubTools, HUB_TOOLS_WORLD,
     /* The pickers, callable with a plain {clientX, clientY}. Driving these
