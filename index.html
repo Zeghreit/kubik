@@ -322,7 +322,10 @@
      Deliberately NOT a second drawer - it's a palette, not a settings
      panel, and the viewport stays the hero. ---- */
   #matFly {
-    position: absolute; right: var(--edge-r, 0px); top: 136px;
+    /* Flush to the screen border - the tab is drawn edge-tucked (rounded
+       left, no right border), so the usual 14px --edge-r inset left it
+       floating. Only the phone safe-area inset applies here. */
+    position: absolute; right: env(safe-area-inset-right, 0px); top: 136px;
     z-index: 25; display: flex; flex-direction: column; align-items: flex-end;
   }
   #matTab {
@@ -661,7 +664,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.9a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.9b</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
