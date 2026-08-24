@@ -664,7 +664,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.12</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.12a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1089,14 +1089,19 @@ function orthoFactor(fromFov) {
 
 function engageOrtho() {
   if (orthoView) return;
-  orthoView = { fov: camera.fov, near: camera.near };
+  orthoView = { fov: camera.fov, near: camera.near, far: camera.far };
   const f = orthoFactor(camera.fov);
   const dir = camera.position.clone().sub(orbit.target);
+  const teleDist = dir.length() * f;
   camera.position.copy(orbit.target).addScaledVector(dir, f);
   camera.fov = ORTHO_FOV;
-  // The long lens parks ~27x further out; a 0.01 near plane from there
-  // wastes all the depth precision. Restored on the way back.
-  camera.near = dir.length() * f * 0.05;
+  /* Near and far BOTH travel with the lens. Near: a 0.01 plane from ~27x
+     out wastes all the depth precision. Far: from any orbit distance past
+     ~37 units the tele position lands beyond the stock 1000 far plane and
+     the whole scene clips to nothing - measured, dist 40 parked at 1069.
+     Both restored on the way back. */
+  camera.near = teleDist * 0.05;
+  camera.far = Math.max(camera.far, teleDist * 2);
   camera.updateProjectionMatrix();
   toast('Orthographic view');
 }
@@ -1108,6 +1113,7 @@ function disengageOrtho(silent) {
   camera.position.copy(orbit.target).addScaledVector(dir, 1 / f);
   camera.fov = orthoView.fov;
   camera.near = orthoView.near;
+  camera.far = orthoView.far;
   camera.updateProjectionMatrix();
   orthoView = null;
   if (!silent) toast('Perspective view');
