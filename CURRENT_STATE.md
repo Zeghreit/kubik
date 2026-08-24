@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **a2.7d**
+- Version at time of writing: **a2.7e**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -254,6 +254,23 @@ pixel of jitter highlighted whatever lay on that bearing, and lifting in
 place RAN it. The optional `aim` argument separates the two, and all three
 callers pass it. (The per-set `deg` bearings and the `owner` tag went
 with the mode ring at a2.4.)
+
+**Item ORDER inside a ring decides which bearing each tool gets, and a few
+of those seats are worth more than others (a2.7e).** `toolRingAngles` puts
+whatever is declared first exactly on-axis (straight up, zero angular
+guesswork) — and for a ring with an even item count, the item declared
+exactly opposite it (index `n/2`) lands on-axis too (straight down), for
+the same reason. Every other seat needs a real aim. Reordered three arrays
+to spend those free seats on the tool most likely to earn them, using
+Blender's own single-key hotkey assignment (Extrude/Inset/Bevel/Loop
+cut/Knife/Delete) as a frequency proxy, since Kubik has no usage telemetry
+of its own: Edge ring's top-3 is now Extrude/Bevel/Loop cut (Bridge moved
+out — it only held that seat because of a two-radius ring layout that's
+since been removed, see the a2.7b note above); Face ring's on-axis-bottom
+seat is now Cap holes, not Knife; Object ring's on-axis-right seat is now
+Delete, not Centre. Full reasoning, plus every other ring's angles measured
+the same way: the Bloom Ring Ergonomics doc. No geometry changed — only
+declaration order, which is the one thing the angle formula reads.
 
 **Back-facing components are rejected by face normal**, so picking agrees
 with back-face culling. Mirrored (negative-determinant) objects are

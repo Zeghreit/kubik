@@ -620,7 +620,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.7d</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.7e</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -9705,13 +9705,19 @@ const HUB_TOOLS_VERTEX = [
 ];
 
 const HUB_TOOLS_EDGE = [
-  // Three in the near ring, five in the far one - four inside the near
-  // ring's shorter sweep crowded the icons together. Loop moves out to sit
-  // with the other edge-flow tools.
+  // The first three declared land nearest the ring's one free on-axis seat
+  // (straight up from the press point, see the Bloom Ring Ergonomics doc) -
+  // kept, as of a2.7e, to the three edge-relevant members of the "four
+  // basic tools" hard-surface modelling keeps converging on: Extrude, Loop
+  // cut and Bevel (Inset is the fourth, and it's Face-only). Bridge held
+  // this seat before that - it earned it under the old two-radius layout
+  // ("near ring's shorter sweep crowded the icons together"), but that
+  // layout is gone, there's one ring now, and the crowding reason for
+  // keeping Loop out never re-applied to the new geometry.
   { key: 'extrude', icon: 'extrude', label: 'Extrude', ring: 0, run: extrudeSelection },
   { key: 'bevel', icon: 'bevel', label: 'Bevel', ring: 0, run: bevelSelection },
-  { key: 'bridge', icon: 'bridge', label: 'Bridge', ring: 0, run: bridgeSelection },
-  { key: 'loopcut', icon: 'loop', label: 'Loop', ring: 1, run: edgeLoopSelection },
+  { key: 'loopcut', icon: 'loop', label: 'Loop', ring: 0, run: edgeLoopSelection },
+  { key: 'bridge', icon: 'bridge', label: 'Bridge', ring: 1, run: bridgeSelection },
   { key: 'split', icon: 'split', label: 'Split', ring: 1, run: splitSelection },
   { key: 'cap', icon: 'cap', label: 'Cap hole', ring: 1, run: fillHolesSelection },
   { key: 'knife', icon: 'knife', label: 'Knife', ring: 1, run: startKnife },
@@ -9727,9 +9733,13 @@ const HUB_TOOLS_FACE = [
   { key: 'extrude', icon: 'extrude', label: 'Extrude', ring: 0, run: extrudeSelection },
   { key: 'inset', icon: 'inset', label: 'Inset', ring: 0, run: insetSelection },
   { key: 'bridge', icon: 'bridge', label: 'Bridge', ring: 0, run: bridgeSelection },
+  // Cap holes takes the ring's other free on-axis seat (straight down, ten
+  // items split evenly) as of a2.7e - swapped with Knife, which stays one
+  // slot over. Closing a shape is the more everyday need of the two; Knife
+  // is the more occasional, precision one.
   { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', ring: 1, run: flipNormalsSelection },
-  { key: 'cap', icon: 'cap', label: 'Cap holes', ring: 1, run: fillHolesSelection },
   { key: 'knife', icon: 'knife', label: 'Knife', ring: 1, run: startKnife },
+  { key: 'cap', icon: 'cap', label: 'Cap holes', ring: 1, run: fillHolesSelection },
   { key: 'grow', icon: 'grow', label: 'Grow', ring: 1, run: growSelection },
   { key: 'shrink', icon: 'shrink', label: 'Shrink', ring: 1, run: shrinkSelection },
   { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', ring: 1, run: toggleShading },
@@ -9740,8 +9750,11 @@ const HUB_TOOLS_OBJECT_BASE = [
   { key: 'duplicate', icon: 'dupe', label: 'Duplicate', ring: 0, run: duplicateSelection },
   { key: 'mirror', icon: 'mirror', label: 'Mirror', ring: 0, run: () => showMirrorChooser(App.symmetryAxis) },
   { key: 'flip', icon: 'flip', label: 'Flip', ring: 0, run: () => flipSelectedObjects(App.symmetryAxis) },
-  { key: 'centre', icon: 'centre', label: 'Centre', ring: 0, run: centreSelectionToOrigin },
+  // Delete takes the on-axis right seat as of a2.7e, swapped with Centre -
+  // Delete is the single most universal action in this ring; Centre
+  // (re-origin a pivot that's drifted) is the more occasional one.
   { key: 'delete', icon: 'del', label: 'Delete', ring: 0, run: deleteSelection },
+  { key: 'centre', icon: 'centre', label: 'Centre', ring: 0, run: centreSelectionToOrigin },
   // Kept together as a group, in this order, since they're the four most
   // related to how the object actually looks.
   { key: 'subdivide', icon: 'subdiv', label: 'Subdivide', ring: 1, run: subdivideSelection },
