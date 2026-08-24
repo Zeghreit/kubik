@@ -316,6 +316,41 @@
     display: flex; flex-direction: column;
   }
   #drawer.open { transform: translateX(0); }
+
+  /* ---- Materials fly-out: a slim tab centred on the right border. A tap
+     rolls the vertical tray of material previews out; a tap rolls it back.
+     Deliberately NOT a second drawer - it's a palette, not a settings
+     panel, and the viewport stays the hero. ---- */
+  #matFly {
+    position: fixed; right: var(--edge-r, 0px); top: 50%;
+    transform: translateY(-50%); z-index: 25;
+    display: flex; align-items: center;
+  }
+  #matTab {
+    width: 30px; height: 64px; min-height: 0; padding: 0;
+    border-radius: var(--r-md) 0 0 var(--r-md); border-right: none;
+    justify-content: center; font-size: 20px; color: var(--text-dim);
+  }
+  #matTray {
+    width: 0; opacity: 0; overflow: hidden;
+    transition: width .22s ease, opacity .22s ease;
+    background: var(--panel); border: 1px solid var(--line); border-right: none;
+    border-radius: var(--r-md) 0 0 var(--r-md);
+  }
+  #matFly.open #matTray { width: 96px; opacity: 1; }
+  #matFly.open #matTab { border-radius: 0; border-left: none; }
+  #matTrayInner {
+    display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px; overflow-x: hidden;
+    max-height: 60vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  }
+  .mat-card {
+    flex-direction: column; gap: 3px; width: 64px; padding: 5px 4px;
+    min-height: 0; border-radius: var(--r-md);
+  }
+  .mat-card img { width: 50px; height: 50px; border-radius: 50%; display: block; pointer-events: none; }
+  .mat-card span { font-size: 10px; color: var(--text-dim); pointer-events: none; }
+  .mat-card.active { border-color: var(--accent); }
+  .mat-card.active span { color: var(--accent); }
   .drawer-head {
     display: flex; align-items: center; justify-content: space-between;
     padding: 12px 14px; border-bottom: 1px solid var(--line);
@@ -620,7 +655,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.8</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.9</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -688,6 +723,13 @@
 
     <!-- Lower-right is the one corner nothing else has claimed. -->
     <button id="btnHelp" title="Help">?</button>
+
+    <!-- Materials: a slim tab centred on the right border. Tap rolls the
+         tray of previews out, tap again rolls it back. -->
+    <div id="matFly">
+      <div id="matTray"><div id="matTrayInner"></div></div>
+      <button id="matTab" title="Materials">&#8249;</button>
+    </div>
 
     <div id="helpOverlay">
       <div id="helpCard">
@@ -1288,10 +1330,14 @@ function attachAllGizmos(pivot) {
 
 /* Three finishes. Kept deliberately few - the point is that they read as
    obviously different at a glance, not that they cover every case. */
+/* Values follow the standard PBR charts: a pure diffuse solid is
+   roughness 1, smooth plastic sits around 0.3-0.5, polished metal around
+   0.2-0.3 at metalness 1. The KEYS are storage format - saved projects
+   reference them by name - so only labels and numbers may change. */
 const FINISHES = {
-  standard: { label: 'Standard', roughness: 0.7,  metalness: 0.0,  envMapIntensity: 0.5 },  // catches a little light
-  plastic:  { label: 'Matte',    roughness: 0.9,  metalness: 0.0,  envMapIntensity: 0.12 }, // barely any
-  metal:    { label: 'Metal',    roughness: 0.28, metalness: 1.0,  envMapIntensity: 1.0 }
+  standard: { label: 'Solid',   roughness: 1.0,  metalness: 0.0, envMapIntensity: 0.5 },
+  plastic:  { label: 'Plastic', roughness: 0.4,  metalness: 0.0, envMapIntensity: 0.7 },
+  metal:    { label: 'Metal',   roughness: 0.25, metalness: 1.0, envMapIntensity: 1.0 }
 };
 
 function applyFinish(mat, name) {
@@ -7900,7 +7946,7 @@ document.addEventListener('touchmove', (ev) => {
 
      #hubBtn replaces #thumbZone, which no longer exists. */
   if (ev.target && ev.target.closest &&
-      ev.target.closest('#topBar, #drawer, #inspector, #opBar, #hubBtn, #symPill, #helpCard')) return;
+      ev.target.closest('#topBar, #drawer, #inspector, #opBar, #hubBtn, #symPill, #helpCard, #matFly')) return;
   if (ev.cancelable) ev.preventDefault();
 }, { passive: false });
 
@@ -9763,8 +9809,7 @@ const HUB_TOOLS_OBJECT_BASE = [
   { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 0, run: deleteSelection },
   { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 8, ring: 1, run: toggleShading },
   { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 9, ring: 1, run: flipNormalsSelection },
-  { key: 'subdivide', icon: 'subdiv', label: 'Subdivide', seat: 10, ring: 1, run: subdivideSelection },
-  { key: 'material', icon: 'color', label: 'Material', seat: 11, ring: 1, run: cycleMaterialFinish }
+  { key: 'subdivide', icon: 'subdiv', label: 'Subdivide', seat: 10, ring: 1, run: subdivideSelection }
 ];
 // Join only means something with more than one object selected, matching
 // the old radial menu's own condition for showing it - appended live rather
@@ -9818,15 +9863,8 @@ const HUB_TOOLS_WORLD = [
     on: () => App.selectDrag === 'lasso', run: () => setSelectGesture('lasso') }
 ];
 
-// Cycles Standard -> Matte -> Metal on repeated taps, since the arc only
-// supports a single tap per item rather than a picker. The full three-way
-// choice with descriptions still lives in the drawer's Finish section.
-const FINISH_CYCLE = ['standard', 'plastic', 'metal'];
-let _finishCycleIdx = 0;
-function cycleMaterialFinish() {
-  _finishCycleIdx = (_finishCycleIdx + 1) % FINISH_CYCLE.length;
-  applyFinishToSelection(FINISH_CYCLE[_finishCycleIdx]);
-}
+// The Material cycle op is gone (a2.9) - the materials tray on the right
+// border replaced it with a real picker; see the Materials fly-out below.
 
 function currentHubTools() {
   if (App.mode === 'object') {
@@ -10187,6 +10225,83 @@ document.getElementById('btnMenu').addEventListener('click', () => setDrawerOpen
 document.getElementById('drawerClose').addEventListener('click', () => setDrawerOpen(false));
 scrimEl.addEventListener('click', () => setDrawerOpen(false));
 
+/* ---------------- Materials fly-out ---------------- */
+
+const matFlyEl = document.getElementById('matFly');
+const matTabEl = document.getElementById('matTab');
+const matTrayInnerEl = document.getElementById('matTrayInner');
+let _matPreviews = null;
+
+/* Real renders, not swatches: a one-off throwaway renderer draws a sphere
+   in each finish against the same RoomEnvironment the scene uses, so a
+   preview shows exactly what that finish does. Built lazily on the first
+   open, then the whole renderer is disposed - one extra WebGL context,
+   briefly, once. */
+function renderMatPreviews() {
+  const r = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+  r.setSize(104, 104);
+  r.setPixelRatio(1);
+  const sc = new THREE.Scene();
+  const pm = new THREE.PMREMGenerator(r);
+  sc.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture;
+  const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 10);
+  cam.position.set(0, 0.5, 2.8);
+  cam.lookAt(0, 0, 0);
+  const key = new THREE.DirectionalLight(0xFFF8EC, 0.9);
+  key.position.set(3, 4, 2);
+  sc.add(key);
+  const mat = new THREE.MeshStandardMaterial({ color: 0x9AA0A8 });
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.8, 48, 32), mat);
+  sc.add(mesh);
+  const out = {};
+  Object.keys(FINISHES).forEach(k => {
+    applyFinish(mat, k);
+    r.render(sc, cam);
+    out[k] = r.domElement.toDataURL();
+  });
+  mesh.geometry.dispose(); mat.dispose(); pm.dispose(); r.dispose();
+  return out;
+}
+
+// The finish the current selection is wearing, for the tray highlight.
+// Group 0 stands in for the whole object; absent means never set, which
+// is 'standard' by construction.
+function currentSelectionFinish() {
+  const id = App.mode === 'object' ? Array.from(App.selectedObjectIds)[0] : App.activeObjectId;
+  const obj = id !== undefined ? findObject(id) : null;
+  if (!obj) return null;
+  const f = obj.mesh.userData.finishes || {};
+  if (App.mode === 'face' && App.selectedElements.size) return f[Array.from(App.selectedElements)[0]] || 'standard';
+  return f[0] || 'standard';
+}
+
+function refreshMatTray() {
+  const cur = currentSelectionFinish();
+  matTrayInnerEl.querySelectorAll('.mat-card').forEach(el =>
+    el.classList.toggle('active', el.dataset.finish === cur));
+}
+
+function buildMatTray() {
+  _matPreviews = renderMatPreviews();
+  matTrayInnerEl.innerHTML = '';
+  Object.keys(FINISHES).forEach(k => {
+    const b = document.createElement('button');
+    b.className = 'mat-card';
+    b.dataset.finish = k;
+    b.innerHTML = '<img alt="" src="' + _matPreviews[k] + '"><span>' + FINISHES[k].label + '</span>';
+    b.addEventListener('click', () => { applyFinishToSelection(k); refreshMatTray(); });
+    matTrayInnerEl.appendChild(b);
+  });
+}
+
+function setMatTrayOpen(open) {
+  if (open && !_matPreviews) buildMatTray();
+  matFlyEl.classList.toggle('open', open);
+  matTabEl.innerHTML = open ? '&#8250;' : '&#8249;';
+  if (open) refreshMatTray();
+}
+matTabEl.addEventListener('click', () => setMatTrayOpen(!matFlyEl.classList.contains('open')));
+
 /* One reference card rather than labels pinned beside each real button -
    see the CSS comment on #helpOverlay for why. Icon + name pairs, using the
    exact same icon() calls and glyph names the real buttons already render
@@ -10290,8 +10405,8 @@ HELP_SECTIONS.push(
     rows: [
       ['dupe', 'Duplicate', 'Copies the object and sets the copy beside it.'],
       ['subdiv', 'Subdivide', 'Divides every face. Smooth rounds the shape as it goes, Keep shape holds the silhouette, and the counter sets how many times. Creased edges stay sharp. Every level multiplies the face count by four, so the counter stops low on purpose.'],
-      ['color', 'Material', 'Cycles the finish of the selection.'],
-      ['bevel', 'Fillet', 'Previews rounded edges over the whole object without changing the mesh. Shape and width live in the drawer.'],
+      ['color', 'Materials', 'The tab on the right border rolls out the material tray. Tap one to apply it - to the selected faces in Face mode, to the whole object otherwise.'],
+      ['fillet', 'Fillet', 'Previews rounded edges over the whole object without changing the mesh. Shape and width live in the drawer.'],
       ['flipnorm', 'Flip normals', 'Turns the whole object inside out - the quick fix for a model that imported or mirrored the wrong way round.'],
       ['flip', 'Flip', 'Mirrors the object in place along the symmetry axis, without leaving a copy behind.'],
       ['separate', 'Separate', 'Splits an object into one object per loose piece.'],
@@ -10323,7 +10438,7 @@ HELP_SECTIONS.push(
       [null, 'Appearance', 'Theme, and the colour of whatever is selected.'],
       [null, 'Editing', 'Exact transform values, Clear creases, drag sensitivity, and which axis symmetry uses.'],
       ['snap', 'Snap step', 'How far one snapped step moves, turns and scales. Snap itself is toggled from the world ring.'],
-      ['bevel', 'Fillet', 'Flat or Round, and how wide - the settings the Fillet preview uses.'],
+      ['fillet', 'Fillet', 'Flat or Round, and how wide - the settings the Fillet preview uses.'],
       [null, 'Models', 'Save the scene into the browser under a name, and open it again later. Survives closing the tab.'],
       [null, 'Files', 'Download and open a .json of the whole scene, and export .glb, .obj or .stl.']
     ]
@@ -10400,8 +10515,8 @@ function toggleFilletPreview() {
   refreshFillets();
   toast(App.fillet ? 'Rounded edges on' : 'Rounded edges off');
 }
-// The Finish drawer buttons are gone too - the fan's Material item cycles
-// through the same three finishes via applyFinishToSelection.
+// Finishes are picked in the materials tray on the right border (a2.9),
+// which calls the same applyFinishToSelection.
 
 const sensSliderEl = document.getElementById('sensSlider');
 const sensValueEl = document.getElementById('sensValue');
