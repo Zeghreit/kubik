@@ -890,9 +890,14 @@ moving — no point drawing icons for a ring that is still changing.
 
 **5. Still open from before, not yet scheduled:**
 
-- **Acknowledging the moment an op lands.** An extrude just happens, with no
-  feedback. For something whose identity is a fidget this is the largest
-  remaining gap, and it is half of what "alive" was meant to mean.
+- ~~**Acknowledging the moment an op lands.**~~ **SHIPPED at a2.8** - see
+  "Landing pulse" below. Covers Extrude, Knife, Connect, Split, single-
+  object Cap holes and component-mode Flip (`finishMeshEdit`), plus Inset,
+  Bevel, Subdivide, Bridge and Loop cut (`confirmPendingOp`). Delete, Weld,
+  Crease and the object-level ops (Mirror, Flip, Separate, Join, Duplicate)
+  still land silently - each has its own `toast()` call that never routes
+  through either function. Not extended there yet; a reasonable next slice
+  if it turns out to matter in use.
 - **More primitives** — cylinder, sphere, plane, from the original v1 spec.
   A DESIGN question, not three constructor calls: Add Cube owns a pole of
   the world ring alone as the one item that makes rather than toggles, and
@@ -1218,6 +1223,45 @@ Verified: sections 1–12 on faces and edges, both modes, watertight and Euler
 2 every time; the curve lifts the middle rings to 1.1 and 1.3 above two box
 tops at 0.5 while Straight keeps them flat; symmetry bridges both pairs in
 one re-run (4 cubes, Euler 8 → 4).
+
+## Landing pulse (a2.8)
+
+**A small low-poly wire sphere blooms outward and fades at the point an op
+just landed.** The gap flagged in "What to build next": an extrude, a
+bevel, a subdivide all used to just happen, with only a small text toast
+(easy to miss - it sits at the top of the screen, away from where your
+thumb and eyes actually are) to say so.
+
+**Two call sites, not one, because there are two families of op.**
+`spawnLandingPulse(obj)` fires from `finishMeshEdit` (Extrude, Knife,
+Connect, Split, single-object Cap holes, component-mode Flip - anything
+that commits immediately) and separately from `confirmPendingOp` (Inset,
+Bevel, Subdivide, Bridge, Loop cut - the live-preview ops that commit on
+the op bar's OK). The first pass only covered `finishMeshEdit` and missed
+the second family entirely; caught by checking every `toast()` call site
+against the two functions rather than assuming "the one place ops
+converge" was actually the only one. See the struck bullet above for what
+still isn't covered.
+
+**Purely visual - never touches mesh, selection or history state.**
+`spawnLandingPulse` only reads the edited object's world bounding box (for
+where and how big) and owns a disposable `THREE.Mesh` of its own
+(`IcosahedronGeometry`, low-poly on purpose, so the acknowledgment reads as
+part of the app rather than a foreign effect). Colour is `SELECT_COLOR`,
+the theme's existing red, rather than a new accent needing its own
+light/dark values.
+
+**Times itself off ABSOLUTE elapsed ms, not accumulated per-frame deltas** -
+the same pattern `camAnim` already uses, for the reason given under "A
+hidden tab clamps `setTimeout`" above: a backgrounded tab stops rAF dead,
+so a pulse timed by per-frame deltas would freeze mid-fade rather than
+finish. `t = min(1, (now - start) / LAND_PULSE_MS)` means whichever frame
+next actually runs - even long after the nominal 420ms - computes `t >= 1`
+and disposes cleanly in that one frame instead of continuing a stale
+animation. Verified, not assumed: spawned in a tab held hidden well past
+its duration, it sits frozen at its start scale/opacity with zero console
+errors (rAF genuinely does not run while hidden here), and the next real
+frame removes and disposes it with no leftover ghost sphere.
 
 ## Open threads
 
