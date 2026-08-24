@@ -620,7 +620,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.8</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.7d</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -5514,7 +5514,6 @@ function finishMeshEdit(obj, message) {
   refreshUI();
   refreshGizmoAttachment();
   pushHistory();
-  spawnLandingPulse(obj);
   toast(message);
   hideRadialMenu();
 }
@@ -10809,56 +10808,6 @@ window.addEventListener('resize', onResize);
   });
 });
 
-/* Landing pulse (a2.8): a small low-poly wire sphere that blooms outward
-   and fades at the spot an edit just landed, so an op has a visible moment
-   instead of happening in total silence - the gap NOTES.md called "half of
-   what alive was meant to mean". Purely visual: never touches mesh,
-   selection or history state. Times itself off ABSOLUTE elapsed ms rather
-   than accumulating per-frame deltas, so a backgrounded tab (which clamps
-   rAF - see CURRENT_STATE's testing traps) just finishes the fade in one
-   jump on the next visible frame instead of leaving a stuck ghost sphere. */
-const LAND_PULSE_MS = 420;
-const activePulses = [];
-function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
-
-function spawnLandingPulse(obj) {
-  if (!obj || !obj.mesh) return;
-  const box = new THREE.Box3().setFromObject(obj.mesh);
-  if (box.isEmpty()) return;
-  const center = box.getCenter(new THREE.Vector3());
-  const radius = Math.max(box.getSize(new THREE.Vector3()).length() * 0.5, 0.3);
-  const geo = new THREE.IcosahedronGeometry(radius, 1);
-  const mat = new THREE.MeshBasicMaterial({
-    color: SELECT_COLOR, wireframe: true, transparent: true, opacity: 0.75,
-    depthTest: false, depthWrite: false, fog: false
-  });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.position.copy(center);
-  mesh.scale.setScalar(0.4);
-  mesh.renderOrder = 997;
-  mesh.frustumCulled = false;
-  scene.add(mesh);
-  activePulses.push({ mesh, geo, mat, start: performance.now() });
-}
-
-function updateLandingPulses() {
-  if (!activePulses.length) return;
-  const now = performance.now();
-  for (let i = activePulses.length - 1; i >= 0; i--) {
-    const p = activePulses[i];
-    const t = Math.min(1, (now - p.start) / LAND_PULSE_MS);
-    const e = easeOutCubic(t);
-    p.mesh.scale.setScalar(0.4 + e * 1.1);
-    p.mat.opacity = 0.75 * (1 - t);
-    if (t >= 1) {
-      scene.remove(p.mesh);
-      p.geo.dispose();
-      p.mat.dispose();
-      activePulses.splice(i, 1);
-    }
-  }
-}
-
 function animate() {
   requestAnimationFrame(animate);
   const now = performance.now();
@@ -10874,7 +10823,6 @@ function animate() {
   }
   if (viewHelper.animating) { viewHelper.update(delta); camAnim = null; }
   orbit.update();
-  updateLandingPulses();
   renderer.render(scene, camera);
   // Separate renderer - cannot affect the main viewport above.
   viewHelper.render(cubeRenderer);
