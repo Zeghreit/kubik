@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~7900 lines)
-- Version at time of writing: **a2.7e**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~12,000 lines)
+- Version at time of writing: **a2.16a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -28,6 +28,128 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+
+## The a2.7f -> a2.16a wave (2026-08-24/25) - READ BEFORE OLDER SECTIONS
+
+Everything below this section describes the app before this wave and
+stays true unless contradicted here. Deeper detail lives in the project
+docs (claude/materials-roadmap.md, claude/crosstest-findings.md,
+claude/kubik-orientation.md).
+
+**Icons (a2.7f).** Redesigned: cap (open iso cube + solid lid), bevel
+(flat-cut upper-right corner) + NEW `fillet` key (round corner), loop
+(dashed seam), bridge (two edges + ghost band), separate (two cubes +
+dashed vertical), `mirroraction` (new key for the Object-ring action;
+the Symmetry pill keeps `mirror`). The trash `del` serves ALL deletes -
+user decision, do not re-split. Pixel laws: dash gaps under ~4.8 units
+fuse (round caps eat 1.6 per gap); detail under ~1.8u collapses at ring
+size; never dash a diagonal.
+
+**Ring seats (a2.8 + a2.10).** Every tool entry carries `seat` (0 = up,
+clockwise, 7 = down) on one 14-seat compass shared across rings - same
+op pulls the same DIRECTION in every ring (Delete is always down).
+toolRingAngles sorts by seat, spreads evenly over the FULL circle (no
+gaps) and rotates by a circular-mean phase to best fit the bearings.
+Empty-scene and world rings keep their old layouts.
+
+**Materials are LIVE ASSETS (a2.9 -> a2.15).** The finish system became
+a material library:
+- MATERIALS Map of defs {id, name, color|null, roughness, metalness,
+  envMapIntensity, preset, masks?}. Presets keep ids standard/plastic/
+  metal (the old finish keys - old saves parse natively). color null =
+  follow the theme (themedDefault still drives applyTheme's retint).
+  Chart values: Solid r1.0/m0, Plastic r0.4/m0, Metal r0.25/m1.
+- COLOUR LIVES IN THE MATERIAL (user decision). Painting = applying
+  materials, Blender-slots style. The drawer colour picker is REMOVED;
+  per-face colour no longer exists as a separate thing.
+- userData.finishes = per-face-group material-id map (name kept for
+  save/undo compat). applyFinish(mat, id) applies the WHOLE definition
+  and is the single funnel every path goes through; it has NO blanket
+  needsUpdate (it runs per slider tick). updateMaterialEverywhere(id)
+  propagates a definition edit to everything wearing it, live.
+- The library is GLOBAL AND PERSONAL: localStorage 'kubik.materials.v1'
+  {customs, presetOverrides (incl. masks), nextNum}. Project JSON embeds
+  materialLib; restoreDoc merges unknown ids into the library (never on
+  the undo path - undo never rewinds appearance).
+  harvestLegacyMaterials() turns legacy per-slot colours into deduped
+  custom defs on load. Applying a material schedules autosave.
+- UI: the materials fly-out sits under the view cube - slim tab flush to
+  the right SCREEN edge (env safe-area inset only, NOT --edge-r), tray
+  of real rendered sphere previews (lazy throwaway 104px renderer), tap
+  applies (per-face in Face mode, per-object otherwise), pencil on the
+  active card or a 500ms long-press opens the editor INSIDE the tray
+  (#matEditor: colour/metal/rough live sliders, presets Reset to chart
+  defaults + mask cleared, customs Delete with fallback to Solid, '+'
+  forks the applied def and applies it).
+
+**Procedural colour mask (a2.15, fixed a2.16a).** def.masks.color =
+{on, type:'fbm', color, amount, scale, detail, contrast, seed, gen}.
+Tileable FBM baked to a 128px CanvasTexture per def (_maskTex map),
+sampled TRIPLANARLY in OBJECT SPACE via onBeforeCompile injected through
+applyFinish. colour/amount/scale ride uniforms; detail/contrast/seed
+re-bake the texture in place; ONLY the on/off toggle recompiles.
+TRIPLANAR is decided policy - no UV tools, no box projection.
+TWO LAWS, learned the hard way (a2.16a, cross-material GPU corruption
+and dead clones before them):
+1. customProgramCacheKey must NEVER be constant - three.js runs
+   onBeforeCompile only when the material holds no program under the
+   key. Key = 'kubik-colormask:' + defId + ':' + gen; gen (_maskGen)
+   bumps on mask re-enable and on applying a masked def.
+2. NEVER store uniforms/textures in material.userData - Material.clone
+   JSON-copies userData. Patch state lives in module WeakSet
+   _maskedMats + WeakMap _maskUniforms; ensureMaskPatches (called from
+   refreshUI) re-dresses clones after duplicate/separate/detach/join.
+   Probe from tests: __kubik.isMaskPatched(mat).
+The fillet preview re-dresses its cloned materials from finishes.
+
+**New ops (a2.11).** Merge (Vertex ring): merge-by-distance,
+MERGE_EPS=0.01 grid clustering to centroids (exact coincidence <=1e-4
+is already one logical vertex by construction); relational -> runs once
+per symmetry side like Weld. Detach (Face ring): selected face groups
+become a new object (separateObject's remap pattern; materials/
+smoothing/finishes travel; the source keeps the hole via
+deleteFaceGroups; refuses detaching every face).
+
+**The view cube is a CONTROL (a2.12/a/b).** Tapping an axis dot swings
+the camera (ViewHelper) and snaps to an orthographic look: long-lens
+emulation on the SAME PerspectiveCamera - fov to 2, distance x~26.7,
+near to 5% of tele distance, far scaled up, and the FOG BAND shifted
+out by the same amount (fog silently ate the whole scene before that).
+A manual orbit gesture restores perspective exactly. animateCameraTo
+leaves the flat view first; aim assist works while flat. LAW: anything
+that ever moves the camera far must carry far plane + fog band + near.
+
+**Crease = sharp edge in SHADING too (a2.16/a2.16a).** applyShading
+builds per-vertex normal islands (face groups connected through
+non-creased edges) and smooth normals average only within an island -
+a creased loop is ONE sharp line on a smooth surface, neighbouring
+rings untouched. Edge-mode Shade now creases/uncreases the selected
+edges instead of flattening adjacent face groups.
+creaseSelection/clearAllCreases re-apply shading. undo/redo now
+refresh the autosave (it used to resurrect undone edits on reload).
+
+**KNOWN OPEN ISSUES (crosstest 2026-08-25, unverified findings in
+claude/crosstest-findings.md) - fix order as agreed:**
+1. RED, IN THE LIVE BUILD: crease + smooth shading HANGS on large
+   meshes (L4-subdivided cube, 1536 face groups, >10s freeze) - the
+   a2.16 islands code has a blow-up somewhere; small meshes fine.
+2. RED: Bridge between edge loops of two joined cubes produces an open
+   slit with overlapping walls (bridge between two faces is fine).
+3. AMBER: Connect across a quad's diagonal silently no-ops (violates
+   the silent-no-op rule). AMBER unconfirmed: creases may not hold
+   through smooth Subdivide - needs a clean repro.
+4. Perf backlog: ensureHelpers builds one overlay mesh+material PER
+   face group; subdivide rebuild is superlinear; one
+   MeshStandardMaterial per face group (structural fix = shared
+   instance per material def). Three audit sweeps never ran (mobile/UX,
+   static correctness, static perf) - resumable.
+
+**Next planned work:** a2.17 roughness + metalness masks (pack channels
+into one RGB canvas, single triplanar sample, extend the cache key with
+channel bits, keep the gen discipline) + noise types (worley, stripes)
+with a type select. Icon sweep findings deferred (weld/connect/merge
+now share the Vertex ring - revisit those three icons TOGETHER).
 
 ## Screen layout
 
