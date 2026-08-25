@@ -664,7 +664,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.12b</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.13</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1417,25 +1417,137 @@ function attachAllGizmos(pivot) {
 
 /* ---------------- Geometry helpers ---------------- */
 
-/* Three finishes. Kept deliberately few - the point is that they read as
-   obviously different at a glance, not that they cover every case. */
-/* Values follow the standard PBR charts: a pure diffuse solid is
-   roughness 1, smooth plastic sits around 0.3-0.5, polished metal around
-   0.2-0.3 at metalness 1. The KEYS are storage format - saved projects
-   reference them by name - so only labels and numbers may change. */
-const FINISHES = {
-  standard: { label: 'Solid',   roughness: 1.0,  metalness: 0.0, envMapIntensity: 0.5 },
-  plastic:  { label: 'Plastic', roughness: 0.4,  metalness: 0.0, envMapIntensity: 0.7 },
-  metal:    { label: 'Metal',   roughness: 0.25, metalness: 1.0, envMapIntensity: 1.0 }
-};
+/* ---------------- Material library ----------------
+   Materials are LIVE ASSETS, not copied values: a material is a named
+   {color, roughness, metalness, envMapIntensity}; face groups reference
+   one by id through userData.finishes - the key name predates the
+   library and is kept because every save and undo snapshot already
+   carries it - and editing a definition updates everything wearing it.
+   The library is PERSONAL and GLOBAL: it lives in localStorage and spans
+   projects; project files embed the definitions they use so a shared
+   file brings its materials along (unknown ids join the library, known
+   ids keep the library's version).
 
-function applyFinish(mat, name) {
-  const f = FINISHES[name] || FINISHES.standard;
-  mat.roughness = f.roughness;
-  mat.metalness = f.metalness;
-  mat.envMapIntensity = f.envMapIntensity;
+   The three presets keep the exact ids the old finish system stored, so
+   legacy finishes maps are already material-id maps. Numbers follow the
+   standard PBR charts. color null means "follow the theme's default" -
+   the material-level form of the old themedDefault flag, which
+   applyTheme still uses to retint. */
+const MATERIAL_DEFAULTS = {
+  standard: { name: 'Solid',   color: null, roughness: 1.0,  metalness: 0.0, envMapIntensity: 0.5 },
+  plastic:  { name: 'Plastic', color: null, roughness: 0.4,  metalness: 0.0, envMapIntensity: 0.7 },
+  metal:    { name: 'Metal',   color: null, roughness: 0.25, metalness: 1.0, envMapIntensity: 1.0 }
+};
+const MATERIALS = new Map();
+let nextMaterialNum = 1;
+const MATLIB_KEY = 'kubik.materials.v1';
+
+function getMaterialDef(id) {
+  return MATERIALS.get(id) || MATERIALS.get('standard');
+}
+
+// Numeric hex for three.js; null follows the theme.
+function materialColorHex(def) {
+  return def.color ? parseInt(def.color.slice(1), 16) : DEFAULT_MATERIAL_COLOR;
+}
+
+function loadMaterialLibrary() {
+  Object.entries(MATERIAL_DEFAULTS).forEach(([id, d]) =>
+    MATERIALS.set(id, Object.assign({ id: id, preset: true }, d)));
+  try {
+    const raw = JSON.parse(localStorage.getItem(MATLIB_KEY) || '{}');
+    (raw.customs || []).forEach(d => {
+      if (d && d.id) MATERIALS.set(d.id, Object.assign({}, d, { preset: false }));
+    });
+    Object.entries(raw.presetOverrides || {}).forEach(([id, ov]) => {
+      const p = MATERIALS.get(id);
+      if (p && p.preset) Object.assign(p, ov, { id: id, preset: true });
+    });
+    if (Number.isFinite(raw.nextNum)) nextMaterialNum = raw.nextNum;
+  } catch (e) { /* a broken library entry must never stop the app */ }
+}
+
+function saveMaterialLibrary() {
+  const customs = [], presetOverrides = {};
+  MATERIALS.forEach(d => {
+    if (!d.preset) { customs.push(d); return; }
+    const base = MATERIAL_DEFAULTS[d.id];
+    if (d.color !== base.color || d.roughness !== base.roughness ||
+        d.metalness !== base.metalness || d.envMapIntensity !== base.envMapIntensity ||
+        d.name !== base.name) {
+      presetOverrides[d.id] = { name: d.name, color: d.color, roughness: d.roughness,
+        metalness: d.metalness, envMapIntensity: d.envMapIntensity };
+    }
+  });
+  try {
+    localStorage.setItem(MATLIB_KEY, JSON.stringify({ customs: customs, presetOverrides: presetOverrides, nextNum: nextMaterialNum }));
+  } catch (e) { /* storage full or blocked - the session still works */ }
+}
+loadMaterialLibrary();
+
+// The name is historical - it now applies the WHOLE definition, colour
+// included, since colour lives in the material as of a2.13.
+function applyFinish(mat, id) {
+  const d = getMaterialDef(id);
+  mat.color.setHex(materialColorHex(d));
+  mat.userData.themedDefault = (d.color === null || d.color === undefined);
+  mat.roughness = d.roughness;
+  mat.metalness = d.metalness;
+  mat.envMapIntensity = d.envMapIntensity;
   mat.needsUpdate = true;
   return mat;
+}
+
+/* Legacy scenes stored colour per face slot, independent of the finish.
+   Any slot whose colour disagrees with its material gets a custom
+   material of that exact look (deduped across the scene and the
+   library), so old saves open pixel-identical and are born consistent
+   the next time they're saved. */
+function harvestLegacyMaterials() {
+  const byLook = new Map();
+  let made = 0;
+  App.objects.forEach(o => {
+    const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
+    if (!o.mesh.userData.finishes) o.mesh.userData.finishes = {};
+    const fin = o.mesh.userData.finishes;
+    mats.forEach((m, gi) => {
+      if (m.userData.themedDefault) return;   // follows its material already
+      const def = getMaterialDef(fin[gi] || 'standard');
+      const hex = '#' + m.color.getHexString();
+      if (def.color && def.color.toLowerCase() === hex) return;
+      if (!def.color && m.color.getHex() === DEFAULT_MATERIAL_COLOR) return;
+      const key = hex + '|' + m.roughness + '|' + m.metalness + '|' + m.envMapIntensity;
+      let nid = byLook.get(key);
+      if (!nid) {
+        MATERIALS.forEach(d => {
+          if (!d.preset && d.color && d.color.toLowerCase() === hex &&
+              d.roughness === m.roughness && d.metalness === m.metalness &&
+              d.envMapIntensity === m.envMapIntensity) nid = d.id;
+        });
+        if (!nid) {
+          nid = 'mat_' + nextMaterialNum.toString(36) + '_' + Math.abs(hex.split('').reduce((a, c) => (a * 31 + c.charCodeAt(0)) | 0, 7)).toString(36);
+          MATERIALS.set(nid, { id: nid, preset: false, name: 'Material ' + nextMaterialNum++,
+            color: hex, roughness: m.roughness, metalness: m.metalness,
+            envMapIntensity: m.envMapIntensity });
+          made++;
+        }
+        byLook.set(key, nid);
+      }
+      fin[gi] = nid;
+    });
+  });
+  if (made) { saveMaterialLibrary(); _matPreviews = null; }
+  return made;
+}
+
+// The live-asset half: after a definition changes, everything wearing it
+// follows. An absent finishes entry means 'standard', as everywhere.
+function updateMaterialEverywhere(id) {
+  App.objects.forEach(o => {
+    const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
+    const fin = o.mesh.userData.finishes || {};
+    mats.forEach((m, gi) => { if ((fin[gi] || 'standard') === id) applyFinish(m, id); });
+  });
 }
 
 function makeMaterialSet(count, hex, finish) {
@@ -8807,7 +8919,7 @@ function applyFinishToSelection(name) {
     });
   }
   refreshUI();
-  toast(FINISHES[name].label); // finish is appearance, not geometry - no undo step
+  toast(getMaterialDef(name).name); // appearance, not geometry - no undo step
 }
 
 /* ---------------- Radial menu (contextual tools) ----------------
@@ -9469,6 +9581,10 @@ function serializeDoc() {
   return {
     version: 1,
     nextId: App.nextId,
+    // The material definitions this scene references, so a shared file
+    // brings its palette along. The receiving library keeps its own
+    // version of ids it already knows.
+    materialLib: Array.from(MATERIALS.values()),
     objects: App.objects.map(o => {
       const g = o.mesh.geometry;
       const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
@@ -9519,6 +9635,13 @@ function restoreDoc(doc, opts = {}) {
   // Undo is about shape. Colour, finish and the current selection are carried
   // across untouched, so stepping back through geometry never quietly repaints
   // your model or drops what you had picked.
+  if (doc.materialLib && !opts.keepAppearance) {
+    doc.materialLib.forEach(d => {
+      if (d && d.id && !MATERIALS.has(d.id)) MATERIALS.set(d.id, Object.assign({}, d, { preset: !!MATERIAL_DEFAULTS[d.id] }));
+    });
+    saveMaterialLibrary();
+    _matPreviews = null;
+  }
   const keepLook = !!opts.keepAppearance;
   const keepSel = !!opts.keepSelection;
 
@@ -9615,6 +9738,8 @@ function restoreDoc(doc, opts = {}) {
   } else {
     App.selectedElements = new Set();
   }
+
+  if (!opts.keepAppearance) harvestLegacyMaterials();
 
   refreshUI();
   refreshGizmoAttachment();
@@ -10513,8 +10638,8 @@ function renderMatPreviews() {
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.8, 48, 32), mat);
   sc.add(mesh);
   const out = {};
-  Object.keys(FINISHES).forEach(k => {
-    applyFinish(mat, k);
+  MATERIALS.forEach((_d, k) => {
+    applyFinish(mat, k);   // sets the definition's colour too, as of a2.13
     r.render(sc, cam);
     out[k] = r.domElement.toDataURL();
   });
@@ -10543,11 +10668,11 @@ function refreshMatTray() {
 function buildMatTray() {
   _matPreviews = renderMatPreviews();
   matTrayInnerEl.innerHTML = '';
-  Object.keys(FINISHES).forEach(k => {
+  MATERIALS.forEach((d, k) => {
     const b = document.createElement('button');
     b.className = 'mat-card';
     b.dataset.finish = k;
-    b.innerHTML = '<img alt="" src="' + _matPreviews[k] + '"><span>' + FINISHES[k].label + '</span>';
+    b.innerHTML = '<img alt="" src="' + _matPreviews[k] + '"><span>' + d.name + '</span>';
     b.addEventListener('click', () => { applyFinishToSelection(k); refreshMatTray(); });
     matTrayInnerEl.appendChild(b);
   });
@@ -11379,6 +11504,8 @@ if (PICK_DEBUG) {
        harness that presses and waits gets no bloom at all, however long it
        waits. Calling these directly sidesteps the whole question. */
     engageOrtho, disengageOrtho, viewHelper,
+    MATERIALS, getMaterialDef, updateMaterialEverywhere, saveMaterialLibrary,
+    harvestLegacyMaterials, applyFinishToSelection,
     bloomToolRing, updateToolRingHover, closeToolRing, placeRingLabel,
     currentHubTools, HUB_TOOLS_WORLD,
     /* The pickers, callable with a plain {clientX, clientY}. Driving these
