@@ -360,6 +360,35 @@
   .mat-card span { font-size: 10px; color: var(--text-dim); pointer-events: none; }
   .mat-card.active { border-color: var(--accent); }
   .mat-card.active span { color: var(--accent); }
+  .mat-card { position: relative; }
+  /* The edit affordance rides whichever card the selection is wearing. */
+  .mat-edit {
+    position: absolute; top: 2px; right: 2px; width: 20px; height: 20px;
+    border-radius: 50%; background: var(--accent); color: var(--on-accent);
+    font-size: 11px; line-height: 20px; text-align: center; display: none;
+  }
+  .mat-card.active .mat-edit { display: block; }
+  .mat-card.add { color: var(--text-dim); font-size: 22px; min-height: 44px; justify-content: center; }
+
+  /* ---- Material editor: the card column swaps out for this panel ---- */
+  #matEditor {
+    display: none; width: 176px; padding: 10px; flex-direction: column;
+    gap: 8px; max-height: 60vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  }
+  #matFly.editing #matTrayInner { display: none; }
+  #matFly.editing #matTray { width: 198px; }
+  #matFly.editing #matTab { margin-right: 84px; }
+  #matFly.editing #matEditor { display: flex; }
+  #matEditor img { width: 64px; height: 64px; border-radius: 50%; align-self: center; }
+  #matEditor .me-name { font-size: 12px; text-align: center; color: var(--text); }
+  #matEditor label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .06em; }
+  #matEditor input[type="range"] { width: 100%; margin: 0; }
+  #matEditor input[type="color"] {
+    width: 100%; height: 32px; border: 1px solid var(--line);
+    border-radius: var(--r-sm); background: var(--panel2); padding: 2px;
+  }
+  #matEditor .me-row { display: flex; gap: 6px; }
+  #matEditor .me-row button { flex: 1; min-height: 34px; padding: 4px 6px; font-size: 12px; justify-content: center; }
   .drawer-head {
     display: flex; align-items: center; justify-content: space-between;
     padding: 12px 14px; border-bottom: 1px solid var(--line);
@@ -664,7 +693,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.13</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.14</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -737,7 +766,18 @@
          tray of previews out, tap again rolls it back. -->
     <div id="matFly">
       <button id="matTab" title="Materials">&#8249;</button>
-      <div id="matTray"><div id="matTrayInner"></div></div>
+      <div id="matTray"><div id="matTrayInner"></div><div id="matEditor">
+        <img id="meImg" alt="">
+        <div class="me-name" id="meName"></div>
+        <label>Colour</label>
+        <input type="color" id="meColor">
+        <label>Metalness <span id="meMetalV"></span></label>
+        <input type="range" id="meMetal" min="0" max="1" step="0.01">
+        <label>Roughness <span id="meRoughV"></span></label>
+        <input type="range" id="meRough" min="0" max="1" step="0.01">
+        <div class="me-row"><button id="meReset">Reset</button><button id="meDelete" class="danger">Delete</button></div>
+        <div class="me-row"><button id="meDone">Done</button></div>
+      </div></div>
     </div>
 
     <div id="helpOverlay">
@@ -789,9 +829,9 @@
         <div class="drawer-title">Appearance</div>
         <div class="drawer-row">
           <button id="btnTheme" title="Switch theme">Theme</button>
-          <span class="label">Colour</span>
-          <input type="color" id="colorPicker" value="#303338" />
         </div>
+        <div class="drawer-note">Colour moved into materials: open the tray
+          on the right edge and edit the material the selection wears.</div>
         <div class="drawer-note">See-through, Floor grid, Aim assist and Snap are in the
           ring that blooms when you press and hold on empty space.</div>
       </div>
@@ -8858,38 +8898,11 @@ function handleTap(ev) {
   }
 }
 
-/* ---------------- Color application ---------------- */
-
-const colorPicker = document.getElementById('colorPicker');
-colorPicker.addEventListener('input', () => applyColor(colorPicker.value, false));
-colorPicker.addEventListener('change', () => applyColor(colorPicker.value, true));
-
-function applyColor(hex, commit) {
-  if (App.mode === 'object' || App.mode === 'vertex' || App.mode === 'edge') {
-    // color applies at object granularity for these modes
-    const ids = App.mode === 'object' ? Array.from(App.selectedObjectIds)
-      : (App.activeObjectId ? [App.activeObjectId] : []);
-    ids.forEach(id => {
-      const obj = findObject(id);
-      const mats = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
-      mats.forEach(m => { m.color.set(hex); m.userData.themedDefault = false; });
-    });
-  } else if (App.mode === 'face') {
-    const obj = findObject(App.activeObjectId);
-    if (obj) {
-      const topo = obj.mesh.userData.topo;
-      const mats = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
-      App.selectedElements.forEach(gi => {
-        const fg = topo.faceGroups[gi];
-        const m = mats[fg.materialIndex];
-        if (m) { m.color.set(hex); m.userData.themedDefault = false; }
-      });
-    }
-  }
-  // Deliberately no history entry: colour isn't a geometry change, so it
-  // shouldn't consume an undo step or be rewound by one.
-  void commit;
-}
+/* ---------------- Color application ----------------
+   Gone as of a2.14: colour lives in the MATERIAL and is edited in the
+   materials fly-out. The drawer picker that wrote per-face colours went
+   with it - per-face colour still exists in old files and is harvested
+   into custom materials on load (see harvestLegacyMaterials). */
 
 /* Finishes follow the same granularity rule as colour: per face in Face mode,
    per object everywhere else. The choice is recorded per face group so it
@@ -10672,19 +10685,154 @@ function buildMatTray() {
     const b = document.createElement('button');
     b.className = 'mat-card';
     b.dataset.finish = k;
-    b.innerHTML = '<img alt="" src="' + _matPreviews[k] + '"><span>' + d.name + '</span>';
-    b.addEventListener('click', () => { applyFinishToSelection(k); refreshMatTray(); });
+    b.innerHTML = '<img alt="" src="' + _matPreviews[k] + '"><span>' + d.name + '</span><span class="mat-edit">&#9998;</span>';
+    /* Tap applies. The pencil on the ACTIVE card - or a long press on any
+       card - opens the editor instead; the long-press flag keeps the click
+       that follows the release from also applying. */
+    let lpTimer = null, longPressed = false;
+    b.addEventListener('pointerdown', () => {
+      longPressed = false;
+      lpTimer = setTimeout(() => { longPressed = true; openMatEditor(k); }, 500);
+    });
+    const cancelLp = () => { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } };
+    b.addEventListener('pointerup', cancelLp);
+    b.addEventListener('pointerleave', cancelLp);
+    b.addEventListener('click', (ev) => {
+      if (longPressed) { ev.preventDefault(); return; }
+      if (ev.target.classList.contains('mat-edit')) { openMatEditor(k); return; }
+      applyFinishToSelection(k);
+      refreshMatTray();
+    });
     matTrayInnerEl.appendChild(b);
   });
+
+  /* A new material starts as a copy of whatever the selection wears -
+     duplicate-and-tune beats a blank slate - and is applied to the
+     selection right away when there is one. */
+  const add = document.createElement('button');
+  add.className = 'mat-card add';
+  add.title = 'New material';
+  add.textContent = '+';
+  add.addEventListener('click', () => {
+    const src = getMaterialDef(currentSelectionFinish() || 'standard');
+    const id = 'mat_' + nextMaterialNum.toString(36) + '_' + (Date.now() % 46656).toString(36);
+    MATERIALS.set(id, { id: id, preset: false, name: 'Material ' + nextMaterialNum++,
+      color: src.color, roughness: src.roughness, metalness: src.metalness,
+      envMapIntensity: src.envMapIntensity });
+    saveMaterialLibrary();
+    if ((App.mode === 'face' && App.selectedElements.size) ||
+        (App.mode !== 'face' && (App.selectedObjectIds.size || App.activeObjectId))) {
+      applyFinishToSelection(id);
+    }
+    _matPreviews = null;
+    buildMatTray();
+    refreshMatTray();
+    openMatEditor(id);
+  });
+  matTrayInnerEl.appendChild(add);
 }
 
 function setMatTrayOpen(open) {
+  if (!open) { matEditingId = null; matFlyEl.classList.remove('editing'); }
   if (open && !_matPreviews) buildMatTray();
   matFlyEl.classList.toggle('open', open);
   matTabEl.innerHTML = open ? '&#8250;' : '&#8249;';
   if (open) refreshMatTray();
 }
 matTabEl.addEventListener('click', () => setMatTrayOpen(!matFlyEl.classList.contains('open')));
+
+/* ---------------- Material editor ----------------
+   Lives inside the tray: the card column swaps out for a compact panel.
+   Slider moves update the definition and everything wearing it LIVE;
+   previews re-render on release, not per tick, so a phone doesn't
+   stutter. Presets Reset to their chart defaults; customs Delete, and
+   whatever wore them falls back to Solid. */
+let matEditingId = null;
+const meImg = document.getElementById('meImg');
+const meName = document.getElementById('meName');
+const meColor = document.getElementById('meColor');
+const meMetal = document.getElementById('meMetal');
+const meRough = document.getElementById('meRough');
+const meMetalV = document.getElementById('meMetalV');
+const meRoughV = document.getElementById('meRoughV');
+
+function openMatEditor(id) {
+  matEditingId = id;
+  const d = getMaterialDef(id);
+  meName.textContent = d.name + (d.preset ? ' (preset)' : '');
+  meColor.value = d.color || '#' + DEFAULT_MATERIAL_COLOR.toString(16).padStart(6, '0');
+  meMetal.value = d.metalness;
+  meRough.value = d.roughness;
+  meMetalV.textContent = d.metalness.toFixed(2);
+  meRoughV.textContent = d.roughness.toFixed(2);
+  meImg.src = (_matPreviews && _matPreviews[id]) || '';
+  document.getElementById('meReset').style.display = d.preset ? '' : 'none';
+  document.getElementById('meDelete').style.display = d.preset ? 'none' : '';
+  matFlyEl.classList.add('editing');
+}
+
+function closeMatEditor(rebuild) {
+  matEditingId = null;
+  matFlyEl.classList.remove('editing');
+  if (rebuild) { _matPreviews = null; buildMatTray(); }
+  refreshMatTray();
+}
+
+function meApplyLive() {
+  if (!matEditingId) return;
+  const d = getMaterialDef(matEditingId);
+  d.color = meColor.value;
+  d.metalness = parseFloat(meMetal.value);
+  d.roughness = parseFloat(meRough.value);
+  meMetalV.textContent = d.metalness.toFixed(2);
+  meRoughV.textContent = d.roughness.toFixed(2);
+  updateMaterialEverywhere(matEditingId);
+}
+
+function meCommit() {
+  if (!matEditingId) return;
+  saveMaterialLibrary();
+  const keep = matEditingId;
+  _matPreviews = null;
+  buildMatTray();
+  refreshMatTray();
+  matEditingId = keep;
+  meImg.src = _matPreviews[keep] || '';
+}
+
+[meColor, meMetal, meRough].forEach(el => {
+  el.addEventListener('input', meApplyLive);
+  el.addEventListener('change', () => { meApplyLive(); meCommit(); });
+});
+
+document.getElementById('meReset').addEventListener('click', () => {
+  const d = getMaterialDef(matEditingId);
+  if (!d || !d.preset) return;
+  Object.assign(d, MATERIAL_DEFAULTS[d.id]);
+  updateMaterialEverywhere(d.id);
+  saveMaterialLibrary();
+  toast('Reset to default');
+  meCommit();
+  openMatEditor(d.id);
+});
+
+document.getElementById('meDelete').addEventListener('click', () => {
+  const d = getMaterialDef(matEditingId);
+  if (!d || d.preset) return;
+  App.objects.forEach(o => {
+    const fin = o.mesh.userData.finishes || {};
+    const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
+    mats.forEach((m, gi) => {
+      if (fin[gi] === d.id) { fin[gi] = 'standard'; applyFinish(m, 'standard'); }
+    });
+  });
+  MATERIALS.delete(d.id);
+  saveMaterialLibrary();
+  toast('Deleted ' + d.name);
+  closeMatEditor(true);
+});
+
+document.getElementById('meDone').addEventListener('click', () => closeMatEditor(false));
 
 /* One reference card rather than labels pinned beside each real button -
    see the CSS comment on #helpOverlay for why. Icon + name pairs, using the
@@ -10792,7 +10940,7 @@ HELP_SECTIONS.push(
     rows: [
       ['dupe', 'Duplicate', 'Copies the object and sets the copy beside it.'],
       ['subdiv', 'Subdivide', 'Divides every face. Smooth rounds the shape as it goes, Keep shape holds the silhouette, and the counter sets how many times. Creased edges stay sharp. Every level multiplies the face count by four, so the counter stops low on purpose.'],
-      ['color', 'Materials', 'The tab on the right border rolls out the material tray. Tap one to apply it - to the selected faces in Face mode, to the whole object otherwise.'],
+      ['color', 'Materials', 'The tab under the view cube rolls out the material tray. Tap one to apply it - to the selected faces in Face mode, to the whole object otherwise. The pencil on the applied card, or a long press on any card, opens the editor: colour, metalness and roughness change live on everything wearing that material. + makes a new material from the applied one; presets reset to defaults, custom materials can be deleted.'],
       ['fillet', 'Fillet', 'Previews rounded edges over the whole object without changing the mesh. Shape and width live in the drawer.'],
       ['flipnorm', 'Flip normals', 'Turns the whole object inside out - the quick fix for a model that imported or mirrored the wrong way round.'],
       ['flip', 'Flip', 'Mirrors the object in place along the symmetry axis, without leaving a copy behind.'],
@@ -11060,7 +11208,8 @@ function refreshUI() {
   // Delete/Duplicate/Mirror no longer have drawer buttons to enable or
   // disable - the fan items that replaced them self-guard with a toast
   // instead, same as every other fan action.
-  colorPicker.style.opacity = (App.mode === 'object' ? App.selectedObjectIds.size > 0 : (App.activeObjectId && App.selectedElements.size > 0)) ? '1' : '.4';
+  // The colour picker this used to dim retired with a2.14 - colour lives
+  // in the material now.
   refreshInspector();
   updateFrameVisibility();
   App.objects.forEach(o => { o.mesh.castShadow = true; o.mesh.receiveShadow = true; });
