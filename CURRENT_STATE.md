@@ -83,13 +83,16 @@ a material library:
   defaults + mask cleared, customs Delete with fallback to Solid, '+'
   forks the applied def and applies it).
 
-**Procedural mask STACK (a2.15, rebuilt a2.20).** def.masks is an ARRAY
+**Procedural mask STACK (a2.15, rebuilt a2.20, types a2.21).** def.masks is an ARRAY
 of up to MASK_SLOTS (4) masks; mask i owns channel i of ONE 128px RGBA
 DataTexture per def (_maskTex map), sampled TRIPLANARLY in OBJECT SPACE
 with one tap set for all four. Each mask is
-{on, type:'fbm', blend, colorOn, color, roughOn, rough, amount, scale,
-detail, contrast, seed}; blend is normal|multiply|screen|overlay and the
-colour and roughness components switch on and off independently.
+{on, type, blend, colorOn, color, roughOn, rough, amount, scale,
+detail, contrast, seed, img?}; blend is normal|multiply|screen|overlay and
+the colour and roughness components switch on and off independently.
+type is one of MASK_TYPES: fbm (Clouds), voronoi (Cells), scratches, dots,
+stripes, image. EVERY field must TILE - the triplanar sample repeats it
+three ways and a seam draws a straight line down the model.
 DataTexture, not CanvasTexture: Canvas 2D is PREMULTIPLIED, so packing
 four masks through a canvas corrupts the channels the shader reads.
 Legacy `masks: {color:{...}}` is migrated by normaliseDefMasks, wired
@@ -488,12 +491,14 @@ claude/crosstest-findings.md) - fix order as agreed:**
    instance per material def). Three audit sweeps never ran (mobile/UX,
    static correctness, static perf) - resumable.
 
-**Next planned work:** a2.21 noise types - voronoi/cells, scratches,
-dots/speckle, stripes/bands - plus "load custom image" as a mask source
-(bake its luminance into the mask's channel; the image has to be
-embedded in the project JSON, and triplanar will seam on a photo).
-bakeNoiseField(mk, size) is already split out of the packer for exactly
-this: switch on mk.type there and nothing else has to move. Icon sweep findings deferred (weld/connect/merge
+**Next planned work:** open. The materials line is at a natural stopping
+point - the stack, the components, the blend modes and the noise types are
+all in. Candidates from the backlog: repoint Weld/Merge/delete at
+removeTrianglesCarrying (top code-health item); Connect across a quad's
+diagonal silently no-ops; the superlinear subdivide rebuild; one
+MeshStandardMaterial per face group (a per-def shared instance is the
+structural fix and needs its own discussion); masks do not export to glTF
+(bake-to-UV at export). Icon sweep findings deferred (weld/connect/merge
 now share the Vertex ring - revisit those three icons TOGETHER).
 
 ## a2.20 - THE MASK STACK
@@ -550,6 +555,65 @@ programs.
 definition the local library does not already have, so opening someone
 else's file on a machine that has its own `standard` keeps the local
 one - masks and all. Pre-existing rule; it now hides more.
+
+## a2.21 - NOISE TYPES, AND YOUR OWN PICTURES
+
+Six kinds of mask instead of one. Clouds is the old FBM; Cells is Voronoi
+F2-F1 (bright inside a cell, dark along the wall); Scratches walks tapered
+lines with a wrapping splat; Dots is a jittered grid with a quarter of the
+cells left empty so it reads as speckle rather than polka dots; Stripes
+rides an INTEGER lattice direction with an FBM wobble; Image is a picture
+from your disk.
+
+**Tiling is the constraint everything here is built around.** The site GRID
+wraps while the site POSITION does not (Voronoi); the splats index with a
+modulo, so a scratch running off one edge comes back on the other; the
+stripe phase advances by a whole number of periods across the tile in x AND
+in y, which is why the direction is rounded to an integer lattice vector
+rather than taken from the angle directly. Measured seam-vs-interior
+gradient for all five procedural types: equal to within noise.
+
+**One control doing five jobs.** The Detail slider is relabelled per type -
+Detail / Cells / Count / Density / Bands - and hidden for an image, and
+"New pattern" hides too because a picture has no seed. The type itself is a
+`<select>`, not another chip row: six types would have been three more rows
+of buttons in a 176px column, and the native picker is a bigger target on a
+phone than anything we could draw.
+
+**Type changes are re-bake only.** The GLSL is type-agnostic - it reads
+channel i by uniform and knows nothing about what drew it - so nothing here
+recompiles. `rebakeMaskTexture(d, i)` re-bakes ONE channel, which is what
+the Detail/Contrast/seed/type paths use; the three untouched masks are left
+alone. Full four-type bake: 7.3 ms.
+
+**Pictures.** Loaded through an object URL (never base64 - that would be
+~134 MB of string for a 50 MB photo to sample 16384 pixels), redrawn onto a
+WHITE ground so a logo on transparency is not black on black, centre
+CROPPED rather than squashed, and re-encoded as a 128px PNG data URL. That
+small square is what is stored - in the library and in every project file
+that references the material - typically about 1 KB. Files over 25 MB are
+refused with a toast.
+
+**Three things the review caught, all fixed, all worth remembering:**
+1. The decode is ASYNC and used to resolve its target material from
+   `matEditingId` when it FINISHED. Close the editor while a phone photo
+   decodes and the re-bake went to `standard` (which is what
+   `getMaterialDef(null)` answers) while the real material stayed blank
+   until a reload. The definition is captured when the file is PICKED, and
+   the completion checks `MATERIALS.get(d.id) === d` before touching it.
+2. Selecting "Image" used to open the file picker for you. A dismissed
+   dialog fires no event you can rely on across browsers, and the mask was
+   then stuck as an image with no picture and no control that did anything.
+   "Choose picture" is one tap and cannot dead-end.
+3. `mk.img` is only ever used after `maskImageSrc` has checked it is a
+   `data:image/` URL. A project file is JSON someone handed you; a remote
+   URL in there would have the viewer's browser call home the moment they
+   opened the model, from a static origin with no CSP to stop it.
+`pruneMaskImages()` drops the decoded fields and the data URLs nothing
+wears any more - on type change, on replace and on material delete.
+
+**Say it plainly:** a loaded picture is EMBEDDED in the project JSON.
+Sharing a .json ships a 128px copy of that photo inside it.
 
 ## Screen layout
 

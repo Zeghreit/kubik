@@ -411,6 +411,16 @@
     justify-content: center; border-radius: var(--r-sm);
   }
   .mk-blends button.active { border-color: var(--accent); color: var(--accent); }
+  .mk-sel {
+    width: 100%; min-height: 32px; padding: 4px 6px; font-size: 12px;
+    background: var(--panel2); color: var(--text);
+    border: 1px solid var(--line, #33373f); border-radius: var(--r-sm);
+  }
+  .mk-note { font-size: 10px; color: var(--text-dim); text-align: center; }
+  .mk-imgprev {
+    width: 100%; height: 56px; object-fit: cover; border-radius: var(--r-sm);
+    border: 1px solid var(--line, #33373f); display: block;
+  }
   .mk-check { display: flex; align-items: center; gap: 6px; text-transform: none; letter-spacing: 0; }
   .mk-check input { margin: 0; }
   #matEditor .me-row button { flex: 1; min-height: 34px; padding: 4px 6px; font-size: 12px; justify-content: center; }
@@ -718,7 +728,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.20</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.21</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -806,6 +816,16 @@
              176px column would be a scroll from the first mask to the last. -->
         <div id="mkChips" class="mk-chips"></div>
         <div id="meMask" style="display:none; flex-direction:column; gap:8px;">
+          <!-- A select, not another chip row: six types would be three more
+               rows of buttons in a 176px column, and on a phone the native
+               picker is a bigger target than anything we could draw. -->
+          <select id="mkType" class="mk-sel"></select>
+          <div id="mkImgRow" style="display:none; flex-direction:column; gap:6px;">
+            <button id="mkImage" class="small">Choose picture</button>
+            <img id="mkImgPrev" alt="" class="mk-imgprev">
+            <div id="mkImgNote" class="mk-note">No picture yet</div>
+          </div>
+          <input type="file" id="mkFile" accept="image/*" style="display:none;">
           <div id="mkBlendRow" class="mk-blends"></div>
           <label class="mk-check"><input type="checkbox" id="mkColorOn"> Colour</label>
           <input type="color" id="mkColor">
@@ -815,8 +835,10 @@
           <input type="range" id="mkAmount" min="0" max="1" step="0.01">
           <label>Scale <span id="mkScaleV"></span></label>
           <input type="range" id="mkScale" min="0.25" max="20" step="0.25">
-          <label>Detail <span id="mkDetailV"></span></label>
-          <input type="range" id="mkDetail" min="1" max="5" step="1">
+          <div id="mkDetailRow" style="display:flex; flex-direction:column; gap:8px;">
+            <label id="mkDetailLbl">Detail <span id="mkDetailV"></span></label>
+            <input type="range" id="mkDetail" min="1" max="5" step="1">
+          </div>
           <label>Contrast <span id="mkContrastV"></span></label>
           <input type="range" id="mkContrast" min="0.5" max="3" step="0.1">
           <div class="me-row"><button id="mkSeed" class="small">New pattern</button><button id="mkDelete" class="small danger">Remove</button></div>
@@ -1578,6 +1600,7 @@ function loadMaterialLibrary() {
   } catch (e) { /* a broken library entry must never stop the app */ }
 }
 
+let _matLibWarned = false;
 function saveMaterialLibrary() {
   const customs = [], presetOverrides = {};
   MATERIALS.forEach(_d => {
@@ -1593,7 +1616,12 @@ function saveMaterialLibrary() {
   });
   try {
     localStorage.setItem(MATLIB_KEY, JSON.stringify({ customs: customs, presetOverrides: presetOverrides, nextNum: nextMaterialNum }));
-  } catch (e) { /* storage full or blocked - the session still works */ }
+  } catch (e) {
+    /* Storage full or blocked. The session still works, but a picture that
+       does not survive a reload looks like a bug rather than a full disk,
+       so say it once. */
+    if (!_matLibWarned) { _matLibWarned = true; toast('Material library is too big to save'); }
+  }
 }
 loadMaterialLibrary();
 
@@ -1721,6 +1749,21 @@ function updateMaterialEverywhere(id) {
    us the fourth slot. */
 const MASK_SLOTS = 4;
 const MASK_BLENDS = ['normal', 'multiply', 'screen', 'overlay'];
+/* The catalogue. `detail` is the LABEL the Detail slider wears for that
+   type - the slider is one control doing five different jobs, and "Detail 3"
+   means nothing when you are drawing stripes. null hides it entirely. */
+const MASK_TYPES = [
+  { id: 'fbm',       name: 'Clouds',    detail: 'Detail' },
+  { id: 'voronoi',   name: 'Cells',     detail: 'Cells' },
+  { id: 'scratches', name: 'Scratches', detail: 'Count' },
+  { id: 'dots',      name: 'Dots',      detail: 'Density' },
+  { id: 'stripes',   name: 'Stripes',   detail: 'Bands' },
+  { id: 'image',     name: 'Image',     detail: null }
+];
+function maskTypeOf(mk) {
+  const t = mk && mk.type;
+  return MASK_TYPES.find(x => x.id === t) || MASK_TYPES[0];
+}
 const MASK_SIZE = 128;
 const MASK_DEFAULT = {
   on: true, type: 'fbm', blend: 'normal',
@@ -1775,9 +1818,31 @@ function maskOf(d) {
   return null;
 }
 
-/* One noise field, 0..1, as a plain Float32Array. Split out of the baker so
-   that a2.21 can switch on mk.type without touching the packing. */
-function bakeNoiseField(mk, size) {
+/* EVERY field here must TILE, because the triplanar sample repeats it three
+   ways across the object and a seam would draw a straight line down the
+   model. Tiling is not decoration: it is the constraint each of these is
+   built around, and it is why the stripes ride an INTEGER lattice direction
+   and why the scratch and dot splats index with a modulo. */
+
+// Splat a soft round mark, wrapping at the edges. Brightest wins, so marks
+// crossing each other do not add up into a hot spot.
+function maskSplat(out, size, x, y, r, amp) {
+  for (let yy = Math.floor(y - r); yy <= Math.ceil(y + r); yy++) {
+    for (let xx = Math.floor(x - r); xx <= Math.ceil(x + r); xx++) {
+      const dx = xx - x, dy = yy - y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > r) continue;
+      const v = amp * (1 - dist / r);
+      const i = (((yy % size) + size) % size) * size + (((xx % size) + size) % size);
+      if (v > out[i]) out[i] = v;
+    }
+  }
+}
+
+/* Clouds: tileable value-noise FBM. Each octave interpolates a PERIODIC
+   random lattice, so the tile wraps seamlessly. RAW - contrast is applied
+   once, at the end, for every type alike. */
+function maskFbmField(mk, size) {
   const out = new Float32Array(size * size);
   const base = 8;
   const octaves = Math.max(1, Math.round(mk.detail));
@@ -1804,8 +1869,175 @@ function bakeNoiseField(mk, size) {
         norm += amp; amp *= 0.55;
       }
       v /= norm;
-      out[y * size + x] = Math.min(1, Math.max(0, (v - 0.5) * mk.contrast + 0.5));
+      out[y * size + x] = v;
     }
+  }
+  return out;
+}
+
+/* Cells: Voronoi F2-F1, which is bright inside a cell and dark along the
+   wall between two - the cracked-plates look. The site GRID wraps while the
+   site POSITION does not, which is what makes it tile. */
+function maskVoronoiField(mk, size) {
+  const n = Math.max(2, Math.round(mk.detail) * 2 + 2);
+  const rnd = mulberry32((mk.seed * 2246822519) | 0);
+  const px = new Float32Array(n * n), py = new Float32Array(n * n);
+  for (let i = 0; i < n * n; i++) { px[i] = rnd(); py[i] = rnd(); }
+  const out = new Float32Array(size * size);
+  const cs = size / n;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const cx = Math.floor(x / cs), cy = Math.floor(y / cs);
+      let f1 = Infinity, f2 = Infinity;
+      for (let oy = -1; oy <= 1; oy++) {
+        for (let ox = -1; ox <= 1; ox++) {
+          const gx = ((cx + ox) % n + n) % n, gy = ((cy + oy) % n + n) % n;
+          const i = gy * n + gx;
+          const dx = x - (cx + ox + px[i]) * cs, dy = y - (cy + oy + py[i]) * cs;
+          const dd = dx * dx + dy * dy;
+          if (dd < f1) { f2 = f1; f1 = dd; } else if (dd < f2) f2 = dd;
+        }
+      }
+      out[y * size + x] = Math.min(1, (Math.sqrt(f2) - Math.sqrt(f1)) / (cs * 0.5));
+    }
+  }
+  return out;
+}
+
+/* Scratches: thin tapered lines on a black ground, walked step by step with
+   a wrapping splat - so a scratch that runs off one edge comes back on the
+   other and the tile has no seam. The taper is what stops them reading as
+   sticks with square ends. */
+function maskScratchField(mk, size) {
+  const out = new Float32Array(size * size);
+  const rnd = mulberry32((mk.seed * 668265263) | 0);
+  const count = Math.max(1, Math.round(mk.detail)) * 6;
+  for (let s2 = 0; s2 < count; s2++) {
+    const ang = rnd() * Math.PI * 2;
+    const steps = Math.max(4, Math.round(size * (0.15 + rnd() * 0.5)));
+    const x0 = rnd() * size, y0 = rnd() * size;
+    const dx = Math.cos(ang), dy = Math.sin(ang);
+    const fade = steps * 0.25 + 1;
+    for (let t = 0; t < steps; t++) {
+      const e = Math.min(1, Math.min(t, steps - 1 - t) / fade);
+      maskSplat(out, size, x0 + dx * t, y0 + dy * t, 1.6, e);
+    }
+  }
+  return out;
+}
+
+/* Dots: a jittered grid with a quarter of the cells left empty, so it reads
+   as speckle rather than as polka dots. */
+function maskDotField(mk, size) {
+  const n = Math.max(2, Math.round(mk.detail) * 3 + 3);
+  const rnd = mulberry32((mk.seed * 374761393) | 0);
+  const out = new Float32Array(size * size);
+  const cs = size / n;
+  for (let cy = 0; cy < n; cy++) {
+    for (let cx = 0; cx < n; cx++) {
+      const skip = rnd(), jx = rnd(), jy = rnd(), rr = (0.15 + rnd() * 0.3) * cs;
+      if (skip < 0.25) continue;   // drawn first, so skipping costs the same rolls
+      maskSplat(out, size, (cx + jx) * cs, (cy + jy) * cs, Math.max(1, rr), 1);
+    }
+  }
+  return out;
+}
+
+/* Stripes: an INTEGER lattice direction is the whole trick. The phase
+   advances by a whole number of periods across the tile in x AND in y, so
+   the bands meet themselves exactly at the seam whatever angle they run at.
+   A low-octave fbm wobbles them so they are not dead straight. */
+function maskStripeField(mk, size) {
+  const rnd = mulberry32((mk.seed * 2654435761) | 0);
+  const bands = Math.max(1, Math.round(mk.detail)) * 2;
+  const ang = rnd() * Math.PI * 2;
+  let nx = Math.round(Math.cos(ang) * bands), ny = Math.round(Math.sin(ang) * bands);
+  if (nx === 0 && ny === 0) nx = bands;
+  const wob = maskFbmField({ seed: (mk.seed ^ 0x5bf03635) | 0, detail: 2 }, size);
+  const out = new Float32Array(size * size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const p = (x * nx + y * ny) / size + (wob[y * size + x] - 0.5) * 0.35;
+      out[y * size + x] = 0.5 + 0.5 * Math.sin(p * Math.PI * 2);
+    }
+  }
+  return out;
+}
+
+/* A picture you loaded, as a mask. Decoding is ASYNC and baking is not, so
+   the first bake returns nothing, the mask shows as absent, and the decode
+   re-bakes everything wearing that image when it lands. Keyed by the data
+   URL itself, so the same picture on four masks decodes once. */
+const _maskImages = new Map();
+
+/* A project file is JSON someone handed you. Anything but a data: image in
+   here would be an outbound request fired by opening a model - the viewer's
+   address and the fact they opened that file, to whoever wrote the file.
+   One test, at the only two places the string is ever used. */
+function maskImageSrc(mk) {
+  const src = mk && mk.img;
+  return (typeof src === 'string' && /^data:image\//.test(src)) ? src : null;
+}
+
+/* Everything the loaded pictures cost, dropped the moment nothing wears
+   them. Called when a mask stops being an image and when a material goes. */
+function pruneMaskImages() {
+  const live = new Set();
+  MATERIALS.forEach(_d => maskList(normaliseDefMasks(_d)).forEach(m => {
+    const u = maskImageSrc(m);
+    if (u && m.type === 'image') live.add(u);
+  }));
+  _maskImages.forEach((_v, k) => { if (!live.has(k)) _maskImages.delete(k); });
+}
+
+function maskImageField(mk, size) {
+  const src = maskImageSrc(mk);
+  if (!src) return null;
+  const got = _maskImages.get(src);
+  if (got) return got === 'pending' ? null : got;
+  _maskImages.set(src, 'pending');
+  const im = new Image();
+  im.onload = () => {
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = size;
+    const ctx = cv.getContext('2d');
+    ctx.drawImage(im, 0, 0, size, size);
+    const px = ctx.getImageData(0, 0, size, size).data;
+    const f = new Float32Array(size * size);
+    for (let i = 0; i < size * size; i++) {
+      f[i] = (px[i * 4] * 0.299 + px[i * 4 + 1] * 0.587 + px[i * 4 + 2] * 0.114) / 255;
+    }
+    _maskImages.set(src, f);
+    MATERIALS.forEach(_d => {
+      const d = normaliseDefMasks(_d);
+      if (!maskList(d).some(m => m.type === 'image' && maskImageSrc(m) === src)) return;
+      rebakeMaskTexture(d);
+      updateMaterialEverywhere(d.id);
+    });
+    _matPreviews = null;
+    if (matFlyEl && matFlyEl.classList.contains('open')) buildMatTray();
+  };
+  im.onerror = () => { _maskImages.set(src, new Float32Array(size * size)); };
+  im.src = src;
+  return null;
+}
+
+/* The one call the packer makes. Contrast is the shared tail: every type
+   gets the same push away from mid-grey, so the slider means one thing. */
+function bakeNoiseField(mk, size) {
+  const t = mk.type || 'fbm';
+  let raw = null;
+  if (t === 'voronoi') raw = maskVoronoiField(mk, size);
+  else if (t === 'scratches') raw = maskScratchField(mk, size);
+  else if (t === 'dots') raw = maskDotField(mk, size);
+  else if (t === 'stripes') raw = maskStripeField(mk, size);
+  else if (t === 'image') raw = maskImageField(mk, size);
+  else raw = maskFbmField(mk, size);
+  const out = new Float32Array(size * size);
+  if (!raw) return out;   // an image still decoding paints nothing, not half
+  const c = mk.contrast;
+  for (let i = 0; i < raw.length; i++) {
+    out[i] = Math.min(1, Math.max(0, (raw[i] - 0.5) * c + 0.5));
   }
   return out;
 }
@@ -1843,10 +2075,19 @@ function getMaskTexture(d) {
 /* Re-bake IN PLACE: every wearer and every preview sees the new cloth with
    no shader recompile. The buffer is written through rather than replaced,
    so the texture object - and every uniform pointing at it - stays valid. */
-function rebakeMaskTexture(d) {
+function rebakeMaskTexture(d, only) {
   const t = _maskTex.get(d.id);
   if (!t) return;
-  t.image.data.set(bakeMaskPacked(d));
+  if (typeof only === 'number' && only >= 0 && only < MASK_SLOTS) {
+    const mk = maskList(d)[only];
+    const f = (mk && mk.on) ? bakeNoiseField(mk, MASK_SIZE) : null;
+    const data = t.image.data;
+    for (let p = 0; p < MASK_SIZE * MASK_SIZE; p++) {
+      data[p * 4 + only] = f ? Math.round(f[p] * 255) : 0;
+    }
+  } else {
+    t.image.data.set(bakeMaskPacked(d));
+  }
   t.needsUpdate = true;
 }
 
@@ -12203,6 +12444,7 @@ document.getElementById('meDelete').addEventListener('click', () => {
   MATERIALS.delete(d.id);
   const _t = _maskTex.get(d.id);
   if (_t) { _t.dispose(); _maskTex.delete(d.id); }
+  pruneMaskImages();
   if (_matPreviewRig) {
     const _pm = _matPreviewRig.mats.get(d.id);
     if (_pm) { _pm.dispose(); _matPreviewRig.mats.delete(d.id); }
@@ -12221,9 +12463,12 @@ document.getElementById('meDone').addEventListener('click', () => closeMatEditor
      slide, every frame, no recompile and no re-bake.
    - detail, contrast, seed, and which type: re-bake the packed texture in
      place. Still no recompile - the texture object never changes identity.
-   - adding, removing, or switching a mask or a component on or off: a
-     STRUCTURAL change, so bumpMaskGen. That is the only thing that compiles
-     anything, and it is the thing LAW 1 exists for. */
+   - adding, removing, or switching a mask or a component on or off, and
+     changing its TYPE: still no recompile. The shader source is the same
+     for one mask as for four and for clouds as for scratches; an off mask
+     is amount 0. Nothing in this editor bumps the generation - the only
+     compile left is crossing between no patch and a patch, which
+     applyMaskPatch's two branches own. */
 
 let mkEditing = 0;   // which slot the controls are pointing at
 
@@ -12303,6 +12548,31 @@ function refreshMaskControls(d) {
     blends.appendChild(b);
   });
 
+  // Type, and the controls it does or does not want.
+  const sel = document.getElementById('mkType');
+  if (!sel.options.length) {
+    MASK_TYPES.forEach(t => {
+      const o = document.createElement('option');
+      o.value = t.id; o.textContent = t.name;
+      sel.appendChild(o);
+    });
+  }
+  const spec = maskTypeOf(mk);
+  sel.value = spec.id;   // an unknown type renders as clouds, so say clouds
+  const isImg = spec.id === 'image';
+  document.getElementById('mkImgRow').style.display = isImg ? 'flex' : 'none';
+  document.getElementById('mkDetailRow').style.display = spec.detail ? 'flex' : 'none';
+  if (spec.detail) {
+    document.getElementById('mkDetailLbl').firstChild.nodeValue = spec.detail + ' ';
+  }
+  // "New pattern" rolls a seed, and a picture does not have one.
+  document.getElementById('mkSeed').style.display = isImg ? 'none' : '';
+  const prev = document.getElementById('mkImgPrev');
+  const src = maskImageSrc(mk);
+  prev.style.display = src ? '' : 'none';
+  if (src) prev.src = src;
+  document.getElementById('mkImgNote').style.display = (isImg && !src) ? '' : 'none';
+
   document.getElementById('mkColorOn').checked = !!mk.colorOn;
   document.getElementById('mkColor').value = mk.color || '#7a4a20';
   document.getElementById('mkColor').style.opacity = mk.colorOn ? '' : '.4';
@@ -12336,7 +12606,7 @@ function mkLive(rebake) {
   document.getElementById('mkScaleV').textContent = mk.scale.toFixed(2);
   document.getElementById('mkDetailV').textContent = String(mk.detail);
   document.getElementById('mkContrastV').textContent = mk.contrast.toFixed(1);
-  if (rebake) rebakeMaskTexture(d);
+  if (rebake) rebakeMaskTexture(d, mkEditing);   // only the channel being dragged
   updateMaterialEverywhere(d.id);
 }
 
@@ -12363,12 +12633,101 @@ function mkLive(rebake) {
   });
 });
 
+/* Type is a CLOTH change: re-bake, no recompile. It also changes which
+   controls make sense, so the panel is redrawn. */
+document.getElementById('mkType').addEventListener('change', () => {
+  const mk = mkCurrent();
+  if (!mk) return;
+  const d = getMaterialDef(matEditingId);
+  mk.type = document.getElementById('mkType').value;
+  if (mk.type !== 'image' && mk.img) { delete mk.img; pruneMaskImages(); }
+  rebakeMaskTexture(d, mkEditing);
+  updateMaterialEverywhere(d.id);
+  saveMaterialLibrary();
+  refreshMaskControls(d);
+  meCommit();
+  /* Deliberately NOT opening the file picker here. It saved a tap, but a
+     dismissed dialog fires no event we can rely on across browsers, and the
+     mask was then stuck as an image with no picture and no control that did
+     anything. "Choose picture" is one tap and cannot dead-end. */
+});
+
+document.getElementById('mkImage').addEventListener('click', () =>
+  document.getElementById('mkFile').click());
+
+/* Your picture, redrawn to MASK_SIZE and re-encoded before anything keeps
+   it. What gets stored - in the library AND in every project file that
+   references the material - is that small square, not the 4000px photo you
+   picked. The field is primed straight into the decode cache, so the mask
+   appears on this tick rather than after a round trip through Image. */
+const MASK_IMG_MAX_BYTES = 25 * 1024 * 1024;
+document.getElementById('mkFile').addEventListener('change', (ev) => {
+  const file = ev.target.files && ev.target.files[0];
+  ev.target.value = '';            // so picking the same file twice still fires
+  const mk = mkCurrent();
+  /* The material is captured HERE, not when the decode finishes. Decoding a
+     phone photo takes long enough to close the editor in, and reading
+     matEditingId at the end sent the re-bake to whatever was open by then -
+     or to Solid, which is what getMaterialDef(null) answers. */
+  const d = matEditingId ? getMaterialDef(matEditingId) : null;
+  if (!file || !mk || !d) return;
+  if (file.size > MASK_IMG_MAX_BYTES) {
+    toast('That picture is too large - under 25 MB please');
+    return;
+  }
+  /* An object URL, not readAsDataURL: base64-ing a 50 MB photo to sample
+     16384 pixels costs ~134 MB of string on the main thread. The only data
+     URL we want is the 128px one we make at the end. */
+  const objUrl = URL.createObjectURL(file);
+  const im = new Image();
+  im.onload = () => {
+    URL.revokeObjectURL(objUrl);
+    if (!im.naturalWidth || !im.naturalHeight) {
+      toast('That picture would not decode');
+      return;
+    }
+    const cvs = document.createElement('canvas');
+    cvs.width = cvs.height = MASK_SIZE;
+    const ctx = cvs.getContext('2d');
+    // White ground first: a logo on transparency would otherwise read as
+    // black on black and bake to a mask that paints nothing.
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, MASK_SIZE, MASK_SIZE);
+    // Centre CROP, not squash - a 16:9 photo squeezed into a square is a
+    // pattern nobody chose.
+    const side = Math.min(im.naturalWidth, im.naturalHeight);
+    ctx.drawImage(im, (im.naturalWidth - side) / 2, (im.naturalHeight - side) / 2,
+      side, side, 0, 0, MASK_SIZE, MASK_SIZE);
+    const px = ctx.getImageData(0, 0, MASK_SIZE, MASK_SIZE).data;
+    const f = new Float32Array(MASK_SIZE * MASK_SIZE);
+    for (let i = 0; i < f.length; i++) {
+      f[i] = (px[i * 4] * 0.299 + px[i * 4 + 1] * 0.587 + px[i * 4 + 2] * 0.114) / 255;
+    }
+    const url = cvs.toDataURL('image/png');
+    if (MATERIALS.get(d.id) !== d) return;   // the material was deleted meanwhile
+    _maskImages.set(url, f);
+    mk.type = 'image';
+    mk.img = url;
+    pruneMaskImages();                       // the picture it replaced, if any
+    rebakeMaskTexture(d);
+    updateMaterialEverywhere(d.id);
+    saveMaterialLibrary();
+    if (matEditingId === d.id) refreshMaskControls(d);
+    meCommit();
+  };
+  im.onerror = () => {
+    URL.revokeObjectURL(objUrl);
+    toast('That file did not open as a picture');
+  };
+  im.src = objUrl;
+});
+
 document.getElementById('mkSeed').addEventListener('click', () => {
   const mk = mkCurrent();
   if (!mk) return;
   const d = getMaterialDef(matEditingId);
   mk.seed = 1 + Math.floor(Math.random() * 1e9);
-  rebakeMaskTexture(d);          // new cloth, same shader
+  rebakeMaskTexture(d, mkEditing);   // new cloth for THIS mask, same shader
   updateMaterialEverywhere(d.id);
   saveMaterialLibrary();
   meCommit();
