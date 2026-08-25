@@ -693,7 +693,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.16d</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.17</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -2333,6 +2333,41 @@ function removeTriangles(ed, mats, predicate) {
   return keptMats;
 }
 
+/* The same filter, carrying ALL THREE of the things keyed by face-group
+   index - material[], userData.smoothGroups and userData.finishes - instead
+   of just the materials. Dropping an empty group renumbers every group after
+   it, so the two maps have to be rebuilt against the new numbering or the
+   smooth flags and the applied materials come out shifted by however many
+   groups vanished ahead of them.
+
+   Collapse melts whole rings of quads at once, so it cannot use the
+   two-of-three version. Weld, Merge and the delete paths still call
+   removeTriangles directly and still have that shift latent in them -
+   recorded rather than fixed here, because that is a different change with
+   its own testing. */
+function removeTrianglesCarrying(obj, ed, mats, predicate) {
+  const smoothIn = obj.mesh.userData.smoothGroups || {};
+  const finIn = obj.mesh.userData.finishes || {};
+  const keptGroups = [], keptMats = [], smooth = {}, fin = {};
+  ed.groups.forEach((g, gi) => {
+    const kept = g.triangles.filter(tri => !predicate(tri, gi));
+    if (!kept.length) return;
+    const ni = keptGroups.length;
+    keptGroups.push({ triangles: kept });
+    keptMats.push(mats[gi] || mats[0]);
+    // `!== undefined`, not truthiness: an explicit `false` is a real value
+    // here and must survive the renumber as itself.
+    if (smoothIn[gi] !== undefined) smooth[ni] = smoothIn[gi];
+    if (finIn[gi] !== undefined) fin[ni] = finIn[gi];
+  });
+  ed.groups = keptGroups;
+  // Nothing is written to the mesh here. The caller can still find the mesh
+  // fully degenerate one line later and bail; writing the two maps at this
+  // point would leave them describing the NEW numbering while the geometry
+  // and materials still describe the old one.
+  return { mats: keptMats, smooth: smooth, fin: fin };
+}
+
 // Runs a triangle-removing edit, then either rebuilds the mesh or - if
 // nothing is left - removes the object entirely (a meshless object can't
 // exist here).
@@ -2700,6 +2735,110 @@ function mergeVerticesOp(obj, logicalIds) {
   obj.mesh.material = keptMats;
   rebuildFromEditable(obj, ed);
   return merged;
+}
+
+/* ---------------- Collapse edges ----------------
+
+   Each connected RUN of selected edges melts into ONE vertex at the run's
+   centre: a selected loop becomes a single point, two separate runs become
+   two points, a lone edge becomes its midpoint. Runs are found by union-find
+   over the endpoints of the selected edges, so what counts as "one run" is
+   the selection's own connectivity and nothing else.
+
+   That makes Collapse RELATIONAL in the house sense - it acts on the
+   selection as a group - so, like Weld and Merge, it must run once per
+   symmetry side. Handed the union of a selection and its mirror it would
+   find one run bridging the plane wherever the two halves touch and pull the
+   whole thing onto the plane.
+
+   Once the endpoints share a position, any triangle with two corners on the
+   same spot is degenerate and goes. Returns runs collapsed, 0 for none, -1
+   when the whole mesh degenerated (caller removes the object, as with Weld).
+*/
+function collapseEdgesOp(obj, edgeIndices) {
+  const topo = obj.mesh.userData.topo;
+  const ed = toEditable(obj.mesh);
+  const mats = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
+
+  const parent = new Map();
+  const find = (a) => { while (parent.get(a) !== a) { parent.set(a, parent.get(parent.get(a))); a = parent.get(a); } return a; };
+  let taken = 0;
+  edgeIndices.forEach(ei => {
+    const e = topo.edges[ei];
+    if (!e) return;
+    taken++;
+    [e[0], e[1]].forEach(l => { if (!parent.has(l)) parent.set(l, l); });
+    const ra = find(e[0]), rb = find(e[1]);
+    if (ra !== rb) parent.set(ra, rb);
+  });
+  if (!taken) return 0;
+
+  const runs = new Map();
+  Array.from(parent.keys()).forEach(l => {
+    const r = find(l);
+    if (!runs.has(r)) runs.set(r, []);
+    runs.get(r).push(l);
+  });
+
+  /* logicalPos reads the LIVE mesh, which is untouched until
+     rebuildFromEditable - only ed.positions is being written - so the runs
+     are independent of the order they are handled in. They are also
+     vertex-disjoint by construction. Do not "optimise" this to read ed. */
+  let done = 0;
+  const movedTo = new Map();   // logical id -> its new position key
+  runs.forEach(list => {
+    if (list.length < 2) return;
+    const c = new THREE.Vector3();
+    list.forEach(l => c.add(logicalPos(obj, l)));
+    c.divideScalar(list.length);
+    const nk = posKey(c);
+    list.forEach(l => {
+      movedTo.set(l, nk);
+      topo.logicalGroups[l].forEach(ai => {
+        ed.positions[ai * 3] = c.x; ed.positions[ai * 3 + 1] = c.y; ed.positions[ai * 3 + 2] = c.z;
+      });
+    });
+    done++;
+  });
+  if (!done) return 0;
+
+  const same = (i, j) =>
+    Math.abs(ed.positions[i * 3] - ed.positions[j * 3]) < 1e-6 &&
+    Math.abs(ed.positions[i * 3 + 1] - ed.positions[j * 3 + 1]) < 1e-6 &&
+    Math.abs(ed.positions[i * 3 + 2] - ed.positions[j * 3 + 2]) < 1e-6;
+  const carried = removeTrianglesCarrying(obj, ed, mats, ([a, b, c]) => same(a, b) || same(b, c) || same(a, c));
+  if (!ed.groups.length) return -1;   // nothing committed yet - caller drops the object
+
+  /* CREASES ARE KEYED BY POSITION, and this op moves vertices. Left alone,
+     a crease on a collapsed edge becomes a key whose two halves are the
+     same point - a crease on nothing - and a crease on an edge merely
+     TOUCHING a run keeps one stale endpoint, so it silently disappears, or
+     worse, aliases onto whatever later lands on that position. Rebuild the
+     map through the same moves: both ends inside one run means the edge is
+     gone and so is its crease. */
+  const creases = obj.mesh.userData.creases;
+  let newCreases = creases;
+  if (creases && Object.keys(creases).length) {
+    const idOfKey = new Map();
+    for (let l = 0; l < topo.logicalCount; l++) idOfKey.set(posKey(logicalPos(obj, l)), l);
+    newCreases = {};
+    Object.keys(creases).forEach(k => {
+      const half = k.split('|');
+      if (half.length !== 2) return;
+      const la = idOfKey.get(half[0]), lb = idOfKey.get(half[1]);
+      const ka = (la !== undefined && movedTo.has(la)) ? movedTo.get(la) : half[0];
+      const kb = (lb !== undefined && movedTo.has(lb)) ? movedTo.get(lb) : half[1];
+      if (ka === kb) return;   // the edge collapsed into a point
+      newCreases[ka < kb ? ka + '|' + kb : kb + '|' + ka] = true;
+    });
+  }
+
+  obj.mesh.material = carried.mats;
+  obj.mesh.userData.smoothGroups = carried.smooth;
+  obj.mesh.userData.finishes = carried.fin;
+  if (newCreases !== creases) obj.mesh.userData.creases = newCreases;
+  rebuildFromEditable(obj, ed);
+  return done;
 }
 
 // Duplicates an object, mirrored across the world origin along one axis.
@@ -9542,6 +9681,39 @@ function mergeSelectionOnce() {
   pushHistory();
 }
 
+function collapseSelection() {
+  if (App.mode !== 'edge') { toast('Collapse works in Edge mode'); return; }
+  const obj = findObject(App.activeObjectId);
+  if (!obj || !App.selectedElements.size) { toast('Select edges to collapse'); return; }
+  runMirrored(obj, collapseSelectionOnce);
+}
+
+// Relational, like Weld and Merge: handed a selection and its mirror as one
+// set, a run touching the plane would pull both halves onto it. One pass
+// per side.
+function collapseSelectionOnce() {
+  const obj = findObject(App.activeObjectId);
+  if (!obj || !App.selectedElements.size) return;
+  const n = collapseEdgesOp(obj, App.selectedElements);
+  if (n === 0) { toast('Nothing to collapse there'); return; }
+  App.selectedElements.clear();
+  if (n === -1) {
+    disposeObject(obj);
+    App.objects = App.objects.filter(o => o.id !== obj.id);
+    App.activeObjectId = null;
+    detachAllGizmos();
+    toast('Collapsing took the whole mesh - removed the object');
+  } else {
+    ensureHelpers(obj);
+    setActiveObjectHelpersVisible(obj, App.mode);
+    toast(n === 1 ? 'Collapsed to 1 point' : 'Collapsed to ' + n + ' points');
+  }
+  hideRadialMenu();
+  refreshUI();
+  refreshGizmoAttachment();
+  pushHistory();
+}
+
 function detachFacesSelection() {
   if (App.mode !== 'face') { toast('Detach works in Face mode'); return; }
   const obj = findObject(App.activeObjectId);
@@ -10535,6 +10707,15 @@ const ICON = {
   subdiv:  '<path d="M3 3h18v18H3z"/><path d="M12 3v18M3 12h18"/>',
   // Two solid edges and the band of new faces forming between them.
   bridge:  '<path d="M5 4.5v15M19 4.5v15"/><rect x="5" y="9" width="14" height="6" fill="currentColor" opacity=".45" stroke="none"/>',
+  /* Two ends driven onto one solid point. The dot is deliberately the same
+     move as merge's - both ops melt several things into one - while the
+     chevrons say it is the ENDS of a run coming in, not loose vertices.
+     The first try put arrowheads with tails on this axis and touched them
+     to the dot; rendered at the 26px the ring actually uses it fused into
+     one blob and read as an asterisk. Screenshot, not reasoning, at both
+     26px and 72px: apex to dot edge is 1.9u, over the ~1.8u that collapses
+     and under the ~4.8u that would read as a gap. */
+  collapse:'<path d="M4 6.5L8 12L4 17.5"/><path d="M20 6.5L16 12L20 17.5"/><circle cx="12" cy="12" r="2.1" fill="currentColor" stroke="none"/>',
   symoff:  '<path d="M12 3v18" opacity=".45"/><path d="M9 7L5 12l4 5z" opacity=".45"/><path d="M15 7l4 5-4 5z" opacity=".45"/><path d="M4 20L20 4"/>',
   centre:  '<circle cx="12" cy="12" r="2.2"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5"/><circle cx="12" cy="12" r="7.5" stroke-dasharray="2.5 3"/>'
 };
@@ -10575,12 +10756,20 @@ const HUB_TOOLS_VERTEX = [
 const HUB_TOOLS_EDGE = [
   // Seats replace the a2.7e declaration-order ergonomics: the "four
   // basics" hold the seats around straight-up (Extrude 0, Bevel 1 - which
-  // Fillet mirrors in the Object ring - and Loop 2; Inset takes 1 in the
-  // Face ring), Delete owns straight-down (7) in EVERY ring, and every
-  // tool shared with another ring keeps the same bearing there.
+  // Fillet mirrors in the Object ring; Inset takes 1 in the Face ring),
+  // Delete owns straight-down (7) in EVERY ring, and every tool shared with
+  // another ring keeps the same bearing there. Seat 2 was Loop until
+  // Collapse claimed it as Merge's "melt together" bearing.
   { key: 'extrude', icon: 'extrude', label: 'Extrude', seat: 0, ring: 0, run: extrudeSelection },
   { key: 'bevel', icon: 'bevel', label: 'Bevel', seat: 1, ring: 0, run: bevelSelection },
-  { key: 'loopcut', icon: 'loop', label: 'Loop', seat: 2, ring: 0, run: edgeLoopSelection },
+  /* Collapse takes seat 2 because that is MERGE's bearing in the Vertex
+     ring, and collapsing an edge run is the same gesture one component up -
+     several things melting into one point. Loop moves to 9, the seat the
+     Edge ring had spare. Seat 9 is Flip normals in the Face and Object
+     rings, which has no meaning on edges, so nothing shares a ring with it
+     here. */
+  { key: 'collapse', icon: 'collapse', label: 'Collapse', seat: 2, ring: 1, run: collapseSelection },
+  { key: 'loopcut', icon: 'loop', label: 'Loop', seat: 9, ring: 0, run: edgeLoopSelection },
   { key: 'knife', icon: 'knife', label: 'Knife', seat: 3, ring: 1, run: startKnife },
   { key: 'split', icon: 'split', label: 'Split', seat: 4, ring: 1, run: splitSelection },
   { key: 'bridge', icon: 'bridge', label: 'Bridge', seat: 5, ring: 1, run: bridgeSelection },

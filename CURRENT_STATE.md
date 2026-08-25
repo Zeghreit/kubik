@@ -173,6 +173,54 @@ way. Known and accepted: a run that is entirely CONTAINED in a larger
 selection reads as "already selected" and drops - repeat the gesture to
 get it back.
 
+**NEW a2.17 - COLLAPSE EDGES, in the Edge ring.** Each connected RUN of
+selected edges melts into ONE vertex at the run's centre: a selected loop
+becomes a single point, two separate runs become two points, a lone edge
+becomes its midpoint. Runs are the connected components of the selected
+edges (union-find over their endpoints) and nothing else. Relational, so
+like Weld and Merge it goes through runMirrored - handed a selection and
+its mirror as one set it would find a run bridging the plane and pull
+both halves onto it.
+
+**Seat 2, and LOOP MOVED TO 9 to make room** (user decision). Seat 2 is
+Merge's bearing in the Vertex ring, and collapsing an edge run is that
+same gesture one component up - several things melting into one point.
+Seat 9 is Flip normals in the Face and Object rings, which has no meaning
+on edges, so nothing shares a ring with it here.
+
+Three things this op needed that the older melt ops do NOT do:
+- `removeTrianglesCarrying(obj, ed, mats, predicate)` - the group-index
+  -safe filter. Dropping an empty group renumbers everything after it, so
+  smoothGroups and finishes have to be rebuilt against the new numbering.
+  It returns {mats, smooth, fin} and writes NOTHING to the mesh, so the
+  caller can still find the mesh fully degenerate and bail. **Weld, Merge
+  and the delete paths still call the old removeTriangles and still have
+  that shift latent in them** - own increment, own testing.
+- CREASES ARE KEYED BY POSITION and this op moves vertices, so the crease
+  map is rebuilt through the same moves: both ends inside one run means
+  the edge is gone and so is its crease; one end inside means the key is
+  remapped. Left alone they would silently vanish or alias onto whatever
+  later landed on that position.
+- logicalPos reads the LIVE mesh while only ed.positions is written, which
+  is what makes the runs order-independent. Do not "optimise" it to read
+  ed.
+
+Measured: plain cube one edge 8 verts -> 7, 12 edges -> 11, still 1 shell
+/ 0 boundary / 0 non-manifold / 0 reversed; two separate edges -> 2
+points, clean; twice-subdivided cube, a 16-edge loop -> 1 point, 98 verts
+-> 83, audit clean but **2 SHELLS - the cube is pinched into two lobes
+meeting at one point.** That is the correct output for this op (it is how
+you make a pinch on purpose) but note auditWinding does not look for a
+non-manifold VERTEX, so a clean audit is not proof here. Moved and
+rotated object: the point lands on the LOCAL midpoint. Symmetry on: one
+edge selected collapses on both sides, 40/40 verts, clean. All 12 creases
+on a cube: 11 survive the collapse of one edge, none degenerate, none
+dangling. capture/restore round-trips all three maps.
+
+The icon (`>` dot `<`) was chosen by SCREENSHOT at the 26px the ring
+actually uses. The first try - arrowheads with tails touching a centre
+dot - fused into one blob and read as an asterisk.
+
 **KNOWN OPEN ISSUES (crosstest 2026-08-25, unverified findings in
 claude/crosstest-findings.md) - fix order as agreed:**
 1. DONE (a2.16b) - see above.
