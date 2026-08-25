@@ -385,6 +385,52 @@ can read false-sharp or false-smooth; comparing the two TRIANGLES either side
 of the edge would be exact. From Face or Object mode there is no way to clear
 a stubborn sharp mark - Edge mode's toggle is the escape.
 
+## a2.19 - SMOOTH BY ANGLE, on the Object ring (seat 11)
+
+A live op on the existing op bar: the "amount" is a THRESHOLD IN DEGREES and
+the preview is the shading itself, which is the one thing you cannot judge
+from a number. OK commits, Cancel puts everything back.
+
+**It stores a per-object angle, not baked marks** (user decision).
+`userData.autoSmoothAngle` overrides the global SHARP_ANGLE for that object,
+so geometry made LATER still obeys the angle you chose - a face extruded
+tomorrow follows today's setting, which a baked set of per-edge marks could
+never do. `effectiveSmoothAngle(mesh)` is the single place that knows
+"no angle of its own means the app default"; it is written out rather than
+`angle || SHARP_ANGLE`, which would quietly treat a deliberate 0 as unset.
+
+**It clears the object's hand marks** (user decision), so the preview shows
+exactly what the angle gives with no invisible leftovers fighting it. The
+snapshot holds them, so Cancel puts them back - and this doubles as the only
+way to clear a stubborn mark from Object mode, which a2.18 had no answer for.
+The confirm toast says how many marks it cleared, because that is the one
+destructive thing the tool does.
+
+**Range is 0-180, not 0-90.** The test is the angle between two face
+normals, which runs the whole half-circle: at 90 an edge whose faces fold
+back on each other - a spike, a fin, a thin shell - could never be smoothed.
+90 is merely where a plain cube turns over.
+
+**Degrees on disk, radians in memory.** The file carries
+`autoSmoothAngleDeg` and it is clamped on load. A bare unitless number in
+JSON is a trap: anything later writing 33 meaning degrees would be read as 33
+RADIANS and the model would shade like nonsense while the bar read 1891.
+Docs without the key simply get the default, so there is nothing to migrate.
+
+**Measured.** Smooth-subdivided cube, 96 faces: sweeping the angle gives 0 deg
+288 normals (fully faceted), 20 deg 206, 33 deg 98, 45-90 deg 98 - monotonic
+and live. Plain cube: faceted to 89 deg, smooth at 90. Cancel with TWO objects
+selected, each carrying 4 hand marks: both lose them during the preview and
+both come back to 4 marks, the original shading and the default angle.
+Confirm at 47 deg round-trips through save and load. After confirming, an
+extrude keeps the object's angle and the new walls obey it.
+
+**Reviewer notes not acted on:** opening a ring op while another op is
+pending overwrites the pending one - pre-existing for every entry in every
+ring, not specific to this tool. And once an object has its own angle there
+is no "back to default" affordance; setting the slider to 33 is the same
+value but not the same state.
+
 **KNOWN OPEN ISSUES (crosstest 2026-08-25, unverified findings in
 claude/crosstest-findings.md) - fix order as agreed:**
 1. DONE (a2.16b) - see above.

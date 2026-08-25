@@ -693,7 +693,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.18</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.19</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1995,6 +1995,14 @@ function computeTopology(geometry) {
 const SHARP_ANGLE = 33 * Math.PI / 180;   // auto-sharp threshold
 const SHARP_EPS = 1e-6;
 
+/* The ONE place that knows "no angle of its own means use the app default".
+   Written out rather than `angle || SHARP_ANGLE`, which would quietly treat
+   a deliberate 0 - every edge sharp - as "unset". */
+function effectiveSmoothAngle(mesh) {
+  const a = mesh && mesh.userData && mesh.userData.autoSmoothAngle;
+  return typeof a === 'number' ? a : SHARP_ANGLE;
+}
+
 function edgeShadeSet(obj) {
   if (!obj.mesh.userData.edgeShade) obj.mesh.userData.edgeShade = {};
   return obj.mesh.userData.edgeShade;
@@ -2113,7 +2121,11 @@ function applyShading(obj) {
 
     const marks = obj.mesh.userData.edgeShade;
     const hasMarks = !!marks && Object.keys(marks).length > 0;
-    const cosLimit = Math.cos(SHARP_ANGLE);
+    /* An object can carry its OWN threshold, set by Smooth by angle. It is
+       one number rather than a mark per edge, so it keeps deciding for
+       geometry that does not exist yet - a face extruded tomorrow obeys the
+       angle you chose today, which a baked set of marks could never do. */
+    const cosLimit = Math.cos(effectiveSmoothAngle(obj.mesh));
     const pA = new THREE.Vector3(), pB = new THREE.Vector3();
     const sharp = new Map();
     edgeFaces.forEach((fs, k) => {
@@ -6028,7 +6040,8 @@ function captureObjectState(obj) {  const ed = toEditable(obj.mesh);
        long-standing, and it started mattering a great deal once shading
        moved onto the same kind of map. */
     creases: { ...(obj.mesh.userData.creases || {}) },
-    edgeShade: { ...(obj.mesh.userData.edgeShade || {}) }
+    edgeShade: { ...(obj.mesh.userData.edgeShade || {}) },
+    autoSmoothAngle: obj.mesh.userData.autoSmoothAngle
   };
 }
 
@@ -6038,6 +6051,9 @@ function restoreObjectState(obj, st) {
   if (st.finishes) obj.mesh.userData.finishes = { ...st.finishes };
   if (st.creases) obj.mesh.userData.creases = { ...st.creases };
   if (st.edgeShade) obj.mesh.userData.edgeShade = { ...st.edgeShade };
+  // Undefined is a real value here - it means "use the app default" - so
+  // this is assigned unconditionally, not guarded like the maps above.
+  obj.mesh.userData.autoSmoothAngle = st.autoSmoothAngle;
   rebuildFromEditable(obj, {
     positions: st.positions.slice(),
     groups: st.groups.map(g => ({ triangles: g.triangles.map(t => t.slice()) }))
@@ -6092,6 +6108,19 @@ const OP_SPECS = {
       { key: 'straight', label: 'Straight' },
       { key: 'curve', label: 'Curved', minSegments: 2 }
     ]
+  },
+  /* Smooth by angle. No geometry changes at all - the "amount" is a
+     THRESHOLD in degrees, and the preview is the shading itself, which is
+     exactly what you cannot judge from a number. Object-level, so `multi`
+     snapshots every selected object and each re-run starts from that
+     snapshot. */
+  autosmooth: {
+    /* 0 to 180, not 0 to 90. The test is the angle between two face
+       normals, which runs the whole half-circle: at 90 an edge whose faces
+       fold back on each other - a spike, a thin shell, a fin - can never be
+       smoothed, and there is no reason to put that out of reach. 90 is
+       merely where a plain cube turns over. */
+    label: 'Smooth by angle', min: 0, max: 180, step: 1, start: 33, multi: true
   },
   loopcut: {
     // The amount is a slide position along the ring, 0..1, centred at 0.5.
@@ -6394,6 +6423,28 @@ function applyPendingOp() {
     if (pairs.length) bevelEdgesOp(obj, pairs, op.amount, op.segments || 1, op.groupMode || 'flat');
     ensureHelpers(obj);
 
+  } else if (op.kind === 'autosmooth') {
+    /* Set the object's own threshold and CLEAR its hand marks, so what you
+       see is what the angle alone gives - an invisible leftover mark fighting
+       the preview is the one thing that would make this tool untrustworthy.
+       The snapshot holds the old marks, so Cancel puts them all back, and
+       this doubles as the only way to clear a stubborn mark from Object
+       mode. */
+    let cleared = 0;
+    (op.multi || []).forEach(m => {
+      const o = findObject(m.objId);
+      if (!o) return;
+      restoreObjectState(o, m.state);
+      o.mesh.userData.autoSmoothAngle = op.amount * Math.PI / 180;
+      cleared += Object.keys(o.mesh.userData.edgeShade || {}).length;
+      // A FRESH object, never a mutation: the snapshot's own map has to stay
+      // untouched or Cancel would have nothing to put back.
+      o.mesh.userData.edgeShade = {};
+      applyShading(o);
+      ensureHelpers(o);
+    });
+    op.clearedMarks = cleared;
+
   } else if (op.kind === 'subdivide') {
     /* Re-run from the snapshot at the current count, exactly like every
        other live op - which is what makes the stepper a PREVIEW of the
@@ -6559,10 +6610,18 @@ function confirmPendingOp() {
   refreshUI();
   refreshGizmoAttachment();
   pushHistory();
-  toast(op.kind === 'subdivide'
-    ? 'Subdivided \u00d7' + (op.segments || 1) +
-      (op.groupMode === 'keep' ? ', shape kept' : ', smoothed')
-    : label + ' applied');
+  if (op.kind === 'subdivide') {
+    toast('Subdivided \u00d7' + (op.segments || 1) +
+      (op.groupMode === 'keep' ? ', shape kept' : ', smoothed'));
+  } else if (op.kind === 'autosmooth') {
+    /* The number IS the result here, so say it rather than "applied" - and
+       say what was thrown away, because clearing hand marks is the one
+       destructive thing this tool does. */
+    toast('Smooth below ' + Math.round(op.amount) + '\u00b0' +
+      (op.clearedMarks ? ' \u2014 cleared ' + op.clearedMarks + ' edge mark(s)' : ''));
+  } else {
+    toast(label + ' applied');
+  }
 }
 
 function cancelPendingOp() {
@@ -6826,6 +6885,27 @@ function fillHolesSelection() {
    reachable now - 'keep' has existed and worked since subdivideOp was
    written and simply had nothing calling it - and the stepper chooses how
    many times, previewed live. */
+/* Smooth by angle: opens the op bar on a threshold in degrees and reshades
+   live as you move it. Nothing is committed until OK, and Cancel puts back
+   both the old threshold and any marks it cleared. */
+function autoSmoothSelection() {
+  if (App.mode !== 'object') { toast('Smooth by angle works in Object mode'); return; }
+  const ids = Array.from(App.selectedObjectIds);
+  if (!ids.length) { toast('Select an object first'); return; }
+  const obj = findObject(ids[0]);
+  if (!obj) { toast('Select an object first'); return; }
+  ensureHelpers(obj);
+  beginPendingOp('autosmooth', obj, {});
+  /* Open ON the angle the object is already using, not on the default -
+     re-opening a tool should show you where you are, not reset you. */
+  const cur = obj.mesh.userData.autoSmoothAngle;
+  if (App.pendingOp && typeof cur === 'number') {
+    App.pendingOp.amount = Math.round(cur * 180 / Math.PI);
+    applyPendingOp();
+    showOpBar();
+  }
+}
+
 function subdivideSelection() {
   if (App.mode !== 'object') { toast('Subdivide works in Object mode'); return; }
   const ids = Array.from(App.selectedObjectIds);
@@ -10546,7 +10626,13 @@ function serializeDoc() {
         smoothGroups: o.mesh.userData.smoothGroups || {},
         finishes: o.mesh.userData.finishes || {},
         creases: o.mesh.userData.creases || {},
-        edgeShade: o.mesh.userData.edgeShade || {}
+        edgeShade: o.mesh.userData.edgeShade || {},
+        /* DEGREES in the file, radians in memory. A bare number in JSON with
+           no unit is a trap: anything that later wrote 33 meaning degrees
+           would be read as 33 RADIANS, and the model would shade like
+           nonsense while the bar read 1891. The name carries the unit. */
+        autoSmoothAngleDeg: typeof o.mesh.userData.autoSmoothAngle === 'number'
+          ? +(o.mesh.userData.autoSmoothAngle * 180 / Math.PI).toFixed(2) : undefined
       };
     }),
     // Selection travels with the snapshot so undo/redo doesn't drop you back
@@ -10650,6 +10736,10 @@ function restoreDoc(doc, opts = {}) {
        an empty map means "everything decided by angle", not "not migrated". */
     if (od.edgeShade) mesh.userData.edgeShade = { ...od.edgeShade };
     else migrateEdgeShade(obj);
+    if (typeof od.autoSmoothAngleDeg === 'number') {
+      const d = Math.min(180, Math.max(0, od.autoSmoothAngleDeg));
+      mesh.userData.autoSmoothAngle = d * Math.PI / 180;
+    }
     applyShading(obj);
     scene.add(mesh);
     App.objects.push(obj);
@@ -11041,6 +11131,12 @@ const ICON = {
      outside the curve, against empty background, so it is the part that
      survives the size. */
   sharp:   '<path d="M3 18L12 6l9 12"/><circle cx="12" cy="6" r="1.8" fill="currentColor" stroke="none"/>',
+  /* The draughtsman's angle mark, arc and all. Tried a peak with one hard
+     side and one round one, which is a truer picture of what the tool does -
+     and at 26px it was indistinguishable from `sharp`, because both collapse
+     to a bare chevron. The arc is the part that survives, so the arc is the
+     icon. */
+  smoothangle:'<path d="M4 19h15"/><path d="M4 19L17.5 6.5"/><path d="M13 19a9 9 0 0 0-2.6-6.4"/>',
   crease:  '<path d="M3 18Q12 5 21 18"/><path d="M12 4v5"/><circle cx="12" cy="11.4" r="1.9" fill="currentColor" stroke="none"/>',
   uncrease:'<path d="M3 18c4-6 14-6 18 0"/>',
   subdiv:  '<path d="M3 3h18v18H3z"/><path d="M12 3v18M3 12h18"/>',
@@ -11158,7 +11254,11 @@ const HUB_TOOLS_OBJECT_BASE = [
   { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 0, run: deleteSelection },
   { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 8, ring: 1, run: toggleShading },
   { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 9, ring: 1, run: flipNormalsSelection },
-  { key: 'subdivide', icon: 'subdiv', label: 'Subdivide', seat: 10, ring: 1, run: subdivideSelection }
+  { key: 'subdivide', icon: 'subdiv', label: 'Subdivide', seat: 10, ring: 1, run: subdivideSelection },
+  /* Seat 11 is Crease's bearing in the Edge ring, and that is the right
+     company: 11 is where the FINER shading control lives, one step past the
+     blunt Shade toggle at 8, in whichever ring you are holding. */
+  { key: 'autosmooth', icon: 'smoothangle', label: 'Smooth by angle', seat: 11, ring: 1, run: autoSmoothSelection }
 ];
 // Join only means something with more than one object selected, matching
 // the old radial menu's own condition for showing it - appended live rather
