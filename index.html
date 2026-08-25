@@ -693,7 +693,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.16a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.16c</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -2020,8 +2020,15 @@ function applyShading(obj) {
           const tag = l + '#' + cid;
           const stack = [g];
           clusterAt.set(l + '_' + g, tag);
+          /* pop FIRST, then look the neighbours up. Written as
+             `m && m.get(stack.pop())` the pop sat behind the guard, so a
+             vertex with no bridges at all (adj.get(l) undefined - every
+             edge around it creased) short-circuited before popping and the
+             loop spun forever. Creasing all 12 edges of a cube was enough
+             to hang the tab. */
           while (stack.length) {
-            const nbrs = m && m.get(stack.pop());
+            const cur = stack.pop();
+            const nbrs = m ? m.get(cur) : null;
             if (nbrs) nbrs.forEach(n => {
               if (here.has(n) && !clusterAt.has(l + '_' + n)) {
                 clusterAt.set(l + '_' + n, tag);
@@ -4033,7 +4040,16 @@ function edgeChains(ed, pairs) {
       prev = cur;
       cur = next;
     }
-    if (chain.length > 1) chains.push(chain);
+    /* A RING comes back looking like a path: the walk refuses to step onto
+       an already-seen vertex, so the closing edge is simply never taken and
+       an n-edge loop reads as an n-vertex open run of n-1 edges. Recording
+       it here is what lets bridge wall the whole rim instead of leaving the
+       last quad out as a slit. */
+    if (chain.length > 1) {
+      chain.closed = chain.length > 2 &&
+        (adj.get(chain[chain.length - 1]) || []).includes(chain[0]);
+      chains.push(chain);
+    }
   });
   return chains;
 }
@@ -4050,15 +4066,56 @@ function bridgeEdgesOp(obj, logicalPairs, segments, curved) {
     return { ok: false, why: 'Select two separate runs of edges (found ' + chains.length + ')' };
   }
   let [cA, cB] = chains;
+  const closed = !!cA.closed && !!cB.closed;
+  if (!!cA.closed !== !!cB.closed) {
+    return { ok: false, why: 'One run closes into a loop and the other does not' };
+  }
+  const edgesIn = c => c.closed ? c.length : c.length - 1;
   if (cA.length !== cB.length) {
-    return { ok: false, why: 'Both runs need the same number of edges (' + (cA.length - 1) + ' vs ' + (cB.length - 1) + ')' };
+    return { ok: false, why: 'Both runs need the same number of edges (' + edgesIn(cA) + ' vs ' + edgesIn(cB) + ')' };
   }
 
-  // Sew end-to-end rather than crossing over in the middle.
-  const pa = vecAt(ed, attrFor(cA[0])), pz = vecAt(ed, attrFor(cA[cA.length - 1]));
-  const qa = vecAt(ed, attrFor(cB[0])), qz = vecAt(ed, attrFor(cB[cB.length - 1]));
-  if (pa.distanceToSquared(qa) + pz.distanceToSquared(qz) >
-      pa.distanceToSquared(qz) + pz.distanceToSquared(qa)) cB = cB.slice().reverse();
+  /* Every group's outline, once - needed both to recognise a rim that IS a
+     face and, further down, by leaveDir. */
+  const allLoops = ed.groups.map((g, gi) => getGroupBoundaryLoopAttr(ed, gi));
+
+  if (closed) {
+    /* THE RIM OF A FACE IS THAT FACE. Bridging the four edges round a cube's
+       top has to mean what bridging the top face means, and bridgeFacesOp
+       already knows how: it drops both caps (they end up inside the tube)
+       and inherits their winding, pairing and phase together.
+
+       Left to the open-chain path below, a 4-edge loop arrived as a 4-vertex
+       run of THREE edges, so only three of the four walls were built - the
+       reported open slit - and the end-to-end sew then paired A's near
+       corner with B's FAR one, so the connectors crossed: the overlapping
+       walls. Both symptoms, one cause. */
+    const ringGroup = (ring) => {
+      const want = new Set(ring);
+      let hit = -1;
+      allLoops.forEach((lp, gi) => {
+        if (lp.length !== want.size) return;
+        const ls = lp.map(a => L.logicalOf[a]);
+        if (ls.every(l => want.has(l)) && new Set(ls).size === want.size) {
+          hit = (hit === -1) ? gi : -2;   // -2: ambiguous, leave it alone
+        }
+      });
+      return hit;
+    };
+    const gA = ringGroup(cA), gB = ringGroup(cB);
+    if (gA >= 0 && gB >= 0 && gA !== gB) {
+      return bridgeFacesOp(obj, [gA, gB], segments, curved);
+    }
+    // Otherwise these are open rims (holes). Fall through: the ring is walled
+    // all the way round below, and the phase is chosen rather than assumed.
+  } else {
+    // Sew end-to-end rather than crossing over in the middle. Only an OPEN
+    // run has ends; on a ring this test is meaningless.
+    const pa = vecAt(ed, attrFor(cA[0])), pz = vecAt(ed, attrFor(cA[cA.length - 1]));
+    const qa = vecAt(ed, attrFor(cB[0])), qz = vecAt(ed, attrFor(cB[cB.length - 1]));
+    if (pa.distanceToSquared(qa) + pz.distanceToSquared(qz) >
+        pa.distanceToSquared(qz) + pz.distanceToSquared(qa)) cB = cB.slice().reverse();
+  }
 
   const rowA = cA.map(attrFor), rowB = cB.map(attrFor);
   const segs = Math.max(1, Math.round(segments || 1));
@@ -4069,12 +4126,12 @@ function bridgeEdgesOp(obj, logicalPairs, segments, curved) {
      that lies IN the neighbouring face and points away from it, so the
      normal component is taken back out. With nothing adjacent there is no
      surface to continue and the straight chord is the honest answer. */
-  /* Every group's outline, once. leaveDir used to walk them all itself and
-     then walk the matching ones AGAIN, twice per bridge and twice more for
-     the mirrored pass - four full scans of the mesh on every press of the
-     section stepper, in a live op. Fine on a cube, a stall on anything
-     subdivided, and only in Curved mode, which is why it measured clean. */
-  const allLoops = ed.groups.map((g, gi) => getGroupBoundaryLoopAttr(ed, gi));
+  /* allLoops is built once, near the top. leaveDir used to walk every group
+     itself and then walk the matching ones AGAIN, twice per bridge and twice
+     more for the mirrored pass - four full scans of the mesh on every press
+     of the section stepper, in a live op. Fine on a cube, a stall on
+     anything subdivided, and only in Curved mode, which is why it measured
+     clean. */
 
   const leaveDir = (row, otherCentre) => {
     const here = loopCentroid(ed, row);
@@ -4145,15 +4202,26 @@ function bridgeEdgesOp(obj, logicalPairs, segments, curved) {
     if (!bLegOK) rowB.reverse();
   }
 
+  /* Two rims wound the right way still have to be told WHICH corner meets
+     which - a ring has no ends to line up, so the phase is measured the same
+     way bridgeFacesOp measures it. Rotating comes last, after the winding
+     rule above may already have reversed B. */
+  if (closed && rowB.length > 2) {
+    const k = chooseRingOffset(ed, rowA, rowB);
+    if (k) rowB.push(...rowB.splice(0, k));
+  }
+
   const rings = bridgeRings(ed, rowA, rowB, segs, curve);
 
   const added = [];
   for (let r = 0; r + 1 < rings.length; r++) {
     const r0 = rings[r], r1 = rings[r + 1];
-    for (let i = 0; i + 1 < r0.length; i++) {
+    const legs = closed ? r0.length : r0.length - 1;
+    for (let i = 0; i < legs; i++) {
+      const j = (i + 1) % r0.length;
       const quad = flip
-        ? [r0[i + 1], r0[i], r1[i], r1[i + 1]]
-        : [r0[i], r0[i + 1], r1[i + 1], r1[i]];
+        ? [r0[j], r0[i], r1[i], r1[j]]
+        : [r0[i], r0[j], r1[j], r1[i]];
       ed.groups.push({ triangles: polygonTriangles(ed, quad) });
       mats.push((mats[0] || mats[0]).clone());
       added.push(quad);

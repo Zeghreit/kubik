@@ -129,18 +129,48 @@ edges instead of flattening adjacent face groups.
 creaseSelection/clearAllCreases re-apply shading. undo/redo now
 refresh the autosave (it used to resurrect undone edits on reload).
 
+**FIXED a2.16b - the crease-shading "hang" was an INFINITE LOOP, not a
+cost problem.** The island flood fill read
+`const nbrs = m && m.get(stack.pop())`, so when a vertex had no
+adjacency map at all (`adj.get(l)` undefined - EVERY edge around it
+creased) the `&&` short-circuited before `stack.pop()` ever ran and the
+`while (stack.length)` loop spun forever. Pop first, then look the
+neighbours up. Reproduced deterministically by creasing all 12 edges of
+a plain cube - it was never about mesh size. Measured after the fix:
+applyShading is ~linear (0.3 ms on a 6-group cube fully creased, 55 ms
+on 1541 groups fully creased, 160 ms at 6144 groups). The crosstest
+guess of "an effectively-unbounded cost in the crease-aware
+applyShading" was wrong about the mechanism and right about where.
+
 **KNOWN OPEN ISSUES (crosstest 2026-08-25, unverified findings in
 claude/crosstest-findings.md) - fix order as agreed:**
-1. RED, IN THE LIVE BUILD: crease + smooth shading HANGS on large
-   meshes (L4-subdivided cube, 1536 face groups, >10s freeze) - the
-   a2.16 islands code has a blow-up somewhere; small meshes fine.
-2. RED: Bridge between edge loops of two joined cubes produces an open
-   slit with overlapping walls (bridge between two faces is fine).
+1. DONE (a2.16b) - see above.
+2. DONE (a2.16c). Bridge between two CLOSED edge loops. edgeChains walks
+   the selected edges and never steps onto a seen vertex, so a RING came
+   back as an open path: an n-edge loop read as n vertices / n-1 edges.
+   Bridge then built n-1 walls (the open slit) and matched the two runs
+   by their ENDS, which for two rings pairs A's near corner with B's far
+   one (the overlapping walls). Both symptoms, one cause. Fix: chains
+   record `closed`; two closed rims that are each exactly one face
+   group's outline now delegate to bridgeFacesOp (the rim of a face IS
+   that face - same result as bridging the two faces, caps dropped,
+   winding inherited); genuine open rims fall through to a ring path
+   that walls all the way round and picks the phase with
+   chooseRingOffset; one closed + one open now refuses with a message
+   instead of quietly slitting. Measured, two joined cubes, both top
+   rims: BEFORE 3 walls, 15 groups, 3 shells, 2 boundary, 6
+   non-manifold, audit FAIL. AFTER 4 walls, 14 groups, 1 shell, 0/0/0,
+   audit PASS - identical to the face bridge. Also clean at 3 sections
+   curved, 2 sections straight, and on rims left open by deleting the
+   caps first.
 3. AMBER: Connect across a quad's diagonal silently no-ops (violates
    the silent-no-op rule). AMBER unconfirmed: creases may not hold
    through smooth Subdivide - needs a clean repro.
 4. Perf backlog: ensureHelpers builds one overlay mesh+material PER
-   face group; subdivide rebuild is superlinear; one
+   face group; subdivide rebuild is superlinear - MEASURED a2.16b on a
+   cube, smooth subdivide: L3 26 ms, L4 191 ms, L5 1454 ms (roughly
+   x7.6 per level for x4 the data), so L6 would be the >10 s freeze the
+   crosstest agent hit and probably misattributed to shading; one
    MeshStandardMaterial per face group (structural fix = shared
    instance per material def). Three audit sweeps never ran (mobile/UX,
    static correctness, static perf) - resumable.
