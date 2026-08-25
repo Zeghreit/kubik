@@ -221,6 +221,71 @@ The icon (`>` dot `<`) was chosen by SCREENSHOT at the 26px the ring
 actually uses. The first try - arrowheads with tails touching a centre
 dot - fused into one blob and read as an asterisk.
 
+**FIXED a2.17a - FINISHES IS NOW DERIVED, NOT MAINTAINED.** User report:
+"materials behave strangely when geometry changes - one should apply the
+material again to reproject". Correct, and it was two bugs wearing one
+coat. userData.finishes maps face-group index -> material-def id, and it
+was kept by hand, per op. Ops that GROW faces (extrude, inset, bevel,
+split, knife, bridge, cap) push a CLONED material per new group and never
+added the matching entry; ops that DROP a group renumber everything after
+it and shifted the map. updateMaterialEverywhere reads
+`fin[gi] || 'standard'`, so a face with no entry silently belongs to the
+Solid preset: it renders unmasked and editing the material it visibly
+wears does nothing to it, until you re-apply by hand.
+
+Measured before the fix, cube wearing one masked material: extrude 6
+groups -> 10 but 6 entries, inset 6 -> 10 / 6, bevel 6 -> 7 / 6, delete
+5 groups against 6 stale entries. Subdivide and Collapse were already
+right, which is why it looked intermittent rather than systematic.
+
+THE MODEL NOW: **the material remembers its own definition**
+(`mat.userData.kubikDef`, stamped by applyFinish) and finishes is DERIVED
+from the material array by `reconcileFinishes(obj)`, called inside
+rebuildFromEditable - the one funnel every op passes through, and the only
+place that sees the finished group list and the finished material array
+together. This is the one thing that SHOULD live in userData: Material
+.clone JSON-copies it, so a face grown by cloning the material of the face
+it came from is BORN wearing the same definition. (The LAW is about live
+uniforms and textures, which clone into dead snapshots. A string id is
+exactly what wants copying.) A renumber then cannot shift anything,
+because the map is rebuilt from the materials rather than carried.
+
+Three supporting pieces:
+- `stampFinishesOnMaterials()` runs at the end of restoreDoc. A saved
+  scene stores finishes as a plain map and rebuilds materials WITHOUT
+  applyFinish, so nothing is stamped on load - and the first op after
+  loading would clone an unstamped material and lose the new faces again.
+  Measured, and now covered.
+- A stamp naming a definition the library no longer has (a custom the user
+  DELETED while a face wore it) self-heals to Solid. Skipping it left the
+  face showing the dead definition, mask and all, forever, while the UI
+  reported Solid.
+- `ensureMaskPatches()` is called from reconcileFinishes, not only from
+  refreshUI. An id test cannot see whether a material is DRESSED: a clone
+  landing at an index that already held the same id passes every check and
+  is still unpatched, because the patch lives in a module WeakSet a clone
+  is not in. Any path that edited and then saved, exported or rendered
+  without a refresh was working on undressed materials.
+- bridgeFacesOp no longer wipes finishes - there is nothing to wipe now.
+
+Measured after, every op, cube wearing one masked material, WITHOUT any
+manual refresh: applied 6/6, subdivide 24/24, collapse 6/6, delete 5/5,
+extrude 10/10, inset 10/10, bevel 7/7, bridge 8/8, every entry correct and
+every material mask-patched. Editing the definition after an extrude now
+reaches 10 of 10 (was 6 of 10). Mixed materials: extruding a metal face
+among plastic ones gives metal walls; deleting a face keeps metal on the
+right face through the renumber. Save -> restore -> extrude carries. Cost:
+reconcile plus ensureMaskPatches on 1536 groups is 0.4 ms.
+
+**NEXT, from the same review: `smoothGroups` is STILL a hand-maintained
+index-keyed map, so the delete-shift bug almost certainly still lives
+there** - bridge wiping it is the only thing masking it. Same treatment
+(derive it) or at least renumber it with the groups. Also noted: anything
+that mutates a material OUTSIDE applyFinish must `delete
+m.userData.kubikDef` or reconcile will re-apply the definition over the
+manual change; and reconcile assumes group gi is drawn with mats[gi],
+which holds because rebuildFromEditable emits identity materialIndex.
+
 **KNOWN OPEN ISSUES (crosstest 2026-08-25, unverified findings in
 claude/crosstest-findings.md) - fix order as agreed:**
 1. DONE (a2.16b) - see above.

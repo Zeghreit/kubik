@@ -693,7 +693,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.17</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.17a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1547,6 +1547,14 @@ loadMaterialLibrary();
 // included, since colour lives in the material as of a2.13.
 function applyFinish(mat, id) {
   const d = getMaterialDef(id);
+  /* THE MATERIAL REMEMBERS WHICH DEFINITION IT IS WEARING, and this is the
+     one thing that SHOULD live in userData: Material.clone JSON-copies it,
+     so when an op grows new faces by cloning the material of the face they
+     came from, the clone arrives already knowing its definition. That is
+     what reconcileFinishes then reads. (The LAW about userData is about
+     live uniforms and textures, which clone into dead snapshots - a plain
+     string id is exactly what wants copying.) */
+  mat.userData.kubikDef = d.id;
   mat.color.setHex(materialColorHex(d));
   mat.userData.themedDefault = (d.color === null || d.color === undefined);
   mat.roughness = d.roughness;
@@ -1600,6 +1608,28 @@ function harvestLegacyMaterials() {
   });
   if (made) { saveMaterialLibrary(); _matPreviews = null; }
   return made;
+}
+
+/* Stamp every material with the definition its face is RECORDED as wearing.
+   A saved scene stores finishes as a plain map and rebuilds its materials
+   without going through applyFinish, so nothing carries a stamp on load -
+   and the first op after loading would then clone an unstamped material,
+   whose new faces drop straight back out of the map. Measured: load a
+   two-material cube, extrude one face, 10 groups against 6 entries.
+
+   Runs on every restoreDoc, after harvestLegacyMaterials has had its say
+   about legacy slots so their fresh ids get stamped too. It is bookkeeping,
+   not appearance, so it runs on the undo path as well. */
+function stampFinishesOnMaterials() {
+  App.objects.forEach(o => {
+    const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
+    const fin = o.mesh.userData.finishes || {};
+    mats.forEach((m, gi) => {
+      if (!m.userData) m.userData = {};
+      if (MATERIALS.has(m.userData.kubikDef)) return;
+      if (MATERIALS.has(fin[gi])) applyFinish(m, fin[gi]);
+    });
+  });
 }
 
 // The live-asset half: after a definition changes, everything wearing it
@@ -2285,6 +2315,72 @@ function separateGroupVertices(ed) {
   return { positions, groups };
 }
 
+/* WHY THIS EXISTS. userData.finishes maps face-group index -> material-def
+   id, and it was maintained by hand, per op. Ops that GROW faces (extrude,
+   inset, bevel, split, knife, bridge, cap) push a cloned material for each
+   new group and never added the matching finishes entry, and ops that DROP
+   a group renumber everything after it. updateMaterialEverywhere reads
+   `fin[gi] || 'standard'`, so a face with no entry silently belongs to the
+   Solid preset: it renders unmasked, and editing the material it visibly
+   wears does nothing to it. Re-applying the material by hand fixed it,
+   which is exactly how it was reported - "materials need re-applying to
+   reproject after a destructive op".
+
+   Measured on a cube wearing one masked material: extrude 6 groups -> 10
+   but 6 finishes, inset 6 -> 10 but 6, bevel 6 -> 7 but 6, delete 6 -> 5
+   groups against 6 stale entries. Subdivide and Collapse were already
+   right, which is why it looked intermittent.
+
+   So finishes is no longer maintained - it is DERIVED, here, from the one
+   thing every op already carries correctly: the material array. Each
+   material knows its own definition (applyFinish stamps it, and clones
+   inherit it), so a face grown from another face is born wearing the same
+   definition, and a renumber cannot shift anything. Groups whose material
+   has no stamp - a brand-new object, a scene saved before this - fall back
+   to the existing entry and get stamped, so old files heal on first edit
+   rather than losing their materials. */
+function reconcileFinishes(obj) {
+  const mesh = obj.mesh;
+  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  const groupCount = mesh.geometry.groups.length || 1;
+  const fin = mesh.userData.finishes || {};
+  const out = {};
+  for (let gi = 0; gi < groupCount; gi++) {
+    const m = mats[gi];
+    if (!m) continue;
+    if (!m.userData) m.userData = {};
+    const stamp = m.userData.kubikDef;
+    let id = stamp;
+    if (!MATERIALS.has(id)) id = fin[gi];         // pre-stamp material
+    if (!MATERIALS.has(id)) {
+      /* A stamp naming a definition the library no longer has means the
+         custom was DELETED while this face was wearing it. Skipping would
+         drop the entry and leave the face showing the dead definition -
+         colour, mask and all - forever, while the UI reported Solid. Put it
+         back on Solid instead, which restamps it and strips the mask. */
+      if (stamp !== undefined) applyFinish(m, 'standard');
+      if (!MATERIALS.has(m.userData.kubikDef)) continue;   // never wore one
+      id = m.userData.kubikDef;
+    }
+    out[gi] = id;
+    /* Dress only what actually moved or is new. applyFinish is the funnel
+       that also re-patches the mask on a fresh clone; running it over every
+       group on every rebuild would mean 1536 calls per slider tick on a
+       subdivided mesh. */
+    if (fin[gi] !== id || stamp !== id) applyFinish(m, id);
+  }
+  mesh.userData.finishes = out;
+  /* An id test cannot see whether a material is DRESSED. A clone landing at
+     an index that already held the same id passes every check above and is
+     still unpatched, because the patch lives in a module WeakSet that a
+     clone is not in. ensureMaskPatches is the thing that heals that; it used
+     to be reached only via refreshUI, so any path that edited and then saved,
+     exported or rendered without a refresh worked on undressed materials.
+     It is flag-guarded and idempotent, so calling it here costs a WeakSet
+     lookup per material and removes the ordering dependency. */
+  if (typeof ensureMaskPatches === 'function') ensureMaskPatches();
+}
+
 function rebuildFromEditable(obj, edIn) {
   const ed = separateGroupVertices(edIn);
   const geo = new THREE.BufferGeometry();
@@ -2302,6 +2398,9 @@ function rebuildFromEditable(obj, edIn) {
   disposeHelpersOnly(obj);
   obj.mesh.geometry.dispose();
   obj.mesh.geometry = geo;
+  // Every op in the app funnels through here, which is the only place that
+  // sees the finished group list and the finished material array together.
+  reconcileFinishes(obj);
   applyShading(obj);
 }
 
@@ -4139,8 +4238,12 @@ function bridgeFacesOp(obj, groupIndices, segments, curved) {
 
   ed.groups = keptGroups;
   mesh.material = keptMats;
+  /* The walls are clones of face A's material and carry its definition, and
+     reconcileFinishes derives the map from the materials now, so wiping
+     finishes here would only throw away what it is about to recover.
+     smoothGroups is still keyed by index with nothing to derive it from, so
+     that one stays cleared. */
   mesh.userData.smoothGroups = {};
-  mesh.userData.finishes = {};
   rebuildFromEditable(obj, ed);
   return { ok: true, count: walls.length };
 }
@@ -10355,6 +10458,7 @@ function restoreDoc(doc, opts = {}) {
   }
 
   if (!opts.keepAppearance) harvestLegacyMaterials();
+  stampFinishesOnMaterials();
 
   refreshUI();
   refreshGizmoAttachment();
