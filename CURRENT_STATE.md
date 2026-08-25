@@ -142,6 +142,37 @@ on 1541 groups fully creased, 160 ms at 6144 groups). The crosstest
 guess of "an effectively-unbounded cost in the crease-aware
 applyShading" was wrong about the mechanism and right about where.
 
+**FIXED a2.16d - a double-tapped run now JOINS the selection.** The
+loop / ring / path / face-strip double-tap was the ONLY non-additive
+selection path in the app: it did `App.selectedElements = sel`, a hard
+replace, while App.multiSelect is permanently true and every single tap
+and region select adds. So a second edge loop silently threw the first
+one away and two loops could never be held at once - which is exactly
+what Bridge needs, so its own house gesture could not feed it. User
+report, and correct.
+
+All four double-tap branches now go through `mergeRunIntoSelection(sel,
+tappedIndex, msg, noun)`: it ADDS the run, and takes it back OFF again
+if it was already selected, the way a single tap toggles one element.
+The first tap of the double-tap has already toggled the tapped element
+by the time the handler runs, so that one element is excluded from the
+"already selected?" test - without that a fully selected loop always
+looks one element short and can never be switched off.
+
+The near-miss fallback (thin edges, second tap lands a few pixels off)
+used to read `selectedElements.size === 1`, so it only ever worked on a
+virgin selection - with a loop already held, a near miss fell through to
+camera Focus. It now remembers the edge the last single tap picked, WITH
+its screen position, and reuses it only within 900 ms and 40 px, bounds
+-checked against the current edge count.
+
+Measured on a twice-subdivided cube: three loop gestures accumulate
+16 -> 32 -> 36 selected; repeating the first drops exactly that loop
+(36 -> 20) and leaves the others. Face strips 16 -> 30 -> 14 the same
+way. Known and accepted: a run that is entirely CONTAINED in a larger
+selection reads as "already selected" and drops - repeat the gesture to
+get it back.
+
 **KNOWN OPEN ISSUES (crosstest 2026-08-25, unverified findings in
 claude/crosstest-findings.md) - fix order as agreed:**
 1. DONE (a2.16b) - see above.

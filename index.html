@@ -693,7 +693,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.16c</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.16d</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1255,6 +1255,10 @@ const App = {
   selectedElements: new Set(), // logical vertex ids / edge indices / face-group indices, for activeObjectId
   edgeAnchor: null,      // edge selected by the previous single tap, for path selection
   edgeAnchorTime: 0,     // when that tap happened - a stale anchor is ignored
+  lastEdgePick: null,    // edge the last single tap landed on, for the near-miss
+  lastEdgePickTime: 0,   // second tap of a double-tap (edges are thin) -
+  lastEdgePickX: 0,      // with WHERE it was, so a double-tap that misses
+  lastEdgePickY: 0,      // entirely cannot borrow an unrelated earlier pick
   history: [],
   historyIndex: -1,
   pivot: null,            // temp pivot object for multi/element transforms
@@ -6854,6 +6858,7 @@ function setMode(mode) {
   if (mode !== 'object') App.lastComponentMode = mode;
   App.selectedElements.clear();
   App.edgeAnchor = null;
+  App.lastEdgePick = null;
   hideAllHelpers();
   hideRadialMenu();
   if (mode !== 'object') {
@@ -8403,6 +8408,7 @@ function switchToComponentType(newType) {
   App.lastComponentMode = newType;
   App.selectedElements.clear();
   App.edgeAnchor = null;
+  App.lastEdgePick = null;
   hideAllHelpers();
   const obj = findObject(App.activeObjectId);
   if (obj) setActiveObjectHelpersVisible(obj, newType);
@@ -9091,6 +9097,43 @@ function faceLoopSelectFromPoint(obj, startFace, localPoint) {
   return result;
 }
 
+/* A double-tapped loop, ring, strip or path JOINS what is already selected.
+
+   Every other selection path in the app is additive - App.multiSelect is
+   permanently on, and tapping empty space is how you clear - but this one
+   alone did `App.selectedElements = sel`, so double-tapping a second loop
+   silently threw the first one away and two loops could never be held at
+   once. Bridge needs exactly two runs, so its own house gesture could not
+   feed it.
+
+   Double-tapping a run that is ALREADY selected takes it back off again,
+   the way a single tap toggles one element. The first tap of the
+   double-tap has already toggled the tapped element by the time we get
+   here, so that one is left out of the "already selected?" test - without
+   that, a fully selected loop always looked one element short and could
+   never be switched off. */
+function mergeRunIntoSelection(sel, tappedIndex, msg, noun) {
+  // A copy, never the caller's own Set - selection is edited in place from
+  // half a dozen places and a shared reference is a trap waiting to be set.
+  if (!App.multiSelect) { App.selectedElements = new Set(sel); return msg; }
+  const before = App.selectedElements.size;
+  const rest = Array.from(sel).filter(i => i !== tappedIndex);
+  const already = sel.size > 1 && rest.length > 0 &&
+    rest.every(i => App.selectedElements.has(i));
+  if (already) {
+    sel.forEach(i => App.selectedElements.delete(i));
+    return 'Dropped ' + sel.size + ' ' + noun +
+      (App.selectedElements.size ? ' - ' + App.selectedElements.size + ' still selected' : '');
+  }
+  sel.forEach(i => App.selectedElements.add(i));
+  /* Count from what was there BEFORE, not from the set sizes: two runs that
+     share elements add up to less than the sum, and comparing sizes then
+     hides the total exactly when it is most confusing. */
+  return before > 1
+    ? msg + ' - ' + App.selectedElements.size + ' in all'
+    : msg;
+}
+
 function handleDoubleTap(ev) {
   // While an operation is being dialled in, a double-tap on empty space is the
   // cancel gesture.
@@ -9116,11 +9159,12 @@ function handleDoubleTap(ev) {
         if (gi >= 0) {
           const local = obj.mesh.worldToLocal(hits[0].point.clone());
           const sel = faceLoopSelectFromPoint(obj, gi, local);
-          App.selectedElements = sel;
+          let msg = sel.size > 1 ? 'Selected face loop (' + sel.size + ')' : 'No loop across this face';
+          msg = mergeRunIntoSelection(sel, gi, msg, 'faces');
           refreshElementColors(obj);
           refreshUI();
           refreshGizmoAttachment();
-          toast(sel.size > 1 ? 'Selected face loop (' + sel.size + ')' : 'No loop across this face');
+          toast(msg);
           return;
         }
       }
@@ -9132,11 +9176,18 @@ function handleDoubleTap(ev) {
     const obj = findObject(App.activeObjectId);
     let ei = obj ? pickEdgeOnActive(ev) : -1;
 
-    // Edges are thin, so the second tap of a double-tap easily lands a few
-    // pixels off. Rather than falling through to camera focus, reuse the edge
-    // the first tap just selected.
-    if (ei < 0 && obj && App.selectedElements.size === 1) {
-      ei = Array.from(App.selectedElements)[0];
+    /* Edges are thin, so the second tap of a double-tap easily lands a few
+       pixels off. Rather than falling through to camera focus, reuse the edge
+       the first tap landed on. This used to read `selectedElements.size === 1`
+       and so only worked on a virgin selection - with a loop already selected
+       the near miss fell through to Focus instead. */
+    if (ei < 0 && obj && App.lastEdgePick !== null &&
+        (performance.now() - App.lastEdgePickTime) < 900 &&
+        Math.hypot(ev.clientX - App.lastEdgePickX, ev.clientY - App.lastEdgePickY) < 40) {
+      ensureHelpers(obj);
+      // Every mesh edit renumbers the edges, so a remembered index can point
+      // past the end of the new topology.
+      if (App.lastEdgePick < obj.mesh.userData.topo.edges.length) ei = App.lastEdgePick;
     }
 
     if (ei >= 0 && obj) {
@@ -9165,7 +9216,7 @@ function handleDoubleTap(ev) {
         }
       }
 
-      App.selectedElements = sel;
+      msg = mergeRunIntoSelection(sel, ei, msg, 'edges');
       App.edgeAnchor = null;
       refreshElementColors(obj);
       refreshUI();
@@ -9241,6 +9292,10 @@ function handleTap(ev) {
       const prev = Array.from(App.selectedElements);
       App.edgeAnchor = (prev.length === 1 && prev[0] !== pick.index) ? prev[0] : null;
       App.edgeAnchorTime = performance.now();
+      App.lastEdgePick = pick.index;
+      App.lastEdgePickTime = App.edgeAnchorTime;
+      App.lastEdgePickX = ev.clientX;
+      App.lastEdgePickY = ev.clientY;
     } else {
       App.edgeAnchor = null;
     }
