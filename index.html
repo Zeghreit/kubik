@@ -693,7 +693,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.16</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.16a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1695,24 +1695,37 @@ function rebakeMaskTexture(d) {
   if (t) { t.image = bakeMaskCanvas(d.masks.color); t.needsUpdate = true; }
 }
 
+/* Patch state lives OUTSIDE the material: userData gets JSON-copied by
+   Material.clone, which handed clones a truthy 'patched' flag plus a dead
+   serialized uniform snapshot - the self-heal walk then believed them
+   healthy while editing them threw (QA findings 3 and 6, with a
+   Texture-serialize warning storm as the tell). A WeakSet/WeakMap can't
+   travel through clone, so a clone starts honestly unpatched. */
+const _maskedMats = new WeakSet();
+const _maskUniforms = new WeakMap();
+let _maskGen = 1;
+
 function applyMaskPatch(mat, d) {
+  // Scrub what clones may have JSON-copied from older builds.
+  delete mat.userData.kubikMasked;
+  delete mat.userData.kubikMaskU;
   const mk = maskOf(d);
   if (!mk) {
-    if (mat.userData.kubikMasked) {
+    if (_maskedMats.has(mat)) {
+      _maskedMats.delete(mat);
+      _maskUniforms.delete(mat);
       mat.onBeforeCompile = function () {};
       mat.customProgramCacheKey = function () { return ''; };
-      mat.userData.kubikMasked = false;
-      delete mat.userData.kubikMaskU;
       mat.needsUpdate = true;
     }
     return;
   }
   const tex = getMaskTexture(d);
-  if (mat.userData.kubikMasked) {
+  if (_maskedMats.has(mat)) {
     // Already patched: refresh uniforms only - no recompile. (A material
     // that hasn't rendered yet has no uniforms; its compile closure reads
     // the live definition, so it comes up correct anyway.)
-    const u = mat.userData.kubikMaskU;
+    const u = _maskUniforms.get(mat);
     if (u) {
       u.uKubikMask.value = tex;
       u.uKubikMaskColor.value.set(mk.color);
@@ -1721,13 +1734,14 @@ function applyMaskPatch(mat, d) {
     }
     return;
   }
-  mat.userData.kubikMasked = true;
+  _maskedMats.add(mat);
+  const gen = mk.gen || 0;
   mat.onBeforeCompile = function (shader) {
     shader.uniforms.uKubikMask = { value: tex };
     shader.uniforms.uKubikMaskColor = { value: new THREE.Color(mk.color) };
     shader.uniforms.uKubikMaskAmount = { value: mk.amount };
     shader.uniforms.uKubikMaskScale = { value: mk.scale };
-    mat.userData.kubikMaskU = shader.uniforms;
+    _maskUniforms.set(mat, shader.uniforms);
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vKubikPos;\nvarying vec3 vKubikNrm;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\nvKubikPos = position;\nvKubikNrm = normal;');
@@ -1753,7 +1767,15 @@ function applyMaskPatch(mat, d) {
         '  diffuseColor.rgb = mix(diffuseColor.rgb, uKubikMaskColor, kubikW * uKubikMaskAmount);',
         '}'].join('\n'));
   };
-  mat.customProgramCacheKey = function () { return 'kubik-colormask'; };
+  /* Cache-key discipline (QA finding 1/2): three runs onBeforeCompile only
+     when this MATERIAL holds no program under the key yet. A constant key
+     let a re-masked material silently reuse its stale program - its mask
+     uniforms were orphaned, sliders froze, and the GPU kept whichever
+     values the last-drawn masked material uploaded (visible corruption).
+     Key = definition id + generation: wearers of one definition still
+     share one compiled program, and bumping the generation on re-enable
+     forces every wearer through a fresh onBeforeCompile. */
+  mat.customProgramCacheKey = function () { return 'kubik-colormask:' + d.id + ':' + gen; };
   mat.needsUpdate = true;
 }
 
@@ -1767,7 +1789,7 @@ function ensureMaskPatches() {
     const fin = o.mesh.userData.finishes || {};
     mats.forEach((m, gi) => {
       const d = getMaterialDef(fin[gi] || 'standard');
-      if (!!maskOf(d) !== !!m.userData.kubikMasked) applyMaskPatch(m, d);
+      if (!!maskOf(d) !== _maskedMats.has(m)) applyMaskPatch(m, d);
     });
   });
 }
@@ -4187,6 +4209,7 @@ function buildFilletedMesh(obj, radius, segments, profile) {
   const srcMats = Array.isArray(src.material) ? src.material : [src.material];
   const temp = new THREE.Mesh(src.geometry.clone(), srcMats.map(m => m.clone()));
   temp.userData.smoothGroups = { ...(src.userData.smoothGroups || {}) };
+  temp.userData.finishes = { ...(src.userData.finishes || {}) };
   const wrapper = { id: -1, name: 'fillet', mesh: temp };
 
   try {
@@ -4197,6 +4220,12 @@ function buildFilletedMesh(obj, radius, segments, profile) {
     console.error('fillet preview failed', err);
     return null;
   }
+  /* The clones (and whatever bevelEdgesOp renumbered) lost the mask
+     compile patch - the preview rendered maskless (QA finding 4).
+     Re-dress every final material from its finishes entry. */
+  const pmats = Array.isArray(temp.material) ? temp.material : [temp.material];
+  const pfin = temp.userData.finishes || {};
+  pmats.forEach((m, gi) => applyFinish(m, pfin[gi] || 'standard'));
   return temp;
 }
 
@@ -9178,6 +9207,11 @@ function handleTap(ev) {
    per object everywhere else. The choice is recorded per face group so it
    survives rebuilds, save/load and undo. */
 function applyFinishToSelection(name) {
+  /* Re-applying a masked definition can land on materials that wore this
+     very definition earlier in the session; a fresh generation keeps their
+     per-material program cache from resurrecting a stale patch. */
+  const _md = getMaterialDef(name);
+  if (_md.masks && _md.masks.color && _md.masks.color.on) _md.masks.color.gen = _maskGen++;
   const setOn = (obj, groupIndices) => {
     if (!obj.mesh.userData.finishes) obj.mesh.userData.finishes = {};
     const mats = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
@@ -10054,12 +10088,14 @@ function undo() {
   if (App.historyIndex <= 0) return;
   App.historyIndex--;
   restoreDoc(App.history[App.historyIndex], { keepAppearance: true, keepSelection: true });
+  scheduleAutosave();   // or a reload resurrects the edit that was just undone
 }
 function redo() {
   if (App.pendingOp) { App.pendingOp = null; hideOpBar(); }
   if (App.historyIndex >= App.history.length - 1) return;
   App.historyIndex++;
   restoreDoc(App.history[App.historyIndex], { keepAppearance: true, keepSelection: true });
+  scheduleAutosave();
 }
 
 document.getElementById('btnUndo').addEventListener('click', undo);
@@ -11100,6 +11136,7 @@ document.getElementById('meReset').addEventListener('click', () => {
   const d = getMaterialDef(matEditingId);
   if (!d || !d.preset) return;
   Object.assign(d, MATERIAL_DEFAULTS[d.id]);
+  delete d.masks;   // Object.assign can't remove the added key (QA finding 5)
   updateMaterialEverywhere(d.id);
   saveMaterialLibrary();
   toast('Reset to default');
@@ -11134,6 +11171,7 @@ document.getElementById('meMaskToggle').addEventListener('click', () => {
   if (!d.masks) d.masks = {};
   if (!d.masks.color) d.masks.color = Object.assign({}, MASK_DEFAULT, { seed: 1 + (nextMaterialNum * 7919) % 1000 });
   else d.masks.color.on = !d.masks.color.on;
+  if (d.masks.color.on) d.masks.color.gen = _maskGen++;   // fresh programs for every wearer (see applyMaskPatch)
   rebakeMaskTexture(d);
   updateMaterialEverywhere(d.id);
   saveMaterialLibrary();
@@ -12004,6 +12042,7 @@ if (PICK_DEBUG) {
     MATERIALS, getMaterialDef, updateMaterialEverywhere, saveMaterialLibrary,
     harvestLegacyMaterials, applyFinishToSelection,
     applyMaskPatch, ensureMaskPatches, rebakeMaskTexture, bakeMaskCanvas,
+    isMaskPatched: (m) => _maskedMats.has(m),
     bloomToolRing, updateToolRingHover, closeToolRing, placeRingLabel,
     currentHubTools, HUB_TOOLS_WORLD,
     /* The pickers, callable with a plain {clientX, clientY}. Driving these
