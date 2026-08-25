@@ -693,7 +693,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.15</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.16</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1915,7 +1915,7 @@ function applyShading(obj) {
   try {
     const posAttr = geo.attributes.position;
     const index = geo.index;
-    const { logicalOf } = computeLogicalOf(posAttr);
+    const { logicalOf, logicalGroups } = computeLogicalOf(posAttr);
     const groupsSrc = geo.groups.length ? geo.groups : [{ start: 0, count: index.count, materialIndex: 0 }];
     const triCount = index.count / 3;
 
@@ -1944,6 +1944,73 @@ function applyShading(obj) {
       });
     }
 
+    /* Creased edges are HARD in shading, not just through Subdivide: at a
+       vertex, a smooth normal averages only over the fan of faces
+       reachable without crossing a creased edge. Faces on opposite sides
+       of the crease each keep their own normal, so a creased loop reads
+       as ONE sharp line on an otherwise smooth surface - and nothing
+       around it hardens. The crease map is keyed by position (posKey), so
+       this survives every rebuild the same way Subdivide's use does. */
+    const creases = obj.mesh.userData.creases || {};
+    let clusterAt = null;   // "l_g" -> island id; built only when creases exist
+    if (Object.keys(creases).length) {
+      const edgeGroups = new Map();   // logical edge key -> Set of face groups
+      for (let t = 0; t < triCount; t++) {
+        const ia = index.getX(t * 3), ib = index.getX(t * 3 + 1), ic = index.getX(t * 3 + 2);
+        const ls = [logicalOf[ia], logicalOf[ib], logicalOf[ic]];
+        for (let e = 0; e < 3; e++) {
+          const a = ls[e], b = ls[(e + 1) % 3];
+          if (a === b) continue;
+          const k = a < b ? a + '_' + b : b + '_' + a;
+          if (!edgeGroups.has(k)) edgeGroups.set(k, new Set());
+          edgeGroups.get(k).add(triGroup[t]);
+        }
+      }
+      const pA = new THREE.Vector3(), pB = new THREE.Vector3();
+      const adj = new Map();   // l -> Map(group -> Set(neighbour groups))
+      edgeGroups.forEach((gs, k) => {
+        const parts = k.split('_');
+        const a = +parts[0], b = +parts[1];
+        pA.fromBufferAttribute(posAttr, logicalGroups[a][0]);
+        pB.fromBufferAttribute(posAttr, logicalGroups[b][0]);
+        if (creases[creaseKeyFor(pA, pB)]) return;   // hard edge: no bridge
+        const list = Array.from(gs);
+        if (list.length < 2) return;
+        [a, b].forEach(l => {
+          if (!adj.has(l)) adj.set(l, new Map());
+          const m = adj.get(l);
+          list.forEach(g => { if (!m.has(g)) m.set(g, new Set()); });
+          for (let i = 1; i < list.length; i++) {
+            m.get(list[0]).add(list[i]);
+            m.get(list[i]).add(list[0]);
+          }
+        });
+      });
+      clusterAt = new Map();
+      logicalTris.forEach((tris, l) => {
+        const m = adj.get(l);
+        const here = new Set();
+        tris.forEach(t => here.add(triGroup[t]));
+        let cid = 0;
+        here.forEach(g => {
+          if (clusterAt.has(l + '_' + g)) return;
+          cid++;
+          const tag = l + '#' + cid;
+          const stack = [g];
+          clusterAt.set(l + '_' + g, tag);
+          while (stack.length) {
+            const nbrs = m && m.get(stack.pop());
+            if (nbrs) nbrs.forEach(n => {
+              if (here.has(n) && !clusterAt.has(l + '_' + n)) {
+                clusterAt.set(l + '_' + n, tag);
+                stack.push(n);
+              }
+            });
+          }
+        });
+      });
+    }
+
     const normals = geo.attributes.normal.array;
     const acc = new THREE.Vector3();
     for (let t = 0; t < triCount; t++) {
@@ -1951,8 +2018,16 @@ function applyShading(obj) {
       const isSmooth = !!smooth[triGroup[t]];
       if (!isSmooth) continue; // leave computeVertexNormals' flat result in place
       [ia, ib, ic].forEach(ai => {
+        const l = logicalOf[ai];
         acc.set(0, 0, 0);
-        logicalTris.get(logicalOf[ai]).forEach(t2 => acc.add(triNormal[t2]));
+        if (clusterAt) {
+          const mine = clusterAt.get(l + '_' + triGroup[t]);
+          logicalTris.get(l).forEach(t2 => {
+            if (clusterAt.get(l + '_' + triGroup[t2]) === mine) acc.add(triNormal[t2]);
+          });
+        } else {
+          logicalTris.get(l).forEach(t2 => acc.add(triNormal[t2]));
+        }
         if (acc.lengthSq() > 1e-12) acc.normalize();
         normals[ai * 3] = acc.x; normals[ai * 3 + 1] = acc.y; normals[ai * 3 + 2] = acc.z;
       });
@@ -1995,6 +2070,17 @@ function faceGroupsForShadingTarget(obj) {
 }
 
 function shadeSelection(smooth) {
+  if (App.mode === 'edge') {
+    /* Hard shading on edges means the EDGES go sharp - not every face
+       group that happens to touch them, which hardened whole rings and
+       was the complaint. Flat creases the selected edges (one sharp line
+       across a smooth surface); smooth un-creases them. Face flags stay
+       untouched. Same map Subdivide honours, so a sharp edge is sharp
+       everywhere. creaseSelection guards, mirrors, toasts and pushes
+       history itself. */
+    creaseSelection(!smooth);
+    return;
+  }
   if (App.mode === 'object') {
     const ids = Array.from(App.selectedObjectIds);
     if (!ids.length) { toast('Select an object first'); return; }
@@ -6224,6 +6310,7 @@ function creaseSelection(on) {
     n++;
   });
 
+  applyShading(obj);   // creases shape smooth normals now, not just Subdivide
   refreshElementColors(obj);
   hideRadialMenu();
   refreshUI();
@@ -6237,6 +6324,7 @@ function clearAllCreases() {
   if (!obj) { toast('Select an object first'); return; }
   obj.mesh.userData.creases = {};
   ensureHelpers(obj);
+  applyShading(obj);
   refreshElementColors(obj);
   refreshUI();
   pushHistory();
@@ -11186,9 +11274,9 @@ HELP_SECTIONS.push(
       ['grow', 'Grow', 'Widens the selection to everything touching it.'],
       [null, 'View cube', 'Tap a dot on the cube in the top-right corner and the camera swings to that view and goes orthographic - flat, no perspective, for lining things up. Orbit by hand and perspective comes back.'],
       ['shrink', 'Shrink', 'Pulls the selection back in from its border.'],
-      ['crease', 'Crease', 'Marks an edge to stay sharp when the surface is smoothed. Uncrease takes it back.'],
+      ['crease', 'Crease', 'Marks an edge sharp: it stays a hard line on a smooth-shaded surface and through Subdivide. Uncrease takes it back.'],
       ['flipnorm', 'Flip normals', 'Turns the selected faces inside out.'],
-      ['shade', 'Shade', 'Flat or smooth shading for the selected faces.'],
+      ['shade', 'Shade', 'Flat or smooth shading for the selected faces. In Edge mode it works on the edges themselves: flat marks the selected edges sharp, smooth unmarks them - the surrounding faces keep their own shading.'],
       [null, 'Delete, faces', 'Cuts the faces away and leaves a hole. This is how you make one.'],
       ['del', 'Delete, vertices and edges', 'DISSOLVES rather than cuts: the faces close over what was removed instead of going with it. Dissolving an edge merges the two faces it separated; dissolving a vertex merges the ring of faces around it. The vertices inside a dissolved run go too - the two ends of a partial run stay, since they still join edges that survive.']
     ]
