@@ -396,6 +396,23 @@
     border-radius: var(--r-sm); background: var(--panel2); padding: 2px;
   }
   #matEditor .me-row { display: flex; gap: 6px; }
+  .mk-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+  .mk-chips button {
+    min-height: 28px; min-width: 28px; padding: 0 6px; font-size: 11px;
+    justify-content: center; border-radius: var(--r-sm);
+  }
+  .mk-chips button.active { border-color: var(--accent); color: var(--accent); }
+  /* An off mask keeps its seat in the row - you can see it is there and
+     switched off, rather than wondering where it went. */
+  .mk-chips button.muted { opacity: .45; }
+  .mk-blends { display: flex; gap: 4px; flex-wrap: wrap; }
+  .mk-blends button {
+    flex: 1 1 44%; min-height: 28px; padding: 0 4px; font-size: 11px;
+    justify-content: center; border-radius: var(--r-sm);
+  }
+  .mk-blends button.active { border-color: var(--accent); color: var(--accent); }
+  .mk-check { display: flex; align-items: center; gap: 6px; text-transform: none; letter-spacing: 0; }
+  .mk-check input { margin: 0; }
   #matEditor .me-row button { flex: 1; min-height: 34px; padding: 4px 6px; font-size: 12px; justify-content: center; }
   .drawer-head {
     display: flex; align-items: center; justify-content: space-between;
@@ -701,7 +718,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.19b</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.20</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -783,19 +800,26 @@
         <input type="range" id="meMetal" min="0" max="1" step="0.01">
         <label>Roughness <span id="meRoughV"></span></label>
         <input type="range" id="meRough" min="0" max="1" step="0.01">
-        <button id="meMaskToggle" class="small">Colour mask: off</button>
+        <label>Masks</label>
+        <!-- One row of chips picks WHICH mask you are editing, and one set of
+             controls edits it. Four masks' worth of controls stacked in a
+             176px column would be a scroll from the first mask to the last. -->
+        <div id="mkChips" class="mk-chips"></div>
         <div id="meMask" style="display:none; flex-direction:column; gap:8px;">
-          <label>Mask colour</label>
+          <div id="mkBlendRow" class="mk-blends"></div>
+          <label class="mk-check"><input type="checkbox" id="mkColorOn"> Colour</label>
           <input type="color" id="mkColor">
+          <label class="mk-check"><input type="checkbox" id="mkRoughOn"> Roughness <span id="mkRoughV"></span></label>
+          <input type="range" id="mkRough" min="0" max="1" step="0.01">
           <label>Amount <span id="mkAmountV"></span></label>
           <input type="range" id="mkAmount" min="0" max="1" step="0.01">
           <label>Scale <span id="mkScaleV"></span></label>
-          <input type="range" id="mkScale" min="0.25" max="8" step="0.25">
+          <input type="range" id="mkScale" min="0.25" max="20" step="0.25">
           <label>Detail <span id="mkDetailV"></span></label>
           <input type="range" id="mkDetail" min="1" max="5" step="1">
           <label>Contrast <span id="mkContrastV"></span></label>
           <input type="range" id="mkContrast" min="0.5" max="3" step="0.1">
-          <button id="mkSeed" class="small">New pattern</button>
+          <div class="me-row"><button id="mkSeed" class="small">New pattern</button><button id="mkDelete" class="small danger">Remove</button></div>
         </div>
         <div class="me-row"><button id="meReset">Reset</button><button id="meDelete" class="danger">Delete</button></div>
         <div class="me-row"><button id="meDone">Done</button></div>
@@ -1530,7 +1554,7 @@ let nextMaterialNum = 1;
 const MATLIB_KEY = 'kubik.materials.v1';
 
 function getMaterialDef(id) {
-  return MATERIALS.get(id) || MATERIALS.get('standard');
+  return normaliseDefMasks(MATERIALS.get(id) || MATERIALS.get('standard'));
 }
 
 // Numeric hex for three.js; null follows the theme.
@@ -1556,12 +1580,13 @@ function loadMaterialLibrary() {
 
 function saveMaterialLibrary() {
   const customs = [], presetOverrides = {};
-  MATERIALS.forEach(d => {
+  MATERIALS.forEach(_d => {
+    const d = normaliseDefMasks(_d);   // legacy shape, read before it is judged
     if (!d.preset) { customs.push(d); return; }
     const base = MATERIAL_DEFAULTS[d.id];
     if (d.color !== base.color || d.roughness !== base.roughness ||
         d.metalness !== base.metalness || d.envMapIntensity !== base.envMapIntensity ||
-        d.name !== base.name || d.masks) {
+        d.name !== base.name || (d.masks && d.masks.length)) {
       presetOverrides[d.id] = { name: d.name, color: d.color, roughness: d.roughness,
         metalness: d.metalness, envMapIntensity: d.envMapIntensity, masks: d.masks };
     }
@@ -1681,7 +1706,28 @@ function updateMaterialEverywhere(id) {
    on or off: colour/amount/scale ride uniforms, detail/contrast/seed
    re-bake the shared texture in place. */
 
-const MASK_DEFAULT = { on: true, type: 'fbm', color: '#7a4a20', amount: 0.7, scale: 2, detail: 3, contrast: 1.4, seed: 1 };
+/* A material carries a STACK of up to MASK_SLOTS masks. Each one has its
+   own noise, its own scale, and two independent components - a colour and a
+   roughness - either of which can be off, so one pattern can tint without
+   touching roughness, roughen without touching colour, or do both. Each also
+   has a blend mode saying how it meets what is under it.
+
+   WHY FOUR, AND WHY ONE TEXTURE. All four masks bake into the four channels
+   of ONE RGBA texture: mask 0 in red, 1 in green, 2 in blue, 3 in alpha.
+   That is one texture and one bake per material however many masks it uses,
+   instead of four of each. It is a DataTexture rather than a CanvasTexture
+   for a specific reason: a canvas is PREMULTIPLIED, so anything stored in
+   its alpha channel corrupts the other three on read - which would have cost
+   us the fourth slot. */
+const MASK_SLOTS = 4;
+const MASK_BLENDS = ['normal', 'multiply', 'screen', 'overlay'];
+const MASK_SIZE = 128;
+const MASK_DEFAULT = {
+  on: true, type: 'fbm', blend: 'normal',
+  colorOn: true, color: '#7a4a20',
+  roughOn: false, rough: 0.25,
+  amount: 0.7, scale: 2, detail: 3, contrast: 1.4, seed: 1
+};
 const _maskTex = new Map();   // material id -> CanvasTexture
 
 // Small deterministic PRNG - a seed always bakes the same cloth.
@@ -1694,15 +1740,46 @@ function mulberry32(a) {
   };
 }
 
-/* Tileable value-noise FBM: each octave interpolates a PERIODIC random
-   lattice, so the tile wraps seamlessly and the triplanar repeat shows
-   no seams. 128px is plenty for a 26px-to-fullscreen range of scales. */
-function bakeMaskCanvas(mk) {
-  const size = 128, base = 8;
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = size;
-  const ctx = cv.getContext('2d');
-  const img = ctx.createImageData(size, size);
+
+
+/* Before a2.20 a definition had at most ONE mask, stored as
+   `masks: { color: {...} }`. Now `masks` is an array. Every read goes
+   through getMaterialDef, so normalising there converts old library entries
+   and old project files the first time anything touches them, and costs an
+   Array.isArray on the way past after that. */
+function normaliseDefMasks(d) {
+  if (!d || Array.isArray(d.masks)) return d;
+  if (d.masks && d.masks.color) {
+    const legacy = d.masks.color;
+    d.masks = [Object.assign({}, MASK_DEFAULT, legacy,
+      { colorOn: true, roughOn: false, blend: 'normal' })];
+  } else if (d.masks) {
+    d.masks = [];
+  }
+  return d;
+}
+
+// The masks that actually paint, in stack order. Never longer than MASK_SLOTS.
+function maskList(d) {
+  if (!d || !Array.isArray(d.masks)) return [];
+  return d.masks.slice(0, MASK_SLOTS);
+}
+
+// Does this definition need the shader patch at all?
+function maskOf(d) {
+  const list = maskList(d);
+  for (let i = 0; i < list.length; i++) {
+    const mk = list[i];
+    if (mk && mk.on && (mk.colorOn || mk.roughOn)) return mk;
+  }
+  return null;
+}
+
+/* One noise field, 0..1, as a plain Float32Array. Split out of the baker so
+   that a2.21 can switch on mk.type without touching the packing. */
+function bakeNoiseField(mk, size) {
+  const out = new Float32Array(size * size);
+  const base = 8;
   const octaves = Math.max(1, Math.round(mk.detail));
   const lattices = [];
   for (let o = 0; o < octaves; o++) {
@@ -1727,35 +1804,50 @@ function bakeMaskCanvas(mk) {
         norm += amp; amp *= 0.55;
       }
       v /= norm;
-      v = Math.min(1, Math.max(0, (v - 0.5) * mk.contrast + 0.5));
-      const i = (y * size + x) * 4, g = Math.round(v * 255);
-      img.data[i] = img.data[i + 1] = img.data[i + 2] = g;
-      img.data[i + 3] = 255;
+      out[y * size + x] = Math.min(1, Math.max(0, (v - 0.5) * mk.contrast + 0.5));
     }
   }
-  ctx.putImageData(img, 0, 0);
-  return cv;
+  return out;
 }
 
-function maskOf(d) {
-  return d.masks && d.masks.color && d.masks.color.on ? d.masks.color : null;
+// The whole stack packed into one RGBA buffer, one mask per channel.
+function bakeMaskPacked(d) {
+  const size = MASK_SIZE;
+  const data = new Uint8Array(size * size * 4);
+  const list = maskList(d);
+  for (let i = 0; i < MASK_SLOTS; i++) {
+    const mk = list[i];
+    if (!mk || !mk.on) continue;   // an off mask leaves its channel at zero
+    const field = bakeNoiseField(mk, size);
+    for (let p = 0; p < size * size; p++) data[p * 4 + i] = Math.round(field[p] * 255);
+  }
+  return data;
 }
 
 function getMaskTexture(d) {
   let t = _maskTex.get(d.id);
   if (!t) {
-    t = new THREE.CanvasTexture(bakeMaskCanvas(d.masks.color));
+    t = new THREE.DataTexture(bakeMaskPacked(d), MASK_SIZE, MASK_SIZE, THREE.RGBAFormat);
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    // DataTexture defaults to NearestFilter and no mipmaps, which on a
+    // pattern this small reads as aliased confetti at any distance.
+    t.magFilter = THREE.LinearFilter;
+    t.minFilter = THREE.LinearMipmapLinearFilter;
+    t.generateMipmaps = true;
+    t.needsUpdate = true;
     _maskTex.set(d.id, t);
   }
   return t;
 }
 
-// Re-bake IN PLACE: every wearer and every preview sees the new cloth
-// without a single shader recompile.
+/* Re-bake IN PLACE: every wearer and every preview sees the new cloth with
+   no shader recompile. The buffer is written through rather than replaced,
+   so the texture object - and every uniform pointing at it - stays valid. */
 function rebakeMaskTexture(d) {
   const t = _maskTex.get(d.id);
-  if (t) { t.image = bakeMaskCanvas(d.masks.color); t.needsUpdate = true; }
+  if (!t) return;
+  t.image.data.set(bakeMaskPacked(d));
+  t.needsUpdate = true;
 }
 
 /* Patch state lives OUTSIDE the material: userData gets JSON-copied by
@@ -1765,8 +1857,46 @@ function rebakeMaskTexture(d) {
    Texture-serialize warning storm as the tell). A WeakSet/WeakMap can't
    travel through clone, so a clone starts honestly unpatched. */
 const _maskedMats = new WeakSet();
+/* mat -> Map(cache key -> that program's uniforms).
+
+   Keyed by the CACHE KEY, not just by the material, because three keeps a
+   program per key per material and runs onBeforeCompile only on a miss. A
+   single slot per material meant that a material which had been through
+   another definition in between came back to a program three still had
+   cached, skipped onBeforeCompile, and left us writing into uniforms
+   nothing was reading. That is what froze the material previews: the shared
+   preview material walks the whole library on every render, so it is
+   forever leaving and returning to the same key. */
 const _maskUniforms = new WeakMap();
+const _maskKey = new WeakMap();   // mat -> the key it should compile under now
 let _maskGen = 1;
+
+function maskUniStore(mat) {
+  let m = _maskUniforms.get(mat);
+  if (!m) { m = new Map(); _maskUniforms.set(mat, m); }
+  return m;
+}
+
+/* THE GENERATION IS PER DEFINITION, and it is what makes LAW 1 work.
+
+   The key is 'kubik-colormask:' + def id + ':' + generation. Per DEFINITION
+   so that every material wearing one definition shares a single compiled
+   program - a subdivided mesh has one material per face and would otherwise
+   compile hundreds. Plus a GENERATION so the key is never constant: three
+   runs onBeforeCompile only when the material holds no program under the
+   key, so after a mask is switched off and on again the material would
+   otherwise reuse the program it already had, with the uniform objects that
+   program captured - orphaned from anything we later write to.
+
+   That is exactly what happened while building a2.20: the stack rewrite
+   captured `_maskGen` without ever advancing it, and every mask
+   configuration rendered identically because the first compiled program was
+   the only one that ever ran. Bump this on any STRUCTURAL change - a mask
+   added, removed, or switched on or off, or a component toggled. Slider
+   ticks must NOT bump it; they ride the uniforms. */
+function bumpMaskGen(d) {
+  if (d) d.maskGen = _maskGen++;
+}
 
 function applyMaskPatch(mat, d) {
   // Scrub what clones may have JSON-copied from older builds.
@@ -1776,35 +1906,97 @@ function applyMaskPatch(mat, d) {
   if (!mk) {
     if (_maskedMats.has(mat)) {
       _maskedMats.delete(mat);
-      _maskUniforms.delete(mat);
+      _maskKey.delete(mat);
+      /* The uniform store STAYS. Those uniform objects belong to programs
+         three has not thrown away, and this material may well come back to
+         one of them - which is exactly the case that used to break. */
       mat.onBeforeCompile = function () {};
-      mat.customProgramCacheKey = function () { return ''; };
+      delete mat.customProgramCacheKey;   // back to three's default, not a constant of ours
       mat.needsUpdate = true;
     }
     return;
   }
   const tex = getMaskTexture(d);
-  if (_maskedMats.has(mat)) {
-    // Already patched: refresh uniforms only - no recompile. (A material
-    // that hasn't rendered yet has no uniforms; its compile closure reads
-    // the live definition, so it comes up correct anyway.)
-    const u = _maskUniforms.get(mat);
-    if (u) {
-      u.uKubikMask.value = tex;
-      u.uKubikMaskColor.value.set(mk.color);
-      u.uKubikMaskAmount.value = mk.amount;
-      u.uKubikMaskScale.value = mk.scale;
+
+  /* Everything about the stack rides UNIFORMS - how many masks, which
+     components each drives, its blend mode, colour, roughness, amount and
+     scale. The shader source is the same for one mask as for four, so
+     adding a mask, turning a component off or changing a blend mode costs
+     no recompile at all. The only thing that still needs one is crossing
+     between "no patch" and "a patch", which is what applyMaskPatch's two
+     branches are. */
+  const packUniforms = () => {
+    const list = maskList(d);
+    const u = {
+      uKubikMask: { value: tex },
+      uKubikCount: { value: 0 },
+      uKubikColor: { value: [] },
+      uKubikAmount: { value: [] },
+      uKubikScale: { value: [] },
+      uKubikBlend: { value: [] },
+      uKubikColorOn: { value: [] },
+      uKubikRoughOn: { value: [] },
+      uKubikRough: { value: [] }
+    };
+    for (let k = 0; k < MASK_SLOTS; k++) {
+      const mk = list[k];
+      const live = !!(mk && mk.on && (mk.colorOn || mk.roughOn));
+      u.uKubikColor.value.push(new THREE.Color(mk && mk.color ? mk.color : '#ffffff'));
+      u.uKubikAmount.value.push(live ? mk.amount : 0);
+      u.uKubikScale.value.push(mk && mk.scale ? mk.scale : 1);
+      u.uKubikBlend.value.push(mk ? Math.max(0, MASK_BLENDS.indexOf(mk.blend || 'normal')) : 0);
+      u.uKubikColorOn.value.push(live && mk.colorOn ? 1 : 0);
+      u.uKubikRoughOn.value.push(live && mk.roughOn ? 1 : 0);
+      u.uKubikRough.value.push(mk && typeof mk.rough === 'number' ? mk.rough : 0.5);
+      if (live) u.uKubikCount.value = k + 1;   // highest live slot, so the loop can stop
     }
-    return;
-  }
+    return u;
+  };
+
+  const refresh = (u) => {
+    const fresh = packUniforms();
+    // Written INTO the existing uniform objects - replacing them would
+    // orphan the ones the compiled program is holding.
+    u.uKubikMask.value = tex;
+    u.uKubikCount.value = fresh.uKubikCount.value;
+    for (let k = 0; k < MASK_SLOTS; k++) {
+      u.uKubikColor.value[k].copy(fresh.uKubikColor.value[k]);
+      u.uKubikAmount.value[k] = fresh.uKubikAmount.value[k];
+      u.uKubikScale.value[k] = fresh.uKubikScale.value[k];
+      u.uKubikBlend.value[k] = fresh.uKubikBlend.value[k];
+      u.uKubikColorOn.value[k] = fresh.uKubikColorOn.value[k];
+      u.uKubikRoughOn.value[k] = fresh.uKubikRoughOn.value[k];
+      u.uKubikRough.value[k] = fresh.uKubikRough.value[k];
+    }
+  };
+
+  if (!d.maskGen) bumpMaskGen(d);   // first wearer of a never-patched definition
+  let key = 'kubik-colormask:' + d.id + ':' + d.maskGen;
+  const wasPatched = _maskedMats.has(mat);
+  const keyChanged = _maskKey.get(mat) !== key;
+  /* THE ONE THING THREE WILL NOT DO FOR US. It keeps a program per key per
+     material and, on a HIT, hands the program back without re-running
+     onBeforeCompile AND without repointing materialProperties.uniforms -
+     which still names whichever program compiled last. So a material coming
+     BACK to a key it once compiled under renders from another program's
+     uniform objects, and every slider we move writes into thin air. A fresh
+     generation is the only thing that guarantees the miss. */
+  if (keyChanged && maskUniStore(mat).has(key)) key += '#' + (_maskGen++);
   _maskedMats.add(mat);
-  const gen = mk.gen || 0;
+  _maskKey.set(mat, key);
+
+  /* Whether three compiles or reuses, the uniforms this material will
+     actually render with are the ones filed under this key - so write the
+     current stack into them either way. On a compile onBeforeCompile files
+     a fresh set a moment later; on a reuse this is the only chance. */
+  const known = maskUniStore(mat).get(key);
+  if (known && known.uKubikCount) refresh(known);
+
+  if (wasPatched && !keyChanged) return;   // a slider tick: no recompile
+
   mat.onBeforeCompile = function (shader) {
-    shader.uniforms.uKubikMask = { value: tex };
-    shader.uniforms.uKubikMaskColor = { value: new THREE.Color(mk.color) };
-    shader.uniforms.uKubikMaskAmount = { value: mk.amount };
-    shader.uniforms.uKubikMaskScale = { value: mk.scale };
-    _maskUniforms.set(mat, shader.uniforms);
+    Object.assign(shader.uniforms, packUniforms());
+    maskUniStore(mat).set(key, shader.uniforms);
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vKubikPos;\nvarying vec3 vKubikNrm;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\nvKubikPos = position;\nvKubikNrm = normal;');
@@ -1813,32 +2005,87 @@ function applyMaskPatch(mat, d) {
         'varying vec3 vKubikPos;',
         'varying vec3 vKubikNrm;',
         'uniform sampler2D uKubikMask;',
-        'uniform vec3 uKubikMaskColor;',
-        'uniform float uKubikMaskAmount;',
-        'uniform float uKubikMaskScale;',
-        'float kubikTriplanar(vec3 p, vec3 n) {',
+        'uniform int   uKubikCount;',
+        'uniform vec3  uKubikColor[' + MASK_SLOTS + '];',
+        'uniform float uKubikAmount[' + MASK_SLOTS + '];',
+        'uniform float uKubikScale[' + MASK_SLOTS + '];',
+        'uniform int   uKubikBlend[' + MASK_SLOTS + '];',
+        'uniform float uKubikColorOn[' + MASK_SLOTS + '];',
+        'uniform float uKubikRoughOn[' + MASK_SLOTS + '];',
+        'uniform float uKubikRough[' + MASK_SLOTS + '];',
+        // The weights are computed once, in <color_fragment>, and read again
+        // later in <roughnessmap_fragment> - three runs colour first.
+        'float kubikW[' + MASK_SLOTS + '];',
+        // One triplanar tap set, then the channel this mask owns. Picked by
+        // a dot with a selector rather than s[i] so this stays legal if the
+        // renderer ever falls back to WebGL1.
+        'float kubikPick(vec4 s, int ch) {',
+        '  vec4 m = vec4(ch == 0 ? 1.0 : 0.0, ch == 1 ? 1.0 : 0.0,',
+        '                ch == 2 ? 1.0 : 0.0, ch == 3 ? 1.0 : 0.0);',
+        '  return dot(s, m);',
+        '}',
+        'float kubikTriplanar(vec3 p, vec3 n, float scale, int ch) {',
+        '  vec3 q = p * scale * 0.5;',
         '  vec3 w = abs(n);',
         '  w = w / (w.x + w.y + w.z + 0.0001);',
-        '  float sx = texture2D(uKubikMask, p.yz).r;',
-        '  float sy = texture2D(uKubikMask, p.xz).r;',
-        '  float sz = texture2D(uKubikMask, p.xy).r;',
-        '  return sx * w.x + sy * w.y + sz * w.z;',
+        '  vec4 s = texture2D(uKubikMask, q.yz) * w.x',
+        '         + texture2D(uKubikMask, q.xz) * w.y',
+        '         + texture2D(uKubikMask, q.xy) * w.z;',
+        '  return kubikPick(s, ch);',
+        '}',
+        'vec3 kubikBlend(vec3 base, vec3 top, int mode) {',
+        '  if (mode == 1) return base * top;',
+        '  if (mode == 2) return 1.0 - (1.0 - base) * (1.0 - top);',
+        '  if (mode == 3) return mix(2.0 * base * top,',
+        '                            1.0 - 2.0 * (1.0 - base) * (1.0 - top),',
+        '                            step(0.5, base));',
+        '  return top;',
+        '}',
+        'float kubikBlend1(float base, float top, int mode) {',
+        '  if (mode == 1) return base * top;',
+        '  if (mode == 2) return 1.0 - (1.0 - base) * (1.0 - top);',
+        '  if (mode == 3) return mix(2.0 * base * top,',
+        '                            1.0 - 2.0 * (1.0 - base) * (1.0 - top),',
+        '                            step(0.5, base));',
+        '  return top;',
         '}'].join('\n'))
       .replace('#include <color_fragment>', ['#include <color_fragment>',
         '{',
-        '  float kubikW = kubikTriplanar(vKubikPos * uKubikMaskScale * 0.5, normalize(vKubikNrm));',
-        '  diffuseColor.rgb = mix(diffuseColor.rgb, uKubikMaskColor, kubikW * uKubikMaskAmount);',
+        '  vec3 kubikN = normalize(vKubikNrm);',
+        '  for (int i = 0; i < ' + MASK_SLOTS + '; i++) {',
+        '    kubikW[i] = 0.0;',
+        '    if (i >= uKubikCount) continue;',
+        '    if (uKubikAmount[i] <= 0.0) continue;',
+        '    kubikW[i] = kubikTriplanar(vKubikPos, kubikN, uKubikScale[i], i);',
+        '    if (uKubikColorOn[i] > 0.5) {',
+        '      vec3 mixed = kubikBlend(diffuseColor.rgb, uKubikColor[i], uKubikBlend[i]);',
+        '      diffuseColor.rgb = mix(diffuseColor.rgb, mixed, kubikW[i] * uKubikAmount[i]);',
+        '    }',
+        '  }',
+        '}'].join('\n'))
+      .replace('#include <roughnessmap_fragment>', ['#include <roughnessmap_fragment>',
+        '{',
+        '  for (int i = 0; i < ' + MASK_SLOTS + '; i++) {',
+        '    if (i >= uKubikCount) continue;',
+        '    if (uKubikRoughOn[i] < 0.5) continue;',
+        '    float mixed = kubikBlend1(roughnessFactor, uKubikRough[i], uKubikBlend[i]);',
+        '    roughnessFactor = mix(roughnessFactor, mixed, kubikW[i] * uKubikAmount[i]);',
+        '  }',
+        '  roughnessFactor = clamp(roughnessFactor, 0.0, 1.0);',
         '}'].join('\n'));
   };
-  /* Cache-key discipline (QA finding 1/2): three runs onBeforeCompile only
-     when this MATERIAL holds no program under the key yet. A constant key
-     let a re-masked material silently reuse its stale program - its mask
-     uniforms were orphaned, sliders froze, and the GPU kept whichever
-     values the last-drawn masked material uploaded (visible corruption).
-     Key = definition id + generation: wearers of one definition still
-     share one compiled program, and bumping the generation on re-enable
-     forces every wearer through a fresh onBeforeCompile. */
-  mat.customProgramCacheKey = function () { return 'kubik-colormask:' + d.id + ':' + gen; };
+  /* Cache-key discipline (QA finding 1/2, still LAW): three runs
+     onBeforeCompile only when this MATERIAL holds no program under the key
+     yet. A constant key let a re-masked material silently reuse a stale
+     program - orphaned uniforms, frozen sliders, and whatever values the
+     last-drawn masked material had left on the GPU. Wearers of one
+     definition still share one program; the generation is what forces every
+     wearer through a fresh compile when the patch is re-attached. */
+  /* Read live from _maskKey rather than closing over one definition: a
+     material that changes definition keeps the onBeforeCompile it was last
+     given, and a key that still named the OLD definition would have sent it
+     back to the old program. */
+  mat.customProgramCacheKey = function () { return _maskKey.get(mat) || ''; };
   mat.needsUpdate = true;
 }
 
@@ -9896,8 +10143,7 @@ function applyFinishToSelection(name) {
   /* Re-applying a masked definition can land on materials that wore this
      very definition earlier in the session; a fresh generation keeps their
      per-material program cache from resurrecting a stale patch. */
-  const _md = getMaterialDef(name);
-  if (_md.masks && _md.masks.color && _md.masks.color.on) _md.masks.color.gen = _maskGen++;
+  getMaterialDef(name);
   const setOn = (obj, groupIndices) => {
     if (!obj.mesh.userData.finishes) obj.mesh.userData.finishes = {};
     const mats = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
@@ -10623,7 +10869,7 @@ function serializeDoc() {
     // The material definitions this scene references, so a shared file
     // brings its palette along. The receiving library keeps its own
     // version of ids it already knows.
-    materialLib: Array.from(MATERIALS.values()),
+    materialLib: Array.from(MATERIALS.values()).map(normaliseDefMasks),
     objects: App.objects.map(o => {
       const g = o.mesh.geometry;
       const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
@@ -11757,19 +12003,30 @@ function matPreviewRig() {
   key.position.set(3, 4, 2);
   sc.add(key);
   const mat = new THREE.MeshStandardMaterial({ color: 0x9AA0A8 });
-  sc.add(new THREE.Mesh(new THREE.SphereGeometry(0.8, 48, 32), mat));
-  _matPreviewRig = { r, sc, cam, mat };
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(0.8, 48, 32), mat);
+  sc.add(ball);
+  _matPreviewRig = { r, sc, cam, mat, ball, mats: new Map() };
   return _matPreviewRig;
 }
 
+/* One SHARED material walking the whole library was the worst possible
+   case for the collision above - it left and returned to every masked
+   definition's key on every pass, so the thumbnails froze at whatever the
+   first pass compiled. A material per definition starts with an empty
+   program map, so onBeforeCompile always runs and the uniforms are always
+   this definition's. The compiled GLSL itself is still shared: three caches
+   programs by key across materials, so this costs an object, not a compile. */
 function renderMatPreviews() {
   const rig = matPreviewRig();
   const out = {};
   MATERIALS.forEach((_d, k) => {
-    applyFinish(rig.mat, k);   // sets the definition's colour too, as of a2.13
+    let m = rig.mats.get(k);
+    if (!m) { m = new THREE.MeshStandardMaterial({ color: 0x9AA0A8 }); rig.mats.set(k, m); }
+    rig.ball.material = applyFinish(m, k);
     rig.r.render(rig.sc, rig.cam);
     out[k] = rig.r.domElement.toDataURL();
   });
+  rig.ball.material = rig.mat;
   return out;
 }
 
@@ -11881,25 +12138,9 @@ function openMatEditor(id) {
   meImg.src = (_matPreviews && _matPreviews[id]) || '';
   document.getElementById('meReset').style.display = d.preset ? '' : 'none';
   document.getElementById('meDelete').style.display = d.preset ? 'none' : '';
+  mkEditing = 0;   // a freshly opened editor starts on the first mask
   refreshMaskControls(d);
   matFlyEl.classList.add('editing');
-}
-
-function refreshMaskControls(d) {
-  const mk = d.masks && d.masks.color;
-  const on = !!(mk && mk.on);
-  document.getElementById('meMaskToggle').textContent = 'Colour mask: ' + (on ? 'on' : 'off');
-  document.getElementById('meMask').style.display = on ? 'flex' : 'none';
-  if (!mk) return;
-  document.getElementById('mkColor').value = mk.color;
-  document.getElementById('mkAmount').value = mk.amount;
-  document.getElementById('mkScale').value = mk.scale;
-  document.getElementById('mkDetail').value = mk.detail;
-  document.getElementById('mkContrast').value = mk.contrast;
-  document.getElementById('mkAmountV').textContent = mk.amount.toFixed(2);
-  document.getElementById('mkScaleV').textContent = mk.scale.toFixed(2);
-  document.getElementById('mkDetailV').textContent = String(mk.detail);
-  document.getElementById('mkContrastV').textContent = mk.contrast.toFixed(1);
 }
 
 function closeMatEditor(rebuild) {
@@ -11940,7 +12181,8 @@ document.getElementById('meReset').addEventListener('click', () => {
   const d = getMaterialDef(matEditingId);
   if (!d || !d.preset) return;
   Object.assign(d, MATERIAL_DEFAULTS[d.id]);
-  delete d.masks;   // Object.assign can't remove the added key (QA finding 5)
+  d.masks = [];     // Object.assign can't clear it (QA finding 5)
+  rebakeMaskTexture(d);
   updateMaterialEverywhere(d.id);
   saveMaterialLibrary();
   toast('Reset to default');
@@ -11959,6 +12201,12 @@ document.getElementById('meDelete').addEventListener('click', () => {
     });
   });
   MATERIALS.delete(d.id);
+  const _t = _maskTex.get(d.id);
+  if (_t) { _t.dispose(); _maskTex.delete(d.id); }
+  if (_matPreviewRig) {
+    const _pm = _matPreviewRig.mats.get(d.id);
+    if (_pm) { _pm.dispose(); _matPreviewRig.mats.delete(d.id); }
+  }
   saveMaterialLibrary();
   toast('Deleted ' + d.name);
   closeMatEditor(true);
@@ -11966,33 +12214,124 @@ document.getElementById('meDelete').addEventListener('click', () => {
 
 document.getElementById('meDone').addEventListener('click', () => closeMatEditor(false));
 
-/* Mask wiring. Colour/amount/scale are uniform-driven - free to slide
-   live. Detail/contrast/seed re-bake the shared texture in place - still
-   no recompile. Only the on/off toggle recompiles the wearers' shaders. */
-document.getElementById('meMaskToggle').addEventListener('click', () => {
-  if (!matEditingId) return;
-  const d = getMaterialDef(matEditingId);
-  if (!d.masks) d.masks = {};
-  if (!d.masks.color) d.masks.color = Object.assign({}, MASK_DEFAULT, { seed: 1 + (nextMaterialNum * 7919) % 1000 });
-  else d.masks.color.on = !d.masks.color.on;
-  if (d.masks.color.on) d.masks.color.gen = _maskGen++;   // fresh programs for every wearer (see applyMaskPatch)
+/* Mask wiring.
+
+   WHAT COSTS WHAT, and it matters:
+   - colour, roughness, amount, scale, blend mode: pure uniforms. Free to
+     slide, every frame, no recompile and no re-bake.
+   - detail, contrast, seed, and which type: re-bake the packed texture in
+     place. Still no recompile - the texture object never changes identity.
+   - adding, removing, or switching a mask or a component on or off: a
+     STRUCTURAL change, so bumpMaskGen. That is the only thing that compiles
+     anything, and it is the thing LAW 1 exists for. */
+
+let mkEditing = 0;   // which slot the controls are pointing at
+
+function mkCurrent() {
+  if (!matEditingId) return null;
+  const list = maskList(getMaterialDef(matEditingId));
+  return list[mkEditing] || null;
+}
+
+// Everything that changes the SHAPE of the stack funnels through here.
+function mkStructural(d) {
   rebakeMaskTexture(d);
   updateMaterialEverywhere(d.id);
   saveMaterialLibrary();
   refreshMaskControls(d);
   meCommit();
-});
+}
 
-function mkLive(rebake) {
-  if (!matEditingId) return;
-  const d = getMaterialDef(matEditingId);
-  const mk = d.masks && d.masks.color;
+function refreshMaskControls(d) {
+  const list = maskList(d);
+  if (mkEditing >= list.length) mkEditing = Math.max(0, list.length - 1);
+
+  // The chip row: one per mask, plus "+" while there is a slot free.
+  const chips = document.getElementById('mkChips');
+  chips.innerHTML = '';
+  list.forEach((mk, i) => {
+    const b = document.createElement('button');
+    b.textContent = String(i + 1);
+    b.className = (i === mkEditing ? 'active' : '') + (mk.on ? '' : ' muted');
+    b.title = 'Mask ' + (i + 1) + (mk.on ? '' : ' (off)');
+    b.addEventListener('click', () => {
+      // Tapping the chip you are already on toggles that mask off and on -
+      // the same second-tap-is-the-off rule the edge marks use.
+      if (i === mkEditing) { mk.on = !mk.on; mkStructural(getMaterialDef(matEditingId)); return; }
+      mkEditing = i;
+      refreshMaskControls(getMaterialDef(matEditingId));
+    });
+    chips.appendChild(b);
+  });
+  if (list.length < MASK_SLOTS) {
+    const add = document.createElement('button');
+    add.textContent = '+';
+    add.title = 'Add a mask';
+    add.addEventListener('click', () => {
+      const def = getMaterialDef(matEditingId);
+      if (!Array.isArray(def.masks)) def.masks = [];
+      if (def.masks.length >= MASK_SLOTS) return;
+      def.masks.push(Object.assign({}, MASK_DEFAULT, {
+        seed: 1 + Math.floor(Math.random() * 1e9),
+        scale: 2 + def.masks.length * 3   // so a new mask reads as its own layer
+      }));
+      mkEditing = def.masks.length - 1;
+      mkStructural(def);
+    });
+    chips.appendChild(add);
+  }
+
+  const mk = list[mkEditing];
+  document.getElementById('meMask').style.display = mk ? 'flex' : 'none';
   if (!mk) return;
+
+  const blends = document.getElementById('mkBlendRow');
+  blends.innerHTML = '';
+  MASK_BLENDS.forEach(name => {
+    const b = document.createElement('button');
+    b.textContent = name[0].toUpperCase() + name.slice(1);
+    b.className = (mk.blend || 'normal') === name ? 'active' : '';
+    b.addEventListener('click', () => {
+      mk.blend = name;
+      // A blend mode is a uniform, so this needs no recompile - but it does
+      // need the row redrawn to move the highlight.
+      updateMaterialEverywhere(getMaterialDef(matEditingId).id);
+      saveMaterialLibrary();
+      refreshMaskControls(getMaterialDef(matEditingId));
+      meCommit();
+    });
+    blends.appendChild(b);
+  });
+
+  document.getElementById('mkColorOn').checked = !!mk.colorOn;
+  document.getElementById('mkColor').value = mk.color || '#7a4a20';
+  document.getElementById('mkColor').style.opacity = mk.colorOn ? '' : '.4';
+  document.getElementById('mkRoughOn').checked = !!mk.roughOn;
+  document.getElementById('mkRough').value = mk.rough;
+  document.getElementById('mkRough').style.opacity = mk.roughOn ? '' : '.4';
+  document.getElementById('mkRoughV').textContent = Number(mk.rough).toFixed(2);
+  document.getElementById('mkAmount').value = mk.amount;
+  document.getElementById('mkScale').value = mk.scale;
+  document.getElementById('mkDetail').value = mk.detail;
+  document.getElementById('mkContrast').value = mk.contrast;
+  document.getElementById('mkAmountV').textContent = Number(mk.amount).toFixed(2);
+  document.getElementById('mkScaleV').textContent = Number(mk.scale).toFixed(2);
+  document.getElementById('mkDetailV').textContent = String(mk.detail);
+  document.getElementById('mkContrastV').textContent = Number(mk.contrast).toFixed(1);
+}
+
+// The live sliders. `rebake` says whether this control changes the CLOTH.
+function mkLive(rebake) {
+  const mk = mkCurrent();
+  if (!mk) return;
+  const d = getMaterialDef(matEditingId);
   mk.color = document.getElementById('mkColor').value;
+  mk.rough = parseFloat(document.getElementById('mkRough').value);
   mk.amount = parseFloat(document.getElementById('mkAmount').value);
   mk.scale = parseFloat(document.getElementById('mkScale').value);
   mk.detail = parseInt(document.getElementById('mkDetail').value, 10);
   mk.contrast = parseFloat(document.getElementById('mkContrast').value);
+  document.getElementById('mkRoughV').textContent = mk.rough.toFixed(2);
   document.getElementById('mkAmountV').textContent = mk.amount.toFixed(2);
   document.getElementById('mkScaleV').textContent = mk.scale.toFixed(2);
   document.getElementById('mkDetailV').textContent = String(mk.detail);
@@ -12001,7 +12340,7 @@ function mkLive(rebake) {
   updateMaterialEverywhere(d.id);
 }
 
-['mkColor', 'mkAmount', 'mkScale'].forEach(id => {
+['mkColor', 'mkRough', 'mkAmount', 'mkScale'].forEach(id => {
   const el = document.getElementById(id);
   el.addEventListener('input', () => mkLive(false));
   el.addEventListener('change', () => { mkLive(false); meCommit(); });
@@ -12011,16 +12350,37 @@ function mkLive(rebake) {
   el.addEventListener('input', () => mkLive(true));
   el.addEventListener('change', () => { mkLive(true); meCommit(); });
 });
+
+['mkColorOn', 'mkRoughOn'].forEach(id => {
+  document.getElementById(id).addEventListener('change', () => {
+    const mk = mkCurrent();
+    if (!mk) return;
+    mk.colorOn = document.getElementById('mkColorOn').checked;
+    mk.roughOn = document.getElementById('mkRoughOn').checked;
+    // A component going on or off changes whether this mask paints at all,
+    // which is structural.
+    mkStructural(getMaterialDef(matEditingId));
+  });
+});
+
 document.getElementById('mkSeed').addEventListener('click', () => {
-  if (!matEditingId) return;
-  const d = getMaterialDef(matEditingId);
-  const mk = d.masks && d.masks.color;
+  const mk = mkCurrent();
   if (!mk) return;
+  const d = getMaterialDef(matEditingId);
   mk.seed = 1 + Math.floor(Math.random() * 1e9);
-  rebakeMaskTexture(d);
+  rebakeMaskTexture(d);          // new cloth, same shader
   updateMaterialEverywhere(d.id);
   saveMaterialLibrary();
   meCommit();
+});
+
+document.getElementById('mkDelete').addEventListener('click', () => {
+  const d = getMaterialDef(matEditingId);
+  const list = maskList(d);
+  if (!list[mkEditing]) return;
+  d.masks.splice(mkEditing, 1);
+  if (mkEditing > 0) mkEditing--;
+  mkStructural(d);
 });
 
 /* One reference card rather than labels pinned beside each real button -
@@ -12845,7 +13205,7 @@ if (PICK_DEBUG) {
     engageOrtho, disengageOrtho, viewHelper,
     MATERIALS, getMaterialDef, updateMaterialEverywhere, saveMaterialLibrary,
     harvestLegacyMaterials, applyFinishToSelection,
-    applyMaskPatch, ensureMaskPatches, rebakeMaskTexture, bakeMaskCanvas,
+    applyMaskPatch, ensureMaskPatches, rebakeMaskTexture,
     isMaskPatched: (m) => _maskedMats.has(m),
     bloomToolRing, updateToolRingHover, closeToolRing, placeRingLabel,
     currentHubTools, HUB_TOOLS_WORLD,

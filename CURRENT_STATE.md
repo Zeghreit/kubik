@@ -83,19 +83,43 @@ a material library:
   defaults + mask cleared, customs Delete with fallback to Solid, '+'
   forks the applied def and applies it).
 
-**Procedural colour mask (a2.15, fixed a2.16a).** def.masks.color =
-{on, type:'fbm', color, amount, scale, detail, contrast, seed, gen}.
-Tileable FBM baked to a 128px CanvasTexture per def (_maskTex map),
-sampled TRIPLANARLY in OBJECT SPACE via onBeforeCompile injected through
-applyFinish. colour/amount/scale ride uniforms; detail/contrast/seed
-re-bake the texture in place; ONLY the on/off toggle recompiles.
+**Procedural mask STACK (a2.15, rebuilt a2.20).** def.masks is an ARRAY
+of up to MASK_SLOTS (4) masks; mask i owns channel i of ONE 128px RGBA
+DataTexture per def (_maskTex map), sampled TRIPLANARLY in OBJECT SPACE
+with one tap set for all four. Each mask is
+{on, type:'fbm', blend, colorOn, color, roughOn, rough, amount, scale,
+detail, contrast, seed}; blend is normal|multiply|screen|overlay and the
+colour and roughness components switch on and off independently.
+DataTexture, not CanvasTexture: Canvas 2D is PREMULTIPLIED, so packing
+four masks through a canvas corrupts the channels the shader reads.
+Legacy `masks: {color:{...}}` is migrated by normaliseDefMasks, wired
+into getMaterialDef - and ALSO called by saveMaterialLibrary and
+serializeDoc, which read MATERIALS raw and would otherwise judge a
+legacy mask "no change" and delete it on the first save.
+WHAT COSTS WHAT: colour, roughness, amount, scale and blend mode are
+pure uniforms. detail, contrast and seed re-bake the texture in place.
+Adding, removing or switching a mask or a component on or off is ALSO
+uniform-only (an off mask is amount 0, and the shader source is the same
+for one mask as for four) - the ONLY recompile left is crossing between
+"no patch" and "a patch". Nothing in the editor bumps the generation.
 TRIPLANAR is decided policy - no UV tools, no box projection.
 TWO LAWS, learned the hard way (a2.16a, cross-material GPU corruption
 and dead clones before them):
 1. customProgramCacheKey must NEVER be constant - three.js runs
    onBeforeCompile only when the material holds no program under the
-   key. Key = 'kubik-colormask:' + defId + ':' + gen; gen (_maskGen)
-   bumps on mask re-enable and on applying a masked def.
+   key. Key = 'kubik-colormask:' + defId + ':' + d.maskGen, read live
+   from the _maskKey WeakMap so a material that CHANGES definition stops
+   naming the old one. The generation is per DEFINITION so every wearer
+   shares one program. a2.20 broke this law once and the whole stack
+   rendered identically - see the a2.20 section.
+   AND THE PART THREE.JS WILL NOT DO FOR YOU: on a program cache HIT
+   three returns the program without re-running onBeforeCompile AND
+   without repointing materialProperties.uniforms, which still names
+   whichever program compiled last. So a material coming BACK to a key
+   it once compiled under renders from another program's uniforms and
+   every slider writes into thin air. _maskUniforms is therefore a Map
+   PER KEY per material, and a material returning to a key it already
+   used gets a private '#n' suffix that guarantees the miss.
 2. NEVER store uniforms/textures in material.userData - Material.clone
    JSON-copies userData. Patch state lives in module WeakSet
    _maskedMats + WeakMap _maskUniforms; ensureMaskPatches (called from
@@ -464,11 +488,68 @@ claude/crosstest-findings.md) - fix order as agreed:**
    instance per material def). Three audit sweeps never ran (mobile/UX,
    static correctness, static perf) - resumable.
 
-**Next planned work:** a2.17 roughness + metalness masks (pack channels
-into one RGB canvas, single triplanar sample, extend the cache key with
-channel bits, keep the gen discipline) + noise types (worley, stripes)
-with a type select. Icon sweep findings deferred (weld/connect/merge
+**Next planned work:** a2.21 noise types - voronoi/cells, scratches,
+dots/speckle, stripes/bands - plus "load custom image" as a mask source
+(bake its luminance into the mask's channel; the image has to be
+embedded in the project JSON, and triplanar will seam on a photo).
+bakeNoiseField(mk, size) is already split out of the packer for exactly
+this: switch on mk.type there and nothing else has to move. Icon sweep findings deferred (weld/connect/merge
 now share the Vertex ring - revisit those three icons TOGETHER).
+
+## a2.20 - THE MASK STACK
+
+Four masks per material instead of one, packed one per RGBA channel of a
+single texture, each with a colour component and a roughness component
+that switch on and off independently, and one of four blend modes.
+
+**The editor is a chip row, not four stacked panels.** #mkChips shows one
+numbered chip per mask plus "+" while a slot is free; one set of controls
+edits whichever chip is active. Four masks' worth of controls in a 176px
+column would have been a scroll from the first mask to the last. Tapping
+the chip you are ALREADY on toggles that mask off and on - the same
+second-tap-is-the-off rule the edge marks use - and an off mask keeps its
+seat, greyed, so you can see it is there and switched off. "Remove"
+deletes it outright.
+
+**Uniform-driven end to end.** uKubikCount / uKubikColor[4] /
+uKubikAmount[4] / uKubikScale[4] / uKubikBlend[4] / uKubikColorOn[4] /
+uKubikRoughOn[4] / uKubikRough[4]. The weights are computed once in
+<color_fragment> into a global float kubikW[4] and read again in
+<roughnessmap_fragment> - three runs colour first. kubikPick selects a
+channel with a dot against a selector rather than s[i], so the shader
+stays legal if the renderer ever falls back to WebGL1.
+
+**LAW 1 caught a real bug here.** The first cut of the stack captured
+`_maskGen` once and never advanced it, so the cache key was constant,
+the first compiled program was the only one that ever ran, and EVERY
+mask configuration rendered identically. Per-definition d.maskGen fixed
+it. Then the opposite mistake: bumping on every checkbox minted a
+program per click that three never releases (its per-material programs
+Map is never pruned) - 40 taps, 40 retained programs and 40 compile
+stalls. Both gone: structural changes are uniform-only now.
+
+**The frozen thumbnails.** One SHARED preview material walked the whole
+library on every pass, so it left and returned to every masked
+definition's key constantly and hit the three.js cache-hit wart above -
+the thumbnails froze at whatever the first pass compiled, and unrelated
+materials bled into each other (6 unique previews out of 10). Now one
+preview material PER definition, created once and kept (disposing them
+handed the program back to three and recompiled it on the next slider
+release). Measured after: 10 unique previews out of 10, and a full
+edit-and-churn pass costs 0 new programs.
+
+**Verified, on the real UI and by pixel diff of the viewport:** all four
+blend modes distinct; colour and roughness components independently
+distinct; add/remove/on/off distinct and exactly reversible (on-off-on
+returns to within 2 pixels of +-1); a 4-mask stack round-trips through
+save/load byte-for-byte; a legacy `{color:{...}}` library entry survives
+the upgrade and migrates to the array; 30 component toggles add 0
+programs.
+
+**Known, unchanged by choice:** restoreDoc still only adopts a material
+definition the local library does not already have, so opening someone
+else's file on a machine that has its own `standard` keeps the local
+one - masks and all. Pre-existing rule; it now hides more.
 
 ## Screen layout
 
