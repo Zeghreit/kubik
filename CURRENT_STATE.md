@@ -286,6 +286,105 @@ m.userData.kubikDef` or reconcile will re-apply the definition over the
 manual change; and reconcile assumes group gi is drawn with mats[gi],
 which holds because rebuildFromEditable emits identity materialIndex.
 
+## a2.18 - SHADING MOVED OFF THE FACES AND ONTO THE EDGES
+
+The per-face smooth/flat map is GONE. Every face is smooth; what breaks the
+smoothing is an EDGE being sharp. This was the user's design, and it also
+dissolved the bug queued behind it: `smoothGroups` was keyed by FACE-GROUP
+INDEX, exactly like `finishes`, and the a2.17a bug was sitting in it waiting
+its turn. There is no index-keyed shading state left to shift.
+
+**How an edge decides it is sharp**, in order:
+1. `userData.edgeShade[key] === 'sharp'`
+2. `userData.edgeShade[key] === 'smooth'`
+3. anything other than exactly TWO faces -> sharp (a rim has nothing to blend
+   with, a non-manifold seam must not blend). This is checked BEFORE the
+   marks: Shade Smooth writes 'smooth' onto rim edges where it does nothing,
+   and a later Bridge or weld giving that edge a second face would otherwise
+   let an invisible stale mark beat the angle.
+4. otherwise sharp if the two faces turn by more than SHARP_ANGLE.
+
+**SHARP_ANGLE is 33 degrees, not 30, and the comparison carries an epsilon.**
+A regular 12-sided prism meets itself at exactly 30, so a 30 threshold puts
+every edge of that ring on the knife edge of a float compare - some sharp,
+some smooth, changing as the object turns. 33 lands between the 12-gon (30)
+and the 10-gon (36) and on no regular polygon at all.
+
+Rule 4 is the point of the whole model: a fresh cube is crisp and a
+subdivided sphere is smooth with NOTHING stored, and a wall grown by Extrude
+is born crisp without the op having to remember anything.
+
+**SHARP IS NOT CREASE.** They are separate marks in separate maps. Crease
+means only "hold this edge through Subdivide"; Sharp means only "break the
+shading here". An edge can carry either, both or neither, and creaseSelection
+no longer calls applyShading.
+
+**Tools.** Edge ring: `Mark Sharp` (seat 10) is a two-state toggle - marking
+edges that are already all sharp CLEARS them, back to angle-decided. `Crease`
+(seat 11) is now the same shape of toggle. `Uncrease` is gone, because the
+second tap is the off, and `Shade` is gone FROM THIS RING because it did the
+same job as Mark Sharp there - it keeps seat 8 in Face and Object. Face and
+Object `Shade Smooth` marks every edge of the selection smooth EXCEPT any
+already marked sharp - "smooth everything except sharp" - and `Shade Flat`
+marks them all sharp.
+
+**Both marks are drawn in the viewport**: crease colour for creases, a warm
+`SHARP_COLOR` for sharp, sharp checked last so an edge carrying both reads as
+the one you can see in the render.
+
+**POSITION KEYS AND DRAGGING - the thing that nearly shipped broken.** Both
+maps are keyed by position pair, and a drag changes positions, so every mark
+on a moved vertex's edges was orphaned the instant a drag began: the
+sharpness fell back to the angle rule mid-drag and the dead entry stayed in
+the map, ready to resurrect on whatever later landed on that spot. A drag
+cannot change TOPOLOGY, so `snapshotEdgeMarks` records the marks against
+logical edge pairs when the drag context is built and `rewriteEdgeMarks`
+rebuilds both maps from that snapshot after every move. **Creases had this
+flaw all along** - unnoticed because a crease only pays out at Subdivide,
+while sharpness is on screen every frame. Fixed for both.
+
+`captureObjectState` / `restoreObjectState` now carry creases and edgeShade
+too. A cancelled op used to put the geometry back and leave whatever creases
+it had written - a long-standing gap that started to matter a lot once
+shading moved onto the same kind of map.
+
+**Subdivide splits marks onto both halves** of every edge, like it already
+did for creases - looked up by the edge's ORIGINAL endpoint positions, since
+smooth subdivision MOVES the originals. A first attempt used the moved
+positions and silently lost every mark.
+
+**Migration is per MESH, on load, only when a doc has no `edgeShade` key at
+all** (an empty map means "all angle-decided", not "not migrated"): every
+edge of a face that was flat becomes sharp, and every existing crease also
+becomes sharp - creases keep their own map and their Subdivide meaning, they
+are merely also marked so the file opens looking the same. Old all-flat cube
+-> 12 marks, 6 normals, identical. Old all-smooth ball -> 0 marks. Old
+all-smooth + a creased loop -> 32 marks, identical to how a2.16 drew it.
+
+**Measured** (unique normals is the proxy for how it looks): fresh cube 6 / 0
+marks; smooth-subdivided 384-face cube 386 / 0; extruded wall 6 / 0; inset
+6 / 0. Cube Shade Smooth -> 8 normals and 12 smooth marks, then Shade Flat ->
+6 and 12 sharp. Smooth ball + one 32-edge loop marked sharp -> 386 -> 418
+(one hard ring); tapping the same loop again -> back to 386 and no marks. A
+sharp mark survives a later Shade Smooth. Marks double correctly through two
+Subdivides (16 -> 32 -> 64). Creasing changes shading not at all.
+
+**Performance: no regression, and better where it counts.** applyShading now
+always does the island work, where the old one early-returned when nothing
+was marked - but the pass was rewritten onto NUMERIC edge keys (the old one
+built strings like 'l_g' in its hot loop) and does the whole thing one vertex
+at a time with nothing global stored. 1536 groups: old 15 ms unmarked / 55 ms
+creased, new 15 ms unmarked / 29 ms fully marked. It runs on every drag move,
+so this mattered.
+
+**Known and accepted:** Join (`combineObjectsInto`) bakes world transforms
+into a new local space, so position keys would be meaningless and it carries
+neither creases nor marks - the angle rule takes over. A strongly non-planar
+n-gon decides its own boundaries by its area-weighted average normal, which
+can read false-sharp or false-smooth; comparing the two TRIANGLES either side
+of the edge would be exact. From Face or Object mode there is no way to clear
+a stubborn sharp mark - Edge mode's toggle is the escape.
+
 **KNOWN OPEN ISSUES (crosstest 2026-08-25, unverified findings in
 claude/crosstest-findings.md) - fix order as agreed:**
 1. DONE (a2.16b) - see above.

@@ -693,7 +693,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.17a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.18</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1312,6 +1312,10 @@ let SELECT_COLOR = THEMES.dark.select;
 let UNSELECT_VERT_COLOR = THEMES.dark.vert;
 let UNSELECT_EDGE_COLOR = THEMES.dark.edge;
 let CREASE_COLOR = THEMES.dark.crease;
+/* Sharp edges have to be visible or the whole model is guesswork - you
+   cannot see a normal, only its effect. Warm against the crease colour so
+   the two marks never read as the same thing on one mesh. */
+const SHARP_COLOR = 0xff8a3d;
 
 // Objects already in the scene keep whatever colour they were given - only the
 // default for new ones follows the theme.
@@ -1952,28 +1956,101 @@ function computeTopology(geometry) {
   return { logicalOf, logicalGroups, edges, faceGroups, logicalCount: logicalGroups.length };
 }
 
-/* ---------------- Shading (smooth / flat per face) ----------------
-   mesh.userData.smoothGroups is a { [groupIndex]: true } map. A face with no
-   entry (or false) is flat-shaded (its own crisp per-triangle normal, the
-   default look). A face marked smooth blends its normal with every triangle
-   touching the same position, including neighbors that are themselves flat -
-   the same convention most 3D tools use for a per-face smooth/flat toggle. */
+/* ---------------- Shading: smooth faces, sharpness on the EDGES ----------
+
+   There is no per-face smooth/flat flag any more. EVERY face is smooth, and
+   what breaks the smoothing is an EDGE being sharp. Whether an edge is sharp
+   is decided per edge, in this order:
+
+     1. userData.edgeShade[key] === 'sharp'   -> sharp
+     2. userData.edgeShade[key] === 'smooth'  -> smooth
+     3. anything other than exactly two faces -> sharp (an open rim has
+        nothing to blend with, and a non-manifold seam should not blend)
+     4. otherwise: sharp if the two faces turn by more than SHARP_ANGLE
+
+   Rule 4 is the whole point. It is why a fresh cube is crisp and a
+   subdivided sphere is not, with nothing stored anywhere - and why a wall
+   grown by Extrude is born crisp instead of depending on the op to remember
+   to mark it. That was the old model's real failure: smoothness was a map
+   keyed by FACE-GROUP INDEX, so every op that grew or dropped a face had to
+   maintain it by hand, and the same class of bug that hit `finishes` in
+   a2.17a was sitting in `smoothGroups` waiting its turn.
+
+   Rules 1 and 2 are the hand marks and always win over the angle. The map is
+   keyed by POSITION PAIR - the same key creases use - so it survives every
+   rebuild the way creases do, with no index to shift.
+
+   SHARP IS NOT CREASE. a2.18 split them: Crease means only "hold this edge
+   through Subdivide" and has no say in shading, Sharp means only "break the
+   shading here" and has no say in Subdivide. An edge can carry either, both
+   or neither.
+*/
+
+/* 33 degrees, not 30, and compared with a margin. A regular 12-sided prism -
+   about the most ordinary primitive there is - meets itself at exactly 30, so
+   a threshold there puts every edge of the ring on the knife edge of a
+   floating-point comparison: some sharp, some smooth, and which is which
+   changes as the object rotates. 33 sits between the 12-gon (30) and the
+   10-gon (36) and lands on no regular polygon at all. */
+const SHARP_ANGLE = 33 * Math.PI / 180;   // auto-sharp threshold
+const SHARP_EPS = 1e-6;
+
+function edgeShadeSet(obj) {
+  if (!obj.mesh.userData.edgeShade) obj.mesh.userData.edgeShade = {};
+  return obj.mesh.userData.edgeShade;
+}
+
+/* BOTH mark maps are keyed by POSITION, and dragging a vertex changes
+   positions - so every mark on a moved vertex's edges is orphaned the instant
+   the drag starts. The sharpness silently falls back to the angle rule while
+   you are still dragging, and the dead entry stays in the map waiting to
+   resurrect on whatever later lands on that spot.
+
+   A drag cannot change TOPOLOGY, so the fix is to snapshot the marks against
+   logical edge pairs when the drag begins and rewrite both maps from that
+   snapshot after every move. Creases had this flaw all along and nobody
+   noticed, because a crease only pays out at Subdivide; sharpness is on
+   screen every frame, which is what turned a latent bug into a visible one. */
+function snapshotEdgeMarks(obj) {
+  const topo = obj.mesh.userData.topo;
+  if (!topo) return null;
+  const shade = obj.mesh.userData.edgeShade || {};
+  const creases = obj.mesh.userData.creases || {};
+  if (!Object.keys(shade).length && !Object.keys(creases).length) return null;
+  const out = [];
+  topo.edges.forEach(e => {
+    const k = creaseKeyFor(logicalPos(obj, e[0]), logicalPos(obj, e[1]));
+    const sv = shade[k], cv = !!creases[k];
+    if (sv || cv) out.push([e[0], e[1], sv || null, cv]);
+  });
+  return out.length ? out : null;
+}
+
+function rewriteEdgeMarks(obj, snap) {
+  if (!snap) return;
+  const shade = {}, creases = {};
+  snap.forEach(pair => {
+    const k = creaseKeyFor(logicalPos(obj, pair[0]), logicalPos(obj, pair[1]));
+    if (pair[2]) shade[k] = pair[2];
+    if (pair[3]) creases[k] = true;
+  });
+  obj.mesh.userData.edgeShade = shade;
+  obj.mesh.userData.creases = creases;
+}
 
 function applyShading(obj) {
   const geo = obj.mesh.geometry;
-  // Safe, always-correct baseline first (this is what every version before
-  // the shading feature used). If nothing is marked smooth, stop here -
-  // this keeps the common case identical to the known-good behavior.
+  // Safe baseline: if anything below throws, the mesh is still shaded.
   geo.computeVertexNormals();
-  const smooth = obj.mesh.userData.smoothGroups;
-  if (!smooth || !Object.keys(smooth).some(k => smooth[k])) return;
+  const index = geo.index;
+  if (!index) return;
 
   try {
     const posAttr = geo.attributes.position;
-    const index = geo.index;
     const { logicalOf, logicalGroups } = computeLogicalOf(posAttr);
     const groupsSrc = geo.groups.length ? geo.groups : [{ start: 0, count: index.count, materialIndex: 0 }];
     const triCount = index.count / 3;
+    const nLog = logicalGroups.length;
 
     const triGroup = new Int32Array(triCount);
     groupsSrc.forEach((g, gi) => {
@@ -1981,187 +2058,283 @@ function applyShading(obj) {
       for (let t = 0; t < tc; t++) triGroup[ts + t] = gi;
     });
 
+    // Triangle normals, and each FACE's own normal (area-weighted, which is
+    // what makes a triangulated n-gon answer as one flat face).
     const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3();
     const triNormal = new Array(triCount);
+    const groupNormal = [];
+    for (let gi = 0; gi < groupsSrc.length; gi++) groupNormal.push(new THREE.Vector3());
     for (let t = 0; t < triCount; t++) {
       const ia = index.getX(t * 3), ib = index.getX(t * 3 + 1), ic = index.getX(t * 3 + 2);
       vA.fromBufferAttribute(posAttr, ia); vB.fromBufferAttribute(posAttr, ib); vC.fromBufferAttribute(posAttr, ic);
       const nrm = new THREE.Vector3().subVectors(vB, vA).cross(new THREE.Vector3().subVectors(vC, vA));
+      groupNormal[triGroup[t]].add(nrm);
       triNormal[t] = nrm.lengthSq() > 1e-12 ? nrm.normalize() : nrm;
     }
+    groupNormal.forEach(n => { if (n.lengthSq() > 1e-12) n.normalize(); });
 
-    const logicalTris = new Map();
+    const groupOfAttr = new Int32Array(posAttr.count).fill(-1);
+    const trisAt = new Map();
     for (let t = 0; t < triCount; t++) {
-      const ia = index.getX(t * 3), ib = index.getX(t * 3 + 1), ic = index.getX(t * 3 + 2);
-      [ia, ib, ic].forEach(ai => {
+      for (let e = 0; e < 3; e++) {
+        const ai = index.getX(t * 3 + e);
+        groupOfAttr[ai] = triGroup[t];
         const l = logicalOf[ai];
-        if (!logicalTris.has(l)) logicalTris.set(l, []);
-        logicalTris.get(l).push(t);
-      });
+        let lst = trisAt.get(l);
+        if (!lst) { lst = []; trisAt.set(l, lst); }
+        lst.push(t);
+      }
     }
 
-    /* Creased edges are HARD in shading, not just through Subdivide: at a
-       vertex, a smooth normal averages only over the fan of faces
-       reachable without crossing a creased edge. Faces on opposite sides
-       of the crease each keep their own normal, so a creased loop reads
-       as ONE sharp line on an otherwise smooth surface - and nothing
-       around it hardens. The crease map is keyed by position (posKey), so
-       this survives every rebuild the same way Subdivide's use does. */
-    const creases = obj.mesh.userData.creases || {};
-    let clusterAt = null;   // "l_g" -> island id; built only when creases exist
-    if (Object.keys(creases).length) {
-      const edgeGroups = new Map();   // logical edge key -> Set of face groups
-      for (let t = 0; t < triCount; t++) {
-        const ia = index.getX(t * 3), ib = index.getX(t * 3 + 1), ic = index.getX(t * 3 + 2);
-        const ls = [logicalOf[ia], logicalOf[ib], logicalOf[ic]];
-        for (let e = 0; e < 3; e++) {
-          const a = ls[e], b = ls[(e + 1) % 3];
-          if (a === b) continue;
-          const k = a < b ? a + '_' + b : b + '_' + a;
-          if (!edgeGroups.has(k)) edgeGroups.set(k, new Set());
-          edgeGroups.get(k).add(triGroup[t]);
+    /* Logical edges on NUMERIC keys (a * nLog + b). The old islands pass
+       spent most of its time building strings like 'l_g', and it only ran
+       when creases existed; this one runs on every rebuild, so the keys have
+       to be cheap. */
+    const edgeFaces = new Map();   // key -> face groups along it
+    const edgeEnds = new Map();    // key -> [a, b]
+    const incident = new Map();    // logical vertex -> its edge keys
+    for (let t = 0; t < triCount; t++) {
+      const ls = [logicalOf[index.getX(t * 3)], logicalOf[index.getX(t * 3 + 1)], logicalOf[index.getX(t * 3 + 2)]];
+      for (let e = 0; e < 3; e++) {
+        const a = ls[e], b = ls[(e + 1) % 3];
+        if (a === b) continue;
+        const lo = a < b ? a : b, hi = a < b ? b : a;
+        const k = lo * nLog + hi;
+        let fs = edgeFaces.get(k);
+        if (!fs) {
+          fs = []; edgeFaces.set(k, fs); edgeEnds.set(k, [lo, hi]);
+          let ia = incident.get(lo); if (!ia) { ia = []; incident.set(lo, ia); } ia.push(k);
+          let ib = incident.get(hi); if (!ib) { ib = []; incident.set(hi, ib); } ib.push(k);
+        }
+        const g = triGroup[t];
+        if (fs.indexOf(g) < 0) fs.push(g);
+      }
+    }
+
+    const marks = obj.mesh.userData.edgeShade;
+    const hasMarks = !!marks && Object.keys(marks).length > 0;
+    const cosLimit = Math.cos(SHARP_ANGLE);
+    const pA = new THREE.Vector3(), pB = new THREE.Vector3();
+    const sharp = new Map();
+    edgeFaces.forEach((fs, k) => {
+      /* The face count is checked FIRST, above the marks. An edge with one
+         face is a rim with nothing to blend into and an edge with three is a
+         seam that must not blend, whatever is written about it - and Shade
+         Smooth happily writes 'smooth' onto rim edges, where it does nothing
+         until a Bridge or a weld later gives that edge a second face. Then a
+         stale mark nobody can see would beat the angle and put a smooth seam
+         across a square join. */
+      if (fs.length !== 2) { sharp.set(k, true); return; }
+      if (hasMarks) {
+        const ends = edgeEnds.get(k);
+        pA.fromBufferAttribute(posAttr, logicalGroups[ends[0]][0]);
+        pB.fromBufferAttribute(posAttr, logicalGroups[ends[1]][0]);
+        const m = marks[creaseKeyFor(pA, pB)];
+        if (m === 'sharp') { sharp.set(k, true); return; }
+        if (m === 'smooth') { sharp.set(k, false); return; }
+      }
+      sharp.set(k, groupNormal[fs[0]].dot(groupNormal[fs[1]]) < cosLimit - SHARP_EPS);
+    });
+
+    /* One vertex at a time: split the fan of faces around it into islands
+       that are joined through NON-sharp edges, average the triangle normals
+       within each island, and write that to the attribute vertices of that
+       island. Nothing global is stored, so there is no per-(vertex, face)
+       map to build and no string keys anywhere in the loop. */
+    const normals = geo.attributes.normal.array;
+    const parent = new Map();
+    const find = (g) => { while (parent.get(g) !== g) { parent.set(g, parent.get(parent.get(g))); g = parent.get(g); } return g; };
+    const acc = new Map();
+    trisAt.forEach((tris, l) => {
+      parent.clear(); acc.clear();
+      for (let i = 0; i < tris.length; i++) { const g = triGroup[tris[i]]; if (!parent.has(g)) parent.set(g, g); }
+      const inc = incident.get(l);
+      if (inc) for (let i = 0; i < inc.length; i++) {
+        const k = inc[i];
+        if (sharp.get(k)) continue;
+        const fs = edgeFaces.get(k);
+        for (let j = 0; j < fs.length; j++) if (!parent.has(fs[j])) parent.set(fs[j], fs[j]);
+        for (let j = 1; j < fs.length; j++) {
+          const r1 = find(fs[0]), r2 = find(fs[j]);
+          if (r1 !== r2) parent.set(r1, r2);
         }
       }
-      const pA = new THREE.Vector3(), pB = new THREE.Vector3();
-      const adj = new Map();   // l -> Map(group -> Set(neighbour groups))
-      edgeGroups.forEach((gs, k) => {
-        const parts = k.split('_');
-        const a = +parts[0], b = +parts[1];
-        pA.fromBufferAttribute(posAttr, logicalGroups[a][0]);
-        pB.fromBufferAttribute(posAttr, logicalGroups[b][0]);
-        if (creases[creaseKeyFor(pA, pB)]) return;   // hard edge: no bridge
-        const list = Array.from(gs);
-        if (list.length < 2) return;
-        [a, b].forEach(l => {
-          if (!adj.has(l)) adj.set(l, new Map());
-          const m = adj.get(l);
-          list.forEach(g => { if (!m.has(g)) m.set(g, new Set()); });
-          for (let i = 1; i < list.length; i++) {
-            m.get(list[0]).add(list[i]);
-            m.get(list[i]).add(list[0]);
-          }
-        });
-      });
-      clusterAt = new Map();
-      logicalTris.forEach((tris, l) => {
-        const m = adj.get(l);
-        const here = new Set();
-        tris.forEach(t => here.add(triGroup[t]));
-        let cid = 0;
-        here.forEach(g => {
-          if (clusterAt.has(l + '_' + g)) return;
-          cid++;
-          const tag = l + '#' + cid;
-          const stack = [g];
-          clusterAt.set(l + '_' + g, tag);
-          /* pop FIRST, then look the neighbours up. Written as
-             `m && m.get(stack.pop())` the pop sat behind the guard, so a
-             vertex with no bridges at all (adj.get(l) undefined - every
-             edge around it creased) short-circuited before popping and the
-             loop spun forever. Creasing all 12 edges of a cube was enough
-             to hang the tab. */
-          while (stack.length) {
-            const cur = stack.pop();
-            const nbrs = m ? m.get(cur) : null;
-            if (nbrs) nbrs.forEach(n => {
-              if (here.has(n) && !clusterAt.has(l + '_' + n)) {
-                clusterAt.set(l + '_' + n, tag);
-                stack.push(n);
-              }
-            });
-          }
-        });
-      });
-    }
-
-    const normals = geo.attributes.normal.array;
-    const acc = new THREE.Vector3();
-    for (let t = 0; t < triCount; t++) {
-      const ia = index.getX(t * 3), ib = index.getX(t * 3 + 1), ic = index.getX(t * 3 + 2);
-      const isSmooth = !!smooth[triGroup[t]];
-      if (!isSmooth) continue; // leave computeVertexNormals' flat result in place
-      [ia, ib, ic].forEach(ai => {
-        const l = logicalOf[ai];
-        acc.set(0, 0, 0);
-        if (clusterAt) {
-          const mine = clusterAt.get(l + '_' + triGroup[t]);
-          logicalTris.get(l).forEach(t2 => {
-            if (clusterAt.get(l + '_' + triGroup[t2]) === mine) acc.add(triNormal[t2]);
-          });
-        } else {
-          logicalTris.get(l).forEach(t2 => acc.add(triNormal[t2]));
-        }
-        if (acc.lengthSq() > 1e-12) acc.normalize();
-        normals[ai * 3] = acc.x; normals[ai * 3 + 1] = acc.y; normals[ai * 3 + 2] = acc.z;
-      });
-    }
+      for (let i = 0; i < tris.length; i++) {
+        const t = tris[i], r = find(triGroup[t]);
+        let v = acc.get(r);
+        if (!v) { v = new THREE.Vector3(); acc.set(r, v); }
+        v.add(triNormal[t]);
+      }
+      acc.forEach(v => { if (v.lengthSq() > 1e-12) v.normalize(); });
+      const ais = logicalGroups[l];
+      for (let i = 0; i < ais.length; i++) {
+        const ai = ais[i], g = groupOfAttr[ai];
+        if (g < 0 || !parent.has(g)) continue;
+        const v = acc.get(find(g));
+        if (!v || v.lengthSq() < 1e-12) continue;   // degenerate fan: keep the baseline
+        normals[ai * 3] = v.x; normals[ai * 3 + 1] = v.y; normals[ai * 3 + 2] = v.z;
+      }
+    });
     geo.attributes.normal.needsUpdate = true;
   } catch (err) {
-    // Custom smoothing failed - the computeVertexNormals() baseline from
-    // above is still in place, so the mesh stays visible either way.
-    console.error('applyShading smoothing overlay failed, using flat normals', err);
+    console.error('applyShading failed, using flat normals', err);
     geo.computeVertexNormals();
   }
 }
 
+/* Old files carry per-face smoothGroups and creases that also hardened
+   shading. Convert once, on load, into edge marks that reproduce exactly
+   what the file used to look like: every edge of a FLAT face was crisp, and
+   so was every creased edge. Creases stay in their own map - they keep their
+   Subdivide meaning - they are merely also marked sharp so the file opens
+   looking the same.
+
+   A doc that already has edgeShade is left alone, and so is a brand-new
+   object: new geometry has no marks at all and lets the angle decide, which
+   is the whole point of the new model. */
+function migrateEdgeShade(obj) {
+  const ud = obj.mesh.userData;
+  if (ud.edgeShade) return 0;
+  const marks = {};
+  Object.keys(ud.creases || {}).forEach(k => { marks[k] = 'sharp'; });
+  const smooth = ud.smoothGroups || {};
+  const geo = obj.mesh.geometry;
+  const groupCount = geo.groups.length || 1;
+  let flatFaces = 0;
+  for (let gi = 0; gi < groupCount; gi++) if (!smooth[gi]) flatFaces++;
+  if (flatFaces) {
+    const topo = computeTopology(geo);
+    const pos = geo.attributes.position;
+    const at = (l) => { const ai = topo.logicalGroups[l][0]; return new THREE.Vector3(pos.getX(ai), pos.getY(ai), pos.getZ(ai)); };
+    topo.faceGroups.forEach(fg => {
+      if (smooth[fg.groupIndex]) return;
+      faceOutlinePairs(topo, geo, fg).forEach(([a, b]) => {
+        marks[creaseKeyFor(at(a), at(b))] = 'sharp';
+      });
+    });
+  }
+  ud.edgeShade = marks;
+  ud.smoothGroups = {};
+  return Object.keys(marks).length;
+}
+
+/* One face's OUTLINE edges as logical pairs. An edge its triangles use once
+   is on the outline; used twice it is that face's internal triangulation and
+   was never drawn. Same test computeTopology uses, done for a single face on
+   a topology that is already built - the migration runs before helpers do. */
+function faceOutlinePairs(topo, geo, fg) {
+  const index = geo.index;
+  const seen = new Map();
+  for (let t = 0; t < fg.triCount; t++) {
+    const ti = fg.triStart + t;
+    const ls = [topo.logicalOf[index.getX(ti * 3)], topo.logicalOf[index.getX(ti * 3 + 1)], topo.logicalOf[index.getX(ti * 3 + 2)]];
+    for (let e = 0; e < 3; e++) {
+      const a = ls[e], b = ls[(e + 1) % 3];
+      if (a === b) continue;
+      const k = a < b ? a + '_' + b : b + '_' + a;
+      const hit = seen.get(k);
+      if (hit) hit.n++; else seen.set(k, { n: 1, a: a, b: b });
+    }
+  }
+  const out = [];
+  seen.forEach(v => { if (v.n === 1) out.push([v.a, v.b]); });
+  return out;
+}
+
 // Sets the smooth/flat flag for a list of face-group indices and reapplies
 // shading. Returns nothing - callers refresh UI/history themselves.
-function setGroupsShading(obj, groupIndices, smooth) {
-  if (!obj.mesh.userData.smoothGroups) obj.mesh.userData.smoothGroups = {};
-  groupIndices.forEach(gi => { obj.mesh.userData.smoothGroups[gi] = !!smooth; });
-  applyShading(obj);
-}
-
-// Resolves "all face groups touching the current selection" for whichever
-// mode is active, so Shade Smooth/Flat can be offered from any component.
-function faceGroupsForShadingTarget(obj) {
-  if (App.mode === 'face') return Array.from(App.selectedElements);
+/* The edges a Shade command should act on, for whichever mode is active.
+   Face mode: the outlines of the selected faces. Object mode: everything. */
+function edgesForShading(obj) {
   ensureHelpers(obj);
   const topo = obj.mesh.userData.topo;
-  const groups = new Set();
-  if (App.mode === 'vertex') {
-    App.selectedElements.forEach(l => topo.faceGroups.forEach(fg => { if (fg.logicalVerts.includes(l)) groups.add(fg.groupIndex); }));
-  } else if (App.mode === 'edge') {
-    App.selectedElements.forEach(ei => {
-      const [la, lb] = topo.edges[ei];
-      topo.faceGroups.forEach(fg => { if (fg.logicalVerts.includes(la) && fg.logicalVerts.includes(lb)) groups.add(fg.groupIndex); });
+  if (App.mode === 'face' && App.selectedElements.size) {
+    const byKey = new Map();
+    topo.edges.forEach((e, ei) => byKey.set(e[0] < e[1] ? e[0] + '_' + e[1] : e[1] + '_' + e[0], ei));
+    const out = new Set();
+    App.selectedElements.forEach(gi => {
+      const fg = topo.faceGroups[gi];
+      if (!fg) return;
+      faceOutlinePairs(topo, obj.mesh.geometry, fg).forEach(([a, b]) => {
+        const ei = byKey.get(a < b ? a + '_' + b : b + '_' + a);
+        if (ei !== undefined) out.add(ei);
+      });
     });
-  } else if (App.mode === 'object') {
-    topo.faceGroups.forEach(fg => groups.add(fg.groupIndex));
+    return Array.from(out);
   }
-  return Array.from(groups);
+  return topo.edges.map((e, ei) => ei);
 }
 
-function shadeSelection(smooth) {
-  if (App.mode === 'edge') {
-    /* Hard shading on edges means the EDGES go sharp - not every face
-       group that happens to touch them, which hardened whole rings and
-       was the complaint. Flat creases the selected edges (one sharp line
-       across a smooth surface); smooth un-creases them. Face flags stay
-       untouched. Same map Subdivide honours, so a sharp edge is sharp
-       everywhere. creaseSelection guards, mirrors, toasts and pushes
-       history itself. */
-    creaseSelection(!smooth);
-    return;
-  }
-  if (App.mode === 'object') {
-    const ids = Array.from(App.selectedObjectIds);
-    if (!ids.length) { toast('Select an object first'); return; }
-    ids.forEach(id => {
-      const obj = findObject(id);
-      const groups = faceGroupsForShadingTarget(obj);
-      setGroupsShading(obj, groups, smooth);
-    });
-  } else {
-    const obj = findObject(App.activeObjectId);
-    if (!obj || App.selectedElements.size === 0) { toast('Select something first'); return; }
-    const groups = faceGroupsForShadingTarget(obj);
-    if (!groups.length) { toast('Nothing adjacent to shade'); return; }
-    setGroupsShading(obj, groups, smooth);
-  }
-  pushHistory();
-  toast(smooth ? 'Shade smooth' : 'Shade flat');
+// The position-pair key for one edge index, which is how both shading marks
+// and creases are stored.
+function edgeKeyAt(obj, ei) {
+  const e = obj.mesh.userData.topo.edges[ei];
+  return e ? creaseKeyFor(logicalPos(obj, e[0]), logicalPos(obj, e[1])) : null;
+}
+
+/* MARK SHARP, as a two-state toggle. Tapping it on edges that are already
+   marked sharp takes the mark OFF rather than needing a second tool - the
+   edge goes back to letting its angle decide. That is the whole of the
+   "erase sharp if applied a second time" rule, and it is why the ring lost
+   its separate Uncrease seat. */
+function markSharpSelection() {
+  if (App.mode !== 'edge') { toast('Mark Sharp works in Edge mode'); return; }
+  const obj = findObject(App.activeObjectId);
+  if (!obj || !App.selectedElements.size) { toast('Select edges to mark sharp'); return; }
+  ensureHelpers(obj);
+  symExpand(obj);   // a flag per edge, so the union with the mirror is right
+  const marks = edgeShadeSet(obj);
+  const keys = [];
+  App.selectedElements.forEach(ei => { const k = edgeKeyAt(obj, ei); if (k) keys.push(k); });
+  if (!keys.length) { toast('Nothing to mark there'); return; }
+
+  const allSharp = keys.every(k => marks[k] === 'sharp');
+  keys.forEach(k => { if (allSharp) delete marks[k]; else marks[k] = 'sharp'; });
+
+  applyShading(obj);
+  refreshElementColors(obj);
   hideRadialMenu();
+  refreshUI();
+  pushHistory();
+  toast(allSharp ? keys.length + ' edge(s) back to auto' : keys.length + ' edge(s) marked sharp');
+}
+
+/* SHADE SMOOTH / FLAT. Smooth marks every edge of the selection smooth
+   EXCEPT the ones already marked sharp - "smooth everything except sharp",
+   which is what the tool is for. Flat marks them all sharp, because a
+   flat-shaded face in this model is simply a face whose edges are sharp.
+
+   Neither one touches a per-face flag, because there is no longer one. To
+   get an edge back to "let the angle decide", tap Mark Sharp on it twice. */
+function shadeSelection(smooth) {
+  if (App.mode === 'edge') { markSharpSelection(); return; }
+  const objs = App.mode === 'object'
+    ? Array.from(App.selectedObjectIds).map(findObject).filter(Boolean)
+    : [findObject(App.activeObjectId)].filter(Boolean);
+  if (!objs.length) { toast('Select an object first'); return; }
+  if (App.mode === 'face' && !App.selectedElements.size) { toast('Select faces first'); return; }
+
+  let n = 0;
+  objs.forEach(obj => {
+    const marks = edgeShadeSet(obj);
+    edgesForShading(obj).forEach(ei => {
+      const k = edgeKeyAt(obj, ei);
+      if (!k) return;
+      if (smooth) {
+        if (marks[k] === 'sharp') return;   // a hand mark outranks the command
+        marks[k] = 'smooth';
+      } else {
+        marks[k] = 'sharp';
+      }
+      n++;
+    });
+    applyShading(obj);
+    refreshElementColors(obj);
+  });
+  hideRadialMenu();
+  refreshUI();
+  pushHistory();
+  toast((smooth ? 'Shaded smooth - ' : 'Shaded flat - ') + n + ' edge(s)');
 }
 
 function ensureHelpers(obj) {
@@ -4719,14 +4892,34 @@ function subdivideOp(obj, mode) {
   });
   if (!groups.length) return false;
 
-  // creases carry over onto both halves of every edge they marked
+  /* Creases carry over onto both halves of every edge they marked - and so
+     do SHADING MARKS, which are a separate map on the same kind of key. An
+     edge you marked sharp must still be sharp after a subdivision, or the
+     first Subdivide silently undoes your shading; the angle rule would not
+     save it either, because subdividing is exactly what makes the angles
+     shallow. */
   const newCreases = {};
+  const srcShade = mesh.userData.edgeShade || {};
+  const hasShade = Object.keys(srcShade).length > 0;
+  const newShade = {};
   edgeFaces.forEach((faces, k) => {
     const [a, b] = k.split('_').map(Number);
-    if (!edgeIsCreased(a, b)) return;
     const pa = vertPoint.get(a), pb = vertPoint.get(b), pm = edgePoint.get(k);
-    newCreases[creaseKeyFor(pa, pm)] = true;
-    newCreases[creaseKeyFor(pm, pb)] = true;
+    if (edgeIsCreased(a, b)) {
+      newCreases[creaseKeyFor(pa, pm)] = true;
+      newCreases[creaseKeyFor(pm, pb)] = true;
+    }
+    if (hasShade) {
+      /* posOf, not pa/pb: smooth subdivision MOVES the original vertices, so
+         pa and pb are already the new positions and would never match a mark
+         recorded against the old ones. edgeIsCreased has the same shape for
+         the same reason. */
+      const m = srcShade[creaseKeyFor(posOf(a), posOf(b))];
+      if (m) {
+        newShade[creaseKeyFor(pa, pm)] = m;
+        newShade[creaseKeyFor(pm, pb)] = m;
+      }
+    }
   });
 
   // finishes and shading follow the face they came from
@@ -4746,6 +4939,7 @@ function subdivideOp(obj, mode) {
   mesh.userData.finishes = finishes;
   mesh.userData.smoothGroups = smoothGroups;
   mesh.userData.creases = newCreases;
+  mesh.userData.edgeShade = newShade;
   rebuildFromEditable(obj, { positions, groups });
   return true;
 }
@@ -5828,7 +6022,13 @@ function captureObjectState(obj) {  const ed = toEditable(obj.mesh);
     mats,
     smooth: { ...(obj.mesh.userData.smoothGroups || {}) },
     // Also keyed by group index, so a revert has to put it back too.
-    finishes: { ...(obj.mesh.userData.finishes || {}) }
+    finishes: { ...(obj.mesh.userData.finishes || {}) },
+    /* And the two POSITION-keyed marks. A cancelled op used to put the
+       geometry back and leave behind whatever creases it had written -
+       long-standing, and it started mattering a great deal once shading
+       moved onto the same kind of map. */
+    creases: { ...(obj.mesh.userData.creases || {}) },
+    edgeShade: { ...(obj.mesh.userData.edgeShade || {}) }
   };
 }
 
@@ -5836,6 +6036,8 @@ function restoreObjectState(obj, st) {
   obj.mesh.material = st.mats.map(m => m.clone());
   obj.mesh.userData.smoothGroups = { ...st.smooth };
   if (st.finishes) obj.mesh.userData.finishes = { ...st.finishes };
+  if (st.creases) obj.mesh.userData.creases = { ...st.creases };
+  if (st.edgeShade) obj.mesh.userData.edgeShade = { ...st.edgeShade };
   rebuildFromEditable(obj, {
     positions: st.positions.slice(),
     groups: st.groups.map(g => ({ triangles: g.triangles.map(t => t.slice()) }))
@@ -6642,23 +6844,26 @@ function creaseSelection(on) {
 
   ensureHelpers(obj);
   symExpand(obj);   // a flag per edge - per-element, so the union is right
-  const topo = obj.mesh.userData.topo;
   const creases = creaseSet(obj);
-  let n = 0;
-  App.selectedElements.forEach(ei => {
-    const e = topo.edges[ei];
-    if (!e) return;
-    const k = creaseKeyFor(logicalPos(obj, e[0]), logicalPos(obj, e[1]));
-    if (on) creases[k] = true; else delete creases[k];
-    n++;
-  });
+  const keys = [];
+  App.selectedElements.forEach(ei => { const k = edgeKeyAt(obj, ei); if (k) keys.push(k); });
+  if (!keys.length) { toast('Nothing to crease there'); return; }
 
-  applyShading(obj);   // creases shape smooth normals now, not just Subdivide
+  /* A toggle, like Mark Sharp: creasing edges that are already creased takes
+     the crease off. `on` is still honoured when a caller asks for a specific
+     state; called with nothing it decides from what is there. */
+  const allCreased = keys.every(k => !!creases[k]);
+  const want = (on === undefined) ? !allCreased : !!on;
+  keys.forEach(k => { if (want) creases[k] = true; else delete creases[k]; });
+
+  /* No applyShading here any more. As of a2.18 a crease is ONLY a Subdivide
+     instruction - it says "hold this edge when you round the mesh" and has
+     no say in how the surface is shaded. Sharpness is its own mark. */
   refreshElementColors(obj);
   hideRadialMenu();
   refreshUI();
   pushHistory();
-  toast(on ? n + ' edge(s) creased' : 'Crease cleared');
+  toast(want ? keys.length + ' edge(s) creased' : keys.length + ' crease(s) cleared');
 }
 
 function clearAllCreases() {
@@ -6667,7 +6872,6 @@ function clearAllCreases() {
   if (!obj) { toast('Select an object first'); return; }
   obj.mesh.userData.creases = {};
   ensureHelpers(obj);
-  applyShading(obj);
   refreshElementColors(obj);
   refreshUI();
   pushHistory();
@@ -6915,13 +7119,21 @@ function refreshElementColors(obj) {
   if (lines) {
     const col = lines.geometry.attributes.color.array;
     const creases = obj.mesh.userData.creases || {};
+    const shade = obj.mesh.userData.edgeShade || {};
     const hasCreases = Object.keys(creases).length > 0;
+    const hasShade = Object.keys(shade).length > 0;
     const showSel = App.mode === 'edge';
     topo.edges.forEach((e, i) => {
       let c = UNSELECT_EDGE_COLOR;
-      // Creased edges read at a glance, so you can see what a smooth
-      // subdivision will hold sharp before you run it.
-      if (hasCreases && creases[creaseKeyFor(logicalPos(obj, e[0]), logicalPos(obj, e[1]))]) c = CREASE_COLOR;
+      /* Both marks read at a glance: the crease colour says what a smooth
+         Subdivide will hold, the sharp colour says where the shading breaks.
+         Sharp is checked last of the two so that an edge carrying both shows
+         as sharp - that is the one you can see in the render, and the one
+         you are most likely to be hunting for. */
+      const key = (hasCreases || hasShade)
+        ? creaseKeyFor(logicalPos(obj, e[0]), logicalPos(obj, e[1])) : null;
+      if (hasCreases && creases[key]) c = CREASE_COLOR;
+      if (hasShade && shade[key] === 'sharp') c = SHARP_COLOR;
       if (showSel && App.selectedElements.has(i)) c = SELECT_COLOR;
       setCol(col, i * 2, c); setCol(col, i * 2 + 1, c);
     });
@@ -7290,6 +7502,9 @@ function captureDragContext(pivot) {
       obj.mesh.localToWorld(q);
       return { logical: l, world: q };
     });
+    // Marks travel by logical edge for the length of the drag - see
+    // snapshotEdgeMarks.
+    ctx.marks = snapshotEdgeMarks(obj);
     ctx.mirrorMap = App.symmetry ? buildSymmetryMap(obj, App.symmetryAxis) : null;
     // Snapshot the plane with the map: it must not move mid-drag.
     ctx.mirrorOffset = App.symmetry ? symmetryPlane(obj, App.symmetryAxis).offset : 0;
@@ -7337,6 +7552,7 @@ function applyDeltaToSelection(deltaMatrix) {
       }
     });
     pa.needsUpdate = true;
+    rewriteEdgeMarks(obj, dragCtx.marks);
     applyShading(obj);
     obj.mesh.geometry.computeBoundingSphere();
     obj.mesh.geometry.computeBoundingBox();
@@ -10329,7 +10545,8 @@ function serializeDoc() {
         })),
         smoothGroups: o.mesh.userData.smoothGroups || {},
         finishes: o.mesh.userData.finishes || {},
-        creases: o.mesh.userData.creases || {}
+        creases: o.mesh.userData.creases || {},
+        edgeShade: o.mesh.userData.edgeShade || {}
       };
     }),
     // Selection travels with the snapshot so undo/redo doesn't drop you back
@@ -10427,6 +10644,12 @@ function restoreDoc(doc, opts = {}) {
     mesh.userData.smoothGroups = od.smoothGroups ? { ...od.smoothGroups } : {};
     mesh.userData.finishes = { ...finishes };
     mesh.userData.creases = od.creases ? { ...od.creases } : {};
+    /* A doc written before a2.18 has no edgeShade at all, which is the
+       signal to convert its per-face flags and shading creases into edge
+       marks. One written after has it, even when empty, and is left alone -
+       an empty map means "everything decided by angle", not "not migrated". */
+    if (od.edgeShade) mesh.userData.edgeShade = { ...od.edgeShade };
+    else migrateEdgeShade(obj);
     applyShading(obj);
     scene.add(mesh);
     App.objects.push(obj);
@@ -10806,7 +11029,19 @@ const ICON = {
   dupe:    '<path d="M9 3h12v12"/><path d="M3 9h12v12H3z"/>',
   join:    '<circle cx="9" cy="12" r="5.5"/><circle cx="15" cy="12" r="5.5"/>',
   split:   '<path d="M12 3v18"/><path d="M8 8L4 12l4 4M16 8l4 4-4 4"/>',
-  crease:  '<path d="M3 18L12 6l9 12"/><circle cx="12" cy="6" r="1.8" fill="currentColor" stroke="none"/>',
+  /* SHARP keeps the old crease glyph, because a hard peak is what it always
+     depicted - a2.18 only gave that picture the right name. CREASE is the
+     same corner ROUNDED, with the held point PINNED to it: the edge survives
+     the rounding, which is exactly what a crease promises Subdivide.
+
+     The pin is not decoration. Screenshotted at the 26px the ring actually
+     uses, the bead inside BOTH glyphs fuses into the stroke and disappears,
+     which left a pointed hump and a round hump as the only difference
+     between two marks that mean quite different things. The stem sits
+     outside the curve, against empty background, so it is the part that
+     survives the size. */
+  sharp:   '<path d="M3 18L12 6l9 12"/><circle cx="12" cy="6" r="1.8" fill="currentColor" stroke="none"/>',
+  crease:  '<path d="M3 18Q12 5 21 18"/><path d="M12 4v5"/><circle cx="12" cy="11.4" r="1.9" fill="currentColor" stroke="none"/>',
   uncrease:'<path d="M3 18c4-6 14-6 18 0"/>',
   subdiv:  '<path d="M3 3h18v18H3z"/><path d="M12 3v18M3 12h18"/>',
   // Two solid edges and the band of new faces forming between them.
@@ -10879,9 +11114,15 @@ const HUB_TOOLS_EDGE = [
   { key: 'bridge', icon: 'bridge', label: 'Bridge', seat: 5, ring: 1, run: bridgeSelection },
   { key: 'cap', icon: 'cap', label: 'Cap hole', seat: 6, ring: 1, run: fillHolesSelection },
   { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 1, run: deleteSelection },
-  { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 8, ring: 1, run: toggleShading },
-  { key: 'crease', icon: 'crease', label: 'Crease', seat: 10, ring: 1, run: () => creaseSelection(true) },
-  { key: 'uncrease', icon: 'uncrease', label: 'Uncrease', seat: 11, ring: 1, run: () => creaseSelection(false) },
+  /* Shade is gone from THIS ring: in Edge mode it did what Mark Sharp does,
+     and two controls for one thing is how the old shading model got
+     confusing. It keeps seat 8 in the Face and Object rings.
+     Uncrease is gone too - both marks are toggles now, so the second tap is
+     the "off", which is what freed a seat for a second mark in the first
+     place. Sharp inherits Crease's old seat because it inherits the meaning
+     the glyph always had; Crease moves one along. */
+  { key: 'sharp', icon: 'sharp', label: 'Mark Sharp', seat: 10, ring: 1, run: markSharpSelection },
+  { key: 'crease', icon: 'crease', label: 'Crease', seat: 11, ring: 1, run: () => creaseSelection() },
   { key: 'grow', icon: 'grow', label: 'Grow', seat: 12, ring: 1, run: growSelection },
   { key: 'shrink', icon: 'shrink', label: 'Shrink', seat: 13, ring: 1, run: shrinkSelection }
 ];
