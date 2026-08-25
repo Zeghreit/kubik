@@ -701,7 +701,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.19a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.19b</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -998,6 +998,23 @@ function toast(msg) {
 const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(pixelRatio);
+/* A LOST CONTEXT USED TO BE COMPLETELY SILENT: the scene simply stopped
+   drawing and looked like the model had been deleted, which is exactly how
+   it was reported. The cause was the material previews leaking a context per
+   tray rebuild (fixed in a2.19b), but the reason it was hard to find is that
+   nothing said a word. preventDefault() is what lets the browser hand the
+   context back at all, and the toast turns "the app is broken" into
+   something with a name. A full restore means rebuilding every GPU resource
+   in the scene, which is not wired up - reloading is the honest advice. */
+renderer.domElement.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault();
+  console.error('[kubik] WebGL context lost - the viewport has stopped drawing');
+  try { toast('Graphics context lost - reload the page'); } catch (_) {}
+});
+renderer.domElement.addEventListener('webglcontextrestored', () => {
+  console.warn('[kubik] WebGL context restored');
+  try { toast('Graphics context restored - reload if the view looks wrong'); } catch (_) {}
+});
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 // Filmic response instead of a straight clamp: highlights roll off instead of
 // blowing out, which is most of what separates a flat preview from something
@@ -11703,18 +11720,36 @@ const matTabEl = document.getElementById('matTab');
 const matTrayInnerEl = document.getElementById('matTrayInner');
 let _matPreviews = null;
 
-/* Real renders, not swatches: a one-off throwaway renderer draws a sphere
-   in each finish against the same RoomEnvironment the scene uses, so a
-   preview shows exactly what that finish does. Built lazily on the first
-   open, then the whole renderer is disposed - one extra WebGL context,
-   briefly, once. */
-function renderMatPreviews() {
+/* Real renders, not swatches: a small offscreen renderer draws a sphere in
+   each finish against the same RoomEnvironment the scene uses, so a preview
+   shows exactly what that finish does.
+
+   THE RIG IS BUILT ONCE AND KEPT. It used to be created and "disposed" on
+   every tray rebuild, and that is what made the model vanish while you were
+   picking colours: **WebGLRenderer.dispose() does NOT release the WebGL
+   context.** It frees three's own objects; the canvas and its context live
+   on until the garbage collector gets to them, and a browser only allows a
+   handful of live contexts at once - Chrome around sixteen - so each new one
+   evicts the OLDEST. The oldest is the viewport. Measured: eighteen
+   open/close cycles of the shelf and renderer.getContext().isContextLost()
+   on the MAIN renderer comes back true, the scene stops drawing, and nothing
+   is logged because nobody was listening.
+
+   One rig, made on first use and reused, is one context for the life of the
+   page - which is what the old comment claimed and the old code did not do.
+   If this ever does need tearing down, forceContextLoss() before dispose()
+   is the only thing that actually hands the context back. */
+let _matPreviewRig = null;
+
+function matPreviewRig() {
+  if (_matPreviewRig) return _matPreviewRig;
   const r = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
   r.setSize(104, 104);
   r.setPixelRatio(1);
   const sc = new THREE.Scene();
   const pm = new THREE.PMREMGenerator(r);
   sc.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture;
+  pm.dispose();   // the generator goes; its texture stays on the scene
   const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 10);
   cam.position.set(0, 0.5, 2.8);
   cam.lookAt(0, 0, 0);
@@ -11722,15 +11757,19 @@ function renderMatPreviews() {
   key.position.set(3, 4, 2);
   sc.add(key);
   const mat = new THREE.MeshStandardMaterial({ color: 0x9AA0A8 });
-  const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.8, 48, 32), mat);
-  sc.add(mesh);
+  sc.add(new THREE.Mesh(new THREE.SphereGeometry(0.8, 48, 32), mat));
+  _matPreviewRig = { r, sc, cam, mat };
+  return _matPreviewRig;
+}
+
+function renderMatPreviews() {
+  const rig = matPreviewRig();
   const out = {};
   MATERIALS.forEach((_d, k) => {
-    applyFinish(mat, k);   // sets the definition's colour too, as of a2.13
-    r.render(sc, cam);
-    out[k] = r.domElement.toDataURL();
+    applyFinish(rig.mat, k);   // sets the definition's colour too, as of a2.13
+    rig.r.render(rig.sc, rig.cam);
+    out[k] = rig.r.domElement.toDataURL();
   });
-  mesh.geometry.dispose(); mat.dispose(); pm.dispose(); r.dispose();
   return out;
 }
 
