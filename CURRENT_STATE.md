@@ -745,6 +745,53 @@ Measured after, on the default Solid material, mean difference per channel
 over the object's own pixels: Studio vs Rim 48, vs Sunset 57, vs Neutral 70,
 Turn 180 44. Softbox is the closest neighbour at 17 and still reads.
 
+## a2.22b - EXPOSURE, AND LIGHTING LEAVES THE DRAWER
+
+Two reports: too dull even at Strength 3, and "not informative to rule it in
+the drawer - i have to close menu to see changes".
+
+**A LIGHTING PRESET CHANGES CHARACTER, NOT EXPOSURE.** That is the rule this
+settled on, and it is what the dullness was really about. Rim and Sunset are
+authored dark on purpose; honouring that literally left them at half
+Studio's brightness with no way back, because Strength scaled everything
+including the deficit. A photographer relights and then re-exposes. So:
+- every environment is normalised to the same mean radiance
+  (`envNorm`, `ENV_TARGET_MEAN = 1.0`, tuned so the default cube lands at
+  luminance 107 against the old fixed rig's 101);
+- the theme's key+fill+rim is a BUDGET the preset spends by relative panel
+  weight, not a per-slot multiplier - a2.22a scaled each slot against
+  Studio's key, which starved every preset with smaller panels;
+- the hemisphere is flat across presets. Its sky and ground COLOURS still
+  come from the preset; its level does not, or the dark presets go dim
+  again through the back door.
+What still differs is direction, colour and contrast, which is what a preset
+is actually for.
+
+Measured on the default Solid material, object luminance at Strength 1,
+before -> after: Studio 101 -> 107, Softbox ~95 -> 106, Sunset 43 -> 105,
+Neutral 51 -> 86, Overcast 61 -> 77, Rim 54 -> 67. Rim and Overcast stay
+lower by design - they are soft and dark setups - and reach 147 and 182 at
+Strength 5. Presets remain clearly distinct: 16 to 45 mean per channel
+against Studio.
+
+**Strength now runs to 5**, and the shadow caster's elevation floor dropped
+from 32 to 24: pushing the key high to keep the shadow tidy also put the
+light on the TOP face, which is the one face you are usually not looking at.
+
+**The controls moved into the viewport** as `#lightBar`, above the undo row.
+Turn and Strength are judged entirely by what happens to the model, and a
+control you have to close a menu to evaluate is a control you guess with.
+Six chips plus two compact sliders, wrapping on a narrow screen, quiet
+styling (panel background, no accent border) because unlike the op bar it is
+always on screen. The drawer keeps a one-line pointer to it.
+
+**Measurement note that cost two rounds here:** to judge "how bright is the
+model", build an exact object mask first - render once with the meshes
+hidden, once shown, and difference. Thresholding against the background
+colour picks up the floor grid, which outnumbers the object and swamped the
+average; the first attempt reported luminance 19 and no change at all
+between Strength 1 and 3.
+
 ## Screen layout
 
 - **Top-left** hamburger → drawer. **Top-centre** tool/mode readout.
