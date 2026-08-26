@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~12,000 lines)
-- Version at time of writing: **a2.16a**
+- Version at time of writing: **a2.24a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -844,6 +844,91 @@ finger up still counted as one finger down and the camera never came back.
 
 **Desktop has no path to Turn and Strength** - user's decision, touch only.
 The pill still picks the type.
+
+## a2.24 - CAVITY AND EDGES: masks that read the SHAPE
+
+Two new mask types sit in the same list as Clouds and Scratches, and behave
+like any other mask - colour and/or roughness, a blend mode, an amount,
+stackable four deep. What is different is where their weight comes from:
+not a baked texture but the mesh's own curvature.
+
+**`kubikCurv`, one signed float per vertex.** Computed at the end of
+`applyShading`, which is the single funnel every object mesh passes through
+- `createCubeObject`, `restoreDoc`, `rebuildFromEditable` (and therefore all
+25 op call sites), `cloneObjectInto` via `geometry.clone()`.
+
+**0 IS FLAT, positive is a convex edge, negative is a cavity - and that sign
+convention is load-bearing.** WebGL hands an UNBOUND attribute a constant,
+so any geometry that never went through `applyShading` - the material
+preview ball is the one that exists - has to read as something harmless.
+Zero is that something. `mat.defaultAttributeValues.kubikCurv = [0]` pins
+the constant rather than trusting whatever the last draw call left in the
+slot. Verified by deleting the attribute at runtime with a Cavity mask at
+full strength: 0.00/255 change.
+
+**The estimate** is the mean of `dot(normalise(neighbour - v), N)` around the
+one ring, negated. Neighbours ABOVE the tangent plane mean the surface
+closes in - a cavity. `N` is the GEOMETRIC normal, every triangle around the
+vertex whatever the shading islands say, because curvature is a fact about
+the shape and marking an edge sharp must not move it. The x2 is a range fit:
+a cube corner reads -0.577 raw and wants to be a full-strength edge.
+
+**It reuses the normals pass's own working data** - `trisAt`, `incident`,
+`edgeEnds`, `triNormal`, `logicalGroups` - so it costs one more O(V+E)
+sweep, not a second topology build.
+
+**It has its OWN try/catch, and that is not decoration.** It sits after the
+per-island normals are written, inside a function whose outer catch answers
+a throw with `computeVertexNormals()`. Sharing the catch would mean a mask
+that failed to compute took every hard edge in the model down with it.
+
+**No texture, no bake, no recompile.** `bakeNoiseField` returns a flat field
+for these two types and their packed channel goes unused; the shader picks
+its source from a new `uKubikSource` uniform (0 texture, 1 cavity, 2 edges),
+so switching a mask between Clouds and Cavity is a uniform write.
+
+**One slider, two meanings, said out loud.** `MASK_TYPES` already carried a
+`detail` LABEL per type; a2.24 adds `scale` and `contrast` labels the same
+way. On a shape mask Scale reads **Range** (0.05-1 instead of 0.25-20) and
+Contrast reads **Sharpness** (a falloff exponent in the shader, where for
+cloth it was spent at bake time). Bounds are written before the value, or
+the range element snaps 0.35 to the old grid. Crossing the cloth/shape line
+resets Scale once - a Scale of 12 is a Range past the widest crevice, and
+every shape mask would have opened as a solid wash.
+
+**Applying one material to a second object finds THAT object's crevices**,
+with no decision to make: curvature is geometry data, not material data.
+
+**`kubikCurv` is stripped from the glTF export.** `GLTFExporter` exports any
+attribute it does not recognise as `_KUBIKCURV`, which would put four bytes
+a vertex of Kubik bookkeeping into every `.glb` and land in Blender as a
+stray float attribute. OBJ and STL never read it.
+
+**Verified** in headless Chrome against the real app (`_probe.py`, an
+appended harness on a copy of index.html, reading pixels straight off the
+default framebuffer through `gl.readPixels` inside the same synchronous
+block as the render, and measuring over an EXACT object mask built by
+differencing a frame with the mesh hidden - not over the whole canvas, which
+is the mistake a2.22 made): default cube reads +1.000 at every one of its 24
+vertices; an Edges mask darkens the object by 51.9/255; a Cavity mask on a
+cube changes nothing, which is correct - a box has no crevices; a Clouds
+mask still darkens by 22.8/255, so the cloth path is untouched; a flat grid
+reads 0.000 at the middle vertex, the same grid tented reads +0.520 and
+valleyed -0.520. No shader compile errors.
+
+**Debug handle gained `renderer`, `applyShading`, `toEditable`,
+`rebuildFromEditable`** so a harness can build a mesh whose answer is known
+instead of inferring curvature from whatever shape the ops happen to make.
+Inferring from the flattering case is exactly how the environment work went
+wrong twice.
+
+**Known, pre-existing, NOT introduced here:** `restoreDoc` installs a
+material definition from a project file only when the id is absent
+(`!MATERIALS.has(d.id)`). The three presets are always seeded, so masks
+added to *Solid / Plastic / Metal* are written into the JSON and silently
+dropped on open. Masks on custom materials travel fine. Affects every mask
+type equally; the fix is a policy decision - overwrite a preset the file
+disagrees with, or keep the local one - and is the user's to make.
 
 ## Screen layout
 

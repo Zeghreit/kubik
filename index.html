@@ -770,7 +770,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.23</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.24a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -887,13 +887,13 @@
           <input type="range" id="mkRough" min="0" max="1" step="0.01">
           <label>Amount <span id="mkAmountV"></span></label>
           <input type="range" id="mkAmount" min="0" max="1" step="0.01">
-          <label>Scale <span id="mkScaleV"></span></label>
+          <label id="mkScaleLbl">Scale <span id="mkScaleV"></span></label>
           <input type="range" id="mkScale" min="0.25" max="20" step="0.25">
           <div id="mkDetailRow" style="display:flex; flex-direction:column; gap:8px;">
             <label id="mkDetailLbl">Detail <span id="mkDetailV"></span></label>
             <input type="range" id="mkDetail" min="1" max="5" step="1">
           </div>
-          <label>Contrast <span id="mkContrastV"></span></label>
+          <label id="mkContrastLbl">Contrast <span id="mkContrastV"></span></label>
           <input type="range" id="mkContrast" min="0.5" max="3" step="0.1">
           <div class="me-row"><button id="mkSeed" class="small">New pattern</button><button id="mkDelete" class="small danger">Remove</button></div>
         </div>
@@ -2181,17 +2181,28 @@ const MASK_BLENDS = ['normal', 'multiply', 'screen', 'overlay'];
    type - the slider is one control doing five different jobs, and "Detail 3"
    means nothing when you are drawing stripes. null hides it entirely. */
 const MASK_TYPES = [
-  { id: 'fbm',       name: 'Clouds',    detail: 'Detail' },
-  { id: 'voronoi',   name: 'Cells',     detail: 'Cells' },
-  { id: 'scratches', name: 'Scratches', detail: 'Count' },
-  { id: 'dots',      name: 'Dots',      detail: 'Density' },
-  { id: 'stripes',   name: 'Stripes',   detail: 'Bands' },
-  { id: 'image',     name: 'Image',     detail: null }
+  { id: 'fbm',       name: 'Clouds',    detail: 'Detail',  scale: 'Scale', contrast: 'Contrast' },
+  { id: 'voronoi',   name: 'Cells',     detail: 'Cells',   scale: 'Scale', contrast: 'Contrast' },
+  { id: 'scratches', name: 'Scratches', detail: 'Count',   scale: 'Scale', contrast: 'Contrast' },
+  { id: 'dots',      name: 'Dots',      detail: 'Density', scale: 'Scale', contrast: 'Contrast' },
+  { id: 'stripes',   name: 'Stripes',   detail: 'Bands',   scale: 'Scale', contrast: 'Contrast' },
+  { id: 'image',     name: 'Image',     detail: null,      scale: 'Scale', contrast: 'Contrast' },
+  /* SHAPE masks (a2.24). These two read no texture at all - they ride the
+     kubikCurv vertex attribute, which is the mesh's OWN curvature, so the
+     same material laid on a second object finds that object's crevices
+     rather than carrying the first one's around with it. `curv` is the
+     shader's source code: 1 asks for concave, 2 for convex. Their Scale
+     slider is a RANGE in curvature units and so wears a different label and
+     different bounds. */
+  { id: 'cavity',    name: 'Cavity',    detail: null,      scale: 'Range', contrast: 'Sharpness', curv: 1 },
+  { id: 'edges',     name: 'Edges',     detail: null,      scale: 'Range', contrast: 'Sharpness', curv: 2 }
 ];
+const CURV_SCALE_DEFAULT = 0.35;
 function maskTypeOf(mk) {
   const t = mk && mk.type;
   return MASK_TYPES.find(x => x.id === t) || MASK_TYPES[0];
 }
+function maskCurvMode(mk) { return maskTypeOf(mk).curv || 0; }
 const MASK_SIZE = 128;
 const MASK_DEFAULT = {
   on: true, type: 'fbm', blend: 'normal',
@@ -2454,6 +2465,9 @@ function maskImageField(mk, size) {
    gets the same push away from mid-grey, so the slider means one thing. */
 function bakeNoiseField(mk, size) {
   const t = mk.type || 'fbm';
+  /* A shape mask has no cloth to bake. Its channel stays flat and the
+     shader reads the curvature attribute in its place. */
+  if (t === 'cavity' || t === 'edges') return new Float32Array(size * size);
   let raw = null;
   if (t === 'voronoi') raw = maskVoronoiField(mk, size);
   else if (t === 'scratches') raw = maskScratchField(mk, size);
@@ -2586,6 +2600,11 @@ function applyMaskPatch(mat, d) {
     return;
   }
   const tex = getMaskTexture(d);
+  /* A geometry with no kubikCurv - a preview sphere, anything that has not
+     been through applyShading - must read as FLAT. Zero is flat by
+     construction, and this pins the constant WebGL hands an unbound
+     attribute so it cannot inherit whatever the last draw call left there. */
+  mat.defaultAttributeValues = Object.assign({}, mat.defaultAttributeValues, { kubikCurv: [0] });
 
   /* Everything about the stack rides UNIFORMS - how many masks, which
      components each drives, its blend mode, colour, roughness, amount and
@@ -2605,7 +2624,9 @@ function applyMaskPatch(mat, d) {
       uKubikBlend: { value: [] },
       uKubikColorOn: { value: [] },
       uKubikRoughOn: { value: [] },
-      uKubikRough: { value: [] }
+      uKubikRough: { value: [] },
+      uKubikSource: { value: [] },
+      uKubikPow: { value: [] }
     };
     for (let k = 0; k < MASK_SLOTS; k++) {
       const mk = list[k];
@@ -2617,6 +2638,12 @@ function applyMaskPatch(mat, d) {
       u.uKubikColorOn.value.push(live && mk.colorOn ? 1 : 0);
       u.uKubikRoughOn.value.push(live && mk.roughOn ? 1 : 0);
       u.uKubikRough.value.push(mk && typeof mk.rough === 'number' ? mk.rough : 0.5);
+      /* 0 = read the baked texture, 1 = concave, 2 = convex. Contrast is a
+         bake-time number for cloth masks and has already been spent by the
+         time the shader sees them, so the exponent is 1 for those. */
+      const cm = mk ? maskCurvMode(mk) : 0;
+      u.uKubikSource.value.push(cm);
+      u.uKubikPow.value.push(cm && mk && mk.contrast > 0 ? mk.contrast : 1);
       if (live) u.uKubikCount.value = k + 1;   // highest live slot, so the loop can stop
     }
     return u;
@@ -2636,6 +2663,8 @@ function applyMaskPatch(mat, d) {
       u.uKubikColorOn.value[k] = fresh.uKubikColorOn.value[k];
       u.uKubikRoughOn.value[k] = fresh.uKubikRoughOn.value[k];
       u.uKubikRough.value[k] = fresh.uKubikRough.value[k];
+      u.uKubikSource.value[k] = fresh.uKubikSource.value[k];
+      u.uKubikPow.value[k] = fresh.uKubikPow.value[k];
     }
   };
 
@@ -2667,12 +2696,13 @@ function applyMaskPatch(mat, d) {
     Object.assign(shader.uniforms, packUniforms());
     maskUniStore(mat).set(key, shader.uniforms);
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vKubikPos;\nvarying vec3 vKubikNrm;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvKubikPos = position;\nvKubikNrm = normal;');
+      .replace('#include <common>', '#include <common>\nvarying vec3 vKubikPos;\nvarying vec3 vKubikNrm;\nattribute float kubikCurv;\nvarying float vKubikCurv;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvKubikPos = position;\nvKubikNrm = normal;\nvKubikCurv = kubikCurv;');
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', ['#include <common>',
         'varying vec3 vKubikPos;',
         'varying vec3 vKubikNrm;',
+        'varying float vKubikCurv;',
         'uniform sampler2D uKubikMask;',
         'uniform int   uKubikCount;',
         'uniform vec3  uKubikColor[' + MASK_SLOTS + '];',
@@ -2682,6 +2712,8 @@ function applyMaskPatch(mat, d) {
         'uniform float uKubikColorOn[' + MASK_SLOTS + '];',
         'uniform float uKubikRoughOn[' + MASK_SLOTS + '];',
         'uniform float uKubikRough[' + MASK_SLOTS + '];',
+        'uniform int   uKubikSource[' + MASK_SLOTS + '];',
+        'uniform float uKubikPow[' + MASK_SLOTS + '];',
         // The weights are computed once, in <color_fragment>, and read again
         // later in <roughnessmap_fragment> - three runs colour first.
         'float kubikW[' + MASK_SLOTS + '];',
@@ -2701,6 +2733,11 @@ function applyMaskPatch(mat, d) {
         '         + texture2D(uKubikMask, q.xz) * w.y',
         '         + texture2D(uKubikMask, q.xy) * w.z;',
         '  return kubikPick(s, ch);',
+        '}',
+        'float kubikCurvW(float range, float sharp, int mode) {',
+        '  float s = (mode == 2) ? vKubikCurv : -vKubikCurv;',
+        '  float w = clamp(s / max(0.02, range), 0.0, 1.0);',
+        '  return pow(w, max(0.05, sharp));',
         '}',
         'vec3 kubikBlend(vec3 base, vec3 top, int mode) {',
         '  if (mode == 1) return base * top;',
@@ -2725,7 +2762,8 @@ function applyMaskPatch(mat, d) {
         '    kubikW[i] = 0.0;',
         '    if (i >= uKubikCount) continue;',
         '    if (uKubikAmount[i] <= 0.0) continue;',
-        '    kubikW[i] = kubikTriplanar(vKubikPos, kubikN, uKubikScale[i], i);',
+        '    if (uKubikSource[i] > 0) kubikW[i] = kubikCurvW(uKubikScale[i], uKubikPow[i], uKubikSource[i]);',
+        '    else kubikW[i] = kubikTriplanar(vKubikPos, kubikN, uKubikScale[i], i);',
         '    if (uKubikColorOn[i] > 0.5) {',
         '      vec3 mixed = kubikBlend(diffuseColor.rgb, uKubikColor[i], uKubikBlend[i]);',
         '      diffuseColor.rgb = mix(diffuseColor.rgb, mixed, kubikW[i] * uKubikAmount[i]);',
@@ -3129,6 +3167,63 @@ function applyShading(obj) {
       }
     });
     geo.attributes.normal.needsUpdate = true;
+
+    /* ---- Curvature, for the Cavity and Edges masks (a2.24) --------------
+
+       Signed, one number per LOGICAL vertex, written to every attribute
+       vertex that vertex owns. The sign convention is chosen so a MISSING
+       attribute is harmless: 0 is flat, positive is a convex edge, negative
+       is a cavity. WebGL hands an unbound attribute a constant, and any
+       other convention would make a geometry that has never been through
+       here render as one deep crevice.
+
+       The estimate is the mean of dot(neighbour - v, N) around the one
+       ring. Neighbours ABOVE the tangent plane mean the surface closes in
+       around the vertex - a cavity - so the raw number is negated. The
+       normal used is the GEOMETRIC one, every triangle around the vertex
+       whatever the shading islands say, because curvature is a fact about
+       the shape and marking an edge sharp must not move it.
+
+       The x2 is a range fit, not a fudge: a cube corner reads -0.577 and
+       wants to be a full-strength edge. */
+    try {
+    const curv = new Float32Array(posAttr.count);
+    const nv = new THREE.Vector3(), pv = new THREE.Vector3(), pw = new THREE.Vector3();
+    trisAt.forEach((tris, l) => {
+      const ais = logicalGroups[l];
+      if (!ais || !ais.length) return;
+      nv.set(0, 0, 0);
+      for (let i = 0; i < tris.length; i++) nv.add(triNormal[tris[i]]);
+      if (nv.lengthSq() < 1e-12) return;
+      nv.normalize();
+      const inc = incident.get(l);
+      if (!inc || !inc.length) return;
+      pv.fromBufferAttribute(posAttr, ais[0]);
+      let acc = 0, n = 0;
+      for (let i = 0; i < inc.length; i++) {
+        const ends = edgeEnds.get(inc[i]);
+        if (!ends) continue;
+        const o = ends[0] === l ? ends[1] : ends[0];
+        const oa = logicalGroups[o];
+        if (!oa || !oa.length) continue;
+        pw.fromBufferAttribute(posAttr, oa[0]).sub(pv);
+        if (pw.lengthSq() < 1e-12) continue;
+        acc += pw.normalize().dot(nv); n++;
+      }
+      if (!n) return;
+      const sv = Math.max(-1, Math.min(1, (-acc / n) * 2));
+      for (let i = 0; i < ais.length; i++) curv[ais[i]] = sv;
+    });
+    /* Written through when the vertex count has not moved, so anything
+       already holding the attribute keeps holding it. */
+    const ca = geo.attributes.kubikCurv;
+    if (ca && ca.array.length === curv.length) { ca.array.set(curv); ca.needsUpdate = true; }
+    else geo.setAttribute('kubikCurv', new THREE.BufferAttribute(curv, 1));
+    } catch (cerr) {
+      /* No attribute means flat, which is the harmless answer. The normals
+         above are already written and STAY written. */
+      console.error('curvature pass failed, masks will read flat', cerr);
+    }
   } catch (err) {
     console.error('applyShading failed, using flat normals', err);
     geo.computeVertexNormals();
@@ -12115,7 +12210,9 @@ function buildExportGroup() {
     // underneath it.
     const source = (App.fillet && o.mesh.userData.filletMesh) ? o.mesh.userData.filletMesh : o.mesh;
     const mats = Array.isArray(source.material) ? source.material : [source.material];
-    const m = new THREE.Mesh(source.geometry.clone(), mats.map(mm => { const c = mm.clone(); c.visible = true; return c; }));
+    const eg = source.geometry.clone();
+    eg.deleteAttribute('kubikCurv');
+    const m = new THREE.Mesh(eg, mats.map(mm => { const c = mm.clone(); c.visible = true; return c; }));
     m.position.copy(o.mesh.position);
     m.quaternion.copy(o.mesh.quaternion);
     m.scale.copy(o.mesh.scale);
@@ -13170,8 +13267,20 @@ function refreshMaskControls(d) {
   if (spec.detail) {
     document.getElementById('mkDetailLbl').firstChild.nodeValue = spec.detail + ' ';
   }
-  // "New pattern" rolls a seed, and a picture does not have one.
-  document.getElementById('mkSeed').style.display = isImg ? 'none' : '';
+  /* One slider doing two jobs. On a cloth mask it is the pattern's SCALE; on
+     a shape mask it is the RANGE of curvature the mask reaches across, which
+     lives in an entirely different set of numbers. Bounds are set BEFORE the
+     value is written further down, or the browser clamps 0.35 up to 0.25's
+     grid and the mask silently loses its setting. */
+  const curvMode = spec.curv || 0;
+  const sc = document.getElementById('mkScale');
+  document.getElementById('mkScaleLbl').firstChild.nodeValue = (spec.scale || 'Scale') + ' ';
+  sc.min = curvMode ? '0.05' : '0.25';
+  sc.max = curvMode ? '1' : '20';
+  sc.step = curvMode ? '0.01' : '0.25';
+  document.getElementById('mkContrastLbl').firstChild.nodeValue = (spec.contrast || 'Contrast') + ' ';
+  // "New pattern" rolls a seed. A picture has none, and neither does a shape.
+  document.getElementById('mkSeed').style.display = (isImg || curvMode) ? 'none' : '';
   const prev = document.getElementById('mkImgPrev');
   const src = maskImageSrc(mk);
   prev.style.display = src ? '' : 'none';
@@ -13244,8 +13353,15 @@ document.getElementById('mkType').addEventListener('change', () => {
   const mk = mkCurrent();
   if (!mk) return;
   const d = getMaterialDef(matEditingId);
+  const wasCurv = maskCurvMode(mk);
   mk.type = document.getElementById('mkType').value;
   if (mk.type !== 'image' && mk.img) { delete mk.img; pruneMaskImages(); }
+  /* Scale means different numbers on either side of the cloth/shape line, so
+     crossing it carries a value that is nonsense over there - a Scale of 12
+     is a Range far past the widest crevice, and every shape mask would open
+     as a solid wash. Reset once, on the crossing only. */
+  const nowCurv = maskCurvMode(mk);
+  if (!!nowCurv !== !!wasCurv) mk.scale = nowCurv ? CURV_SCALE_DEFAULT : MASK_DEFAULT.scale;
   rebakeMaskTexture(d, mkEditing);
   updateMaterialEverywhere(d.id);
   saveMaterialLibrary();
@@ -14178,6 +14294,15 @@ if (PICK_DEBUG) {
     harvestLegacyMaterials, applyFinishToSelection,
     applyMaskPatch, ensureMaskPatches, rebakeMaskTexture,
     isMaskPatched: (m) => _maskedMats.has(m),
+    /* a2.24. The renderer, the shading pass and the editable round-trip.
+       Curvature is computed inside applyShading, so a harness that wants to
+       ask "what does a KNOWN concave corner read as" has to be able to build
+       that corner and run the real pass over it - inferring it from a shape
+       the ops happen to be able to make was how the environment work went
+       wrong twice. The renderer is here so a harness can render and read
+       the buffer in ONE synchronous block, which is the only way to sample
+       a canvas that does not preserve its drawing buffer. */
+    renderer, applyShading, toEditable, rebuildFromEditable,
     bloomToolRing, updateToolRingHover, closeToolRing, placeRingLabel,
     currentHubTools, HUB_TOOLS_WORLD,
     /* The pickers, callable with a plain {clientX, clientY}. Driving these
