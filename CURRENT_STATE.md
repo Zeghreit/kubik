@@ -697,6 +697,54 @@ Plastic 0.7, Metal 1.0 - has done nothing since the day scene.environment
 was first set. Not introduced here. Decide during the shelf revision whether
 to drop the field or make it multiply.
 
+## a2.22a - THE LIGHTS BECAME PART OF THE PRESET
+
+Reported as "environment changed, but switching to other types not changing
+anything, so as turning and strength sliders". Real, and my testing had
+hidden it twice over.
+
+**What was actually wrong.** Four analytic lights - hemisphere, key, fill,
+rim - were doing the lighting, fixed, and the environment was a wash on top.
+On the DEFAULT Solid material (roughness 1, metalness 0) a fully-rough
+non-metal sees only irradiance, never a reflection, so six presets of
+similar total energy all landed in the same place.
+
+**Two testing mistakes worth not repeating.**
+1. Every earlier measurement was taken with metalness cranked to 0.9-1,
+   because that is what shows an environment best. The default material -
+   the one every new scene wears - was never measured. Test the DEFAULT, not
+   the flattering case.
+2. The pixel metric averaged over the WHOLE FRAME. The object is about 1% of
+   the canvas, so a real 48/255 change on the model read as "mean 1.2" and
+   looked like nothing. Average over the pixels that CHANGED.
+
+**The fix: the analytic lights are derived from the preset, and no new data
+is stored for it.** The preset already describes its lights - a panel has a
+direction, a colour and a radiance - so the three directional lights are
+aimed at the three brightest panels and tinted to match, and the hemisphere
+takes sky/ground/ambient. Weight per panel is
+`int * sin(w/2) * sin(h/2)`, normalised against Studio's key (3.708) so the
+theme's key intensity keeps meaning what it used to.
+
+**The theme still owns the baseline.** applyTheme sets hemi/key/fill/rim as
+before and then calls applyEnvRig, which re-aims and re-tints on top. So
+Daylight stays gentler than Workshop while the preset supplies direction,
+colour and the relative weighting. WITHOUT that call the rig snapped back to
+the theme's fixed directions on every theme switch.
+
+**Turn now rotates the lights with the reflections.** Verified by
+equivalence: turning by 70 degrees is pixel-identical (max 1/255) to baking
+the same preset with its panel already at az+70, while turning the other way
+differs by 92/255 - so the test is sensitive and the signs agree.
+
+**The shadow caster's elevation is floored at 32 degrees.** Sunset's key sits
+at 6, and a shadow cast from the horizon runs off the end of the shadow
+camera and smears. Azimuth and colour still follow.
+
+Measured after, on the default Solid material, mean difference per channel
+over the object's own pixels: Studio vs Rim 48, vs Sunset 57, vs Neutral 70,
+Turn 180 44. Softbox is the closest neighbour at 17 and still reads.
+
 ## Screen layout
 
 - **Top-left** hamburger → drawer. **Top-centre** tool/mode readout.

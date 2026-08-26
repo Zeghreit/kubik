@@ -732,7 +732,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.22</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.22a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1285,11 +1285,86 @@ function applyEnvironment() {
   applyEnvToPreviews();
 }
 
+/* THE ANALYTIC LIGHTS ARE PART OF THE PRESET, and this is the fix for the
+   thing that made a2.22 feel broken: four fixed lights were doing the
+   lighting and the environment was a wash on top, so switching presets
+   changed almost nothing on the default matte material. Measured on Solid:
+   Studio vs Softbox moved the picture by 0.44 mean / 60 max out of 255.
+
+   Nothing new is stored for this. The preset ALREADY describes its lights -
+   a panel has a direction, a colour and a radiance - so the three
+   directional lights are simply aimed at the three brightest panels and
+   tinted to match. A preset now changes the whole lighting character, and
+   Turn rotates the lights with the reflections rather than sliding a wash
+   across a fixed key.
+
+   The THEME still owns overall strength: its key/fill/rim intensities are
+   the scale, and the preset supplies direction, colour and the relative
+   weighting between the three. So Daylight stays gentler than Workshop. */
+function envPanelWeight(L) {
+  // Radiance times a bounded stand-in for solid angle. sin of the half
+  // angle rather than the angle itself, so a 170-degree wrap light does not
+  // claim ten times the energy of a 55-degree softbox.
+  return L.int * Math.sin(Math.min(179, L.w) * Math.PI / 360)
+              * Math.sin(Math.min(179, L.h) * Math.PI / 360);
+}
+// Studio's key, so the theme's key intensity still means what it used to.
+const ENV_WEIGHT_REF = 3.708;
+
+function envDirFromAzEl(az, el, dist, out) {
+  const a = az * Math.PI / 180, e = el * Math.PI / 180;
+  return out.set(Math.cos(e) * Math.sin(a) * dist, Math.sin(e) * dist, Math.cos(e) * Math.cos(a) * dist);
+}
+
+const _envDirV = new THREE.Vector3();
+function applyEnvRig() {
+  const spec = envPreset(App.env.preset);
+  const t = THEMES[App.theme] || THEMES.dark;
+  const turn = App.env.rotation || 0;
+  const gain = App.env.intensity;
+
+  hemi.color.setHex(new THREE.Color(spec.sky).getHex());
+  hemi.groundColor.setHex(new THREE.Color(spec.ground).getHex());
+  hemi.intensity = t.hemi.intensity * spec.ambient * gain;
+
+  const panels = (spec.lights || []).slice().sort((a, b) => envPanelWeight(b) - envPanelWeight(a));
+  /* Brightest panel drives the KEY, which is also the shadow caster. The
+     other two take fill and rim. A preset with fewer panels switches the
+     spare lights off rather than leaving them pointing somewhere arbitrary. */
+  const slots = [
+    { light: dir,      base: t.key.intensity,  shadow: true },
+    { light: fill,     base: t.fill.intensity, shadow: false },
+    { light: rimLight, base: t.rim.intensity,  shadow: false }
+  ];
+  slots.forEach((slot, i) => {
+    const p = panels[i];
+    if (!p) { slot.light.intensity = 0; return; }
+    slot.light.color.setHex(new THREE.Color(p.color).getHex());
+    slot.light.intensity = slot.base * (envPanelWeight(p) / ENV_WEIGHT_REF) * gain;
+    /* The shadow caster's elevation is floored. A sunset key sits at 6
+       degrees, and a shadow cast from the horizon runs off the end of the
+       shadow camera and turns into a smear. Azimuth and colour still
+       follow, so the light visibly moves; only its height is held up. */
+    const el = slot.shadow ? Math.max(32, p.el) : p.el;
+    envDirFromAzEl(p.az + turn, el, 14, _envDirV);
+    slot.light.position.copy(_envDirV);
+  });
+
+  // The thumbnails' own key, so a sphere in the shelf is lit like the model.
+  if (_matPreviewRig && _matPreviewRig.key && panels[0]) {
+    _matPreviewRig.key.color.setHex(new THREE.Color(panels[0].color).getHex());
+    _matPreviewRig.key.intensity = 0.9 * (envPanelWeight(panels[0]) / ENV_WEIGHT_REF) * gain;
+    envDirFromAzEl(panels[0].az + turn, panels[0].el, 6, _envDirV);
+    _matPreviewRig.key.position.copy(_envDirV);
+  }
+}
+
 // Rotation and intensity are LIVE SCENE PROPERTIES in this three - no
 // re-bake, no prefilter, no recompile. They are free; treat them as free.
 function applyEnvLive() {
   scene.environmentRotation.y = (App.env.rotation || 0) * Math.PI / 180;
   scene.environmentIntensity = App.env.intensity;
+  applyEnvRig();   // the analytic lights turn with the reflections
   if (_matPreviewRig) {
     _matPreviewRig.sc.environmentRotation.y = scene.environmentRotation.y;
     _matPreviewRig.sc.environmentIntensity = App.env.intensity;
@@ -1682,6 +1757,11 @@ function applyTheme(name) {
   dir.intensity = t.key.intensity;
   fill.color.setHex(t.fill.color);
   fill.intensity = t.fill.intensity;
+  /* Those four lines set the theme's BASELINE. The lighting preset then
+     re-aims and re-tints on top of it - without this the light rig would
+     snap back to the theme's fixed directions every time you switched
+     theme, and the preset would look like it had been forgotten. */
+  if (App.env) applyEnvRig();
   buildGrid(t.grid[0], t.grid[1]);
 
   SELECT_COLOR = t.select;
@@ -12535,13 +12615,13 @@ function matPreviewRig() {
   const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 10);
   cam.position.set(0, 0.5, 2.8);
   cam.lookAt(0, 0, 0);
-  const key = new THREE.DirectionalLight(0xFFF8EC, 0.9);
+  const key = new THREE.DirectionalLight(0xFFF8EC, 0.9);   // aimed by applyEnvRig
   key.position.set(3, 4, 2);
   sc.add(key);
   const mat = new THREE.MeshStandardMaterial({ color: 0x9AA0A8 });
   const ball = new THREE.Mesh(new THREE.SphereGeometry(0.8, 48, 32), mat);
   sc.add(ball);
-  _matPreviewRig = { r, sc, cam, mat, ball, mats: new Map(), pmrem: null, envRT: null, envDirty: true };
+  _matPreviewRig = { r, sc, cam, mat, ball, mats: new Map(), pmrem: null, envRT: null, envDirty: true, key };
   applyEnvLive();     // the rig missed every earlier call; it exists now
   return _matPreviewRig;
 }
