@@ -469,6 +469,10 @@
   .group { display: inline-flex; gap: 2px; background: var(--panel2); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 2px; flex-shrink: 0; }
   .group button { border: none; background: transparent; border-radius: var(--r-sm); }
   .group button.active { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+  /* Six presets do not fit on one line in a 200px drawer. This group alone
+     wraps and fills the row; .group stays unwrapped for X/Y/Z and the rest. */
+  #envPresetGroup { display: flex; flex-wrap: wrap; width: 100%; flex-shrink: 1; }
+  #envPresetGroup button { flex: 1 1 30%; min-height: 32px; padding: 4px 6px; justify-content: center; }
 
   #objectStrip { gap: 8px; }
   .objChip {
@@ -728,7 +732,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.21</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.22</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -905,6 +909,27 @@
       </div>
 
       <div class="drawer-sec">
+        <div class="drawer-title">Lighting</div>
+        <div class="drawer-row">
+          <div class="group" id="envPresetGroup"></div>
+        </div>
+        <div class="drawer-row">
+          <span class="label">Turn</span>
+          <input type="range" id="envRotation" min="0" max="360" step="1" value="0" />
+          <span class="label" id="envRotationVal">0&deg;</span>
+        </div>
+        <div class="drawer-row">
+          <span class="label">Strength</span>
+          <input type="range" id="envIntensity" min="0.1" max="3" step="0.05" value="1" />
+          <span class="label" id="envIntensityVal">1.00</span>
+        </div>
+        <div class="drawer-note">Studio lighting, built from numbers rather than a
+          photograph - so it travels inside your model file. It lights the models;
+          the backdrop stays the theme's. Turn slides the highlights around, which
+          is the fastest way to find a shape's best side.</div>
+      </div>
+
+      <div class="drawer-sec">
         <div class="drawer-title">Editing</div>
         <div class="drawer-row">
           <button id="btnInspector" title="Type exact transform values">⌗ Values</button>
@@ -1004,7 +1029,6 @@ import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 // Plain lines are stuck at 1px in WebGL - linewidth is ignored on every
 // modern browser. Line2 draws strokes as triangle strips instead, which is
 // the only way to get a controllable hairline that stays crisp at any zoom.
@@ -1112,13 +1136,191 @@ scene.add(dir);
 const rimLight = new THREE.DirectionalLight(0xFFFFFF, 0.5);
 rimLight.position.set(-4, 5, -7);
 scene.add(rimLight);
-// A neutral studio environment. Without one, anything with metalness renders
-// almost black - there's nothing for it to reflect. It also gives roughness
-// something to work with, so the material presets read as different finishes
-// rather than just different shades.
-const pmrem = new THREE.PMREMGenerator(renderer);
-const envRT = pmrem.fromScene(new RoomEnvironment(), 0.04);
-scene.environment = envRT.texture;
+/* THE ENVIRONMENT IS THE MULTIPLIER ON THE WHOLE MATERIAL SYSTEM, which is
+   why it is worth this much code. Metalness has no diffuse colour at all -
+   a metal IS its reflection, so with nothing to reflect it renders almost
+   black. Roughness blurs reflections, so it is invisible unless the
+   environment has contrast to blur. Both were reporting on one hardcoded
+   room until now.
+
+   PROCEDURAL, not a loaded .hdr, and that is a storage decision as much as
+   an aesthetic one: a preset is about fifteen numbers, so a project file
+   carries its lighting for a couple of hundred bytes instead of megabytes.
+   An .hdr can come later as an escape hatch for real-world lighting; this
+   covers studio lighting, which is what a modelling tool actually needs. */
+/* MEASURED, not guessed. PMREM derives its cube size as width/4, so this
+   is the one number that sets reflection sharpness. Against a 1024x512
+   bake, on a mirror-polished metal at roughness 0.02 - the worst case there
+   is - 512 differs by at most 19/255 on a highlight edge and 0.01 mean,
+   while 256 reaches 66/255, which shows. Bake cost is 5 / 18 / 89 ms for
+   256 / 512 / 1024. 512 is where the curve turns. */
+const ENV_W = 512, ENV_H = 256;
+
+/* A light is a RECTANGULAR PANEL, not a point or a blob, because the shape
+   of a highlight is most of what makes a render read as "studio". A
+   softbox leaves a soft-edged rectangle on a glossy surface and the eye
+   knows what that means; a gaussian dot just looks like a bug.
+   az/el in degrees, w/h the angular size in degrees, soft 0..1 how much of
+   the panel is edge falloff, int the radiance MULTIPLIER - values well
+   above 1 are the entire point of an HDR environment. */
+const ENV_PRESETS = [
+  { id: 'studio', name: 'Studio', sky: '#8fa6c4', ground: '#2b2622', ambient: 0.35, lights: [
+      { az:  35, el: 28, w: 55, h: 70, soft: 0.35, color: '#fff4e6', int: 14 },
+      { az: -70, el: 10, w: 80, h: 55, soft: 0.60, color: '#dbe8ff', int: 3.2 },
+      { az: 170, el: 35, w: 40, h: 25, soft: 0.30, color: '#ffffff', int: 9 } ] },
+  { id: 'softbox', name: 'Softbox', sky: '#aab4c0', ground: '#3a3a3c', ambient: 0.5, lights: [
+      { az:  15, el: 22, w: 110, h: 95, soft: 0.75, color: '#fffaf2', int: 7 },
+      { az: -140, el: 15, w: 90, h: 70, soft: 0.80, color: '#eaf0ff', int: 2 } ] },
+  { id: 'rim', name: 'Rim', sky: '#20242c', ground: '#141416', ambient: 0.18, lights: [
+      { az: 145, el: 22, w: 30, h: 50, soft: 0.25, color: '#ffffff', int: 26 },
+      { az: -150, el: 30, w: 26, h: 40, soft: 0.25, color: '#cfe0ff', int: 16 },
+      { az:   0, el: 12, w: 70, h: 60, soft: 0.70, color: '#8090a8', int: 1.2 } ] },
+  { id: 'overcast', name: 'Overcast', sky: '#cdd6e0', ground: '#4c4a47', ambient: 1.15, lights: [
+      { az: 40, el: 65, w: 150, h: 120, soft: 0.95, color: '#ffffff', int: 1.6 } ] },
+  { id: 'sunset', name: 'Sunset', sky: '#3f5a86', ground: '#2a1c14', ambient: 0.4, lights: [
+      { az:  60, el:  6, w: 30, h: 22, soft: 0.30, color: '#ffb066', int: 30 },
+      { az:  60, el: 20, w: 120, h: 60, soft: 0.90, color: '#ff9a5a', int: 3 },
+      { az: -120, el: 40, w: 130, h: 90, soft: 0.90, color: '#7fa0d8', int: 2.2 } ] },
+  { id: 'neutral', name: 'Neutral', sky: '#9a9a9a', ground: '#6e6e6e', ambient: 1.0, lights: [
+      { az: 30, el: 40, w: 60, h: 60, soft: 0.85, color: '#ffffff', int: 2.2 } ] }
+];
+function envPreset(id) {
+  return ENV_PRESETS.find(p => p.id === id) || ENV_PRESETS[0];
+}
+
+/* One equirect radiance map, as FLOAT data. Float is not a nicety: the HDR
+   in HDRI is the light sources sitting far above white, and an 8-bit
+   texture clamps them to 1.0 - which does not error, it just renders flat
+   and plasticky in a way that is very hard to diagnose later. */
+function bakeEnvEquirect(spec, W, H) {
+  const data = new Float32Array(W * H * 4);
+  const up = new THREE.Vector3(0, 1, 0), alt = new THREE.Vector3(0, 0, 1);
+  const lights = (spec.lights || []).map(L => {
+    const az = L.az * Math.PI / 180, el = L.el * Math.PI / 180;
+    const f = new THREE.Vector3(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az));
+    const ref = Math.abs(f.y) > 0.99 ? alt : up;
+    const right = new THREE.Vector3().crossVectors(ref, f).normalize();
+    const top = new THREE.Vector3().crossVectors(f, right).normalize();
+    return { f: f, right: right, top: top,
+      tx: Math.tan(Math.max(0.5, Math.min(179, L.w)) * Math.PI / 360),
+      ty: Math.tan(Math.max(0.5, Math.min(179, L.h)) * Math.PI / 360),
+      soft: Math.max(0.02, L.soft), col: new THREE.Color(L.color), int: L.int };
+  });
+  const sky = new THREE.Color(spec.sky), ground = new THREE.Color(spec.ground);
+  const amb = spec.ambient;
+  const cosPhi = new Float64Array(W), sinPhi = new Float64Array(W);
+  for (let x = 0; x < W; x++) {
+    const phi = ((x + 0.5) / W) * Math.PI * 2 - Math.PI;
+    cosPhi[x] = Math.cos(phi); sinPhi[x] = Math.sin(phi);
+  }
+  const d = new THREE.Vector3();
+  for (let y = 0; y < H; y++) {
+    const theta = (y + 0.5) / H * Math.PI;              // 0 at the +Y pole
+    const st = Math.sin(theta), ct = Math.cos(theta);
+    for (let x = 0; x < W; x++) {
+      /* THREE'S EQUIRECT CONVENTION, and it is worth spelling out because
+         getting it wrong is not an error, it is a picture that looks
+         plausible and is upside down. three samples u = atan2(z,x)/2pi+0.5
+         and v = asin(y)/pi+0.5, and DataTexture sets flipY = false - so row
+         0 is v = 0, which is y = -1, the BOTTOM. The first cut wrote row 0
+         as the top and swapped x for z with it, which came out as a 180
+         degree rotation about (1,0,1): every key light under the floor, the
+         ground overhead, and the Turn slider running backwards. Measured
+         with a single panel pointing straight up: top face 6, side face
+         199. After this line, 199 and 6 the right way round. */
+      d.set(st * cosPhi[x], -ct, st * sinPhi[x]);
+      const t = d.y * 0.5 + 0.5;
+      let rr = (ground.r + (sky.r - ground.r) * t) * amb;
+      let gg = (ground.g + (sky.g - ground.g) * t) * amb;
+      let bb = (ground.b + (sky.b - ground.b) * t) * amb;
+      for (let i = 0; i < lights.length; i++) {
+        const L = lights[i];
+        const fwd = d.dot(L.f);
+        if (fwd <= 0.05) continue;      // behind the panel, or grazing it edge-on
+        /* Project onto the panel's own plane at unit distance. This is what
+           keeps a rectangle rectangular: a panel seen from an angle
+           foreshortens the way a real one would. */
+        const px = Math.abs(d.dot(L.right) / fwd), py = Math.abs(d.dot(L.top) / fwd);
+        const ex = L.tx * L.soft, ey = L.ty * L.soft;
+        let sx = 1 - Math.min(1, Math.max(0, (px - (L.tx - ex)) / ex));
+        let sy = 1 - Math.min(1, Math.max(0, (py - (L.ty - ey)) / ey));
+        sx = sx * sx * (3 - 2 * sx); sy = sy * sy * (3 - 2 * sy);
+        const w = sx * sy * L.int;
+        if (w <= 0) continue;
+        rr += L.col.r * w; gg += L.col.g * w; bb += L.col.b * w;
+      }
+      const i4 = (y * W + x) * 4;
+      data[i4] = rr; data[i4 + 1] = gg; data[i4 + 2] = bb; data[i4 + 3] = 1;
+    }
+  }
+  const tex = new THREE.DataTexture(data, W, H, THREE.RGBAFormat, THREE.FloatType);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.minFilter = tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = THREE.RepeatWrapping;    // so the seam blends instead of clamping
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/* The prefilter is what turns one radiance map into the roughness ladder
+   the shader samples. It is ~22 ms once its own shaders exist, and ~700 ms
+   the first time - so the generator is made once, kept, and pre-warmed at
+   startup rather than built per change. */
+let _envEq = null, _envRT = null, _pmrem = null;
+function applyEnvironment() {
+  const spec = envPreset(App.env.preset);
+  const eq = bakeEnvEquirect(spec, ENV_W, ENV_H);
+  if (!_pmrem) {
+    _pmrem = new THREE.PMREMGenerator(renderer);
+    _pmrem.compileEquirectangularShader();
+  }
+  const rt = _pmrem.fromEquirectangular(eq);
+  // The old one goes only once the new one exists, so a failed bake can
+  // never leave the scene with a disposed texture bound.
+  if (_envRT) _envRT.dispose();
+  if (_envEq) _envEq.dispose();
+  _envRT = rt; _envEq = eq;
+  scene.environment = rt.texture;
+  applyEnvLive();
+  applyEnvToPreviews();
+}
+
+// Rotation and intensity are LIVE SCENE PROPERTIES in this three - no
+// re-bake, no prefilter, no recompile. They are free; treat them as free.
+function applyEnvLive() {
+  scene.environmentRotation.y = (App.env.rotation || 0) * Math.PI / 180;
+  scene.environmentIntensity = App.env.intensity;
+  if (_matPreviewRig) {
+    _matPreviewRig.sc.environmentRotation.y = scene.environmentRotation.y;
+    _matPreviewRig.sc.environmentIntensity = App.env.intensity;
+  }
+}
+
+/* The thumbnails run in their OWN renderer, and a prefiltered texture
+   belongs to the context that made it - so the rig prefilters the same
+   equirect again rather than borrowing the scene's. The source data is
+   plain numbers and travels fine. If the two ever drift apart, a sphere in
+   the shelf stops predicting what the model will look like, which is the
+   whole job of that sphere. */
+function applyEnvToPreviews() {
+  _matPreviews = null;              // every thumbnail is now out of date
+  if (_matPreviewRig) _matPreviewRig.envDirty = true;
+}
+
+/* Deferred on purpose. Prefiltering costs about as much again as the scene's
+   own, and a preset change with the shelf shut would be paying it for
+   pictures nobody is going to look at. renderMatPreviews is the only thing
+   that needs it and it only runs when the tray is actually being drawn. */
+function syncPreviewEnv() {
+  const rig = _matPreviewRig;
+  if (!rig || !rig.envDirty || !_envEq) return;
+  if (!rig.pmrem) { rig.pmrem = new THREE.PMREMGenerator(rig.r); rig.pmrem.compileEquirectangularShader(); }
+  const rt = rig.pmrem.fromEquirectangular(_envEq);
+  if (rig.envRT) rig.envRT.dispose();
+  rig.envRT = rt;
+  rig.sc.environment = rt.texture;
+  rig.envDirty = false;
+}
 
 const fill = new THREE.DirectionalLight(0xE4EAF0, 0.35);
 fill.position.set(-6, 3, -5);
@@ -1290,6 +1492,11 @@ const App = {
   lastComponentMode: 'face', // resumed when the Object/Component toggle re-enters Component mode
   selectDrag: 'off',   // 'off' | 'box' | 'lasso'
   snap: false,
+  /* Lighting is a SCENE property, so it lives here and travels in the
+     project file - not on a material, even though materials are what it
+     most visibly affects. rotation is in DEGREES on purpose: the same
+     lesson as autoSmoothAngleDeg, a bare number with no unit is a trap. */
+  env: { preset: 'studio', rotation: 0, intensity: 1 },
   shadeSmooth: false,  // simple on/off toggle, not a readout of mixed per-face state - matches applyFinishToSelection's cycling approach
   theme: 'dark',
   fillet: false,
@@ -1391,6 +1598,68 @@ const SHARP_COLOR = 0xff8a3d;
 // Objects already in the scene keep whatever colour they were given - only the
 // default for new ones follows the theme.
 let DEFAULT_MATERIAL_COLOR = THEMES.dark.material;
+
+/* The preset buttons are built rather than written out, so ENV_PRESETS
+   stays the single place a preset is defined. */
+function buildEnvPresets() {
+  const g = document.getElementById('envPresetGroup');
+  g.innerHTML = '';
+  ENV_PRESETS.forEach(p => {
+    const b = document.createElement('button');
+    b.textContent = p.name;
+    b.dataset.env = p.id;
+    b.addEventListener('click', () => {
+      if (App.env.preset === p.id) return;
+      App.env.preset = p.id;
+      applyEnvironment();       // the one control that costs a re-bake
+      refreshEnvControls();
+      refreshMatTrayIfOpen();   // thumbnails are lit by this too
+      scheduleAutosave();
+    });
+    g.appendChild(b);
+  });
+}
+
+/* Only the shelf that is actually on screen is worth ten renders and ten
+   PNG encodes. applyEnvToPreviews has already marked them stale, so a shelf
+   opened later rebuilds against the current environment anyway. */
+function refreshMatTrayIfOpen() {
+  if (matFlyEl && matFlyEl.classList.contains('open')) buildMatTray();
+}
+
+function refreshEnvControls() {
+  const g = document.getElementById('envPresetGroup');
+  if (g) g.querySelectorAll('button').forEach(b =>
+    b.classList.toggle('active', b.dataset.env === App.env.preset));
+  const rot = document.getElementById('envRotation');
+  const int = document.getElementById('envIntensity');
+  if (rot) rot.value = App.env.rotation;
+  if (int) int.value = App.env.intensity;
+  const rv = document.getElementById('envRotationVal');
+  const iv = document.getElementById('envIntensityVal');
+  if (rv) rv.textContent = Math.round(App.env.rotation) + '\u00B0';
+  if (iv) iv.textContent = Number(App.env.intensity).toFixed(2);
+}
+
+/* Turn and Strength are free - live scene properties, no re-bake and no
+   recompile - so they update on every tick of the drag. The THUMBNAILS are
+   not free (ten renders), so they wait for the release. */
+function wireEnvControls() {
+  buildEnvPresets();
+  const rot = document.getElementById('envRotation');
+  const int = document.getElementById('envIntensity');
+  const live = () => {
+    App.env.rotation = parseFloat(rot.value);
+    App.env.intensity = parseFloat(int.value);
+    applyEnvLive();
+    refreshEnvControls();
+  };
+  [rot, int].forEach(el => {
+    el.addEventListener('input', live);
+    el.addEventListener('change', () => { live(); refreshMatTrayIfOpen(); scheduleAutosave(); });
+  });
+  refreshEnvControls();
+}
 
 function applyTheme(name) {
   const t = THEMES[name] || THEMES.light;
@@ -11111,6 +11380,9 @@ function serializeDoc() {
     // brings its palette along. The receiving library keeps its own
     // version of ids it already knows.
     materialLib: Array.from(MATERIALS.values()).map(normaliseDefMasks),
+    /* Fifteen numbers, not twelve megabytes - the reason the environment is
+       procedural at all. A shared file arrives lit the way it was made. */
+    environment: { preset: App.env.preset, rotation: App.env.rotation, intensity: App.env.intensity },
     objects: App.objects.map(o => {
       const g = o.mesh.geometry;
       const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
@@ -11174,6 +11446,30 @@ function restoreDoc(doc, opts = {}) {
     });
     saveMaterialLibrary();
     _matPreviews = null;
+  }
+  /* Appearance, so it follows the same rule as the material library: undo
+     steps through geometry without repainting the scene under you. Clamped
+     because a project file is JSON somebody handed you, and an intensity of
+     1e9 is a white screen with no way back. */
+  if (doc.environment && !opts.keepAppearance) {
+    const e = doc.environment;
+    App.env.preset = envPreset(e.preset).id;
+    App.env.rotation = Math.min(360, Math.max(0, +e.rotation || 0));
+    /* +e, not typeof: a hand-edited file writing "2" as a string was
+       silently becoming 1 while "180" for rotation was honoured. */
+    const iv = +e.intensity;
+    App.env.intensity = Math.min(3, Math.max(0.1, isFinite(iv) ? iv : 1));
+    applyEnvironment();
+    refreshEnvControls();
+  } else if (!opts.keepAppearance) {
+    /* A file written before a2.22 carries no lighting. Without this it
+       inherits whatever the last project set, so the same file opens
+       differently depending on what you looked at first. */
+    App.env.preset = 'studio';
+    App.env.rotation = 0;
+    App.env.intensity = 1;
+    applyEnvironment();
+    refreshEnvControls();
   }
   const keepLook = !!opts.keepAppearance;
   const keepSel = !!opts.keepSelection;
@@ -12234,9 +12530,8 @@ function matPreviewRig() {
   r.setSize(104, 104);
   r.setPixelRatio(1);
   const sc = new THREE.Scene();
-  const pm = new THREE.PMREMGenerator(r);
-  sc.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture;
-  pm.dispose();   // the generator goes; its texture stays on the scene
+  /* No environment yet - applyEnvToPreviews fills it in, from the same
+     equirect the scene uses. Building one here would only be thrown away. */
   const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 10);
   cam.position.set(0, 0.5, 2.8);
   cam.lookAt(0, 0, 0);
@@ -12246,7 +12541,8 @@ function matPreviewRig() {
   const mat = new THREE.MeshStandardMaterial({ color: 0x9AA0A8 });
   const ball = new THREE.Mesh(new THREE.SphereGeometry(0.8, 48, 32), mat);
   sc.add(ball);
-  _matPreviewRig = { r, sc, cam, mat, ball, mats: new Map() };
+  _matPreviewRig = { r, sc, cam, mat, ball, mats: new Map(), pmrem: null, envRT: null, envDirty: true };
+  applyEnvLive();     // the rig missed every earlier call; it exists now
   return _matPreviewRig;
 }
 
@@ -12259,6 +12555,7 @@ function matPreviewRig() {
    programs by key across materials, so this costs an object, not a compile. */
 function renderMatPreviews() {
   const rig = matPreviewRig();
+  syncPreviewEnv();   // the thumbnails and the viewport must agree
   const out = {};
   MATERIALS.forEach((_d, k) => {
     let m = rig.mats.get(k);
@@ -13515,6 +13812,10 @@ function init() {
   applyTheme(App.theme);
   setSelectGesture(App.selectDrag);
   applySnapSettings();
+  /* Before restoreAutosave, so a scene always has light even if the restore
+     throws; the restore applies its own afterwards if it carries one. */
+  applyEnvironment();
+  wireEnvControls();
   // Pick up where you left off. Only fall back to a fresh cube when there's
   // nothing to come back to.
   if (!restoreAutosave()) {

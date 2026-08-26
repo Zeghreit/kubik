@@ -491,9 +491,14 @@ claude/crosstest-findings.md) - fix order as agreed:**
    instance per material def). Three audit sweeps never ran (mobile/UX,
    static correctness, static perf) - resumable.
 
-**Next planned work:** open. The materials line is at a natural stopping
-point - the stack, the components, the blend modes and the noise types are
-all in. Candidates from the backlog: repoint Weld/Merge/delete at
+**Next planned work:** NORMALS, derived from the masks that already exist -
+a mask is a greyscale field and a normal is its slope, so every noise type
+becomes a bump for free and it lands as a third checkbox beside Colour and
+Roughness. Triplanar normal mapping needs no UVs (each of the three planar
+projections has a trivially axis-aligned frame), so the no-UV policy
+survives. It needs the environment, which is why a2.22 came first: a bump
+is visible because it redirects reflections. Then cavity and curvature.
+Other candidates from the backlog: repoint Weld/Merge/delete at
 removeTrianglesCarrying (top code-health item); Connect across a quad's
 diagonal silently no-ops; the superlinear subdivide rebuild; one
 MeshStandardMaterial per face group (a per-def shared instance is the
@@ -614,6 +619,83 @@ wears any more - on type change, on replace and on material delete.
 
 **Say it plainly:** a loaded picture is EMBEDDED in the project JSON.
 Sharing a .json ships a 128px copy of that photo inside it.
+
+## a2.22 - THE ENVIRONMENT STOPPED BEING ONE HARDCODED ROOM
+
+Six procedural studio setups, baked from parameters instead of loaded from
+an .hdr, plus Turn and Strength. Drawer, under Appearance.
+
+**Why this before anything else in materials.** It is the MULTIPLIER on the
+rest. Metalness has no diffuse component - a metal IS its reflection, so
+with nothing to reflect it renders almost black; roughness blurs
+reflections, so it is invisible unless the environment has contrast to
+blur; and a normal map (next) shows only because it redirects reflections.
+All three were reporting on one fixed RoomEnvironment until now.
+
+**Procedural is a STORAGE decision as much as a look.** A preset is about
+fifteen numbers, so a project file carries its own lighting for a couple of
+hundred bytes. An .hdr is megabytes and could not be embedded, which is what
+made "custom HDRI" awkward when it was first planned.
+
+**A light is a RECTANGULAR PANEL.** The shape of a highlight is most of what
+makes a render read as studio: a softbox leaves a soft-edged rectangle on a
+glossy surface and the eye knows what that means. Panels are projected onto
+their own plane at unit distance, so one seen at an angle foreshortens the
+way a real one would.
+
+**FLOAT data, not 8-bit.** The HDR in HDRI is the sources sitting far above
+white - the Studio key peaks at 14.1. An 8-bit texture clamps that to 1.0,
+which does not error, it just renders flat and plasticky and is very hard to
+diagnose afterwards. Same family as the premultiplied-canvas trap.
+
+**THREE'S EQUIRECT CONVENTION, and the bug it caused.** three samples
+u = atan2(z,x)/2pi+0.5 and v = asin(y)/pi+0.5, and DataTexture sets
+flipY = false, so row 0 is v = 0, which is y = -1, the BOTTOM. The first cut
+wrote row 0 as the top and swapped x for z with it - a 180 degree rotation
+about (1,0,1). Every key light was under the floor, the ground was overhead
+and Turn ran backwards, and it all looked entirely plausible. Caught by
+review, then confirmed with one bright panel pointing straight up: top face
+6, side face 199. THE TEST THAT SETTLES IT is a six-axis probe - a white
+diffuse plane facing each world axis in turn, rendered under a one-panel
+environment aimed at that axis; the brightest face must be the one the panel
+points at, for all six. It is in the session log and worth rebuilding for
+any future change to the bake.
+
+**512x256, measured not guessed.** PMREM derives its cube size as width/4,
+so this is the one number that sets reflection sharpness. Against a 1024x512
+bake, on mirror-polished metal at roughness 0.02 - the worst case there is -
+512 differs by at most 19/255 and 0.01 mean, while 256 reaches 66/255, which
+shows. Bake cost 5 / 18 / 89 ms for 256 / 512 / 1024.
+
+**Turn and Strength are FREE.** `scene.environmentRotation` (Euler) and
+`scene.environmentIntensity` are live properties in this three - no re-bake,
+no prefilter, no recompile. Verified exactly reversible. Only the preset
+costs a re-bake (~70-115 ms all in).
+
+**The thumbnails prefilter the same equirect through their OWN renderer**,
+because a prefiltered texture belongs to the context that made it. The
+source data is plain numbers and travels fine. That work is DEFERRED to
+renderMatPreviews rather than done on the preset change, so a preset switch
+with the shelf shut pays nothing for pictures nobody is looking at. And
+matPreviewRig calls applyEnvLive when it is built: the rig is lazy, so it
+missed every earlier call and opened its first shelf lit at rotation 0 while
+the viewport was at 180.
+
+**Also from the review:** a zero-width panel divides by zero and ONE NaN
+texel is smeared over the whole radiance map by the blur - black materials,
+no error anywhere - so w and h are clamped from below as well as above.
+DataTexture defaults to NearestFilter, so the downsample into the cube was
+point-sampled and panel edges stair-stepped; it is LinearFilter with
+RepeatWrapping on S now. Strength has a floor of 0.1 because 0 turns every
+metal black with nothing on screen to explain why.
+
+**Known, pre-existing, now more visible:** `scene.environmentIntensity`
+REPLACES `material.envMapIntensity` rather than multiplying it (three writes
+it straight into the uniform for any standard material with envMap === null
+and a scene environment). So the per-definition envMapIntensity - Solid 0.5,
+Plastic 0.7, Metal 1.0 - has done nothing since the day scene.environment
+was first set. Not introduced here. Decide during the shelf revision whether
+to drop the field or make it multiply.
 
 ## Screen layout
 
