@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~12,000 lines)
-- Version at time of writing: **a2.24a**
+- Version at time of writing: **a2.25**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -929,6 +929,97 @@ added to *Solid / Plastic / Metal* are written into the JSON and silently
 dropped on open. Masks on custom materials travel fine. Affects every mask
 type equally; the fix is a policy decision - overwrite a preset the file
 disagrees with, or keep the local one - and is the user's to make.
+
+## a2.25 - EDGES BANDS INWARD: the rim attributes
+
+a2.24's Edges painted a plain cube SOLID and the width slider did nothing.
+Not a tuning problem: every vertex of a cube is convex, so the interpolated
+curvature is a CONSTANT 1 across each face, and no remapping of a constant
+produces a band. A second signal was needed.
+
+**Two more vec4s per vertex, `kubikRimA` and `kubikRimB`**, computed in the
+same pass as the curvature. Together they describe a BOX or a DISC lying in
+the face, so the fragment shader can work out how far into the face a pixel
+is, in object units, and paint a band of fixed width inward from the rim.
+
+```
+A.w  >  0, B.w > 0 : rectangle, half-extents A.w along B.xyz and B.w across
+A.w  >  0, B.w < 0 : disc of radius A.w about A.xyz
+A.w === 0          : NO DATA - unrestricted. What an unbound attribute
+                     reads as, and what the material preview ball gets.
+A.w  <  0          : a shell with no room for a band - paint nothing.
+```
+
+That last pair is a deliberate split. "No data" and "no room" are OPPOSITE
+answers - one must paint everything, the other nothing - and a single
+sentinel cannot say both. One sentinel was the first version, and it turned
+any sliver face solid.
+
+**A "face" here is a SHELL, not a geometry group.** Adjacent groups whose
+normals agree within 2 degrees are unioned first. This is the difference
+between working and looking broken: Subdivide makes one group per corner
+quad, so a box per group bands every internal quad boundary and a subdivided
+cube wears a CROSS on each face. With shells the band follows the flat
+region's outline, which is the same thing as the model's real edges.
+Verified: four separate coplanar quads (16 split vertices) come back as one
+centre with half-extents 1.0, not four centres at 0.5.
+
+**Box or disc, decided by which model's own area is closer to the shell's.**
+A square fills its box completely and only 64% of its disc; a regular
+hexagon fills 83% of its disc and 75% of its box. So a quad gets the box - a
+disc would put the band on its corners only, which is exactly what the first
+attempt shipped and why it measured -0.71/255 at width 0.12, four dots and
+nothing else - and a cylinder cap gets the disc, where a box would band two
+of its six sides and miss the rest. Verified: an octagon answers disc, a
+quad answers rect.
+
+**The box axis comes from the shell's first triangle, trying all three of
+its edges and keeping the smallest area.** Two of those three are real sides
+and, on a quad, the third is the diagonal; the smallest-area test picks a
+side. Taking the first or the longest aligns the box with the diagonal of a
+square and runs the band corner to corner.
+
+**Everything is measured IN PLANE**, and the box is centred on the BOX, not
+on the centroid. Both were review findings with real repros: one vertex
+pulled off the plane inflates the across-extent and the band vanishes from
+the whole shell, and a triangle's centroid is not the centre of its box, so
+a centroid-centred box reaches past two of its three sides.
+
+**Curvature is a GATE now, not the shape.** `clamp(curv / 0.25, 0, 1)`
+multiplied by the rim term: on a cube it is a flat 1 and the width decides,
+on an open plane it is 0 and Edges correctly paints nothing. Cavity is
+unchanged and still pure curvature - it was never the broken one.
+
+**Edges' slider is WIDTH in object units (0.01-1), Cavity's is RANGE in
+curvature (0.05-1).** Different numbers entirely, so `MASK_TYPES` carries
+per-type bounds and a default, and any change of MEANING resets the value.
+`refreshMaskControls` also clamps the model into the bounds, or a foreign
+file's out-of-range scale would render at its true value, show a pinned
+thumb, and snap the moment any other slider moved.
+
+**Written through, not reallocated.** `applyShading` runs every frame of a
+vertex drag; two fresh Float32Arrays a frame is 1.6 MB of garbage per frame
+at 50k vertices.
+
+**Cost: 32 bytes a vertex on every object mesh**, on top of `kubikCurv`'s 4.
+These geometries otherwise carry position + normal = 24 bytes, so the Kubik
+attributes are now larger than everything else on the vertex. Acceptable on
+low-poly meshes and worth revisiting if Kubik ever grows a dense-mesh mode;
+the obvious move then is to compute the rim pass only while some material in
+the scene actually wears a shape mask.
+
+**Measured on the real app**, over an exact object mask: width 0.04 / 0.12 /
+0.4 / 1.0 give -2.87 / -9.97 / -29.44 / -45.45 out of 255, monotonic, where
+a2.24 gave one flat -51.9 at every width. Screenshots confirm a band along
+every edge rather than four corner dots - the numbers alone could not tell
+those apart, and the first rim model passed the numbers while failing the
+picture.
+
+**Known limit:** the model is a box or a disc, never the exact polygon. A
+triangle is the weak case - its hypotenuse is a diagonal of its own box - so
+a large triangular face gets an approximate band. Bevel and fillet corner
+triangles are small enough to be covered entirely at any usable width, which
+is the right look anyway.
 
 ## Screen layout
 

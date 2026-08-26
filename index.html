@@ -770,7 +770,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.24a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.25</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -2194,10 +2194,13 @@ const MASK_TYPES = [
      shader's source code: 1 asks for concave, 2 for convex. Their Scale
      slider is a RANGE in curvature units and so wears a different label and
      different bounds. */
-  { id: 'cavity',    name: 'Cavity',    detail: null,      scale: 'Range', contrast: 'Sharpness', curv: 1 },
-  { id: 'edges',     name: 'Edges',     detail: null,      scale: 'Range', contrast: 'Sharpness', curv: 2 }
+  { id: 'cavity',    name: 'Cavity',    detail: null,      scale: 'Range', contrast: 'Sharpness', curv: 1,
+    sMin: 0.05, sMax: 1, sStep: 0.01, sDef: 0.35 },
+  /* Edges measures WIDTH, in object units, not a curvature range - see the
+     rim attribute in applyShading for why a range could never work here. */
+  { id: 'edges',     name: 'Edges',     detail: null,      scale: 'Width', contrast: 'Sharpness', curv: 2,
+    sMin: 0.01, sMax: 1, sStep: 0.01, sDef: 0.12 }
 ];
-const CURV_SCALE_DEFAULT = 0.35;
 function maskTypeOf(mk) {
   const t = mk && mk.type;
   return MASK_TYPES.find(x => x.id === t) || MASK_TYPES[0];
@@ -2604,7 +2607,11 @@ function applyMaskPatch(mat, d) {
      been through applyShading - must read as FLAT. Zero is flat by
      construction, and this pins the constant WebGL hands an unbound
      attribute so it cannot inherit whatever the last draw call left there. */
-  mat.defaultAttributeValues = Object.assign({}, mat.defaultAttributeValues, { kubikCurv: [0] });
+  /* Both defaults are the INERT answer. kubikRim all-zero gives a rim
+     radius of 0, so "how far into the face" is 0 everywhere and the rim
+     term returns 1 - no restriction, curvature alone, exactly as a2.24. */
+  mat.defaultAttributeValues = Object.assign({}, mat.defaultAttributeValues,
+    { kubikCurv: [0], kubikRimA: [0, 0, 0, 0], kubikRimB: [0, 0, 0, 0] });
 
   /* Everything about the stack rides UNIFORMS - how many masks, which
      components each drives, its blend mode, colour, roughness, amount and
@@ -2696,13 +2703,15 @@ function applyMaskPatch(mat, d) {
     Object.assign(shader.uniforms, packUniforms());
     maskUniStore(mat).set(key, shader.uniforms);
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vKubikPos;\nvarying vec3 vKubikNrm;\nattribute float kubikCurv;\nvarying float vKubikCurv;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvKubikPos = position;\nvKubikNrm = normal;\nvKubikCurv = kubikCurv;');
+      .replace('#include <common>', '#include <common>\nvarying vec3 vKubikPos;\nvarying vec3 vKubikNrm;\nattribute float kubikCurv;\nvarying float vKubikCurv;\nattribute vec4 kubikRimA;\nvarying vec4 vKubikRimA;\nattribute vec4 kubikRimB;\nvarying vec4 vKubikRimB;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvKubikPos = position;\nvKubikNrm = normal;\nvKubikCurv = kubikCurv;\nvKubikRimA = kubikRimA;\nvKubikRimB = kubikRimB;');
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', ['#include <common>',
         'varying vec3 vKubikPos;',
         'varying vec3 vKubikNrm;',
         'varying float vKubikCurv;',
+        'varying vec4 vKubikRimA;',
+        'varying vec4 vKubikRimB;',
         'uniform sampler2D uKubikMask;',
         'uniform int   uKubikCount;',
         'uniform vec3  uKubikColor[' + MASK_SLOTS + '];',
@@ -2734,9 +2743,31 @@ function applyMaskPatch(mat, d) {
         '         + texture2D(uKubikMask, q.xy) * w.z;',
         '  return kubikPick(s, ch);',
         '}',
-        'float kubikCurvW(float range, float sharp, int mode) {',
-        '  float s = (mode == 2) ? vKubikCurv : -vKubikCurv;',
-        '  float w = clamp(s / max(0.02, range), 0.0, 1.0);',
+        'float kubikRimW(float width) {',
+        '  float hu = vKubikRimA.w;',
+        '  if (hu == 0.0) return 1.0;',   // no data at all: curvature alone
+        '  if (hu < 0.0) return 0.0;',    // a shell with no room for a band
+        '  vec3 d = vKubikPos - vKubikRimA.xyz;',
+        '  float into;',
+        '  if (vKubikRimB.w < 0.0) {',
+        '    into = max(0.0, hu - length(d));',
+        '  } else {',
+        '    float a = abs(dot(d, vKubikRimB.xyz));',
+        '    float b = sqrt(max(0.0, dot(d, d) - a * a));',
+        '    into = max(0.0, min(hu - a, vKubikRimB.w - b));',
+        '  }',
+        '  return 1.0 - smoothstep(0.0, max(width, 0.0001), into);',
+        '}',
+        'float kubikCurvW(float p, float sharp, int mode) {',
+        '  float w;',
+        '  if (mode == 2) {',
+        /* Convexity is a GATE here, not the shape: on a cube it is a flat 1
+           and the rim decides, on an open plane it is 0 and Edges correctly
+           paints nothing. The shape comes from the width. */
+        '    w = clamp(vKubikCurv / 0.25, 0.0, 1.0) * kubikRimW(p);',
+        '  } else {',
+        '    w = clamp(-vKubikCurv / max(0.02, p), 0.0, 1.0);',
+        '  }',
         '  return pow(w, max(0.05, sharp));',
         '}',
         'vec3 kubikBlend(vec3 base, vec3 top, int mode) {',
@@ -3219,6 +3250,183 @@ function applyShading(obj) {
     const ca = geo.attributes.kubikCurv;
     if (ca && ca.array.length === curv.length) { ca.array.set(curv); ca.needsUpdate = true; }
     else geo.setAttribute('kubikCurv', new THREE.BufferAttribute(curv, 1));
+
+    /* ---- Rim geometry, so Edges can band INWARD on a flat face ----------
+
+       CURVATURE ALONE CANNOT DO IT, and not for want of tuning: every
+       vertex of a cube is convex, so the field is a CONSTANT 1 across the
+       whole face, and no remapping of a constant produces a band. That is
+       what "Edges fills whole faces and Range won't help" was.
+
+       So each vertex also carries its FACE's centroid and its own distance
+       from it - (cx, cy, cz, r), one vec4. Interpolated, the w channel
+       approximates the rim radius in the direction of the pixel, so
+       `w - length(pos - centre)` is how far INTO the face that pixel is, in
+       object units. A band of a fixed width then hugs every edge of a big
+       face and covers a small face entirely, which is exactly the right
+       behaviour on a dense mesh: no per-quad grid pattern, the rim term
+       simply goes inert and curvature decides alone.
+
+       WHAT A "FACE" IS HERE IS A SHELL, NOT A GROUP. Subdivide makes one
+       group per corner quad, so a box per group would band every internal
+       quad boundary and a subdivided cube would wear a cross on each face
+       instead of a rim. Adjacent groups whose normals agree are merged
+       first, and the band then follows the flat REGION's outline - which is
+       the same thing as the model's real edges. */
+    const gN = groupsSrc.length;
+
+    // 1. Shells: union adjacent groups across an edge their normals agree on.
+    const shellP = new Int32Array(gN);
+    for (let g = 0; g < gN; g++) shellP[g] = g;
+    const sFind = (g) => { while (shellP[g] !== g) { shellP[g] = shellP[shellP[g]]; g = shellP[g]; } return g; };
+    const COPLANAR = Math.cos(2 * Math.PI / 180);
+    edgeFaces.forEach((fs) => {
+      if (fs.length !== 2) return;
+      const n1 = groupNormal[fs[0]], n2 = groupNormal[fs[1]];
+      if (!n1 || !n2 || n1.lengthSq() < 1e-12 || n2.lengthSq() < 1e-12) return;
+      if (n1.dot(n2) < COPLANAR) return;
+      const r1 = sFind(fs[0]), r2 = sFind(fs[1]);
+      if (r1 !== r2) shellP[r1] = r2;
+    });
+
+    // 2. Each shell's vertices, its area, and one triangle to take axes from.
+    const shellVerts = new Map();
+    for (let ai = 0; ai < posAttr.count; ai++) {
+      const g = groupOfAttr[ai];
+      if (g < 0) continue;
+      const r = sFind(g);
+      let l = shellVerts.get(r);
+      if (!l) { l = []; shellVerts.set(r, l); }
+      l.push(ai);
+    }
+    const shellArea = new Map(), shellTri0 = new Map();
+    for (let t = 0; t < triCount; t++) {
+      const r = sFind(triGroup[t]);
+      if (!shellTri0.has(r)) shellTri0.set(r, t);
+      vA.fromBufferAttribute(posAttr, index.getX(t * 3));
+      vB.fromBufferAttribute(posAttr, index.getX(t * 3 + 1));
+      vC.fromBufferAttribute(posAttr, index.getX(t * 3 + 2));
+      const ar = 0.5 * vB.sub(vA).cross(vC.sub(vA)).length();
+      shellArea.set(r, (shellArea.get(r) || 0) + ar);
+    }
+
+    /* 3. A BOX or a DISC, whichever fits the shell. A quad wants the box -
+       the disc would put the band on its corners only, which is what the
+       first attempt at this shipped and looked wrong. A cylinder cap wants
+       the disc - a box bands two of its six sides and misses the rest. The
+       test is which model's own area is closer to the shell's: a square
+       fills its box completely and only 64% of its disc, a hexagon fills
+       83% of its disc and 75% of its box.
+
+       A.w carries the box half-width, or the disc radius:
+         A.w  >  0  and B.w > 0 : rectangle, half-extents A.w by B.w
+         A.w  >  0  and B.w < 0 : disc of radius A.w
+         A.w === 0              : NO DATA - unrestricted, curvature alone.
+                                  This is what an unbound attribute reads as
+                                  and what the preview ball must get.
+         A.w  <  0              : a shell with no usable box - paint nothing.
+                                  A separate value on purpose: "no data" and
+                                  "no room" are opposite answers and one
+                                  sentinel cannot say both. */
+    const wantLen = posAttr.count * 4;
+    let raA = geo.attributes.kubikRimA, raB = geo.attributes.kubikRimB;
+    let rimA, rimB;
+    if (raA && raB && raA.array.length === wantLen && raB.array.length === wantLen) {
+      // Write through: applyShading runs every frame of a vertex drag, and
+      // two fresh Float32Arrays a frame is pure garbage.
+      rimA = raA.array; rimB = raB.array; rimA.fill(0); rimB.fill(0);
+    } else {
+      rimA = new Float32Array(wantLen); rimB = new Float32Array(wantLen);
+      raA = null; raB = null;
+    }
+    const rC = new THREE.Vector3(), rD = new THREE.Vector3();
+    const rU = new THREE.Vector3(), rV = new THREE.Vector3();
+    const rT = new THREE.Vector3(), rBestU = new THREE.Vector3(), rBestC = new THREE.Vector3();
+    shellVerts.forEach((vs, r) => {
+      if (!vs.length) return;
+      const n = groupNormal[r];
+      const flat = !!n && n.lengthSq() > 1e-12;
+      rC.set(0, 0, 0);
+      for (let i = 0; i < vs.length; i++) rC.add(rT.fromBufferAttribute(posAttr, vs[i]));
+      rC.divideScalar(vs.length);
+
+      /* U must lie along a real SIDE. The three edges of the shell's first
+         triangle are two sides and, on a quad, the diagonal; trying all
+         three and keeping the smallest-area box picks a side. Taking the
+         first or the longest would align the box with the diagonal of a
+         square and run the band corner to corner. */
+      const t0 = shellTri0.get(r);
+      let bestArea = Infinity, bu = 0, bv = 0, found = false;
+      if (t0 !== undefined) {
+        const tri = [index.getX(t0 * 3), index.getX(t0 * 3 + 1), index.getX(t0 * 3 + 2)];
+        for (let e = 0; e < 3; e++) {
+          rU.fromBufferAttribute(posAttr, tri[(e + 1) % 3]).sub(rT.fromBufferAttribute(posAttr, tri[e]));
+          if (flat) rU.addScaledVector(n, -rU.dot(n));
+          if (rU.lengthSq() < 1e-12) continue;
+          rU.normalize();
+          if (flat) rV.copy(n).cross(rU); else rV.set(0, 0, 0);
+          let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
+          for (let i = 0; i < vs.length; i++) {
+            rD.fromBufferAttribute(posAttr, vs[i]).sub(rC);
+            /* Measured IN PLANE. Letting a vertex pulled off the plane
+               count towards the across-extent inflates it and the band then
+               vanishes from the whole shell. */
+            if (flat) rD.addScaledVector(n, -rD.dot(n));
+            const a = rD.dot(rU);
+            const b = flat ? rD.dot(rV) : Math.sqrt(Math.max(0, rD.lengthSq() - a * a));
+            if (a < uMin) uMin = a;
+            if (a > uMax) uMax = a;
+            if (b < vMin) vMin = b;
+            if (b > vMax) vMax = b;
+          }
+          const hu = (uMax - uMin) * 0.5, hv = (vMax - vMin) * 0.5;
+          const area = (hu + 1e-6) * (hv + 1e-6);
+          if (area < bestArea) {
+            bestArea = area; bu = hu; bv = hv; found = true;
+            rBestU.copy(rU);
+            /* The box CENTRE, not the centroid. A triangle's centroid is
+               not the centre of its bounding box, and a box centred on it
+               reaches past two of the three sides. */
+            rBestC.copy(rC).addScaledVector(rU, (uMin + uMax) * 0.5);
+            if (flat) rBestC.addScaledVector(rV, (vMin + vMax) * 0.5);
+          }
+        }
+      }
+
+      let mode = 0;   // 0 nothing, 1 rectangle, 2 disc
+      let discR = 0;
+      if (found && bu > 1e-5 && bv > 1e-5) {
+        mode = 1;
+        const area = shellArea.get(r) || 0;
+        for (let i = 0; i < vs.length; i++) {
+          rD.fromBufferAttribute(posAttr, vs[i]).sub(rC);
+          if (flat) rD.addScaledVector(n, -rD.dot(n));
+          const len = rD.length();
+          if (len > discR) discR = len;
+        }
+        const boxFill = area / Math.max(1e-9, 4 * bu * bv);
+        const discFill = area / Math.max(1e-9, Math.PI * discR * discR);
+        if (discR > 1e-5 && discFill > boxFill) mode = 2;
+      }
+
+      for (let i = 0; i < vs.length; i++) {
+        const o = vs[i] * 4;
+        if (mode === 1) {
+          rimA[o] = rBestC.x; rimA[o + 1] = rBestC.y; rimA[o + 2] = rBestC.z; rimA[o + 3] = bu;
+          rimB[o] = rBestU.x; rimB[o + 1] = rBestU.y; rimB[o + 2] = rBestU.z; rimB[o + 3] = bv;
+        } else if (mode === 2) {
+          rimA[o] = rC.x; rimA[o + 1] = rC.y; rimA[o + 2] = rC.z; rimA[o + 3] = discR;
+          rimB[o] = 0; rimB[o + 1] = 0; rimB[o + 2] = 0; rimB[o + 3] = -1;
+        } else {
+          rimA[o + 3] = -1;   // no room: paint nothing, rather than solid
+        }
+      }
+    });
+    if (raA) { raA.needsUpdate = true; raB.needsUpdate = true; }
+    else {
+      geo.setAttribute('kubikRimA', new THREE.BufferAttribute(rimA, 4));
+      geo.setAttribute('kubikRimB', new THREE.BufferAttribute(rimB, 4));
+    }
     } catch (cerr) {
       /* No attribute means flat, which is the harmless answer. The normals
          above are already written and STAY written. */
@@ -12212,6 +12420,8 @@ function buildExportGroup() {
     const mats = Array.isArray(source.material) ? source.material : [source.material];
     const eg = source.geometry.clone();
     eg.deleteAttribute('kubikCurv');
+    eg.deleteAttribute('kubikRimA');
+    eg.deleteAttribute('kubikRimB');
     const m = new THREE.Mesh(eg, mats.map(mm => { const c = mm.clone(); c.visible = true; return c; }));
     m.position.copy(o.mesh.position);
     m.quaternion.copy(o.mesh.quaternion);
@@ -13275,9 +13485,12 @@ function refreshMaskControls(d) {
   const curvMode = spec.curv || 0;
   const sc = document.getElementById('mkScale');
   document.getElementById('mkScaleLbl').firstChild.nodeValue = (spec.scale || 'Scale') + ' ';
-  sc.min = curvMode ? '0.05' : '0.25';
-  sc.max = curvMode ? '1' : '20';
-  sc.step = curvMode ? '0.01' : '0.25';
+  sc.min = String(spec.sMin !== undefined ? spec.sMin : 0.25);
+  sc.max = String(spec.sMax !== undefined ? spec.sMax : 20);
+  sc.step = String(spec.sStep !== undefined ? spec.sStep : 0.25);
+  const scLo = parseFloat(sc.min), scHi = parseFloat(sc.max);
+  if (!(mk.scale >= scLo)) mk.scale = scLo;
+  else if (mk.scale > scHi) mk.scale = scHi;
   document.getElementById('mkContrastLbl').firstChild.nodeValue = (spec.contrast || 'Contrast') + ' ';
   // "New pattern" rolls a seed. A picture has none, and neither does a shape.
   document.getElementById('mkSeed').style.display = (isImg || curvMode) ? 'none' : '';
@@ -13353,15 +13566,20 @@ document.getElementById('mkType').addEventListener('change', () => {
   const mk = mkCurrent();
   if (!mk) return;
   const d = getMaterialDef(matEditingId);
-  const wasCurv = maskCurvMode(mk);
+  const wasSpec = maskTypeOf(mk);
   mk.type = document.getElementById('mkType').value;
   if (mk.type !== 'image' && mk.img) { delete mk.img; pruneMaskImages(); }
   /* Scale means different numbers on either side of the cloth/shape line, so
      crossing it carries a value that is nonsense over there - a Scale of 12
      is a Range far past the widest crevice, and every shape mask would open
      as a solid wash. Reset once, on the crossing only. */
-  const nowCurv = maskCurvMode(mk);
-  if (!!nowCurv !== !!wasCurv) mk.scale = nowCurv ? CURV_SCALE_DEFAULT : MASK_DEFAULT.scale;
+  /* Scale means different numbers on either side of the cloth/shape line -
+     and Cavity's Range and Edges' Width are different numbers again, so
+     every type carries its own default and any change of meaning resets. */
+  const spec = maskTypeOf(mk);
+  const nowDef = spec.sDef !== undefined ? spec.sDef : MASK_DEFAULT.scale;
+  const wasDef = wasSpec.sDef !== undefined ? wasSpec.sDef : MASK_DEFAULT.scale;
+  if (nowDef !== wasDef) mk.scale = nowDef;
   rebakeMaskTexture(d, mkEditing);
   updateMaterialEverywhere(d.id);
   saveMaterialLibrary();
