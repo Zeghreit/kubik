@@ -792,6 +792,59 @@ colour picks up the floor grid, which outnumbers the object and swamped the
 average; the first attempt reported luminance 19 and no change at all
 between Strength 1 and 3.
 
+## a2.23 - LIGHTING BY GESTURE
+
+The a2.22b bottom bar was rejected outright ("this bar is a mess"). The
+replacement splits the two jobs by how often they happen.
+
+**Type is PICKED, rarely: a pill under the Symmetry pill, with a menu that
+falls out of it.** `#lightPill` / `#lightMenu`. Six rows, the current one
+marked, closes on any pointerdown outside itself.
+
+**Turn and Strength are ADJUSTED, constantly: a gesture, no widget at all.**
+Hold TWO fingers still anywhere; the other hand then slides - ONE finger
+turns the light, TWO change its strength. Lifting an anchor ends it. A
+readout (`#lightHud`) sits top-centre, deliberately away from both hands.
+
+Why a gesture rather than a control: Turn and Strength are judged entirely
+by what happens to the model, and nothing you have to look at can be
+watched and dragged at the same time. The drawer failed for that reason and
+so did the bar.
+
+**The gesture was free to take.** Two fingers already hand control to the
+camera, but two fingers held STILL did nothing at all. Stillness is the
+whole discriminator, so the test is travel (`LIGHT_HOLD_PX` 12) as well as
+time (`LIGHT_HOLD_MS` 420). One finger and three fingers are untouched -
+verified.
+
+**Sliding fingers re-baseline whenever their count changes**, so going from
+one finger to two does not jump the value it lands on.
+
+**THE ONE THAT BIT: handing the camera back.** OrbitControls keeps its own
+pointer list, its own captures and its own state machine, and its POINTERUP
+HANDLER IS NOT GUARDED BY `enabled`. Switching it off mid-pinch leaves it
+finishing a gesture that was taken away from it: a release for a pointer it
+never captured throws inside its own handler, and the cleanup after that
+line never runs. Measured: the camera was dead for the rest of the session
+after one lighting gesture. Two things fix it -
+1. `orbit.enabled = true` is deferred until `activePointers.size === 0`,
+   never on the anchor lift, or it drops into a two-finger dolly whose
+   starting distance it never measured;
+2. it is re-armed from EMPTY - `_pointers` cleared, `_pointerPositions`
+   cleared, `state = -1` - each guarded, because these are three's
+   internals and not a contract.
+Verified: three lighting gestures interleaved with orbits, camera working
+throughout.
+
+**And the ordering bug underneath it:** the resume check first lived in the
+pointerup handler, which has five exits each calling `trackPointerUp` at a
+different moment. It belongs INSIDE `trackPointerUp` - the one place a
+pointer actually leaves the tracker. Checked before that removal, the last
+finger up still counted as one finger down and the camera never came back.
+
+**Desktop has no path to Turn and Strength** - user's decision, touch only.
+The pill still picks the type.
+
 ## Screen layout
 
 - **Top-left** hamburger → drawer. **Top-centre** tool/mode readout.

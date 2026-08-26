@@ -469,28 +469,48 @@
   .group { display: inline-flex; gap: 2px; background: var(--panel2); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 2px; flex-shrink: 0; }
   .group button { border: none; background: transparent; border-radius: var(--r-sm); }
   .group button.active { background: var(--accent); color: var(--on-accent); font-weight: 600; }
-  /* Sits above the undo row, centred, and wraps to a second line on a
-     narrow screen rather than running off the edge. Deliberately quiet -
-     panel background, no accent border - because unlike the op bar it is
-     always there and must not compete with the model. */
-  #lightBar {
-    position: absolute; left: 50%; transform: translateX(-50%);
-    bottom: calc(var(--edge-b) + 52px);
-    z-index: 13; display: flex; align-items: center; justify-content: center;
-    flex-wrap: wrap; gap: 6px 10px;
-    max-width: min(720px, calc(100vw - 20px));
+  /* A pill under Symmetry, and a list that falls out of it. Lighting is
+     picked rarely and adjusted often, so the PICKING gets a menu that stays
+     out of the way and the ADJUSTING gets a gesture (see lightHold). */
+  #lightPill {
+    position: absolute; left: var(--edge-l); top: calc(var(--edge) + 48px);
+    z-index: 13; height: 34px; min-width: 88px; padding: 0 12px;
+    border-radius: 17px; background: var(--panel2); border: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    color: var(--text-dim); font-size: 12px;
+    touch-action: none; -webkit-user-select: none; user-select: none; cursor: pointer;
+  }
+  #lightPill.open { border-color: var(--accent); color: var(--accent); }
+  #lightMenu {
+    position: absolute; left: var(--edge-l); top: calc(var(--edge) + 86px);
+    z-index: 14; display: none; flex-direction: column; min-width: 132px;
     background: var(--panel2); border: 1px solid var(--line);
-    border-radius: var(--r-md); padding: 6px 10px;
-    box-shadow: 0 6px 18px rgb(var(--shadow) / .14);
+    border-radius: var(--r-md); padding: 4px; overflow: hidden;
+    box-shadow: 0 10px 26px rgb(var(--shadow) / .22);
   }
-  #envPresetGroup { display: flex; flex-wrap: wrap; justify-content: center; }
-  #envPresetGroup button { min-height: 30px; padding: 0 8px; font-size: 11px; justify-content: center; }
-  .lb-slide {
-    display: flex; align-items: center; gap: 6px;
-    font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .06em;
+  #lightMenu.show { display: flex; }
+  #lightMenu button {
+    min-height: 36px; padding: 0 10px; justify-content: flex-start;
+    background: transparent; border: none; border-radius: var(--r-sm);
+    color: var(--text); font-size: 13px;
   }
-  .lb-slide input[type="range"] { width: 84px; margin: 0; }
-  .lb-val { min-width: 30px; text-align: right; font-variant-numeric: tabular-nums; }
+  #lightMenu button.active { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
+  /* Only while two fingers are held. Placed high and centred so the hand
+     doing the sliding is nowhere near it. */
+  #lightHud {
+    position: absolute; left: 50%; transform: translateX(-50%);
+    top: calc(var(--edge) + 8px); z-index: 18; display: none;
+    align-items: center; gap: 14px;
+    background: var(--panel2); border: 1px solid var(--accent);
+    border-radius: var(--r-md); padding: 8px 14px;
+    box-shadow: 0 8px 24px rgb(var(--shadow) / .18);
+    pointer-events: none; white-space: nowrap;
+  }
+  #lightHud.show { display: flex; }
+  #lightHud .lh-v { font-size: 15px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+  #lightHud .lh-k { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .06em; }
+  #lightHud .lh-hint { font-size: 10px; color: var(--text-dim); }
+  #lightHud .lh-on { color: var(--accent); }
 
   #objectStrip { gap: 8px; }
   .objChip {
@@ -750,7 +770,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.22b</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.23</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -791,25 +811,24 @@
       <div class="sp-half" data-v="off"><span class="ic"></span></div>
     </div>
 
+    <!-- Lighting: the TYPE is picked here, rarely. Turn and Strength are
+         a gesture instead - hold two fingers anywhere and slide with the
+         other hand - because they are judged entirely by what happens to
+         the model, and no widget can be watched and dragged at once. -->
+    <div id="lightPill"><span id="lightPillName">Studio</span></div>
+    <div id="lightMenu"></div>
+    <div id="lightHud">
+      <div><div class="lh-k" id="lhTurnK">Turn</div><div class="lh-v" id="lhTurn">0&deg;</div></div>
+      <div><div class="lh-k" id="lhStrK">Strength</div><div class="lh-v" id="lhStr">1.00</div></div>
+      <div class="lh-hint">one finger turns &middot; two change strength</div>
+    </div>
+
     <!-- Anchored to the viewport, not to any corner box: this blooms at an
          arbitrary touch point and needs real viewport coordinates. -->
     <div id="touchToolRing"></div>
 
     <!-- Anchored to the viewport for the same reason: this needs the full
          viewport width to centre against. -->
-    <!-- Lighting lives in the VIEWPORT, not the drawer. Turn and Strength
-         are judged entirely by what happens to the model, and a control you
-         have to close a menu to evaluate is a control you guess with. -->
-    <div id="lightBar">
-      <div class="group" id="envPresetGroup"></div>
-      <label class="lb-slide"><span>Turn</span>
-        <input type="range" id="envRotation" min="0" max="360" step="1" value="0" />
-        <span class="lb-val" id="envRotationVal">0&deg;</span></label>
-      <label class="lb-slide"><span>Str</span>
-        <input type="range" id="envIntensity" min="0.1" max="5" step="0.05" value="1" />
-        <span class="lb-val" id="envIntensityVal">1.00</span></label>
-    </div>
-
     <div id="quickRow">
       <button id="btnUndo" title="Undo (Ctrl+Z)">⤺</button>
       <button id="btnRedo" title="Redo (Ctrl+Shift+Z)">⤻</button>
@@ -937,8 +956,9 @@
           on the right edge and edit the material the selection wears.</div>
         <div class="drawer-note">See-through, Floor grid, Aim assist and Snap are in the
           ring that blooms when you press and hold on empty space.</div>
-        <div class="drawer-note">Lighting is the bar above the undo buttons - it has to
-          be somewhere you can watch the model while you move it.</div>
+        <div class="drawer-note">Lighting: the pill under Symmetry picks the type.
+          To aim it, hold two fingers anywhere on the model and slide with your other
+          hand - one finger turns the light, two change its strength.</div>
       </div>
 
 
@@ -1736,16 +1756,17 @@ const SHARP_COLOR = 0xff8a3d;
 // default for new ones follows the theme.
 let DEFAULT_MATERIAL_COLOR = THEMES.dark.material;
 
-/* The preset buttons are built rather than written out, so ENV_PRESETS
-   stays the single place a preset is defined. */
+/* The menu is built rather than written out, so ENV_PRESETS stays the
+   single place a preset is defined. */
 function buildEnvPresets() {
-  const g = document.getElementById('envPresetGroup');
-  g.innerHTML = '';
+  const m = document.getElementById('lightMenu');
+  m.innerHTML = '';
   ENV_PRESETS.forEach(p => {
     const b = document.createElement('button');
     b.textContent = p.name;
     b.dataset.env = p.id;
     b.addEventListener('click', () => {
+      setLightMenuOpen(false);
       if (App.env.preset === p.id) return;
       App.env.preset = p.id;
       applyEnvironment();       // the one control that costs a re-bake
@@ -1753,8 +1774,13 @@ function buildEnvPresets() {
       refreshMatTrayIfOpen();   // thumbnails are lit by this too
       scheduleAutosave();
     });
-    g.appendChild(b);
+    m.appendChild(b);
   });
+}
+
+function setLightMenuOpen(open) {
+  document.getElementById('lightMenu').classList.toggle('show', open);
+  document.getElementById('lightPill').classList.toggle('open', open);
 }
 
 /* Only the shelf that is actually on screen is worth ten renders and ten
@@ -1765,36 +1791,27 @@ function refreshMatTrayIfOpen() {
 }
 
 function refreshEnvControls() {
-  const g = document.getElementById('envPresetGroup');
-  if (g) g.querySelectorAll('button').forEach(b =>
+  const m = document.getElementById('lightMenu');
+  if (m) m.querySelectorAll('button').forEach(b =>
     b.classList.toggle('active', b.dataset.env === App.env.preset));
-  const rot = document.getElementById('envRotation');
-  const int = document.getElementById('envIntensity');
-  if (rot) rot.value = App.env.rotation;
-  if (int) int.value = App.env.intensity;
-  const rv = document.getElementById('envRotationVal');
-  const iv = document.getElementById('envIntensityVal');
-  if (rv) rv.textContent = Math.round(App.env.rotation) + '\u00B0';
-  if (iv) iv.textContent = Number(App.env.intensity).toFixed(2);
+  const name = document.getElementById('lightPillName');
+  if (name) name.textContent = envPreset(App.env.preset).name;
+  const t = document.getElementById('lhTurn');
+  const i = document.getElementById('lhStr');
+  if (t) t.textContent = Math.round(App.env.rotation) + '\u00B0';
+  if (i) i.textContent = Number(App.env.intensity).toFixed(2);
 }
 
-/* Turn and Strength are free - live scene properties, no re-bake and no
-   recompile - so they update on every tick of the drag. The THUMBNAILS are
-   not free (ten renders), so they wait for the release. */
 function wireEnvControls() {
   buildEnvPresets();
-  const rot = document.getElementById('envRotation');
-  const int = document.getElementById('envIntensity');
-  const live = () => {
-    App.env.rotation = parseFloat(rot.value);
-    App.env.intensity = parseFloat(int.value);
-    applyEnvLive();
-    refreshEnvControls();
-  };
-  [rot, int].forEach(el => {
-    el.addEventListener('input', live);
-    el.addEventListener('change', () => { live(); refreshMatTrayIfOpen(); scheduleAutosave(); });
-  });
+  const pill = document.getElementById('lightPill');
+  pill.addEventListener('click', () =>
+    setLightMenuOpen(!document.getElementById('lightMenu').classList.contains('show')));
+  // Anywhere else closes it, the same as every other transient panel here.
+  document.addEventListener('pointerdown', (ev) => {
+    if (ev.target.closest && (ev.target.closest('#lightMenu') || ev.target.closest('#lightPill'))) return;
+    setLightMenuOpen(false);
+  }, true);
   refreshEnvControls();
 }
 
@@ -8662,6 +8679,135 @@ const TWO_TAP_MAX_MS = 260;    // longer than this and it was a hold
 const TWO_TAP_MAX_PX = 14;     // further than this and it was a pinch
 
 const activePointers = new Map();   // pointerId -> { x, y, t, moved }
+
+/* LIGHTING BY GESTURE. Two fingers held still anywhere anchor the mode; the
+   OTHER hand then slides - one finger turns the light, two change its
+   strength - and lifting an anchor ends it. No widget, because Turn and
+   Strength are judged entirely by what happens to the model and you cannot
+   watch a slider and the model at the same time.
+
+   The gesture was free to take: two fingers already hand control to the
+   camera, but two fingers held STILL did nothing at all. Stillness is what
+   separates this from the start of an orbit, so the threshold is real
+   travel, not time alone. */
+const LIGHT_HOLD_MS = 420;
+const LIGHT_HOLD_PX = 12;      // an anchor that wanders this far was orbiting
+let lightHold = null;          // { anchors:Set, slide:null|{ids,startX,rot0,int0} }
+let lightHoldTimer = null;
+
+function clearLightHoldTimer() {
+  if (lightHoldTimer) { clearTimeout(lightHoldTimer); lightHoldTimer = null; }
+}
+
+function lightHoldCandidate() {
+  clearLightHoldTimer();
+  if (lightHold || activePointers.size !== 2) return;
+  const ids = Array.from(activePointers.keys());
+  lightHoldTimer = setTimeout(() => {
+    lightHoldTimer = null;
+    if (lightHold || activePointers.size !== 2) return;
+    for (const id of ids) {
+      const p = activePointers.get(id);
+      if (!p || p.moved > LIGHT_HOLD_PX) return;   // that was an orbit
+    }
+    engageLightHold(new Set(ids));
+  }, LIGHT_HOLD_MS);
+}
+
+function engageLightHold(anchors) {
+  lightHold = { anchors: anchors, slide: null };
+  /* The camera must let go, or the anchor fingers keep orbiting underneath
+     the gesture. OrbitControls checks `enabled` on every event, so clearing
+     it mid-pinch stops it where it stands. */
+  orbit.enabled = false;
+  tapArmed = false;            // three fingers down is not a three-finger tap
+  clearToolRingTimer();
+  document.getElementById('lightHud').classList.add('show');
+  refreshEnvControls();
+  if (navigator.vibrate) { try { navigator.vibrate(12); } catch (e) {} }
+}
+
+/* Deliberately NOT `orbit.enabled = true` here. OrbitControls keeps its own
+   list of live pointers and its own captures; switching it back on while
+   fingers are still down drops it into a two-finger dolly whose starting
+   distance it never measured, and the camera jumps. It comes back when the
+   hand is off the glass. */
+let orbitResumePending = false;
+function releaseLightHold() {
+  if (!lightHold) return;
+  lightHold = null;
+  orbitResumePending = true;
+  maybeResumeOrbit();
+  document.getElementById('lightHud').classList.remove('show');
+  refreshMatTrayIfOpen();      // the thumbnails are lit by this too
+  scheduleAutosave();
+}
+
+function maybeResumeOrbit() {
+  if (!orbitResumePending || activePointers.size > 0) return;
+  orbitResumePending = false;
+  /* RE-ARM IT FROM EMPTY rather than trusting what it kept. OrbitControls
+     keeps its own pointer list, its own captures and its own state machine,
+     and its pointerup handler is NOT guarded by `enabled` - so switching it
+     off mid-pinch leaves it finishing a gesture we took away from it. In
+     testing, the camera was dead for the rest of the session afterwards:
+     a release for a pointer it never captured threw inside its own handler,
+     and the cleanup after that line never ran.
+
+     Every field here is checked before use, because these are three's
+     internals and not a contract. */
+  if (Array.isArray(orbit._pointers)) orbit._pointers.length = 0;
+  if (orbit._pointerPositions) {
+    for (const k in orbit._pointerPositions) delete orbit._pointerPositions[k];
+  }
+  if (typeof orbit.state === 'number') orbit.state = -1;   // _STATE.NONE
+  orbit.enabled = true;
+}
+
+// Which pointers are the sliding hand: everything that is not an anchor.
+function lightSlidePointers() {
+  const out = [];
+  activePointers.forEach((p, id) => { if (!lightHold.anchors.has(id)) out.push(id); });
+  return out;
+}
+
+function lightSlideOrigin(ids) {
+  let sx = 0;
+  ids.forEach(id => { const p = activePointers.get(id); if (p) sx += p.lastX !== undefined ? p.lastX : p.x; });
+  return sx / Math.max(1, ids.length);
+}
+
+/* Re-baselined whenever the number of sliding fingers changes, so going from
+   one finger to two does not jump the value it lands on. */
+function lightSyncSlide() {
+  const ids = lightSlidePointers();
+  if (!ids.length) { lightHold.slide = null; return; }
+  const sig = ids.slice().sort().join(',');
+  if (!lightHold.slide || lightHold.slide.sig !== sig) {
+    lightHold.slide = { sig: sig, ids: ids, x0: lightSlideOrigin(ids),
+      rot0: App.env.rotation, int0: App.env.intensity };
+  }
+}
+
+function lightSlideMove() {
+  if (!lightHold || !lightHold.slide) return;
+  const ids = lightHold.slide.ids;
+  const dx = lightSlideOrigin(ids) - lightHold.slide.x0;
+  const w = Math.max(240, window.innerWidth);
+  if (ids.length >= 2) {
+    // Two fingers: strength. Full range across about two thirds of the screen.
+    const per = (5 - 0.1) / (w * 0.66);
+    App.env.intensity = Math.min(5, Math.max(0.1, lightHold.slide.int0 + dx * per));
+  } else {
+    // One finger: turn. A full revolution across about three quarters.
+    const per = 360 / (w * 0.75);
+    let r = (lightHold.slide.rot0 + dx * per) % 360;
+    if (r < 0) r += 360;
+    App.env.rotation = r;
+  }
+  applyEnvLive();
+  refreshEnvControls();
+}
 // How many fingers went down together, and whether they've all stayed still
 // enough to still count as a tap. Recorded at peak because fingers lift one
 // at a time, and the count has already dropped by the time we judge it.
@@ -8710,6 +8856,7 @@ function trackPointerDown(ev) {
 function trackPointerMove(ev) {
   const p = activePointers.get(ev.pointerId);
   if (!p) return;
+  p.lastX = ev.clientX; p.lastY = ev.clientY;   // the light slide needs live positions
   p.moved = Math.max(p.moved, Math.hypot(ev.clientX - p.x, ev.clientY - p.y));
   // Any real travel means this is a pinch or an orbit, not a tap.
   if (p.moved > TWO_TAP_MAX_PX) tapArmed = false;
@@ -8722,6 +8869,7 @@ function trackPointerMove(ev) {
 function trackPointerUp(ev) {
   const p = activePointers.get(ev.pointerId);
   activePointers.delete(ev.pointerId);
+  maybeResumeOrbit();   // the only place that knows the tracker just shrank
   if (!p) { if (!activePointers.size) { tapArmed = false; tapPeakCount = 0; } return 0; }
 
   const quick = performance.now() - p.t <= TWO_TAP_MAX_MS;
@@ -10133,6 +10281,12 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   camAnim = null; // a new touch/click cancels any in-flight focus animation
   trackPointerDown(ev);
 
+  /* Lighting owns the gesture once it is engaged: a third and fourth finger
+     are the sliding hand, not a new selection. Checked before the camera
+     bail-out below, which would otherwise swallow them. */
+  if (lightHold) { lightSyncSlide(); return; }
+  lightHoldCandidate();
+
   // A second finger means the camera is taking over - abandon any transform
   // that was mid-flight rather than fighting the pinch.
   if (activePointers.size > 1) {
@@ -10203,6 +10357,7 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
 
 renderer.domElement.addEventListener('pointermove', (ev) => {
   trackPointerMove(ev);
+  if (lightHold) { lightSlideMove(); return; }
   /* Any real travel means this was a drag or an orbit, never a hold. The
      selection ring's timer is also cancelled below when its candidate is
      promoted to a drag; this covers the empty-space case, which has no
@@ -10248,6 +10403,17 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
 });
 
 renderer.domElement.addEventListener('pointerup', (ev) => {
+  /* An ANCHOR lifting ends the mode; a sliding finger lifting only
+     re-baselines, so you can switch between turning and strength without
+     starting again. */
+  if (lightHold) {
+    const wasAnchor = lightHold.anchors.has(ev.pointerId);
+    trackPointerUp(ev);
+    if (wasAnchor) releaseLightHold(); else lightSyncSlide();
+    maybeResumeOrbit();
+    return;
+  }
+  clearLightHoldTimer();
   // Cleared unconditionally, first - a release before the hold threshold
   // fires must cancel it outright, or a bloom would appear over a finger
   // that's already lifted.
@@ -13823,7 +13989,10 @@ window.addEventListener('resize', onResize);
 ['pointercancel', 'pointerleave'].forEach(name => {
   renderer.domElement.addEventListener(name, (ev) => {
     activePointers.delete(ev.pointerId);
-    if (activePointers.size === 0) { tapArmed = false; tapPeakCount = 0; }
+    if (lightHold && lightHold.anchors.has(ev.pointerId)) releaseLightHold();
+    else if (lightHold) lightSyncSlide();
+    maybeResumeOrbit();
+    if (activePointers.size === 0) { tapArmed = false; tapPeakCount = 0; clearLightHoldTimer(); }
     // A lost pointer mid-hold must not leave a bloom stuck open with no
     // finger left to slide it or lift it.
     clearToolRingTimer();
