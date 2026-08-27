@@ -770,7 +770,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.29c</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.29e</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -2825,6 +2825,8 @@ function applyMaskPatch(mat, d) {
            it for its falloff. color_fragment runs before normal_fragment in
            three's standard shader, so it is set by the time the bevel asks. */
         'vec2 kubikF0;',
+        'vec2 kubikDN;',
+        'float kubikDNset;',
         // One triplanar tap set, then the channel this mask owns. Picked by
         // a dot with a selector rather than s[i] so this stays legal if the
         // renderer ever falls back to WebGL1.
@@ -2909,6 +2911,36 @@ function applyMaskPatch(mat, d) {
            stops at the lip; Edges stops at the crease. Substance ships the
            same thing on every generator, as "Ambient Occlusion Masking" and
            "Edges Masking". Costs nothing - both numbers are already read. */
+        /* IS IT EVEN ON THIS SIDE OF THE WALL? The field is a distance
+           through solid material, and a Kubik model is usually a SHELL: the
+           tank's fenders are 0.04 thick with the field reaching 0.37, so the
+           inside corner where the shell's own inner skin folds sat right
+           behind the outer chamfer and drew a rust line straight down it.
+           No amount of cross-masking helps - there is no convex edge on that
+           chamfer to lose to, because at 45 degrees it shades smooth and is
+           not an edge at all.
+
+           Ask the field which way it grows along the SURFACE NORMAL. Step
+           out and step in: a crease you could walk to lies in the tangent
+           plane, so both steps move you the same distance away and the
+           difference is ZERO. A crease behind the skin is directly below
+           you, so stepping in halves the distance and stepping out doubles
+           it - the difference is 1, the full slope of a distance field.
+           Measured over this model: every painted pixel above 0.6 has an
+           ambient occlusion of exactly 0.00 - open air, every one of them -
+           while the pixels below 0.35 average 0.14 to 0.55. The step is a
+           twentieth of the range, small enough to stay inside one voxel of
+           the field, where the reconstruction is linear and the answer is
+           exact. Computed at most once per pixel, and only for a pixel that
+           is actually within reach of an edge. */
+        '  if (kubikDNset < 0.5) {',
+        '    vec3 kdn = normalize(vKubikNrm);',
+        '    float kde = uKubikFieldRange * 0.05;',
+        '    kubikDN = (kubikField(vKubikPos + kdn * kde) - kubikField(vKubikPos - kdn * kde)) * 10.0;',
+        '    kubikDNset = 1.0;',
+        '  }',
+        '  float behind = (src == 2 ? kubikDN.r : kubikDN.g);',
+        '  if (behind > 0.7) return 0.0;',
         '  float other = (src == 2 ? kubikF0.g : kubikF0.r);',
         '  float bar = max(0.05, 0.35 * width);',
         /* Both channels EXACTLY zero is the no-field default - the material
@@ -2916,6 +2948,7 @@ function applyMaskPatch(mat, d) {
            so a thumbnail can show what the mask does. Cross-masking a tie
            halves it, and every thumbnail in the tray went pale. */
         '  float occ = (d + other > 0.0) ? smoothstep(-bar, bar, other - d) : 1.0;',
+        '  occ *= 1.0 - smoothstep(0.35, 0.7, behind);',
         '  if (occ <= 0.0) return 0.0;',
         '  if (noiseAmt > 0.0) {',
         /* Amplitude divided by the scale on purpose. Noisiness is how deep the
@@ -3012,6 +3045,7 @@ function applyMaskPatch(mat, d) {
         '{',
         '  vec3 kubikN = normalize(vKubikNrm);',
         '  kubikF0 = kubikField(vKubikPos);',
+        '  kubikDNset = 0.0;',
         '  for (int i = 0; i < ' + MASK_SLOTS + '; i++) {',
         '    kubikW[i] = 0.0;',
         '    if (i >= uKubikCount) continue;',
@@ -3466,6 +3500,94 @@ function applyShading(obj) {
       for (let t = 0; t < tc; t++) triGroup[ts + t] = gi;
     });
 
+    /* WHICH WAY EACH TRIANGLE FACES, for the convex/concave test only.
+
+       That test stands on one face's plane and asks which side the
+       neighbour's far vertex falls on, so a face wound backwards inverts
+       every edge it touches: Cavity out on the open lip, Edges down in the
+       crease. A mirrored model carries a handful of those somewhere in the
+       middle, which is what "sometimes, on some edges" looks like.
+
+       So: walk the triangles and give each a SIGN relative to its
+       neighbours - two triangles sharing an edge agree when they cross it in
+       OPPOSITE directions. That settles a shell relative to itself; which way
+       round it goes as a whole is then answered by its SIGNED VOLUME when it
+       is closed (positive is outward, so an inside-out box, or a deliberate
+       Flip Normals, still has its cavities where its cavities are), and
+       otherwise by majority, which keeps an open patch closest to what was
+       drawn.
+
+       IT MUST NOT TOUCH THE SHADING NORMALS. The app CULLS back faces, so a
+       backwards face is already a hole you can see - negating its normal as
+       well only turns the hole black, and the raw cross product of any
+       triangle that survives culling faces the camera by definition. The
+       normals written below stay exactly as authored; the sign is read once,
+       at the classification. */
+    const triSign = new Int8Array(triCount);
+    {
+      const dmap = new Map();
+      for (let t = 0; t < triCount; t++) {
+        for (let e = 0; e < 3; e++) {
+          const a = logicalOf[index.getX(t * 3 + e)], b = logicalOf[index.getX(t * 3 + (e + 1) % 3)];
+          if (a === b) continue;
+          const lo = a < b ? a : b, hi = a < b ? b : a;
+          const kk = lo * nLog + hi;
+          let l = dmap.get(kk);
+          if (!l) { l = []; dmap.set(kk, l); }
+          l.push(t, a === lo ? 1 : 0);
+        }
+      }
+      const stack = [], comp = [];
+      const q0 = new THREE.Vector3(), q1 = new THREE.Vector3(), q2 = new THREE.Vector3(), qc = new THREE.Vector3();
+      for (let seed = 0; seed < triCount; seed++) {
+        if (triSign[seed]) continue;
+        triSign[seed] = 1;
+        stack.length = 0; comp.length = 0;
+        stack.push(seed); comp.push(seed);
+        let closed = true;
+        while (stack.length) {
+          const t = stack.pop();
+          for (let e = 0; e < 3; e++) {
+            const a = logicalOf[index.getX(t * 3 + e)], b = logicalOf[index.getX(t * 3 + (e + 1) % 3)];
+            if (a === b) continue;
+            const lo = a < b ? a : b, hi = a < b ? b : a;
+            const l = dmap.get(lo * nLog + hi);
+            /* Three faces on one edge has no consistent answer, and
+               guessing one stamps it on the whole sub-shell beyond - a wall
+               bridged onto two coplanar plates came back inverted about half
+               the time. Stop: the wall becomes its own component, seeded
+               upright, exactly as it was before this pass existed. */
+            if (!l || l.length !== 4) { closed = false; continue; }
+            const mine = a === lo ? 1 : 0;
+            for (let z = 0; z < l.length; z += 2) {
+              const u = l[z];
+              if (u === t || triSign[u]) continue;
+              triSign[u] = l[z + 1] !== mine ? triSign[t] : -triSign[t];
+              stack.push(u); comp.push(u);
+            }
+          }
+        }
+        let vol = 0, votes = 0, span = 0;
+        for (let i = 0; i < comp.length; i++) {
+          const t = comp[i];
+          votes += triSign[t];
+          q0.fromBufferAttribute(posAttr, index.getX(t * 3));
+          q1.fromBufferAttribute(posAttr, index.getX(t * 3 + 1));
+          q2.fromBufferAttribute(posAttr, index.getX(t * 3 + 2));
+          span = Math.max(span, q0.length(), q1.length(), q2.length());
+          qc.copy(q1).cross(q2);
+          vol += triSign[t] * q0.dot(qc);
+        }
+        /* Relative to the shell's own size, never an absolute. A fixed 1e-9
+           is "any closed shell under half a millimetre keeps whatever winding
+           it arrived with", and Kubik has no unit - a model can be built at
+           any scale. Below the bar means flat or degenerate, where volume
+           says nothing and the vote is the better answer. */
+        const flip = (closed && Math.abs(vol) > 1e-6 * span * span * span) ? vol < 0 : votes < 0;
+        if (flip) for (let i = 0; i < comp.length; i++) triSign[comp[i]] = -triSign[comp[i]];
+      }
+    }
+
     // Triangle normals, and each FACE's own normal (area-weighted, which is
     // what makes a triangulated n-gon answer as one flat face).
     const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3();
@@ -3709,7 +3831,8 @@ function applyShading(obj) {
         if (n0 && n0.lengthSq() > 1e-12) {
           wM.copy(wA).add(wB).multiplyScalar(0.5);
           wO.fromBufferAttribute(posAttr, ops[1]).sub(wM);
-          convex = wO.dot(n0) < 0;
+          // The one place the winding pass is read.
+          convex = wO.dot(n0) * triSign[ots[0]] < 0;
         }
       }
       wePos.push(wA.x, wA.y, wA.z, wB.x, wB.y, wB.z);

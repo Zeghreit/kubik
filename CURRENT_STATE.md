@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~13,800 lines)
-- Version at time of writing: **a2.29c**
+- Version at time of writing: **a2.29e**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -845,7 +845,7 @@ finger up still counted as one finger down and the camera never came back.
 **Desktop has no path to Turn and Strength** - user's decision, touch only.
 The pill still picks the type.
 
-## SHAPE MASKS: Cavity and Edges (a2.24 -> a2.29c)
+## SHAPE MASKS: Cavity and Edges (a2.24 -> a2.29e)
 
 Two mask types that take their weight from the model instead of a texture.
 Cavity darkens crevices, Edges wears the exposed edges. They stack, blend
@@ -1037,6 +1037,87 @@ into -22.64.
 The pan test in the probe is this shape: a plate with a shallow square
 recess. Before, cavity over its whole mask read -12.43 and the dark band sat
 on the outer rim; after, -1.34, and it sits in the recess.
+
+### Which side of the wall (a2.29e)
+
+**A Kubik model is usually a SHELL, and the field does not know that.** It
+measures distance through solid material. Zeghreit's fenders are a folded
+plate 0.04 thick with a field reaching 0.37: the crease on the HIDDEN
+UNDERSIDE, where the front lip folds back under the deck, sat four
+centimetres behind the outer chamfer and drew a rust line straight down it.
+Cross-masking could not help - there is no convex edge on that chamfer to
+lose to, because at 45 degrees it shades smooth and is not an edge at all.
+
+**Ask the field which way it grows along the SURFACE NORMAL.** Step out and
+step in:
+
+    behind = (field(p + N*e) - field(p - N*e)) * range / 2e
+
+A crease you could WALK TO lies in the tangent plane, so both steps move you
+the same distance away from it and the difference is ZERO. A crease behind
+the skin is directly below you: stepping in halves the distance, stepping
+out doubles it, and the difference is 1 - the full slope of a distance
+field. Above 0.7 the mask returns nothing; 0.35 to 0.7 fades.
+
+The numbers come from the real model, analysed offline against a ray-traced
+ambient occlusion: **every painted pixel with `behind` above 0.6 has an AO
+of exactly 0.00** - open air, all 933 of them across the nine objects -
+while the pixels below 0.35 average 0.14 to 0.55. On the fender plate, 46%
+of what Cavity painted was on the wrong side of a wall.
+
+`e` is a TWENTIETH of the range, small enough that both taps land inside one
+voxel of the field, where the reconstruction is linear and the answer is
+exact. A CENTRAL difference, not a forward one: standing exactly on a real
+crease, the forward difference reads 1 and switches off the deepest part of
+every cavity. Computed at most once per pixel, and only for a pixel already
+within reach of an edge.
+
+Probe: the recessed plate, seen from the side (mostly outer surfaces) went
+-1.34 to -0.21, and from ABOVE (where the recess is visible) -3.24 to -2.26.
+Both numbers are needed - the side view alone cannot tell "confined to the
+recess" from "switched off".
+
+### Winding, and why it was invisible (a2.29d)
+
+**A face wound backwards inverts every edge it touches.** The convex/concave
+test stands on one face's plane and asks which side the neighbour's far
+vertex falls on - so with the plane the wrong way up, Cavity comes out on
+the open lip and Edges goes down in the crease. Half a dozen such faces
+somewhere in the middle of a mirrored model is exactly what "sometimes, on
+some edges" looks like.
+
+`applyShading` now walks the triangles first and gives each a SIGN relative
+to its neighbours: two triangles sharing an edge agree when they cross it in
+OPPOSITE directions. That settles a shell against itself. Which way round
+the shell goes as a whole is one more question, answered by its SIGNED
+VOLUME when it is closed - positive is outward, so an inside-out box, or a
+deliberate Flip Normals, still has its cavities where its cavities are - and
+otherwise by majority, which keeps an open patch closest to what was drawn.
+The bar under the volume is relative to the shell's own size; an absolute
+one means "any closed shell under half a millimetre keeps whatever it
+arrived with", and Kubik has no unit.
+
+**It must not touch the shading normals, and the first version did.** The
+premise was "every material is double-sided, so a backwards face is
+invisible" - which is false: since v1.79 the app CULLS back faces, so a
+backwards face is already a hole you can see. Negating its normal as well
+only turns the hole black, and the raw cross product of any triangle that
+survives culling faces the camera by definition. The sign is read in exactly
+one place, at the classification.
+
+**A non-manifold edge stops the walk.** Three faces on one edge has no
+consistent answer, and guessing one stamps it on the entire sub-shell
+beyond: a wall bridged onto two coplanar plates came back inverted about
+half the time. Stopping makes the wall its own component, seeded upright,
+exactly as it was before the pass existed.
+
+Probe: `pan.oneflipped` and `pan.allflipped` rebuild the recessed plate with
+one face group, then every face group, wound backwards. Both were wrong
+(14/12 and 8/16) and both now read the same 16 convex as the clean shape.
+The one flipped group still adds two edges to the total, because the SMOOTH
+ANGLE test compares two face normals and a flipped one reads as 160 degrees.
+That path is deliberately left alone - the face it happens on is a hole on
+screen anyway, and the fix there is Flip Normals, not a shading heuristic.
 
 ### The four architectures that did not work
 
