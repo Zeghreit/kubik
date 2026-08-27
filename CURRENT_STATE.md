@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~13,800 lines)
-- Version at time of writing: **a2.29e**
+- Version at time of writing: **a2.30**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -2038,21 +2038,48 @@ moving — no point drawing icons for a ring that is still changing.
   been judged by thumb since Flip and Separate joined it.
 
 
-## Help (v1.99b)
+## Help (v1.99b, folded at a2.30)
 
-Quick start, then a glossary grouped by task: Getting around, Selecting,
-Moving/rotating/scaling, The two rings, Shaping, Whole objects, Symmetry and
-Mirror, Keeping your work. 58 rows, built from `HELP_QUICKSTART` and
-`HELP_SECTIONS` and rendered with the same `icon()` calls the real buttons
-use, so the glyphs cannot drift from the app.
+Twelve sections, built from `HELP_QUICKSTART` and `HELP_SECTIONS` and
+rendered with the same `icon()` calls the real buttons use, so the glyphs
+cannot drift from the app: Quick start, Getting around, Selecting, Move /
+rotate / scale, The two rings, Shaping, Whole objects, Surface, Symmetry and
+Mirror, The drawer, Keeping your work, Open on your phone.
 
-It replaced eleven icon/name pairs and six gesture lines that named the
-controls without saying what any of them DID - and that had gone stale
-besides, still offering "Smart camera framing" for an icon that has meant
-Aim assist since the smart camera was removed at v1.87. **Rows say what the
-thing does.** Anything added here should do the same, and note that
-double-tap alone does four different things depending on mode, none of which
-the old card mentioned.
+**Every section is a `<details>`, and the closed state IS the table of
+contents.** Before a2.30 it was one 60-row scroll - correct, and unusable on
+a phone: finding "what does Bridge do" meant a thumb hunt past everything
+else. Only one section opens at a time and the one you open is scrolled to
+the top, under a title bar that is now `position: sticky` so the close
+button never leaves the screen.
+
+Three things that had to be got right and are easy to get wrong again:
+
+- **The exclusive-open handler hangs off the SUMMARY's click, not off
+  `toggle`.** Chrome fires `toggle` for a `<details open>` that arrives with
+  `innerHTML` too, and that phantom event scrolled the card by exactly the
+  height of its own title bar - so Help opened with its heading and close
+  button already gone off the top. A click is a tap and nothing else. The
+  open flag flips after the handler returns, hence the `setTimeout(0)`.
+- **The scroll subtracts the sticky bar's height**, or the section you tapped
+  lands underneath it.
+- **The name is the first words of its own line**, not a column. A 96px term
+  column on a 360px card left about 28 characters for the description, so
+  nearly every row wrapped to three lines.
+
+**Rows say what the thing DOES, in one line.** Anything that needed a
+paragraph was saying too much for a reference card. The card this replaced
+had gone stale besides, still offering "Smart camera framing" for an icon
+that has meant Aim assist since v1.87 - and it drew a blank gutter for
+Shade, whose ring icon is a FUNCTION (`flat` or `smooth`, whichever it will
+switch you to) so the key `shade` has never existed in the icon table.
+
+**Open on your phone** is last, and closes with a QR code for the live URL.
+It is a `<path>` of module runs generated from segno at patch time and
+pasted in - no library, no network, and it works from a `file://` URL like
+everything else here. Verified end to end: the matrix is compared against
+segno's own, and OpenCV decodes the string back out of the rendered
+screenshot.
 
 ## The drawer (a2.1)
 

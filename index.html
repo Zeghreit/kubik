@@ -203,12 +203,32 @@
   /* Help card: a quick start you can follow once, then a glossary you come
      back to. Terms carry the same icon() glyph the real button draws, so
      what you read here matches what is on screen. */
-  .help-sec { margin-top: 16px; }
+  #helpCard .insp-head {
+    position: sticky; top: -16px; z-index: 1; background: var(--panel);
+    padding: 16px 0 8px; margin: -16px 0 0;
+  }
+  .help-sec { border-bottom: 1px solid var(--line); }
   .help-sec-title {
     font-size: 11px; font-weight: 700; letter-spacing: .06em;
     text-transform: uppercase; color: var(--accent);
-    padding-bottom: 5px; margin-bottom: 7px; border-bottom: 1px solid var(--line);
+    /* 40px tall for a finger, and no default triangle in any engine. */
+    padding: 12px 2px; display: flex; align-items: center;
+    cursor: pointer; list-style: none; user-select: none; -webkit-user-select: none;
   }
+  .help-sec-title::-webkit-details-marker { display: none; }
+  .help-sec-title::after {
+    content: ''; margin-left: auto; width: 6px; height: 6px;
+    border: solid var(--text-dim); border-width: 0 1.5px 1.5px 0;
+    transform: translateY(-2px) rotate(45deg); transition: transform .15s;
+  }
+  .help-sec[open] > .help-sec-title::after { transform: translateY(1px) rotate(-135deg); }
+  .help-secbody { padding: 0 2px 12px; }
+  .help-qr { text-align: center; padding-top: 2px; }
+  .help-qr .qr {
+    width: 172px; height: 172px; border-radius: var(--r-sm);
+    background: #fff; display: block; margin: 0 auto 10px;
+  }
+  .help-qr a { font-size: 12px; color: var(--accent); word-break: break-all; }
   .help-lead { font-size: 12px; color: var(--text-dim); margin-bottom: 9px; line-height: 1.45; }
   .help-row { display: flex; gap: 9px; align-items: flex-start; padding: 4px 0; font-size: 12px; }
   .help-row .ic { flex: 0 0 20px; color: var(--accent); line-height: 1; padding-top: 1px; }
@@ -217,7 +237,7 @@
     color: var(--on-accent); font-size: 11px; font-weight: 700;
     display: flex; align-items: center; justify-content: center;
   }
-  .help-row .term { flex: 0 0 96px; font-weight: 600; color: var(--text); }
+  .help-row .term { font-weight: 600; color: var(--text); margin-right: 6px; }
   .help-row .desc { flex: 1 1 auto; color: var(--text-dim); line-height: 1.45; }
   .hub-item .tx { font-size: 8px; color: var(--text-dim); letter-spacing: .02em; }
   /* Two different things, deliberately different looks: .on means the
@@ -770,7 +790,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.29e</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.30</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -14159,183 +14179,231 @@ document.getElementById('mkDelete').addEventListener('click', () => {
    exact same icon() calls and glyph names the real buttons already render
    with, so what you read here matches what you see on screen. */
 const helpOverlayEl = document.getElementById('helpOverlay');
-/* Follow the quick start once, then come back to the glossary. The old card
-   was eleven icon/name pairs and six gesture lines, which named the controls
-   without saying what any of them DO - and it had gone stale besides, still
-   listing "Smart camera framing" for an icon that has meant Aim assist since
-   the smart camera was removed. Anything added here should say what the
-   thing does, not just that it exists. */
+/* One screen of headings, everything else folded away. The old card was a
+   single 60-row scroll: correct, and unusable on a phone - finding "what
+   does Bridge do" meant a thumb-flick hunt past everything else. Now every
+   section is a <details>, only one opens at a time, and the closed state IS
+   the table of contents. Rows are one line each; anything that needed a
+   paragraph was saying too much for a reference card.
+
+   Terms carry the same icon() glyph the real button draws, so what you read
+   here matches what is on screen. */
 const HELP_QUICKSTART = [
   'Hold on empty space until the ring blooms, slide to Add Cube, lift.',
-  'Tap the round button, bottom-left, to go from Object to Component.',
-  'Tap a face. Tap empty space if you want to start again.',
-  'Hold on that face - its own tools bloom. Slide to Extrude, lift.',
-  'Drag the new face to place it. Undo is bottom-centre.',
-  'Tap the left half of the Symmetry pill, under the view cube, and every edit mirrors as you make it.',
-  'Menu, top-left: Models saves the scene in the browser, Files downloads it or exports glTF, OBJ or STL.'
+  'Round button, bottom-left, switches Object and Component.',
+  'Tap a face. Hold it - its own tools bloom. Slide to Extrude, lift.',
+  'Drag the new face into place. Undo is bottom-centre.',
+  'Symmetry pill, under the view cube: every edit mirrors as you make it.',
+  'Menu, top-left: Models saves in the browser, Files downloads and exports.'
 ];
 
 const HELP_SECTIONS = [
   {
     title: 'Getting around',
-    lead: 'The viewport is the whole app. Nothing sits on top of it that you did not ask for.',
     rows: [
-      [null, 'Orbit', 'One finger dragged on empty space.'],
+      [null, 'Orbit', 'One finger on empty space.'],
       [null, 'Zoom', 'Pinch, or the scroll wheel.'],
-      [null, 'Pan', 'Two fingers dragged together.'],
-      [null, 'View cube', 'Top-right. Tap a face to bring the camera square onto it.'],
-      [null, 'Double tap', 'On empty space, frames what you have. While a tool is open, cancels it.']
+      [null, 'Pan', 'Two fingers together.'],
+      [null, 'View cube', 'Top-right. Tap a dot for a square-on, flat view. Orbit by hand and perspective returns.'],
+      [null, 'Double tap', 'On empty space, frames your work. Inside a tool, cancels it.']
     ]
   },
   {
     title: 'Selecting',
-    lead: 'Vertices and edges are measured in screen pixels, not in 3D - so whatever looks nearest your finger is what you get, at any zoom.',
+    lead: 'Measured in screen pixels, not in 3D - whatever looks nearest your finger is what you get, at any zoom.',
     rows: [
-      [null, 'Tap', 'Picks the nearest visible thing. Tap empty space to clear.'],
-      [null, 'What a tap picks', 'Whichever is nearest your finger. A vertex wins a tie, because a vertex sits ON its edges - aim at a corner and you get the corner, aim along an edge and you get the edge. Landing on a different kind than you were working in moves you into it.'],
-      [null, 'Type lock', 'Once something is selected, only that kind can be picked until you tap empty space to clear. A tap that gets refused says so rather than doing nothing.'],
+      [null, 'Tap', 'The nearest visible thing. Empty space clears.'],
+      [null, 'Ties', 'A vertex beats its own edges. Aim at a corner, get the corner.'],
+      [null, 'Type lock', 'After the first pick only that kind can be picked. Clear to change.'],
       ['free', 'Tap select', 'Plain tapping. The default.'],
-      ['box', 'Box select', 'Drag a rectangle. Chosen from the world ring.'],
+      ['box', 'Box select', 'Drag a rectangle. From the world ring.'],
       ['lasso', 'Lasso select', 'Draw the shape freehand. Same ring.'],
-      [null, 'Double tap, Face', 'Selects a strip of faces across the mesh. Which way it runs comes from the edge nearest your tap.'],
-      [null, 'Double tap, Edge', 'Selects the whole edge loop. Tap one edge first, then double-tap another within a second and a half, and you get the shortest run of edges between the two instead.'],
+      [null, 'Double tap, face', 'A strip of faces. Direction comes from the edge nearest your tap.'],
+      [null, 'Double tap, edge', 'The whole loop. Tap one edge, double-tap another within 1.5s for the run between them.'],
       ['eye', 'See-through', 'Lets the selection show through the surface.'],
-      ['camera', 'Aim assist', 'After a vertex or edge tap, eases the camera in until neighbours are far enough apart to tell apart. It runs after the pick, so it only ever makes the NEXT tap easier.']
+      ['camera', 'Aim assist', 'Eases the camera in after a tap, so the NEXT one is easier.']
+    ]
+  },
+  {
+    title: 'Move, rotate, scale',
+    lead: 'No gizmo. Grab what is selected and drag it.',
+    rows: [
+      [null, 'Two-finger tap', 'Move / Rotate / Scale. The top readout says which.'],
+      [null, 'Three-finger tap', 'Free / Axis.'],
+      [null, 'Axis', 'Decided in the first few pixels and held until you lift.'],
+      [null, 'Free rotate', 'Axis from the direction you swipe.'],
+      [null, 'Free scale', 'Screen axes, so depth is reachable. Matching none scales evenly.'],
+      ['snap', 'Snap', 'Moves in steps. Step size is in the drawer.']
+    ]
+  },
+  {
+    title: 'The two rings',
+    lead: 'Hold, and tools bloom under your finger. What you get depends on what was under it.',
+    rows: [
+      [null, 'On a selection', 'A third of a second. That selection\'s own tools.'],
+      [null, 'On empty space', 'Half a second - a careful orbit starts the same way. Add Cube and the view toggles.'],
+      [null, 'Choosing', 'Slide toward an icon and lift. It picks by direction, not by landing on it.'],
+      [null, 'Backing out', 'Slide back to the middle, or move before it opens.']
     ]
   }
 ];
 
 HELP_SECTIONS.push(
   {
-    title: 'Moving, rotating, scaling',
-    lead: 'There is no gizmo. You grab what is selected and drag it, and the same drag does whichever of the three the current tool is set to.',
-    rows: [
-      [null, 'Two-finger tap', 'Cycles Move / Rotate / Scale. The readout at the top says which.'],
-      [null, 'Three-finger tap', 'Switches Free / Axis.'],
-      [null, 'Axis', 'The axis is decided from the first few pixels of the drag and held until you lift, so a curving gesture cannot wander onto another one.'],
-      [null, 'Free rotate', 'Takes its axis from the direction you swipe, fixed at the start of the drag.'],
-      [null, 'Free scale', 'Reads the axes as they appear on screen, so depth is reachable. A drag that matches no axis scales everything evenly.'],
-      ['snap', 'Snap', 'Moves in steps instead of running smooth.']
-    ]
-  },
-  {
-    title: 'The two rings',
-    lead: 'Press and hold, and tools bloom under your finger. What you get depends on what was under it.',
-    rows: [
-      [null, 'On your selection', 'About a third of a second. Gives you that selection\'s own tools.'],
-      [null, 'On empty space', 'About half a second. Gives you Add Cube and the view toggles. It waits longer because pressing on the background and pausing is also how a careful orbit starts, so the gesture has to prove itself first.'],
-      [null, 'Choosing', 'Slide toward an icon - its name appears beside it - and lift. The ring picks by direction, so you never have to land on the icon itself.'],
-      [null, 'Backing out', 'Slide back to the middle and lift, and nothing runs. Moving your finger before the ring opens cancels it: that was a drag.']
-    ]
-  },
-  {
     title: 'Shaping',
-    lead: 'Component mode, from the ring on your selection. Several of these open a bar with a slider - set it, then confirm.',
+    lead: 'Component mode, from the ring on your selection. Several open a bar with a slider - set it, then confirm.',
     rows: [
-      ['extrude', 'Extrude', 'Pulls the selected faces or edges out into new geometry. Faces that touch each other come out as one piece rather than separate stubs.'],
-      ['inset', 'Inset', 'Shrinks a face inside its own outline, leaving a border around the edge.'],
-      ['bevel', 'Bevel', 'Replaces a sharp edge with a narrow flat face. More segments rounds it off.'],
-      ['loop', 'Loop', 'Cuts new edge rings across the mesh, running perpendicular to the edge you picked. Count sets how many; slide moves them off centre.'],
-      ['knife', 'Knife', 'Cut by hand. Press and slide to place a point - it snaps to a corner, or slides along an edge, or sits anywhere on a face - then lift. Green dots are your points, the yellow line is the cut. Back removes the last one, OK cuts. Each run has to cross a face from one side to the other; a cut that stops in the middle of a face has nothing to split and is skipped.'],
-      ['split', 'Split', 'Puts a midpoint on each selected edge.'],
-      ['detach', 'Detach', 'Lifts the selected faces out into a new object of their own. The source keeps the hole they leave behind.'],
-      ['bridge', 'Bridge', 'Joins two selections with a band of new faces. The bar counts SECTIONS - more of them subdivide the bridge along its length - and Curved, offered from two sections up, leaves each end the way that end was already going instead of running straight across. Two faces pointing the same way cannot always be joined without the bridge folding through itself; the bar says so while it does.'],
-      ['cap', 'Cap hole', 'Closes an opening. In Edge mode, select any part of a hole\'s rim and only that hole is capped; from anywhere else, every hole in the object. A rim that no single flat face can close is refused and reported rather than quietly making the mesh worse.'],
-      ['connect', 'Connect', 'Runs a new edge between selected vertices.'],
-      ['weld', 'Weld', 'Merges the selected vertices into a single one.'],
-      ['merge', 'Merge', 'Vertices sitting on almost the same spot become one. Select a cluster - or the whole object - and run it; only near-coincident points are affected.'],
+      ['extrude', 'Extrude', 'Pulls faces or edges out. Touching faces come out as one piece.'],
+      ['inset', 'Inset', 'A border inside a face.'],
+      ['bevel', 'Bevel', 'A narrow flat face along an edge. More segments rounds it.'],
+      ['loop', 'Loop', 'New edge rings across the mesh, square to the edge you picked.'],
+      ['knife', 'Knife', 'Press and slide to place points, lift. Back removes one, OK cuts. Each run must cross a face side to side.'],
+      ['split', 'Split', 'A midpoint on every selected edge.'],
+      ['detach', 'Detach', 'The selected faces leave as their own object.'],
+      ['bridge', 'Bridge', 'Joins two selections with new faces. Sections subdivides it, Curved keeps each end going its own way.'],
+      ['cap', 'Cap hole', 'Closes an opening. In Edge mode just that one, otherwise all of them.'],
+      ['connect', 'Connect', 'A new edge between selected vertices.'],
+      ['weld', 'Weld', 'The selected vertices become one.'],
+      ['merge', 'Merge', 'Points sitting on almost the same spot become one.'],
       ['grow', 'Grow', 'Widens the selection to everything touching it.'],
-      [null, 'View cube', 'Tap a dot on the cube in the top-right corner and the camera swings to that view and goes orthographic - flat, no perspective, for lining things up. Orbit by hand and perspective comes back.'],
-      ['shrink', 'Shrink', 'Pulls the selection back in from its border.'],
-      ['crease', 'Crease', 'Marks an edge sharp: it stays a hard line on a smooth-shaded surface and through Subdivide. Uncrease takes it back.'],
+      ['shrink', 'Shrink', 'Pulls it back in from its border.'],
+      ['crease', 'Crease', 'Holds an edge hard through smoothing and Subdivide.'],
+      ['smooth', 'Shade', 'Flat or smooth. In Edge mode it marks the edges themselves.'],
       ['flipnorm', 'Flip normals', 'Turns the selected faces inside out.'],
-      ['shade', 'Shade', 'Flat or smooth shading for the selected faces. In Edge mode it works on the edges themselves: flat marks the selected edges sharp, smooth unmarks them - the surrounding faces keep their own shading.'],
-      [null, 'Delete, faces', 'Cuts the faces away and leaves a hole. This is how you make one.'],
-      ['del', 'Delete, vertices and edges', 'DISSOLVES rather than cuts: the faces close over what was removed instead of going with it. Dissolving an edge merges the two faces it separated; dissolving a vertex merges the ring of faces around it. The vertices inside a dissolved run go too - the two ends of a partial run stay, since they still join edges that survive.']
+      [null, 'Delete, faces', 'Cuts them away and leaves a hole. This is how you make one.'],
+      ['del', 'Delete, rest', 'Dissolves: the faces close over the gap instead of going with it.']
     ]
   },
   {
     title: 'Whole objects',
     lead: 'Object mode, from the same ring.',
     rows: [
-      ['dupe', 'Duplicate', 'Copies the object and sets the copy beside it.'],
-      ['subdiv', 'Subdivide', 'Divides every face. Smooth rounds the shape as it goes, Keep shape holds the silhouette, and the counter sets how many times. Creased edges stay sharp. Every level multiplies the face count by four, so the counter stops low on purpose.'],
-      ['color', 'Materials', 'The tab under the view cube rolls out the material tray. Tap one to apply it - to the selected faces in Face mode, to the whole object otherwise. The pencil on the applied card, or a long press on any card, opens the editor: colour, metalness and roughness change live on everything wearing that material. + makes a new material from the applied one; presets reset to defaults, custom materials can be deleted. A colour mask blends procedural noise toward a second colour - it wraps the object in its own space, no unwrapping involved.'],
-      ['fillet', 'Fillet', 'Previews rounded edges over the whole object without changing the mesh. Shape and width live in the drawer.'],
-      ['flipnorm', 'Flip normals', 'Turns the whole object inside out - the quick fix for a model that imported or mirrored the wrong way round.'],
-      ['flip', 'Flip', 'Mirrors the object in place along the symmetry axis, without leaving a copy behind.'],
-      ['separate', 'Separate', 'Splits an object into one object per loose piece.'],
-      ['join', 'Join', 'Merges two or more selected objects into one.'],
-      ['cap', 'Cap holes', 'Closes every opening in the selected objects.'],
-      ['centre', 'Centre', 'Puts the selection back where new objects appear - centred, resting on the floor.'],
+      ['dupe', 'Duplicate', 'Copies the object beside itself.'],
+      ['subdiv', 'Subdivide', 'Divides every face. Smooth rounds, Keep shape holds the silhouette. Creases stay sharp.'],
+      ['smoothangle', 'Smooth by angle', 'One threshold for the whole object: edges sharper than it stay hard, the rest blend.'],
+      ['color', 'Materials', 'The tray under the view cube. Tap to apply, pencil or long press to edit.'],
+      ['fillet', 'Fillet', 'Previews rounded edges over the object without changing the mesh.'],
+      ['flip', 'Flip', 'Mirrors the object in place, no copy left behind.'],
+      ['flipnorm', 'Flip normals', 'Turns the whole object inside out.'],
+      ['separate', 'Separate', 'One object per loose piece.'],
+      ['join', 'Join', 'Merges the selected objects into one.'],
+      ['cap', 'Cap holes', 'Closes every opening in them.'],
+      ['centre', 'Centre', 'Back to the middle, resting on the floor.'],
       ['del', 'Delete', 'Removes the selected objects.']
     ]
-  }
-);
-
-HELP_SECTIONS.push(
+  },
+  {
+    title: 'Surface',
+    lead: 'The material editor, from the tray under the view cube. Everything here is live on every object wearing that material.',
+    rows: [
+      [null, 'Colour, metal, rough', 'The three that decide what it is made of.'],
+      [null, 'Masks', 'Up to four layers, each blending a second colour and roughness in. They wrap the object in its own space - nothing to unwrap.'],
+      [null, 'Noise masks', 'Clouds, streaks, spots, or a picture of your own.'],
+      [null, 'Cavity, Edges', 'Read off the SHAPE, not a texture. Cavity finds the creases, Edges the exposed edges. Width, Blur, Noise and Noise scale set the band.'],
+      [null, 'Round edges', 'Rounds the light along hard edges without adding geometry. Works with no mask at all.']
+    ]
+  },
   {
     title: 'Symmetry and Mirror',
-    lead: 'Symmetry is a mode you leave switched on while you work. Mirror is a one-off action.',
+    lead: 'Symmetry is a mode you leave switched on. Mirror is a one-off.',
     rows: [
-      ['mirror', 'Symmetry', 'The pill under the view cube. Left half on, right half off - tap a half or swipe toward it.'],
-      [null, 'The plane', 'Captured the moment you switch symmetry on, at the middle of the object\'s bounding box on the chosen axis, and it travels with the object. Switching it off and on again re-reads it.'],
-      [null, 'What mirrors', 'Component edits. Shaping tools take in the mirror of your selection and run once across both halves, so nothing is built at the seam. Dragging a whole object does not mirror.'],
-      [null, 'The catch', 'Symmetry pairs up vertices that already have a twin. It keeps a symmetric model symmetric; it cannot put back symmetry that has been lost.'],
-      ['mirror', 'Mirror', 'With symmetry off, mirrors across the world plane. With it on, across the captured one. If that plane cuts through the object, Mirror keeps the half you are looking at and rebuilds the other from it, leaving an edge loop exactly on the plane.']
+      ['mirror', 'Symmetry', 'The pill under the view cube. Left half on, right half off.'],
+      [null, 'The plane', 'Captured when you switch it on, at the middle of the object, and it travels with the object.'],
+      [null, 'What mirrors', 'Component edits, run once across both halves so nothing is built at the seam. Moving a whole object does not.'],
+      [null, 'The catch', 'It pairs up vertices that already have a twin. It keeps a model symmetric; it cannot put symmetry back.'],
+      ['mirror', 'Mirror', 'Mirrors across the plane. If that plane cuts the object, it keeps the half you are looking at and rebuilds the other.']
     ]
   },
   {
     title: 'The drawer',
-    lead: 'Hamburger, top-left. Everything here is a setting or a list - the tools all live in the rings.',
+    lead: 'Hamburger, top-left. Settings and lists only - the tools all live in the rings.',
     rows: [
-      [null, 'Scene', 'Every object in the scene. Tap one to make it active.'],
-      [null, 'Appearance', 'Theme, and the colour of whatever is selected.'],
-      [null, 'Editing', 'Exact transform values, Clear creases, drag sensitivity, and which axis symmetry uses.'],
-      ['snap', 'Snap step', 'How far one snapped step moves, turns and scales. Snap itself is toggled from the world ring.'],
-      ['fillet', 'Fillet', 'Flat or Round, and how wide - the settings the Fillet preview uses.'],
-      [null, 'Models', 'Save the scene into the browser under a name, and open it again later. Survives closing the tab.'],
-      [null, 'Files', 'Download and open a .json of the whole scene, and export .glb, .obj or .stl.']
+      [null, 'Scene', 'Every object. Tap one to make it active.'],
+      [null, 'Appearance', 'Theme, environment and lighting.'],
+      [null, 'Editing', 'Exact transform values, Clear creases, drag sensitivity, symmetry axis.'],
+      ['snap', 'Snap step', 'How far one snapped step moves, turns and scales.'],
+      ['fillet', 'Fillet', 'Flat or Round, and how wide.'],
+      [null, 'Models', 'Saves the scene inside the browser under a name. Survives closing the tab.'],
+      [null, 'Files', 'Writes it to disk, and exports glTF, OBJ or STL.']
     ]
   },
   {
     title: 'Keeping your work',
     rows: [
       ['undo', 'Undo / Redo', 'Bottom-centre. Every edit is a step.'],
-      [null, 'Models vs Files', 'Two different places, on purpose. Models keeps the scene inside the browser under a name; Files writes it to disk. That is why the drawer says Save under one and Download under the other.'],
-      ['save', 'Download .json', 'Writes the whole scene to a file you can open again.'],
+      [null, 'Models vs Files', 'Two different places on purpose: one is the browser, one is your disk.'],
+      ['save', 'Download .json', 'The whole scene, openable again.'],
       ['load', 'Open .json', 'Reads one back in.'],
-      ['file_export', 'Export', 'glTF, OBJ or STL, for taking the model somewhere else. An export is a one-way trip - it carries the shape, not the scene.'],
+      ['file_export', 'Export', 'glTF, OBJ or STL. A one-way trip - the shape, not the scene.'],
       ['grid', 'Floor grid', 'The reference grid. Off is sometimes easier to read.']
     ]
   }
 );
 
+/* Last, and deliberately last: the thing you want when you are at a desk and
+   the model you want to twist is in your pocket. Drawn from the module grid
+   at build time - no library, no network, and it survives being opened from
+   a file:// URL like everything else here. */
+const HELP_QR = '<svg class="qr" viewBox="0 0 35 35" shape-rendering="crispEdges" xmlns="http://www.w3.org/2000/svg"><rect width="35" height="35" fill="#fff"/><path fill="#000" d="M3 3h7v1h-7zM11 3h1v1h-1zM13 3h1v1h-1zM15 3h1v1h-1zM18 3h4v1h-4zM25 3h7v1h-7zM3 4h1v1h-1zM9 4h1v1h-1zM14 4h1v1h-1zM16 4h2v1h-2zM19 4h2v1h-2zM23 4h1v1h-1zM25 4h1v1h-1zM31 4h1v1h-1zM3 5h1v1h-1zM5 5h3v1h-3zM9 5h1v1h-1zM11 5h1v1h-1zM13 5h1v1h-1zM17 5h6v1h-6zM25 5h1v1h-1zM27 5h3v1h-3zM31 5h1v1h-1zM3 6h1v1h-1zM5 6h3v1h-3zM9 6h1v1h-1zM13 6h1v1h-1zM15 6h1v1h-1zM17 6h1v1h-1zM20 6h1v1h-1zM23 6h1v1h-1zM25 6h1v1h-1zM27 6h3v1h-3zM31 6h1v1h-1zM3 7h1v1h-1zM5 7h3v1h-3zM9 7h1v1h-1zM13 7h6v1h-6zM21 7h1v1h-1zM25 7h1v1h-1zM27 7h3v1h-3zM31 7h1v1h-1zM3 8h1v1h-1zM9 8h1v1h-1zM11 8h2v1h-2zM14 8h2v1h-2zM18 8h1v1h-1zM20 8h2v1h-2zM25 8h1v1h-1zM31 8h1v1h-1zM3 9h7v1h-7zM11 9h1v1h-1zM13 9h1v1h-1zM15 9h1v1h-1zM17 9h1v1h-1zM19 9h1v1h-1zM21 9h1v1h-1zM23 9h1v1h-1zM25 9h7v1h-7zM14 10h2v1h-2zM17 10h3v1h-3zM3 11h1v1h-1zM5 11h1v1h-1zM9 11h2v1h-2zM12 11h2v1h-2zM15 11h3v1h-3zM19 11h1v1h-1zM23 11h1v1h-1zM26 11h1v1h-1zM29 11h1v1h-1zM31 11h1v1h-1zM3 12h2v1h-2zM6 12h1v1h-1zM10 12h2v1h-2zM14 12h1v1h-1zM16 12h2v1h-2zM20 12h1v1h-1zM22 12h5v1h-5zM30 12h2v1h-2zM7 13h1v1h-1zM9 13h2v1h-2zM12 13h1v1h-1zM14 13h2v1h-2zM18 13h12v1h-12zM31 13h1v1h-1zM5 14h3v1h-3zM10 14h1v1h-1zM14 14h3v1h-3zM21 14h1v1h-1zM23 14h1v1h-1zM25 14h1v1h-1zM27 14h2v1h-2zM4 15h3v1h-3zM8 15h3v1h-3zM13 15h1v1h-1zM15 15h2v1h-2zM18 15h2v1h-2zM22 15h1v1h-1zM25 15h2v1h-2zM31 15h1v1h-1zM3 16h2v1h-2zM6 16h1v1h-1zM10 16h2v1h-2zM15 16h1v1h-1zM20 16h1v1h-1zM22 16h2v1h-2zM25 16h2v1h-2zM30 16h2v1h-2zM4 17h1v1h-1zM7 17h1v1h-1zM9 17h1v1h-1zM11 17h1v1h-1zM15 17h4v1h-4zM22 17h1v1h-1zM25 17h1v1h-1zM31 17h1v1h-1zM3 18h1v1h-1zM5 18h1v1h-1zM7 18h2v1h-2zM11 18h2v1h-2zM15 18h1v1h-1zM17 18h3v1h-3zM21 18h1v1h-1zM24 18h1v1h-1zM26 18h1v1h-1zM3 19h1v1h-1zM5 19h1v1h-1zM7 19h4v1h-4zM12 19h1v1h-1zM16 19h2v1h-2zM19 19h1v1h-1zM21 19h1v1h-1zM23 19h1v1h-1zM25 19h2v1h-2zM31 19h1v1h-1zM5 20h3v1h-3zM10 20h1v1h-1zM13 20h2v1h-2zM16 20h3v1h-3zM20 20h1v1h-1zM22 20h2v1h-2zM25 20h2v1h-2zM29 20h3v1h-3zM3 21h5v1h-5zM9 21h1v1h-1zM18 21h1v1h-1zM22 21h1v1h-1zM24 21h1v1h-1zM27 21h2v1h-2zM31 21h1v1h-1zM6 22h3v1h-3zM12 22h1v1h-1zM14 22h3v1h-3zM18 22h1v1h-1zM21 22h4v1h-4zM26 22h1v1h-1zM3 23h2v1h-2zM6 23h1v1h-1zM8 23h4v1h-4zM13 23h2v1h-2zM16 23h1v1h-1zM19 23h1v1h-1zM22 23h7v1h-7zM30 23h1v1h-1zM11 24h1v1h-1zM13 24h1v1h-1zM15 24h1v1h-1zM18 24h3v1h-3zM23 24h1v1h-1zM27 24h3v1h-3zM31 24h1v1h-1zM3 25h7v1h-7zM11 25h2v1h-2zM14 25h1v1h-1zM16 25h3v1h-3zM21 25h1v1h-1zM23 25h1v1h-1zM25 25h1v1h-1zM27 25h1v1h-1zM31 25h1v1h-1zM3 26h1v1h-1zM9 26h1v1h-1zM12 26h3v1h-3zM17 26h1v1h-1zM21 26h3v1h-3zM27 26h1v1h-1zM30 26h1v1h-1zM3 27h1v1h-1zM5 27h3v1h-3zM9 27h1v1h-1zM14 27h4v1h-4zM19 27h1v1h-1zM22 27h7v1h-7zM30 27h2v1h-2zM3 28h1v1h-1zM5 28h3v1h-3zM9 28h1v1h-1zM13 28h1v1h-1zM15 28h1v1h-1zM17 28h3v1h-3zM21 28h1v1h-1zM23 28h2v1h-2zM27 28h3v1h-3zM31 28h1v1h-1zM3 29h1v1h-1zM5 29h3v1h-3zM9 29h1v1h-1zM11 29h3v1h-3zM16 29h5v1h-5zM27 29h1v1h-1zM30 29h2v1h-2zM3 30h1v1h-1zM9 30h1v1h-1zM12 30h2v1h-2zM17 30h2v1h-2zM21 30h1v1h-1zM23 30h2v1h-2zM27 30h2v1h-2zM3 31h7v1h-7zM11 31h2v1h-2zM15 31h1v1h-1zM18 31h2v1h-2zM22 31h5v1h-5zM31 31h1v1h-1z"/></svg>';
+const HELP_URL = 'https://zeghreit.github.io/kubik/';
+
+/* The name reads as the first words of its own line rather than sitting in
+   a column of its own. A 96px column on a 360px card left about 28
+   characters for the description, so nearly every row wrapped to three
+   lines and the card was twice as long as it had to be. */
 function helpRow(r) {
   const [ic, term, desc] = r;
   return '<div class="help-row">' +
     '<span class="ic">' + (ic ? icon(ic, 17) : '') + '</span>' +
-    '<span class="term">' + term + '</span>' +
-    '<span class="desc">' + desc + '</span>' +
+    '<span class="desc"><b class="term">' + term + '</b>' + desc + '</span>' +
     '</div>';
 }
 
+function helpSection(title, inner, open) {
+  return '<details class="help-sec"' + (open ? ' open' : '') + '>' +
+    '<summary class="help-sec-title">' + title + '</summary>' +
+    '<div class="help-secbody">' + inner + '</div></details>';
+}
+
 function openHelp() {
-  const quick = '<div class="help-sec">' +
-    '<div class="help-sec-title">Quick start</div>' +
-    HELP_QUICKSTART.map((s, i) =>
-      '<div class="help-row"><span class="num">' + (i + 1) + '</span>' +
-      '<span class="desc">' + s + '</span></div>').join('') +
-    '</div>';
+  const quick = HELP_QUICKSTART.map((s, i) =>
+    '<div class="help-row"><span class="num">' + (i + 1) + '</span>' +
+    '<span class="desc">' + s + '</span></div>').join('');
 
-  const rest = HELP_SECTIONS.map(sec =>
-    '<div class="help-sec">' +
-    '<div class="help-sec-title">' + sec.title + '</div>' +
-    (sec.lead ? '<div class="help-lead">' + sec.lead + '</div>' : '') +
-    sec.rows.map(helpRow).join('') +
-    '</div>').join('');
+  const qr = '<div class="help-qr">' + HELP_QR +
+    '<a href="' + HELP_URL + '" target="_blank" rel="noopener">' + HELP_URL + '</a></div>';
 
-  document.getElementById('helpBody').innerHTML = quick + rest;
+  const body = document.getElementById('helpBody');
+  body.innerHTML =
+    helpSection('Quick start', quick, true) +
+    HELP_SECTIONS.map(sec => helpSection(sec.title,
+      (sec.lead ? '<div class="help-lead">' + sec.lead + '</div>' : '') +
+      sec.rows.map(helpRow).join(''), false)).join('') +
+    helpSection('Open on your phone', qr, false);
+
+  /* ONE open at a time, and the one you opened put at the top. Without the
+     close, the card grows under your thumb and the section you tapped walks
+     off the bottom of the screen; without the scroll, opening the last
+     section moves nothing you can see.
+
+     Hung off the SUMMARY's click, not off toggle. Chrome fires toggle for a
+     <details open> that arrives with innerHTML too, and that first phantom
+     event scrolled the card by exactly the height of its own title bar - so
+     the card opened with "How Kubik works" and the close button already gone
+     off the top. A click is a tap and nothing else. The open flag flips
+     after the handler returns, hence the timeout. */
+  const card = document.getElementById('helpCard');
+  body.querySelectorAll('summary').forEach(sm => {
+    sm.addEventListener('click', () => setTimeout(() => {
+      const dt = sm.parentElement;
+      if (!dt.open) return;
+      body.querySelectorAll('details').forEach(o => { if (o !== dt) o.open = false; });
+      const head = card.querySelector('.insp-head');
+      card.scrollTop += dt.getBoundingClientRect().top - card.getBoundingClientRect().top
+                        - (head ? head.offsetHeight : 0) - 2;
+    }, 0));
+  });
+  card.scrollTop = 0;
   helpOverlayEl.classList.add('show');
 }
 function closeHelp() { helpOverlayEl.classList.remove('show'); }
