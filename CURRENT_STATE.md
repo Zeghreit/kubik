@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~13,800 lines)
-- Version at time of writing: **a2.31**
+- Version at time of writing: **a2.32**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1640,7 +1640,7 @@ otherwise the inspector reports the position the object was reflected FROM.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
 
-## Extrude is a MODE (a2.31)
+## Extrude is a MODE (a2.31, Rotate/Scale at a2.32)
 
 Extrude used to be a thing that HAPPENED: it committed a 0.02 nub, toasted
 "drag the gizmo to place it", and handed you back to the ordinary move tool.
@@ -1654,10 +1654,17 @@ marks it, and that flag is the whole switch:
 
 | gesture | meaning |
 |---|---|
-| drag on the new section | its height — out, or back in past zero |
-| **tap** the new section | stack ANOTHER section from where this one ended |
+| drag on the new section (Move) | its height — out, or back in past zero |
+| **tap** the new section (Move) | stack ANOTHER section from where this one ended |
+| drag it under Rotate / Scale | the ordinary transform — see "settling" below |
+| two-finger tap | cycles Move / Rotate / Scale, as everywhere else |
 | tap anywhere else, or Done | commit the lot, **one** Undo for all of it |
 | the grouping chips | live, and each one re-measures the drag direction |
+
+**The pull has no ceiling** (a2.32). `setPendingAmount` skips the op spec's
+range for a live op — that range was only ever the slider's, and this is a
+drag. The ±1e5 rail left in place is a guard against a degenerate projection
+producing a nonsense number, not a design limit.
 
 The bar is the same `#opBar` wearing a different face: no slider (the drag on
 the model IS the control), no Cancel, OK reads **Done**, and the label counts
@@ -1721,6 +1728,50 @@ up on it and reads plain up-the-screen. **Projecting also settles the sign
 for free** — dragging the way the axis points grows the section whether the
 face looks toward you or away, which a hardcoded "up = grow" got backwards
 for every away-facing face.
+
+### Rotate and Scale SETTLE the section (a2.32)
+
+They act on real geometry, and the section being pulled is a preview that
+`applyPendingOp` rebuilds from `op.state` on every tick — so a rotation
+applied to it would vanish at the next re-run. `settleExtrudeSection` runs at
+the top of `beginDirectDrag` and turns what has been pulled into mesh:
+`op.state` and `op.baseState` both move up onto it, `op.settled` goes true,
+and `applyPendingOp` then returns straight after its restore. A section that
+was never pulled is dropped here rather than baked in, exactly as at Done.
+
+Afterwards the mode is still open with nothing pending. A pull then opens a
+NEW section (`openExtrudeSection`, which `stackExtrudeSection` also uses) —
+the rotation cannot be un-applied by re-running the extrude, so continuing
+the same section is not on offer and a new one is the honest answer. This is
+the Blender loop: extrude, rotate, extrude, scale.
+
+**A settle enters the history AS IT HAPPENS**, and that is not tidiness. It
+runs at the START of a drag, while the push that would record it sits at the
+END of `endDirectDrag` — and the pointerdown handler throws a drag away
+without ever reaching that push when a second finger arrives, which is simply
+how you orbit to check your work. Between those two the section was real
+geometry in no history entry at all, `confirmPendingOp` closed the mode
+without pushing because it assumed the transform had already pushed, and
+`scheduleAutosave` rides on `pushHistory` — so a reload lost the work. The
+settle now pushes its own step when it kept anything, and `op.inHistory`
+records that everything so far is committed. `confirmPendingOp` pushes only
+when that flag is false, or a tap-and-abandon after a settle adds a step that
+changes nothing and an Undo press that appears dead.
+
+The flag is cleared by `setPendingAmount` whenever the amount actually
+changes — the same call that sets `op.pulled`.
+
+Two consequences worth stating plainly, because both were bugs first:
+`op.selectionBefore` is re-captured at the settle (the one from before the
+mode opened names arbitrary EDGES after the renumbering), and a cancel on a
+settled mode says **"Extrude finished"**, not "cancelled" — nothing is taken
+back, because `baseState` has moved up onto real geometry. Undo inside a
+settled mode closes it and then performs a real undo; inside an unsettled one
+it takes back the preview and holds `historyIndex`.
+
+**A tap only stacks under Move.** Under Rotate or Scale it says "Switch to
+Move to add a section" — with the bar reading "Rotate", a tap that quietly
+extruded 0.02 obeyed neither the label nor the eye.
 
 ### Two things that look like details and are not
 

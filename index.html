@@ -790,7 +790,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.31</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.32</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -7975,6 +7975,18 @@ function applyPendingOp() {
   restoreObjectState(obj, op.state);
   ensureHelpers(obj);
 
+  /* A SETTLED live extrude has no preview of its own. A rotate or a scale
+     turned everything pulled so far into real geometry, so what you are
+     looking at IS the mesh and the re-run is the restore, nothing more.
+     Running the extrude again here would grow a second section on top. */
+  if (op.live && op.settled) {
+    App.selectedElements = selectionFromPayload(obj, op.payload);
+    setActiveObjectHelpersVisible(obj, App.mode);
+    refreshElementColors(obj);
+    updateFrameVisibility();
+    return;
+  }
+
   let resultSelection = new Set();
 
   if (op.kind === 'extrude' && op.payload.mode === 'face') {
@@ -8186,8 +8198,12 @@ function showOpBar() {
       document.getElementById(id).style.display = 'none';
     });
     document.getElementById('opOk').textContent = 'Done';
+    // Move is the pull and needs no label; the other two change what a drag
+    // on the section means, so they say so.
+    const tool = App.transformTool === 'move' ? ''
+      : ' · ' + (App.transformTool === 'rotate' ? 'Rotate' : 'Scale');
     document.getElementById('opLabel').textContent =
-      spec.label + (op.sections > 1 ? ' ×' + op.sections : '');
+      spec.label + (op.sections > 1 ? ' ×' + op.sections : '') + tool;
   }
   opBarEl.classList.add('show');
 }
@@ -8274,13 +8290,19 @@ function setPendingAmount(v) {
   const op = App.pendingOp;
   if (!op) return;
   const spec = OP_SPECS[op.kind];
-  const clamped = Math.min(spec.max, Math.max(spec.min, v));
+  /* The live extrude is DRAGGED, not dialled, so the slider's range is not
+     its range - it stops where your finger stops. The rail left here is a
+     guard against a degenerate projection producing a nonsense number, not
+     a design limit: at 1e5 the section is long past anything you could see. */
+  const clamped = op.live
+    ? Math.max(-1e5, Math.min(1e5, v))
+    : Math.min(spec.max, Math.max(spec.min, v));
   if (!Number.isFinite(clamped)) return;
   // Somebody asked for a DIFFERENT height on purpose - a drag that actually
   // travelled, or an arrow key. measureExtrudeAxis moves op.amount directly
   // and so does not count, and neither does a drag that never left its
   // starting pixel.
-  if (op.live && clamped !== op.amount) op.pulled = true;
+  if (op.live && clamped !== op.amount) { op.pulled = true; op.inHistory = false; }
   op.amount = clamped;
   opSliderEl.value = clamped;
   if (document.activeElement !== opValueEl) opValueEl.value = Number(clamped.toFixed(3));
@@ -8324,6 +8346,22 @@ function confirmPendingOp() {
      and say so, rather than pushing an empty step onto the history. */
   if (op.live) {
     const o0 = findObject(op.objId);
+    /* Settled: a rotate or scale already turned everything into real
+       geometry with its own history step, and nothing has been pulled
+       since. Close the mode rather than committing the same thing twice. */
+    if (op.settled) {
+      App.pendingOp = null;
+      hideOpBar();
+      if (o0) {
+        ensureHelpers(o0);
+        setActiveObjectHelpersVisible(o0, App.mode);
+        refreshElementColors(o0);
+      }
+      refreshUI();
+      refreshGizmoAttachment();
+      toast('Extrude finished');
+      return;
+    }
     if (o0 && (!op.pulled || Math.abs(op.amount) < 1e-3)) {
       restoreObjectState(o0, op.state);
       ensureHelpers(o0);
@@ -8355,7 +8393,11 @@ function confirmPendingOp() {
   }
   refreshUI();
   refreshGizmoAttachment();
-  pushHistory();
+  /* Skipped only when a live extrude has already put everything it did into
+     the history. A settle pushes as it happens, so a section opened after
+     one and then abandoned would otherwise add a step that changes nothing
+     - and an Undo press that appears dead. */
+  if (!op.inHistory) pushHistory();
   if (op.kind === 'subdivide') {
     toast('Subdivided \u00d7' + (op.segments || 1) +
       (op.groupMode === 'keep' ? ', shape kept' : ', smoothed'));
@@ -8398,7 +8440,12 @@ function cancelPendingOp() {
   }
   refreshUI();
   refreshGizmoAttachment();
-  toast(OP_SPECS[op.kind].label + ' cancelled');
+  /* A settled extrude has nothing left to cancel - the sections are real
+     geometry with their own history step, and baseState was moved up onto
+     them. Saying "cancelled" over a model that did not change is worse than
+     saying nothing. */
+  toast(op.live && op.settled ? 'Extrude finished'
+    : OP_SPECS[op.kind].label + ' cancelled');
 }
 
 /* ---------------- Extrude mode (a2.31) ----------------
@@ -8588,6 +8635,9 @@ function beginExtrudeDrag(ev) {
   if (!op || !op.live) return false;
   const obj = findObject(op.objId);
   if (!obj) return false;
+  // Settled by a rotate or a scale, so there is no open section: this pull
+  // starts one, growing from the lip as it now stands.
+  if (op.settled && !openExtrudeSection(op, obj)) return false;
   const origin = selectionCentroidWorld(obj);
   if (!origin) return false;
   const a = extrudeScreenAxis(origin);
@@ -8621,36 +8671,94 @@ function endExtrudeDrag() {
   orbit.enabled = true;
 }
 
-/* Another section, starting where this one ended. The snapshot moves
+// What the mode is aimed at, read off the live selection.
+function extrudePayloadFromSelection(op, obj) {
+  const topo = obj.mesh.userData.topo;
+  return op.payload.mode === 'face'
+    ? { mode: 'face', picked: op.payload.picked, groups: Array.from(App.selectedElements) }
+    : { mode: 'edge', picked: op.payload.picked,
+        pairs: Array.from(App.selectedElements)
+          .map(ei => topo.edges[ei] && topo.edges[ei].slice()).filter(Boolean) };
+}
+
+/* Another section, starting where the last one ended. The snapshot moves
    forward so the next drag reads zero at the new lip; baseState does not,
    so one Undo still reaches back past the whole stack. */
+function openExtrudeSection(op, obj) {
+  ensureHelpers(obj);
+  const next = extrudePayloadFromSelection(op, obj);
+  // Nothing selected means nothing to grow FROM: a section built from an
+  // empty list changes no geometry, cannot measure its own direction, and
+  // would still bump the counter.
+  if (!(next.groups || next.pairs).length) return false;
+  op.state = captureObjectState(obj);
+  op.payload = next;
+  op.amount = EXTRUDE_COMMIT_NUB;
+  op.pulled = false;
+  op.settled = false;
+  op.sections = (op.sections || 0) + 1;
+  applyPendingOp();
+  measureExtrudeAxis();
+  showOpBar();
+  return true;
+}
+
 function stackExtrudeSection() {
   const op = App.pendingOp;
   if (!op || !op.live) return;
   const obj = findObject(op.objId);
   if (!obj) return;
-  // Nothing to stack ON. A second section here would weld straight onto the
-  // first, so the tap means "start this one" instead - and says so, because
-  // a silent no-op is indistinguishable from a broken app.
-  if (!op.pulled || Math.abs(op.amount) < 1e-3) { toast('Drag it out first'); return; }
+  /* Nothing to stack ON: a second section would weld straight onto the
+     first, so the tap means "start this one" instead - and says so, because
+     a silent no-op is indistinguishable from a broken app. A SETTLED mode
+     has no open section at all, so the tap simply opens one. */
+  if (!op.settled && (!op.pulled || Math.abs(op.amount) < 1e-3)) {
+    toast('Drag it out first');
+    return;
+  }
+  if (!openExtrudeSection(op, obj)) toast('Nothing selected to extrude');
+}
+
+/* Rotate and Scale act on REAL geometry, and the section being pulled is a
+   preview that applyPendingOp rebuilds from its snapshot on every tick - so
+   a rotation applied to it would vanish at the next re-run. Settling turns
+   what has been pulled into the mesh: the snapshot moves up to it, the
+   counter keeps it, and the next pull starts a new section from the lip as
+   it then stands. A section never pulled is dropped here rather than baked
+   in, exactly as it would be at Done.
+
+   baseState moves up too. From a settle onward the transform has its own
+   history step, so one Undo takes back the transform rather than the whole
+   stack - which is what "they work as usual" has to mean. */
+function settleExtrudeSection() {
+  const op = App.pendingOp;
+  if (!op || !op.live || op.settled) return;
+  const obj = findObject(op.objId);
+  if (!obj) return;
+  const kept = op.pulled && Math.abs(op.amount) >= 1e-3;
+  if (!kept) {
+    restoreObjectState(obj, op.state);
+    ensureHelpers(obj);
+    App.selectedElements = selectionFromPayload(obj, op.payload);
+    op.sections = Math.max(0, (op.sections || 1) - 1);
+  }
   ensureHelpers(obj);
-  const topo = obj.mesh.userData.topo;
-  const next = op.payload.mode === 'face'
-    ? { mode: 'face', picked: op.payload.picked, groups: Array.from(App.selectedElements) }
-    : { mode: 'edge', picked: op.payload.picked,
-        pairs: Array.from(App.selectedElements)
-          .map(ei => topo.edges[ei] && topo.edges[ei].slice()).filter(Boolean) };
-  // Nothing selected means nothing to stack ON: a section built from an
-  // empty list changes no geometry, cannot re-measure its own direction,
-  // and would still bump the counter. Say so instead.
-  if (!(next.groups || next.pairs).length) { toast('Nothing selected to extrude'); return; }
   op.state = captureObjectState(obj);
-  op.payload = next;
-  op.amount = EXTRUDE_COMMIT_NUB;
+  op.baseState = op.state;
+  /* And what a cancel should put BACK, which is no longer the selection the
+     mode opened with: that one was captured before any of this existed, and
+     in Edge mode its indices name arbitrary edges after the renumbering. */
+  op.selectionBefore = new Set(App.selectedElements);
+  op.settled = true;
   op.pulled = false;
-  op.sections = (op.sections || 1) + 1;
-  applyPendingOp();
-  measureExtrudeAxis();
+  /* The section is real geometry from here, so it enters the history NOW
+     rather than at Done. The transform that triggered this settle can be
+     abandoned mid-gesture - a second finger is the camera taking over, and
+     that path clears directDrag by hand without ever reaching
+     endDirectDrag's pushHistory. Leaving the geometry standing in no
+     history entry at all is how a reload loses it outright. */
+  if (kept) { pushHistory(); op.inHistory = true; }
+  else op.inHistory = true;   // nothing changed, so everything is committed
   showOpBar();
 }
 
@@ -9833,6 +9941,7 @@ function refreshToolIndicator() {
 function setTransformTool(tool) {
   App.transformTool = tool;
   refreshToolIndicator();
+  if (App.pendingOp && App.pendingOp.live) showOpBar();
   toast({ move: 'Move', rotate: 'Rotate', scale: 'Scale' }[tool]);
 }
 
@@ -9840,6 +9949,7 @@ function cycleTransformTool() {
   const i = TRANSFORM_TOOLS.indexOf(App.transformTool);
   App.transformTool = TRANSFORM_TOOLS[(i + 1) % TRANSFORM_TOOLS.length];
   refreshToolIndicator();
+  if (App.pendingOp && App.pendingOp.live) showOpBar();
   toast({ move: 'Move', rotate: 'Rotate', scale: 'Scale' }[App.transformTool]);
 }
 
@@ -10210,6 +10320,10 @@ function axisScreenDir(pivotPos, dir) {
 }
 
 function beginDirectDrag(ev) {
+  /* Reached during extrude mode only with Rotate or Scale active - Move is
+     the pull, and pointerdown routes it elsewhere. Both act on real
+     geometry, so the pulled section is turned into mesh first. */
+  if (App.pendingOp && App.pendingOp.live) settleExtrudeSection();
   const pivot = gizmoTarget || getOrCreatePivot();
   recenterPivot();
   dragCtx = captureDragContext(pivot);
@@ -10476,6 +10590,18 @@ function endDirectDrag() {
   axisGuide.visible = false;
   orbit.enabled = true;
   recenterPivot();
+  /* Extrude mode is still open underneath: the transform just changed the
+     mesh the next section will grow from, so the snapshot has to follow it
+     or the first re-run would put the geometry back where it was. */
+  if (App.pendingOp && App.pendingOp.live && App.pendingOp.settled) {
+    const o = findObject(App.pendingOp.objId);
+    if (o) {
+      ensureHelpers(o);
+      App.pendingOp.payload = extrudePayloadFromSelection(App.pendingOp, o);
+      App.pendingOp.state = captureObjectState(o);
+      App.pendingOp.baseState = App.pendingOp.state;
+    }
+  }
   pushHistory();
 }
 
@@ -11319,8 +11445,14 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
      still orbits, and a still tap ends the mode. No ring blooms - the ring
      is how you got here. */
   if (App.pendingOp && App.pendingOp.live) {
-    extrudeCandidate = pointerOnSelection(ev) ? { x: ev.clientX, y: ev.clientY } : null;
-    directCandidate = null;
+    const on = pointerOnSelection(ev) ? { x: ev.clientX, y: ev.clientY } : null;
+    /* Move IS the pull. Rotate and Scale are the ordinary transforms and go
+       down the ordinary path, settling the section on the way. Two- and
+       three-finger taps still switch tool and mode: they are judged in
+       pointerup, above this branch. */
+    const pulling = App.transformTool === 'move';
+    extrudeCandidate = pulling ? on : null;
+    directCandidate = pulling ? null : on;
     clearToolRingTimer();
     return;
   }
@@ -11792,8 +11924,9 @@ function handleDoubleTap(ev) {
      tap ON the model hit the bare return below, so stacking sections by
      tapping quickly silently dropped every other tap. */
   if (App.pendingOp && App.pendingOp.live) {
-    if (pointerOnSelection(ev)) stackExtrudeSection();
-    else confirmPendingOp();
+    if (!pointerOnSelection(ev)) confirmPendingOp();
+    else if (App.transformTool === 'move') stackExtrudeSection();
+    else toast('Switch to Move to add a section');
     return;
   }
   // While an operation is being dialled in, a double-tap on empty space is the
@@ -11921,8 +12054,12 @@ function handleTap(ev) {
      change: on the section you just pulled it stacks another one; anywhere
      else it means you are done. */
   if (App.pendingOp && App.pendingOp.live) {
-    if (pointerOnSelection(ev)) stackExtrudeSection();
-    else confirmPendingOp();
+    if (!pointerOnSelection(ev)) confirmPendingOp();
+    /* A tap adds a section, but only while the drag it repeats is the pull.
+       With the bar reading "Rotate" a tap that quietly extruded 0.02 obeyed
+       neither the label nor the eye. */
+    else if (App.transformTool === 'move') stackExtrudeSection();
+    else toast('Switch to Move to add a section');
     return;
   }
   // Selection is frozen while an operation is being dialled in - otherwise the
@@ -12957,7 +13094,13 @@ function undo() {
      index back here would take away that step as well as the preview, and
      the mode bar deliberately points at Undo instead of carrying a Cancel.
      So Undo means "take back the preview", and one press is exactly that. */
-  if (App.pendingOp && App.pendingOp.live) { cancelPendingOp(); return; }
+  if (App.pendingOp && App.pendingOp.live) {
+    // A settled mode holds no preview, so there is nothing for this press to
+    // take back - close it and let the press mean what it usually means.
+    const settled = App.pendingOp.settled;
+    cancelPendingOp();
+    if (!settled) return;
+  }
   if (App.pendingOp) { App.pendingOp = null; hideOpBar(); }
   if (App.historyIndex <= 0) return;
   App.historyIndex--;
@@ -12966,7 +13109,11 @@ function undo() {
 }
 function redo() {
   // Same reasoning as undo: close the preview first, on its own terms.
-  if (App.pendingOp && App.pendingOp.live) { cancelPendingOp(); return; }
+  if (App.pendingOp && App.pendingOp.live) {
+    const settled = App.pendingOp.settled;
+    cancelPendingOp();
+    if (!settled) return;
+  }
   if (App.pendingOp) { App.pendingOp = null; hideOpBar(); }
   if (App.historyIndex >= App.history.length - 1) return;
   App.historyIndex++;
@@ -14554,7 +14701,7 @@ HELP_SECTIONS.push(
     title: 'Shaping',
     lead: 'Component mode, from the ring on your selection. Several open a bar with a slider - set it, then confirm.',
     rows: [
-      ['extrude', 'Extrude', 'Pulls faces or edges out. Drag the new part to place it, tap it for another section, tap away when done.'],
+      ['extrude', 'Extrude', 'Pulls faces or edges out. Drag the new part as far as you like, tap it for another section, tap away when done. Two-finger tap switches to Rotate or Scale and they work on it as usual.'],
       ['inset', 'Inset', 'A border inside a face.'],
       ['bevel', 'Bevel', 'A narrow flat face along an edge. More segments rounds it.'],
       ['loop', 'Loop', 'New edge rings across the mesh, square to the edge you picked.'],
@@ -15240,6 +15387,8 @@ if (PICK_DEBUG) {
     measureExtrudeAxis, selectionCentroidWorld,
     // The drag itself, driveable with a plain {clientX, clientY}.
     axisTooFlat, beginExtrudeDrag, updateExtrudeDrag, endExtrudeDrag,
+    settleExtrudeSection, openExtrudeSection, beginDirectDrag, updateDirectDrag,
+    endDirectDrag, setTransformTool,
     get extrudeDrag() { return extrudeDrag; },
     setMode, undo, redo,
     /* The ring, driveable without waiting on the hold timer. That timer runs
