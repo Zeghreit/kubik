@@ -770,7 +770,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.25</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.26</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -2745,18 +2745,31 @@ function applyMaskPatch(mat, d) {
         '}',
         'float kubikRimW(float width) {',
         '  float hu = vKubikRimA.w;',
-        '  if (hu == 0.0) return 1.0;',   // no data at all: curvature alone
-        '  if (hu < 0.0) return 0.0;',    // a shell with no room for a band
-        '  vec3 d = vKubikPos - vKubikRimA.xyz;',
+        /* No model for this shell - or no attribute at all, which is the
+           material preview ball. Unrestricted: curvature answers alone.
+           This test only reads as "absent" because applyMaskPatch pins
+           defaultAttributeValues.kubikRimA to all zeros: WebGL's own default
+           for an unbound attribute is (0,0,0,1), which would make hu 1.0 and
+           measure every preview against a phantom unit box. Do not remove
+           that pin as redundant. */
+        '  if (hu <= 0.0) return 1.0;',
+        '  float hv = vKubikRimB.w;',
         '  float into;',
-        '  if (vKubikRimB.w < 0.0) {',
-        '    into = max(0.0, hu - length(d));',
+        '  if (hv < -1.5) {',
+        // A triangle, exactly: barycentric weight times the opposite altitude.
+        '    vec3 t = vKubikRimB.xyz * vKubikRimA.xyz;',
+        '    into = min(t.x, min(t.y, t.z));',
         '  } else {',
-        '    float a = abs(dot(d, vKubikRimB.xyz));',
-        '    float b = sqrt(max(0.0, dot(d, d) - a * a));',
-        '    into = max(0.0, min(hu - a, vKubikRimB.w - b));',
+        '    vec3 d = vKubikPos - vKubikRimA.xyz;',
+        '    if (hv < 0.0) {',
+        '      into = hu - length(d);',
+        '    } else {',
+        '      float a = abs(dot(d, vKubikRimB.xyz));',
+        '      if (hv == 0.0) into = hu - a;',
+        '      else into = min(hu - a, hv - sqrt(max(0.0, dot(d, d) - a * a)));',
+        '    }',
         '  }',
-        '  return 1.0 - smoothstep(0.0, max(width, 0.0001), into);',
+        '  return 1.0 - smoothstep(0.0, max(width, 0.0001), max(0.0, into));',
         '}',
         'float kubikCurvW(float p, float sharp, int mode) {',
         '  float w;',
@@ -3108,6 +3121,16 @@ function applyShading(obj) {
        spent most of its time building strings like 'l_g', and it only ran
        when creases existed; this one runs on every rebuild, so the keys have
        to be cheap. */
+    /* How many triangle-edges land on this logical edge, as opposed to how
+       many FACES touch it. An edge a face uses TWICE is that face's internal
+       triangulation - the diagonal of a quad - and is not part of its
+       outline. Shading does not care, because both triangles are in the same
+       island either way; a2.26's rim pass does, because it reads the sharp
+       edges as the shell's boundary and a diagonal would put a phantom
+       boundary through the middle of every quad. That is exactly what it
+       did: all six faces of a cube scored a fit error of 1.00 and fell back
+       to unrestricted. */
+    const edgeUse = new Map();     // key -> uses PER FACE, parallel to edgeFaces
     const edgeFaces = new Map();   // key -> face groups along it
     const edgeEnds = new Map();    // key -> [a, b]
     const incident = new Map();    // logical vertex -> its edge keys
@@ -3118,14 +3141,16 @@ function applyShading(obj) {
         if (a === b) continue;
         const lo = a < b ? a : b, hi = a < b ? b : a;
         const k = lo * nLog + hi;
-        let fs = edgeFaces.get(k);
+        let fs = edgeFaces.get(k), cs;
         if (!fs) {
-          fs = []; edgeFaces.set(k, fs); edgeEnds.set(k, [lo, hi]);
+          fs = []; cs = []; edgeFaces.set(k, fs); edgeUse.set(k, cs); edgeEnds.set(k, [lo, hi]);
           let ia = incident.get(lo); if (!ia) { ia = []; incident.set(lo, ia); } ia.push(k);
           let ib = incident.get(hi); if (!ib) { ib = []; incident.set(hi, ib); } ib.push(k);
-        }
+        } else cs = edgeUse.get(k);
         const g = triGroup[t];
-        if (fs.indexOf(g) < 0) fs.push(g);
+        let gi = fs.indexOf(g);
+        if (gi < 0) { gi = fs.length; fs.push(g); cs.push(0); }
+        cs[gi]++;
       }
     }
 
@@ -3267,30 +3292,63 @@ function applyShading(obj) {
        behaviour on a dense mesh: no per-quad grid pattern, the rim term
        simply goes inert and curvature decides alone.
 
-       WHAT A "FACE" IS HERE IS A SHELL, NOT A GROUP. Subdivide makes one
-       group per corner quad, so a box per group would band every internal
-       quad boundary and a subdivided cube would wear a cross on each face
-       instead of a rim. Adjacent groups whose normals agree are merged
-       first, and the band then follows the flat REGION's outline - which is
-       the same thing as the model's real edges. */
-    const gN = groupsSrc.length;
+       WHAT A "FACE" IS HERE IS A SHELL: the run of geometry groups joined
+       across every edge THE SHADING DOES NOT BREAK. It uses the same
+       `sharp` map the normals use above - hand marks, migrated creases, and
+       the object's own angle threshold - so the band lands on hard edges
+       and nowhere else. A 12-sided tube meets itself at 30 degrees, under
+       the 33-degree default, so its seams shade smooth, merge into ONE wall
+       shell and get nothing; only the rims against the caps are sharp. At 8
+       sides those seams are 45 degrees, shade hard, and do get the band -
+       which is what your eye says too. Subdivide is the other end of it:
+       one group per corner quad, all smooth, all one shell.
 
-    // 1. Shells: union adjacent groups across an edge their normals agree on.
+       AN OUTLINE EDGE IS NOT ANY EDGE. An edge a face uses TWICE is that
+       face's own triangulation - the diagonal of a quad - and is not part
+       of its outline; `edgeUse` counts uses PER FACE and the test is the
+       same one `computeTopology` uses, "SOME face uses it exactly once".
+       Getting this wrong is not subtle: every quad had a phantom boundary
+       down its diagonal, every model scored a fit error of 1.00, and the
+       whole feature fell back to unrestricted.
+
+       A shell's BOUNDARY is its sharp outline edges. None at all - a closed
+       smooth body - means there is no edge to band, so the rim steps aside
+       and curvature answers alone, as it did before a2.25.
+
+       FOUR MODELS, AND THE MODEL IS CHECKED AGAINST THE BOUNDARY BEFORE IT
+       IS USED. A lone triangle gets an EXACT answer and needs no check: a
+       triangular face is one triangle with three unshared vertices, so the
+       barycentric weights interpolate for free and the distance to side i
+       is the weight at the opposite corner times that corner's altitude.
+       Otherwise a flat shell tries a rectangle and a disc, a curved one an
+       axial band, and each is scored by how far from zero it puts the
+       MIDPOINTS of the shell's own sharp outline edges. Midpoints, not
+       vertices: a square's four corners sit on its disc as neatly as on its
+       box and only the midpoints tell the two apart. Each constraint is
+       scored against its OWN half-extent, or a long thin face would be
+       judged by its short axis. A model that misses by more than a fifth is
+       not used and the shell falls back to curvature alone. */
+    const gN = groupsSrc.length;
+    const isOutline = (k) => {
+      const cs = edgeUse.get(k);
+      if (!cs) return false;
+      for (let i = 0; i < cs.length; i++) if (cs[i] === 1) return true;
+      return false;
+    };
+
     const shellP = new Int32Array(gN);
     for (let g = 0; g < gN; g++) shellP[g] = g;
     const sFind = (g) => { while (shellP[g] !== g) { shellP[g] = shellP[shellP[g]]; g = shellP[g]; } return g; };
-    const COPLANAR = Math.cos(2 * Math.PI / 180);
-    edgeFaces.forEach((fs) => {
+    edgeFaces.forEach((fs, k) => {
+      // A line neither face exposes separates nothing, whatever the angle
+      // rule had to say about it.
       if (fs.length !== 2) return;
-      const n1 = groupNormal[fs[0]], n2 = groupNormal[fs[1]];
-      if (!n1 || !n2 || n1.lengthSq() < 1e-12 || n2.lengthSq() < 1e-12) return;
-      if (n1.dot(n2) < COPLANAR) return;
+      if (isOutline(k) && sharp.get(k)) return;
       const r1 = sFind(fs[0]), r2 = sFind(fs[1]);
       if (r1 !== r2) shellP[r1] = r2;
     });
 
-    // 2. Each shell's vertices, its area, and one triangle to take axes from.
-    const shellVerts = new Map();
+    const shellVerts = new Map(), shellTri0 = new Map(), shellTriN = new Map();
     for (let ai = 0; ai < posAttr.count; ai++) {
       const g = groupOfAttr[ai];
       if (g < 0) continue;
@@ -3299,126 +3357,219 @@ function applyShading(obj) {
       if (!l) { l = []; shellVerts.set(r, l); }
       l.push(ai);
     }
-    const shellArea = new Map(), shellTri0 = new Map();
     for (let t = 0; t < triCount; t++) {
       const r = sFind(triGroup[t]);
       if (!shellTri0.has(r)) shellTri0.set(r, t);
-      vA.fromBufferAttribute(posAttr, index.getX(t * 3));
-      vB.fromBufferAttribute(posAttr, index.getX(t * 3 + 1));
-      vC.fromBufferAttribute(posAttr, index.getX(t * 3 + 2));
-      const ar = 0.5 * vB.sub(vA).cross(vC.sub(vA)).length();
-      shellArea.set(r, (shellArea.get(r) || 0) + ar);
+      shellTriN.set(r, (shellTriN.get(r) || 0) + 1);
     }
+    // The shell's own normal, not whichever member won the union-find race -
+    // one collapsed quad mid-drag would otherwise call a flat face curved.
+    const shellN = new Map();
+    for (let g = 0; g < gN; g++) {
+      const n = groupNormal[g];
+      if (!n || n.lengthSq() < 1e-12) continue;
+      const r = sFind(g);
+      let v = shellN.get(r);
+      if (!v) { v = new THREE.Vector3(); shellN.set(r, v); }
+      v.add(n);
+    }
+    shellN.forEach(v => { if (v.lengthSq() > 1e-12) v.normalize(); });
 
-    /* 3. A BOX or a DISC, whichever fits the shell. A quad wants the box -
-       the disc would put the band on its corners only, which is what the
-       first attempt at this shipped and looked wrong. A cylinder cap wants
-       the disc - a box bands two of its six sides and misses the rest. The
-       test is which model's own area is closer to the shell's: a square
-       fills its box completely and only 64% of its disc, a hexagon fills
-       83% of its disc and 75% of its box.
+    // The boundary, as midpoints, filed under the shells of the edge's OWN
+    // faces. Walking the vertex fans instead files a midpoint under every
+    // shell that merely touches an endpoint, and one foreign point is enough
+    // to reject a model that fits its own face perfectly.
+    const shellBound = new Map();
+    const bp = new THREE.Vector3(), bq = new THREE.Vector3();
+    sharp.forEach((isSharp, k) => {
+      if (!isSharp || !isOutline(k)) return;
+      const ends = edgeEnds.get(k), fs = edgeFaces.get(k);
+      if (!ends || !fs) return;
+      const a0 = logicalGroups[ends[0]], a1 = logicalGroups[ends[1]];
+      if (!a0 || !a0.length || !a1 || !a1.length) return;
+      bp.fromBufferAttribute(posAttr, a0[0]);
+      bq.fromBufferAttribute(posAttr, a1[0]);
+      bp.add(bq).multiplyScalar(0.5);
+      let last = -1;
+      for (let i = 0; i < fs.length; i++) {
+        const r = sFind(fs[i]);
+        if (r === last) continue;
+        last = r;
+        let l = shellBound.get(r);
+        if (!l) { l = []; shellBound.set(r, l); }
+        l.push(bp.x, bp.y, bp.z);
+      }
+    });
 
-       A.w carries the box half-width, or the disc radius:
-         A.w  >  0  and B.w > 0 : rectangle, half-extents A.w by B.w
-         A.w  >  0  and B.w < 0 : disc of radius A.w
-         A.w === 0              : NO DATA - unrestricted, curvature alone.
-                                  This is what an unbound attribute reads as
-                                  and what the preview ball must get.
-         A.w  <  0              : a shell with no usable box - paint nothing.
-                                  A separate value on purpose: "no data" and
-                                  "no room" are opposite answers and one
-                                  sentinel cannot say both. */
+    /* A.w === 0            : no model - unrestricted, curvature alone
+       A.w > 0, B.w  >  0   : rectangle, half-extents A.w along B.xyz, B.w across
+       A.w > 0, B.w === 0   : axial band, half-length A.w along B.xyz
+       A.w > 0, B.w === -1  : disc of radius A.w about A.xyz
+       A.w > 0, B.w === -2  : triangle - A.xyz altitudes, B.xyz barycentric  */
     const wantLen = posAttr.count * 4;
     let raA = geo.attributes.kubikRimA, raB = geo.attributes.kubikRimB;
     let rimA, rimB;
     if (raA && raB && raA.array.length === wantLen && raB.array.length === wantLen) {
-      // Write through: applyShading runs every frame of a vertex drag, and
-      // two fresh Float32Arrays a frame is pure garbage.
+      // applyShading runs every frame of a vertex drag; two fresh
+      // Float32Arrays a frame is pure garbage.
       rimA = raA.array; rimB = raB.array; rimA.fill(0); rimB.fill(0);
     } else {
       rimA = new Float32Array(wantLen); rimB = new Float32Array(wantLen);
       raA = null; raB = null;
     }
-    const rC = new THREE.Vector3(), rD = new THREE.Vector3();
-    const rU = new THREE.Vector3(), rV = new THREE.Vector3();
-    const rT = new THREE.Vector3(), rBestU = new THREE.Vector3(), rBestC = new THREE.Vector3();
+    const FIT = 0.2;   // a model may miss its own boundary by this much of its reach
+    const rC = new THREE.Vector3(), rD = new THREE.Vector3(), rP = new THREE.Vector3();
+    const rU = new THREE.Vector3(), rV = new THREE.Vector3(), rT = new THREE.Vector3();
+    const rCen = new THREE.Vector3(), rAx = new THREE.Vector3();
+    const tA = new THREE.Vector3(), tB = new THREE.Vector3(), tC = new THREE.Vector3();
     shellVerts.forEach((vs, r) => {
-      if (!vs.length) return;
-      const n = groupNormal[r];
-      const flat = !!n && n.lengthSq() > 1e-12;
+      const bnd = shellBound.get(r);
+      if (!vs.length || !bnd || bnd.length < 3) return;   // no edge: curvature alone
+      const t0 = shellTri0.get(r);
+      if (t0 === undefined) return;
+
+      // ---- a lone triangle is exact, and neither box nor disc can do it --
+      if (shellTriN.get(r) === 1 && vs.length === 3) {
+        const i0t = index.getX(t0 * 3), i1t = index.getX(t0 * 3 + 1), i2t = index.getX(t0 * 3 + 2);
+        tA.fromBufferAttribute(posAttr, i0t);
+        tB.fromBufferAttribute(posAttr, i1t);
+        tC.fromBufferAttribute(posAttr, i2t);
+        const l0 = tB.distanceTo(tC), l1 = tC.distanceTo(tA), l2 = tA.distanceTo(tB);
+        rD.copy(tB).sub(tA).cross(rT.copy(tC).sub(tA));
+        const area2 = rD.length();   // twice the area
+        if (area2 > 1e-10 && l0 > 1e-6 && l1 > 1e-6 && l2 > 1e-6) {
+          const h0 = area2 / l0, h1 = area2 / l1, h2 = area2 / l2;
+          const idx = [i0t, i1t, i2t];
+          for (let j = 0; j < 3; j++) {
+            const o = idx[j] * 4;
+            rimA[o] = h0; rimA[o + 1] = h1; rimA[o + 2] = h2;
+            rimA[o + 3] = Math.min(h0, h1, h2);
+            rimB[o] = j === 0 ? 1 : 0;
+            rimB[o + 1] = j === 1 ? 1 : 0;
+            rimB[o + 2] = j === 2 ? 1 : 0;
+            rimB[o + 3] = -2;
+          }
+          return;
+        }
+      }
+
       rC.set(0, 0, 0);
       for (let i = 0; i < vs.length; i++) rC.add(rT.fromBufferAttribute(posAttr, vs[i]));
       rC.divideScalar(vs.length);
-
-      /* U must lie along a real SIDE. The three edges of the shell's first
-         triangle are two sides and, on a quad, the diagonal; trying all
-         three and keeping the smallest-area box picks a side. Taking the
-         first or the longest would align the box with the diagonal of a
-         square and run the band corner to corner. */
-      const t0 = shellTri0.get(r);
-      let bestArea = Infinity, bu = 0, bv = 0, found = false;
-      if (t0 !== undefined) {
-        const tri = [index.getX(t0 * 3), index.getX(t0 * 3 + 1), index.getX(t0 * 3 + 2)];
-        for (let e = 0; e < 3; e++) {
-          rU.fromBufferAttribute(posAttr, tri[(e + 1) % 3]).sub(rT.fromBufferAttribute(posAttr, tri[e]));
-          if (flat) rU.addScaledVector(n, -rU.dot(n));
-          if (rU.lengthSq() < 1e-12) continue;
-          rU.normalize();
-          if (flat) rV.copy(n).cross(rU); else rV.set(0, 0, 0);
-          let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
-          for (let i = 0; i < vs.length; i++) {
-            rD.fromBufferAttribute(posAttr, vs[i]).sub(rC);
-            /* Measured IN PLANE. Letting a vertex pulled off the plane
-               count towards the across-extent inflates it and the band then
-               vanishes from the whole shell. */
-            if (flat) rD.addScaledVector(n, -rD.dot(n));
-            const a = rD.dot(rU);
-            const b = flat ? rD.dot(rV) : Math.sqrt(Math.max(0, rD.lengthSq() - a * a));
-            if (a < uMin) uMin = a;
-            if (a > uMax) uMax = a;
-            if (b < vMin) vMin = b;
-            if (b > vMax) vMax = b;
-          }
-          const hu = (uMax - uMin) * 0.5, hv = (vMax - vMin) * 0.5;
-          const area = (hu + 1e-6) * (hv + 1e-6);
-          if (area < bestArea) {
-            bestArea = area; bu = hu; bv = hv; found = true;
-            rBestU.copy(rU);
-            /* The box CENTRE, not the centroid. A triangle's centroid is
-               not the centre of its bounding box, and a box centred on it
-               reaches past two of the three sides. */
-            rBestC.copy(rC).addScaledVector(rU, (uMin + uMax) * 0.5);
-            if (flat) rBestC.addScaledVector(rV, (vMin + vMax) * 0.5);
-          }
+      const gn = shellN.get(r);
+      let maxLen = 0, offPlane = 0;
+      for (let i = 0; i < vs.length; i++) {
+        rD.fromBufferAttribute(posAttr, vs[i]).sub(rC);
+        const L = rD.length();
+        if (L > maxLen) maxLen = L;
+        if (gn) {
+          const o = Math.abs(rD.dot(gn));
+          if (o > offPlane) offPlane = o;
         }
       }
+      if (maxLen < 1e-6) return;
+      /* A curved shell's member normals CANCEL - a tube wall sums to zero -
+         and a near-zero vector answers every planarity test perfectly. The
+         length guard is what tells "flat" from "closed around". */
+      const flat = !!gn && gn.lengthSq() > 0.5 && offPlane <= 0.02 * maxLen;
 
-      let mode = 0;   // 0 nothing, 1 rectangle, 2 disc
-      let discR = 0;
-      if (found && bu > 1e-5 && bv > 1e-5) {
-        mode = 1;
-        const area = shellArea.get(r) || 0;
+      /* The axis must lie along a real SIDE. Two of the shell's first
+         triangle's three edges are sides and, on a quad, the third is the
+         diagonal; the smallest-area box picks a side. */
+      let bestArea = Infinity, bu = 0, bv = 0, haveBox = false;
+      const tri = [index.getX(t0 * 3), index.getX(t0 * 3 + 1), index.getX(t0 * 3 + 2)];
+      for (let e = 0; e < 3; e++) {
+        rU.fromBufferAttribute(posAttr, tri[(e + 1) % 3]).sub(rT.fromBufferAttribute(posAttr, tri[e]));
+        if (flat) rU.addScaledVector(gn, -rU.dot(gn));
+        if (rU.lengthSq() < 1e-12) continue;
+        rU.normalize();
+        if (flat) rV.copy(gn).cross(rU);
+        let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
         for (let i = 0; i < vs.length; i++) {
           rD.fromBufferAttribute(posAttr, vs[i]).sub(rC);
-          if (flat) rD.addScaledVector(n, -rD.dot(n));
-          const len = rD.length();
-          if (len > discR) discR = len;
+          // In plane. A vertex pulled off the plane otherwise inflates the
+          // across-extent and the band leaves the whole shell.
+          if (flat) rD.addScaledVector(gn, -rD.dot(gn));
+          const a = rD.dot(rU);
+          const b = flat ? rD.dot(rV) : Math.sqrt(Math.max(0, rD.lengthSq() - a * a));
+          if (a < uMin) uMin = a;
+          if (a > uMax) uMax = a;
+          if (b < vMin) vMin = b;
+          if (b > vMax) vMax = b;
         }
-        const boxFill = area / Math.max(1e-9, 4 * bu * bv);
-        const discFill = area / Math.max(1e-9, Math.PI * discR * discR);
-        if (discR > 1e-5 && discFill > boxFill) mode = 2;
+        const hu = (uMax - uMin) * 0.5, hv = (vMax - vMin) * 0.5;
+        const area = (hu + 1e-6) * (hv + 1e-6);
+        if (area < bestArea) {
+          bestArea = area; bu = hu; bv = hv; haveBox = true;
+          rAx.copy(rU);
+          // The box CENTRE, not the centroid.
+          rCen.copy(rC).addScaledVector(rU, (uMin + uMax) * 0.5);
+          if (flat) rCen.addScaledVector(rV, (vMin + vMax) * 0.5);
+        }
       }
+      if (!haveBox) return;
+
+      let discR = 0;
+      if (flat) {
+        for (let i = 0; i < vs.length; i++) {
+          rD.fromBufferAttribute(posAttr, vs[i]).sub(rC);
+          rD.addScaledVector(gn, -rD.dot(gn));
+          const L = rD.length();
+          if (L > discR) discR = L;
+        }
+      }
+
+      let mode = 0, err = Infinity;
+      if (flat) {
+        let eR = Infinity, eD = Infinity;
+        if (bu > 1e-6 && bv > 1e-6) {
+          eR = 0;
+          for (let i = 0; i < bnd.length; i += 3) {
+            rD.set(bnd[i], bnd[i + 1], bnd[i + 2]).sub(rCen);
+            const a = Math.abs(rD.dot(rAx));
+            const b = Math.sqrt(Math.max(0, rD.lengthSq() - a * a));
+            // each constraint against its OWN reach
+            const m = Math.min((bu - a) / bu, (bv - b) / bv);
+            if (m > eR) eR = m;
+          }
+        }
+        if (discR > 1e-6) {
+          eD = 0;
+          for (let i = 0; i < bnd.length; i += 3) {
+            const m = (discR - rP.set(bnd[i], bnd[i + 1], bnd[i + 2]).distanceTo(rC)) / discR;
+            if (m > eD) eD = m;
+          }
+        }
+        if (eR <= eD) { mode = 1; err = eR; } else { mode = 2; err = eD; }
+      } else if (bu > 1e-6) {
+        /* An axial band is drawn at BOTH ends, so the boundary has to be at
+           both ends. A dome closed by a sharp equator has one, and without
+           this check it scores a perfect zero and then paints a cap on the
+           pole, where there is no edge at all. */
+        let worst = 0, nearHi = Infinity, nearLo = Infinity;
+        for (let i = 0; i < bnd.length; i += 3) {
+          rD.set(bnd[i], bnd[i + 1], bnd[i + 2]).sub(rCen);
+          const sa = rD.dot(rAx);
+          const m = (bu - Math.abs(sa)) / bu;
+          if (m > worst) worst = m;
+          const hiM = (bu - sa) / bu, loM = (bu + sa) / bu;
+          if (hiM < nearHi) nearHi = hiM;
+          if (loM < nearLo) nearLo = loM;
+        }
+        mode = 3;
+        err = Math.max(worst, nearHi, nearLo);
+      }
+      if (!(err <= FIT)) return;   // does not fit: curvature alone
 
       for (let i = 0; i < vs.length; i++) {
         const o = vs[i] * 4;
-        if (mode === 1) {
-          rimA[o] = rBestC.x; rimA[o + 1] = rBestC.y; rimA[o + 2] = rBestC.z; rimA[o + 3] = bu;
-          rimB[o] = rBestU.x; rimB[o + 1] = rBestU.y; rimB[o + 2] = rBestU.z; rimB[o + 3] = bv;
-        } else if (mode === 2) {
+        if (mode === 2) {
           rimA[o] = rC.x; rimA[o + 1] = rC.y; rimA[o + 2] = rC.z; rimA[o + 3] = discR;
-          rimB[o] = 0; rimB[o + 1] = 0; rimB[o + 2] = 0; rimB[o + 3] = -1;
+          rimB[o + 3] = -1;
         } else {
-          rimA[o + 3] = -1;   // no room: paint nothing, rather than solid
+          rimA[o] = rCen.x; rimA[o + 1] = rCen.y; rimA[o + 2] = rCen.z; rimA[o + 3] = bu;
+          rimB[o] = rAx.x; rimB[o + 1] = rAx.y; rimB[o + 2] = rAx.z;
+          rimB[o + 3] = mode === 1 ? bv : 0;
         }
       }
     });

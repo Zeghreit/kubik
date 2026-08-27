@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~12,000 lines)
-- Version at time of writing: **a2.25**
+- Version at time of writing: **a2.26**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1020,6 +1020,93 @@ triangle is the weak case - its hypotenuse is a diagonal of its own box - so
 a large triangular face gets an approximate band. Bevel and fillet corner
 triangles are small enough to be covered entirely at any usable width, which
 is the right look anyway.
+
+## a2.26 - THE BAND FOLLOWS SHARPNESS
+
+a2.25 grouped faces into shells with a fixed 2-degree coplanarity test, so a
+12-sided tube's vertical seams - 30 degrees, well inside the 33-degree
+default, shaded perfectly smooth - counted as edges and wore the band.
+Zeghreit's rule, and it is the right one: **the band goes where a hard edge
+is, which is exactly where the SHADING breaks.**
+
+**Shells now merge across every edge `sharp` says is not sharp** - the same
+map the normals use, so hand marks, migrated creases and the object's own
+angle threshold all feed it. A 12-sided tube's wall becomes ONE shell and
+its seams get nothing; at 8 sides the seams are 45 degrees, shade hard, and
+do get the band. Verified both ways.
+
+**AN OUTLINE EDGE IS NOT ANY EDGE**, and this cost an hour. An edge a face
+uses TWICE is that face's own triangulation - the diagonal of a quad - and
+`edgeFaces` cannot tell the two apart, so the "not exactly two faces" rule
+marked every quad diagonal SHARP. Shading never noticed, because both
+triangles are in the same island either way. The rim pass reads sharp edges
+as the shell's boundary, so every quad got a phantom boundary down its
+middle, every model scored a fit error of 1.00, and the whole feature fell
+back to unrestricted - a cube went solid again. `edgeUse` now counts uses
+PER FACE and the test is the one `computeTopology` already used: **some face
+uses it exactly once.**
+
+**A shell's boundary is its sharp OUTLINE edges, filed under the shells of
+those edges' own faces.** Walking the vertex fans instead files a midpoint
+under every shell that merely touches an endpoint, and one foreign point is
+enough to reject a model that fits its own face perfectly.
+
+**FOUR MODELS, AND THE MODEL IS CHECKED BEFORE IT IS USED.**
+
+- **A lone triangle is EXACT and needs no check.** A triangular face is one
+  triangle with three unshared vertices, so the barycentric weights
+  interpolate for free and the distance to a side is the weight at the
+  opposite corner times that corner's altitude. Neither a box nor a disc can
+  do a triangle - a right isoceles puts its hypotenuse straight through the
+  centre of its own bounding box - and a2.26's first draft rejected every
+  triangle and filled it solid, which is the bug this whole line of work
+  started from. Cone and pyramid sides, and anything Dissolve leaves behind.
+- **A flat shell tries a rectangle and a disc**, scored on the MIDPOINTS of
+  its own sharp outline edges. Midpoints, not vertices: a square's four
+  corners sit on its disc as neatly as on its box, and only the midpoints
+  tell the two apart.
+- **A curved shell tries an axial band** - a tube wall, where the band
+  belongs at the two rims. It is drawn at BOTH ends of the axis, so the
+  boundary has to be at both ends: a dome closed by a sharp equator would
+  otherwise score a perfect zero and then paint a cap on its pole, where
+  there is no edge at all.
+- Each constraint is scored against **its own** half-extent, or a long thin
+  face would be judged by its short axis. Miss by more than a fifth and the
+  model is not used: the shell falls back to curvature alone.
+
+**A curved shell's member normals CANCEL.** The shell normal is the sum over
+its groups, and a tube wall sums to zero - and a near-zero vector answers
+every planarity test perfectly. Caught by the tube reading as one disc
+instead of an axial wall. The length guard is what tells "flat" from "closed
+around". (It is a sum over the shell, not one member's normal, because the
+union-find root is arbitrary and one quad collapsed mid-drag would otherwise
+call a flat face curved.)
+
+**Attribute encoding**, both vec4s:
+
+```
+A.w === 0            no model - unrestricted, curvature alone
+A.w > 0, B.w  >  0   rectangle, half-extents A.w along B.xyz, B.w across
+A.w > 0, B.w === 0   axial band, half-length A.w along B.xyz
+A.w > 0, B.w === -1  disc of radius A.w about A.xyz
+A.w > 0, B.w === -2  triangle: A.xyz the altitudes, B.xyz the barycentric
+```
+
+`A.w === 0` only reads as "absent" because `applyMaskPatch` pins
+`defaultAttributeValues.kubikRimA` to all zeros. WebGL's own default for an
+unbound attribute is (0,0,0,**1**), which would make `hu` 1.0 and measure
+the material preview ball against a phantom unit box. **Do not remove that
+pin as redundant.**
+
+**Verified** on the real app: cube unchanged from a2.25 (-2.87 / -9.97 /
+-29.44 / -45.45 at width 0.04 / 0.12 / 0.4 / 1.0); four coplanar quads still
+one shell with half-extents 1.0; an octagon answers disc and a quad rect; a
+right isoceles triangle with legs 2 answers `tri` with altitudes 1.414,
+2.000, 2.000 and barycentric (1,0,0) at its first corner; a 12-sided tube
+answers axis for all 48 wall vertices - ONE centre, half-height 1.0 - and
+disc for its 24 cap vertices, while an 8-sided one answers rect for all 32
+wall vertices. Screenshots of both tubes confirm it: the 12-sided wall is
+clean with faint rims, the 8-sided one has a dark band down every seam.
 
 ## Screen layout
 
