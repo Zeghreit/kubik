@@ -1891,7 +1891,36 @@ is a gitignored scratch copy, so testing never disturbs `index.html`).
 Synthetic PointerEvents dispatched into the canvas exercise taps, holds and
 drags; `window.__kubik` exposes `App`, `camera`, `orbit`, `camAnim`,
 `vertexSpacing()` and helpers. This has caught several real bugs before they
-were pushed and produced the aim-assist spacing table above.
+were pushed and produced the vertex spacing table above.
+
+**Three harnesses now, all untracked, all the same shape** - append a plain
+`<script>` to a COPY of index.html, serve the folder on 127.0.0.1, run
+headless Chrome from a PYTHON subprocess with a fresh `--user-data-dir`:
+
+- `_probe.py` + `_probe_js.js` - the shape-mask suite. `--dump-dom` for
+  numbers, `canvas.toDataURL()` into the DOM for pictures. It builds the
+  shapes whose answers are known in advance: a fold, an L-shape, 8- and
+  12-sided tubes, and the **pan** - a plate with a shallow square recess,
+  which is the shape every cavity bug has needed.
+- `_helpshot.py` - UI work. Opens the help card, optionally clicks one
+  section open, and takes a real `--screenshot` at
+  `--force-device-scale-factor=2` in a 430x860 window.
+- `_chk.py` - the one-off. A dozen lines that assert a handful of facts and
+  dump them. Use it after a REMOVAL: it is what proved a vertex pick leaves
+  the camera at 0.0000 once Aim assist was gone.
+
+**And when a bug is on the USER'S model, ask for the file.** a2.29e was
+found by reimplementing `applyShading`'s wear-edge pass in Python and
+running it over `kubikTank.json` - no browser, no transfer to the PC. That
+killed the winding hypothesis in one run (zero reversed triangles in all
+nine objects) and located the real cause. The threshold that fixed it was
+then chosen by ray-tracing real ambient occlusion at every painted pixel.
+**One round trip for a file buys certainty that hours of synthetic shapes
+will not.**
+
+**Verify generated assets end to end.** The help card's QR is checked twice:
+its matrix against segno's own, and OpenCV decoding the URL back out of the
+rendered screenshot. A QR that does not scan is worse than no QR.
 
 Three traps, all of which cost real time:
 
@@ -2388,3 +2417,21 @@ one re-run (4 cubes, Euler 8 → 4).
 - The op sweep and the picking harness that produced the numbers above live
   only in a browser console. Turning them into a committed self-test is the
   obvious way to make "flawless" checkable rather than hoped for.
+- **Masks added to a PRESET material do not survive a project file.**
+  `restoreDoc` adopts a definition only when its id is absent, and Solid /
+  Plastic / Metal are always seeded by `loadMaterialLibrary` - so a mask put
+  on one of those three is written into the JSON and silently dropped on
+  open. Custom materials travel fine. Pre-existing, found by review at a2.24,
+  and the fix is a POLICY choice nobody has made yet: file wins, local wins,
+  or import under a new id.
+- **Normals from the masks** is the agreed next feature - a cloth mask is a
+  greyscale field and a normal is its slope, so every noise type already
+  built becomes a bump for free, as a third checkbox beside Colour and
+  Roughness. Triplanar, so the no-UV policy survives.
+- **`material.envMapIntensity` has been inert** since `scene.environment` was
+  set - three overwrites it with `scene.environmentIntensity`. Drop the field
+  or make it multiply.
+- Unmeasured on a phone: the environment's full-float DataTexture
+  (`OES_texture_float_linear` is missing on many mobile GPUs), the atlas's
+  two-tap slice interpolation, and the four extra field fetches a2.29c and
+  a2.29e added per pixel.
