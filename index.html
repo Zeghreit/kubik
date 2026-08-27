@@ -790,7 +790,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.30a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.31</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -7701,10 +7701,15 @@ function applyKnifeOp(obj, pts) {
 /* ---------------- User-facing wrappers for the toolbar buttons ---------------- */
 
 /* ---------------- Live adjustable operations ----------------
-   Extrude, Inset and Bevel don't commit straight away. They snapshot the mesh,
-   then re-run themselves from that snapshot every time the amount changes, so
-   the slider stays responsive and there's no accumulation of rounding. OK
-   commits; Cancel (or a double-tap on empty space) restores the snapshot. */
+   Inset, Bevel, Loop cut, Subdivide, Bridge and Smooth-by-angle don't commit
+   straight away. They snapshot the mesh, then re-run themselves from that
+   snapshot every time the amount changes, so the slider stays responsive and
+   there's no accumulation of rounding. OK commits; Cancel (or a double-tap
+   on empty space) restores the snapshot.
+
+   EXTRUDE runs on the same machinery with `live` set, but its amount comes
+   from a drag on the model instead of the slider, and a tap on the section
+   stacks another one - see "Extrude mode" below. */
 
 function captureObjectState(obj) {  const ed = toEditable(obj.mesh);
   const mats = (Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material]).map(m => m.clone());
@@ -7745,8 +7750,8 @@ const OP_SPECS = {
     label: 'Extrude', min: -1.5, max: 1.5, step: 0.01, start: 0.4,
     options: [
       { key: 'own', label: 'Joined ⇗' },
-      { key: 'avg', label: 'Joined ⇈' },
-      { key: 'each', label: 'Each' }
+      { key: 'avg', needsMultiple: true, label: 'Joined ⇈' },
+      { key: 'each', needsMultiple: true, label: 'Each' }
     ]
   },
   inset: {
@@ -7924,7 +7929,7 @@ function decideLoopCutFlip(obj, pa, pb, mpa, mpb, sym) {
   return flip;
 }
 
-function beginPendingOp(kind, obj, payload) {
+function beginPendingOp(kind, obj, payload, init) {
   const spec = OP_SPECS[kind];
   App.pendingOp = {
     kind, objId: obj.id, payload,
@@ -7949,6 +7954,11 @@ function beginPendingOp(kind, obj, payload) {
   // Default to the first mode that's actually offered for this selection.
   const opts = availableOpOptions(App.pendingOp);
   App.pendingOp.groupMode = opts.length ? opts[0].key : null;
+  /* Whatever the caller needs true BEFORE the first run and the first bar.
+     Extrude mode sets its own starting height and its own `live` flag, and
+     both have to be in place by the time applyPendingOp and showOpBar read
+     them. */
+  if (init) Object.assign(App.pendingOp, init);
   detachAllGizmos();
   hideRadialMenu();
   applyPendingOp();
@@ -8155,7 +8165,8 @@ function showOpBar() {
   const spec = OP_SPECS[op.kind];
   // The extrude grouping chooser borrows this bar and hides some of these -
   // put them all back before a real pending op uses it.
-  ['opSlider', 'opValue', 'opOk'].forEach(id => { document.getElementById(id).style.display = ''; });
+  ['opSlider', 'opValue', 'opOk', 'opCancel'].forEach(id => { document.getElementById(id).style.display = ''; });
+  document.getElementById('opOk').textContent = '✓ OK';
   document.getElementById('opLabel').textContent = spec.label;
   opSliderEl.min = spec.min; opSliderEl.max = spec.max; opSliderEl.step = spec.step;
   opSliderEl.value = op.amount;
@@ -8167,6 +8178,17 @@ function showOpBar() {
   document.getElementById('opSegValue').textContent = op.segments || 1;
   refreshOpGrouping();
   refreshOpAmountVisibility();
+  /* Extrude MODE borrows this bar and wears it differently: no slider (the
+     drag on the model is the control), no Cancel (tap away, or Undo), and
+     the label counts the sections stacked so far. */
+  if (op.live) {
+    ['opSlider', 'opValue', 'opSegments', 'opCancel'].forEach(id => {
+      document.getElementById(id).style.display = 'none';
+    });
+    document.getElementById('opOk').textContent = 'Done';
+    document.getElementById('opLabel').textContent =
+      spec.label + (op.sections > 1 ? ' ×' + op.sections : '');
+  }
   opBarEl.classList.add('show');
 }
 
@@ -8177,7 +8199,15 @@ function availableOpOptions(op) {
   if (!spec || !spec.options) return [];
   // Only face ops carry a `groups` payload; ops without one (loopcut) have no
   // "several selected" notion, so nothing is filtered out for them.
-  const many = !op.payload.groups || op.payload.groups.length > 1;
+  /* Extruding EDGES ignores the grouping entirely - applyPendingOp's edge
+     branch has exactly one behaviour - so the chips there would be three
+     buttons that do nothing. */
+  if (op.kind === 'extrude' && op.payload.mode === 'edge') return [];
+  /* How many the USER picked, before symmetry had its say. One face plus
+     its mirror is still one choice, and the old chooser agreed. */
+  const many = op.payload.picked != null
+    ? op.payload.picked > 1
+    : (!op.payload.groups || op.payload.groups.length > 1);
   const segs = op.segments || 1;
   return spec.options.filter(o => (many || !o.needsMultiple) && !(o.minSegments && segs < o.minSegments));
 }
@@ -8212,6 +8242,9 @@ function refreshOpGrouping() {
       App.pendingOp.groupMode = o.key;
       refreshOpGrouping();
       applyPendingOp();
+      // Each grouping pulls a different way, so the drag direction is
+      // measured again rather than carried over from the last one.
+      if (App.pendingOp.live) measureExtrudeAxis();
     });
     el.appendChild(b);
   });
@@ -8225,7 +8258,7 @@ function refreshOpAmountVisibility() {
   const op = App.pendingOp;
   if (!op) return;
   const spec = OP_SPECS[op.kind];
-  const dead = (spec && spec.noAmount) || (op.kind === 'loopcut' && op.groupMode !== 'slide');
+  const dead = op.live || (spec && spec.noAmount) || (op.kind === 'loopcut' && op.groupMode !== 'slide');
   ['opSlider', 'opValue'].forEach(id => {
     document.getElementById(id).style.display = dead ? 'none' : '';
   });
@@ -8233,7 +8266,8 @@ function refreshOpAmountVisibility() {
 
 function hideOpBar() {
   opBarEl.classList.remove('show');
-  ['opSlider', 'opValue', 'opOk'].forEach(id => { document.getElementById(id).style.display = ''; });
+  ['opSlider', 'opValue', 'opOk', 'opCancel'].forEach(id => { document.getElementById(id).style.display = ''; });
+  document.getElementById('opOk').textContent = '✓ OK';
 }
 
 function setPendingAmount(v) {
@@ -8242,6 +8276,11 @@ function setPendingAmount(v) {
   const spec = OP_SPECS[op.kind];
   const clamped = Math.min(spec.max, Math.max(spec.min, v));
   if (!Number.isFinite(clamped)) return;
+  // Somebody asked for a DIFFERENT height on purpose - a drag that actually
+  // travelled, or an arrow key. measureExtrudeAxis moves op.amount directly
+  // and so does not count, and neither does a drag that never left its
+  // starting pixel.
+  if (op.live && clamped !== op.amount) op.pulled = true;
   op.amount = clamped;
   opSliderEl.value = clamped;
   if (document.activeElement !== opValueEl) opValueEl.value = Number(clamped.toFixed(3));
@@ -8278,6 +8317,33 @@ function confirmPendingOp() {
   if (App.knife) { applyKnife(); return; }
   const op = App.pendingOp;
   if (!op) return;
+  /* A section pulled to nothing is not a section. Extrude mode always has
+     one open, so committing as-is would weld a zero-height wall into the
+     mesh every time you tapped away without dragging. Drop it - and if it
+     was the only one, the whole thing was a false start: put the mesh back
+     and say so, rather than pushing an empty step onto the history. */
+  if (op.live) {
+    const o0 = findObject(op.objId);
+    if (o0 && (!op.pulled || Math.abs(op.amount) < 1e-3)) {
+      restoreObjectState(o0, op.state);
+      ensureHelpers(o0);
+      App.selectedElements = selectionFromPayload(o0, op.payload);
+      op.sections = (op.sections || 1) - 1;
+      if (op.sections <= 0) {
+        App.pendingOp = null;
+        hideOpBar();
+        restoreObjectState(o0, op.baseState || op.state);
+        ensureHelpers(o0);
+        App.selectedElements = new Set(op.selectionBefore);
+        setActiveObjectHelpersVisible(o0, App.mode);
+        refreshElementColors(o0);
+        refreshUI();
+        refreshGizmoAttachment();
+        toast('Extrude cancelled - nothing was pulled');
+        return;
+      }
+    }
+  }
   const label = OP_SPECS[op.kind].label;
   App.pendingOp = null;
   hideOpBar();
@@ -8299,6 +8365,8 @@ function confirmPendingOp() {
        destructive thing this tool does. */
     toast('Smooth below ' + Math.round(op.amount) + '\u00b0' +
       (op.clearedMarks ? ' \u2014 cleared ' + op.clearedMarks + ' edge mark(s)' : ''));
+  } else if (op.live) {
+    toast('Extruded' + (op.sections > 1 ? ' ×' + op.sections : ''));
   } else {
     toast(label + ' applied');
   }
@@ -8320,7 +8388,9 @@ function cancelPendingOp() {
     });
   }
   if (obj) {
-    if (!op.multi) restoreObjectState(obj, op.state);
+    /* baseState reaches back past every stacked extrude section to the mesh
+       as it was before the mode opened; ordinary ops have only the one. */
+    if (!op.multi) restoreObjectState(obj, op.baseState || op.state);
     ensureHelpers(obj);
     App.selectedElements = new Set(op.selectionBefore);
     setActiveObjectHelpersVisible(obj, App.mode);
@@ -8331,100 +8401,273 @@ function cancelPendingOp() {
   toast(OP_SPECS[op.kind].label + ' cancelled');
 }
 
-// A comfortably-clear-of-the-weld-threshold nub (weld rounds to 1e-4), not a
-// real distance. Extrude used to jump straight out to a visible default -
-// now it commits at essentially the original spot and hands you the gizmo to
-// place it, the same as dragging any other fresh selection.
+/* ---------------- Extrude mode (a2.31) ----------------
+
+   Extrude used to be a thing that HAPPENED: it committed a 0.02 nub, told
+   you to drag it, and handed you back to the ordinary move tool. That made
+   it the only shaping op with no control of its own, and it is what "an
+   extrude just happens, with no feedback" on the pre-2.0 list was about.
+
+   Now the tool opens a MODE. The op stays pending, so every re-run starts
+   from the same snapshot and the height is whatever your finger says:
+
+     drag on the new section    - pull it out, or push it in
+     tap the new section        - stack another one, from where this ended
+     tap anywhere else, or Done - commit the lot, one Undo for all of it
+     the grouping chips         - live, and they re-measure the direction
+
+   Nothing here decides WHICH WAY a section travels. That is measured; see
+   measureExtrudeAxis. */
+
+// A nub comfortably clear of the weld threshold (edLogical rounds positions
+// to 1e-4). The mode opens here rather than at zero: at zero the new ring of
+// vertices welds onto the ring it was copied from, and a section that exists
+// only logically is a strange thing to be holding.
 const EXTRUDE_COMMIT_NUB = 0.02;
+// How far the probe run pulls while the direction is being measured. Big
+// enough to read cleanly, small enough that no wall can fold through itself.
+const EXTRUDE_PROBE = 0.1;
+// Said once a session. The bar and the geometry say the rest.
+let extrudeHintShown = false;
 
 function extrudeSelection() {
+  /* Bridge and the knife have always guarded this; extrude did not, and it
+     is now the one op that opens a MODE. Reached from the ring while an
+     inset or bevel bar is up, beginPendingOp would overwrite that op's
+     snapshot - leaving its geometry applied with no bar, no history entry
+     and nothing able to take it back. */
+  if (App.knife) { toast('Finish the cut first'); return; }
+  if (App.pendingOp) {
+    toast('Finish the ' + ((OP_SPECS[App.pendingOp.kind] || {}).label || 'operation') + ' first');
+    return;
+  }
   const obj = findObject(App.activeObjectId);
   if (!obj || App.selectedElements.size === 0) { toast('Select an edge or face to extrude'); return; }
   if (App.mode !== 'face' && App.mode !== 'edge') { toast('Extrude works in Edge or Face mode'); return; }
   ensureHelpers(obj);
-  const sym = opSymmetry(obj);
-  // How many the USER picked, before symmetry had its say - the chooser is
+  // How many the USER picked, before symmetry had its say - the chips are
   // about a choice they made, not one made on their behalf.
   const picked = App.selectedElements.size;
+  const before = new Set(App.selectedElements);
   symExpand(obj);
 
-  let resultSelection = new Set();
+  const topo = obj.mesh.userData.topo;
+  const payload = App.mode === 'face'
+    ? { mode: 'face', picked, groups: Array.from(App.selectedElements) }
+    : { mode: 'edge', picked, pairs: Array.from(App.selectedElements).map(ei => topo.edges[ei].slice()) };
 
-  if (App.mode === 'face') {
-    const groups = Array.from(App.selectedElements);
-    // Several faces at once still get a real topological choice - it's just
-    // one tap instead of a slider, and it commits the instant you make it.
-    if (picked > 1) { showExtrudeGroupingChooser(obj, groups, sym); return; }
-    if (groups.length > 1) {
-      // One face plus its mirror. There is no question to ask, so don't ask
-      // it - grow the pair as one region, each side along its own normals.
-      extrudeRegionOp(obj, groups, EXTRUDE_COMMIT_NUB, true, sym);
-    } else {
-      extrudeFaceGroup(obj, groups[0], EXTRUDE_COMMIT_NUB);
-    }
-    ensureHelpers(obj);
-    resultSelection = new Set(groups);
-  } else {
-    const pairs = Array.from(App.selectedElements).map(ei => obj.mesh.userData.topo.edges[ei].slice());
-    const newEdgePositions = [];
-    pairs.forEach(([la, lb]) => {
-      ensureHelpers(obj);
-      const topoNow = obj.mesh.userData.topo;
-      const idx = topoNow.edges.findIndex(e => (e[0] === la && e[1] === lb) || (e[0] === lb && e[1] === la));
-      if (idx >= 0) newEdgePositions.push(extrudeEdge(obj, idx, EXTRUDE_COMMIT_NUB));
-    });
-    ensureHelpers(obj);
-    const finalTopo = obj.mesh.userData.topo;
-    newEdgePositions.forEach(([pa, pb]) => {
-      const nla = findLogicalByPosition(obj, pa), nlb = findLogicalByPosition(obj, pb);
-      if (nla < 0 || nlb < 0) return;
-      const idx = finalTopo.edges.findIndex(e => (e[0] === nla && e[1] === nlb) || (e[0] === nlb && e[1] === nla));
-      if (idx >= 0) resultSelection.add(idx);
-    });
+  beginPendingOp('extrude', obj, payload, {
+    live: true, sections: 1, amount: EXTRUDE_COMMIT_NUB, pulled: false,
+    selectionBefore: before
+  });
+  if (!App.pendingOp) return;
+  App.pendingOp.baseState = App.pendingOp.state;
+  measureExtrudeAxis();
+  if (!extrudeHintShown) {
+    extrudeHintShown = true;
+    toast('Drag it to pull · tap it again for another · tap away when done');
   }
-
-  App.selectedElements = resultSelection;
-  finishMeshEdit(obj, 'Extruded - drag the gizmo to place it');
 }
 
-// One tap: pick how several faces extrude together, then commit immediately
-// at the same small nub and hand off to the gizmo, same as the single-face
-// path. Reuses the op bar's grouping-row look without its slider/OK/Cancel.
-function showExtrudeGroupingChooser(obj, groups, sym) {
-  const el = document.getElementById('opGrouping');
-  const tips = {
-    each: 'Every face grows its own separate extrusion',
-    avg: 'Joined, lifted along one shared normal',
-    own: 'Joined, each part along its own normal'
-  };
-  el.innerHTML = '';
-  el.style.display = 'inline-flex';
-  OP_SPECS.extrude.options.forEach(o => {
-    const b = document.createElement('button');
-    b.textContent = o.label;
-    b.title = tips[o.key] || '';
-    b.addEventListener('click', () => {
-      hideOpBar();
-      let resultSelection;
-      if (o.key === 'each') {
-        groups.forEach(gi => { ensureHelpers(obj); extrudeFaceGroup(obj, gi, EXTRUDE_COMMIT_NUB); });
-      } else {
-        ensureHelpers(obj);
-        extrudeRegionOp(obj, groups, EXTRUDE_COMMIT_NUB, o.key === 'own', sym);
-      }
-      ensureHelpers(obj);
-      resultSelection = new Set(groups);
-      App.selectedElements = resultSelection;
-      finishMeshEdit(obj, 'Extruded - drag the gizmo to place it');
+/* Which way a drag pulls is MEASURED, not reasoned about: run the op at two
+   heights and see where the selection actually went. One piece of code then
+   answers Joined-own, Joined-avg, Each and edge extrude - none of which
+   agree about direction - and it also detects the case that HAS no
+   direction, two opposite faces in Each mode whose centroid does not move at
+   all. That one falls back to plain up-the-screen. */
+function measureExtrudeAxis() {
+  const op = App.pendingOp;
+  if (!op || !op.live) return;
+  const obj = findObject(op.objId);
+  if (!obj) return;
+  const keep = op.amount;
+  op.axis = null;
+  op.amount = EXTRUDE_COMMIT_NUB; applyPendingOp();
+  const c0 = selectionCentroidWorld(obj);
+  op.amount = EXTRUDE_COMMIT_NUB + EXTRUDE_PROBE; applyPendingOp();
+  const c1 = selectionCentroidWorld(obj);
+  op.amount = keep; applyPendingOp();
+  if (!c0 || !c1) return;
+  const d = c1.sub(c0);
+  const len = d.length();
+  if (len < 1e-5) return;
+  op.axis = { dir: d.divideScalar(len), scale: len / EXTRUDE_PROBE };
+}
+
+// Where the selection sits, in world space. Faces by their group vertices,
+// edges by their endpoints.
+function selectionCentroidWorld(obj) {
+  const topo = obj.mesh.userData.topo;
+  const pa = obj.mesh.geometry.attributes.position;
+  const ls = new Set();
+  if (App.mode === 'edge') {
+    App.selectedElements.forEach(ei => { if (topo.edges[ei]) topo.edges[ei].forEach(l => ls.add(l)); });
+  } else {
+    App.selectedElements.forEach(gi => {
+      if (topo.faceGroups[gi]) topo.faceGroups[gi].logicalVerts.forEach(l => ls.add(l));
     });
-    el.appendChild(b);
+  }
+  if (!ls.size) return null;
+  const c = new THREE.Vector3(), q = new THREE.Vector3();
+  ls.forEach(l => {
+    const g = topo.logicalGroups[l];
+    if (!g || !g.length) return;
+    q.set(pa.getX(g[0]), pa.getY(g[0]), pa.getZ(g[0]));
+    obj.mesh.localToWorld(q);
+    c.add(q);
   });
-  document.getElementById('opLabel').textContent = 'Extrude';
-  document.getElementById('opSlider').style.display = 'none';
-  document.getElementById('opValue').style.display = 'none';
-  document.getElementById('opSegments').style.display = 'none';
-  document.getElementById('opOk').style.display = 'none';
-  opBarEl.classList.add('show');
+  return c.divideScalar(ls.size);
+}
+
+/* WHICH WAY IS UP, for the drag. One rule covers the whole range: the
+   pointer's travel is projected onto the direction the extrusion axis POINTS
+   ON SCREEN. That settles the sign for free - dragging the way the axis
+   points always grows the section, whether the face looks toward you or away
+   - and it degrades gracefully as that axis turns to face the camera.
+
+   Tracking your finger EXACTLY means dividing by the sine of the angle
+   between the axis and the view, which is what axisParamFromPointer does
+   internally, and it is what blew up: measured at this app's own 50 degree
+   fov, 800px high, camera 5 units out, a 10px drag moves 0.058 side on,
+   0.36 at 10 degrees off the axis, and 2.5 at 2 degrees - past the whole
+   clamp in one twitch. Dead on it returns null and the press silently
+   becomes an orbit instead. Looking head on at the face you are about to
+   extrude is the NORMAL way to work, so that is the common case, not a
+   corner one.
+
+   So the factor is CAPPED. From 30 degrees out the geometry tracks your
+   finger exactly; below that it merely slows down. No step at any angle, no
+   blow-up. And under EXTRUDE_MIN_SIN the axis projects to almost nothing and
+   its screen direction is numerical noise, so the drag gives up on it and
+   reads plain up-the-screen - decided ONCE when the drag starts and held,
+   the same bargain resolveDirectAxis makes. */
+const EXTRUDE_MIN_SIN = 0.1;      // ~6 degrees; below this the projection is noise
+const EXTRUDE_MAX_GAIN = 2;       // exact tracking from ~30 degrees out
+
+function axisTooFlat(dir) {
+  const camDir = new THREE.Vector3();
+  camera.getWorldDirection(camDir);
+  const c = Math.abs(camDir.dot(dir));
+  return Math.sqrt(Math.max(0, 1 - c * c)) < EXTRUDE_MIN_SIN;
+}
+
+// World units per screen pixel at a point.
+function worldPerPixel(at) {
+  const h = viewportEl.getBoundingClientRect().height || 1;
+  const dist = camera.position.distanceTo(at);
+  return 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) * dist / h;
+}
+
+// The screen direction the drag reads, plus how much to make of it. Null
+// when there is no usable one and the drag should read up-the-screen.
+function extrudeScreenAxis(origin) {
+  const op = App.pendingOp;
+  if (!op || !op.axis || axisTooFlat(op.axis.dir)) return null;
+  const camDir = new THREE.Vector3();
+  camera.getWorldDirection(camDir);
+  const c = Math.abs(camDir.dot(op.axis.dir));
+  const sin = Math.sqrt(Math.max(0, 1 - c * c));
+  const sd = axisScreenDir(origin, op.axis.dir);
+  if (!sd) return null;
+  return { sd, gain: Math.min(EXTRUDE_MAX_GAIN, 1 / Math.max(sin, 1e-6)) };
+}
+
+/* Where this pointer sits along the drag, in world units. Both the screen
+   direction and the pixel space below are y-DOWN, so they agree; the bare
+   fallback negates y because up-the-screen has to mean grow. */
+function extrudeParam(ev, d) {
+  const p = pointerPx(ev), w = worldPerPixel(d.origin);
+  return d.sd ? (p.x * d.sd.x + p.y * d.sd.y) * w * d.gain : -p.y * w;
+}
+
+/* The drag itself. It does NOT move the geometry - it sets the pending
+   amount, and applyPendingOp rebuilds the section from the snapshot, so a
+   drag out and back leaves no trace of where it has been. */
+function beginExtrudeDrag(ev) {
+  const op = App.pendingOp;
+  if (!op || !op.live) return false;
+  const obj = findObject(op.objId);
+  if (!obj) return false;
+  const origin = selectionCentroidWorld(obj);
+  if (!origin) return false;
+  const a = extrudeScreenAxis(origin);
+  extrudeDrag = { origin, sd: a && a.sd, gain: a ? a.gain : 1, amount0: op.amount, start: 0 };
+  extrudeDrag.start = extrudeParam(ev, extrudeDrag);
+  extrudeCandidate = null;
+  orbit.enabled = false;
+  return true;
+}
+
+function updateExtrudeDrag(ev) {
+  const op = App.pendingOp;
+  if (!extrudeDrag || !op || !op.live) return;
+  /* Divided by the measured scale in EVERY path, deliberately: scale is how
+     far the selection's centre travels per unit of amount, so this is what
+     makes the geometry keep up with the finger rather than the number. It
+     is 1 for a plain face extrude and smaller when the parts disagree about
+     direction - Each mode on two faces 90 degrees apart reads 0.707. */
+  const scale = (op.axis && op.axis.scale) || 1;
+  let amount = extrudeDrag.amount0 + (extrudeParam(ev, extrudeDrag) - extrudeDrag.start) / scale;
+  if (App.snap) amount = Math.round(amount / App.snapMove) * App.snapMove;
+  setPendingAmount(amount);
+}
+
+function endExtrudeDrag() {
+  extrudeDrag = null;
+  extrudeCandidate = null;
+  /* The mode stays open: nothing is committed and nothing is pushed onto
+     the history here. The camera comes back the same way endDirectDrag
+     brings it back. */
+  orbit.enabled = true;
+}
+
+/* Another section, starting where this one ended. The snapshot moves
+   forward so the next drag reads zero at the new lip; baseState does not,
+   so one Undo still reaches back past the whole stack. */
+function stackExtrudeSection() {
+  const op = App.pendingOp;
+  if (!op || !op.live) return;
+  const obj = findObject(op.objId);
+  if (!obj) return;
+  // Nothing to stack ON. A second section here would weld straight onto the
+  // first, so the tap means "start this one" instead - and says so, because
+  // a silent no-op is indistinguishable from a broken app.
+  if (!op.pulled || Math.abs(op.amount) < 1e-3) { toast('Drag it out first'); return; }
+  ensureHelpers(obj);
+  const topo = obj.mesh.userData.topo;
+  const next = op.payload.mode === 'face'
+    ? { mode: 'face', picked: op.payload.picked, groups: Array.from(App.selectedElements) }
+    : { mode: 'edge', picked: op.payload.picked,
+        pairs: Array.from(App.selectedElements)
+          .map(ei => topo.edges[ei] && topo.edges[ei].slice()).filter(Boolean) };
+  // Nothing selected means nothing to stack ON: a section built from an
+  // empty list changes no geometry, cannot re-measure its own direction,
+  // and would still bump the counter. Say so instead.
+  if (!(next.groups || next.pairs).length) { toast('Nothing selected to extrude'); return; }
+  op.state = captureObjectState(obj);
+  op.payload = next;
+  op.amount = EXTRUDE_COMMIT_NUB;
+  op.pulled = false;
+  op.sections = (op.sections || 1) + 1;
+  applyPendingOp();
+  measureExtrudeAxis();
+  showOpBar();
+}
+
+// The elements a payload names, resolved against the mesh as it is now.
+// Used when a section is dropped and the selection has to fall back to the
+// lip below it.
+function selectionFromPayload(obj, payload) {
+  if (!payload) return new Set();
+  if (payload.mode === 'face') return new Set(payload.groups || []);
+  const topo = obj.mesh.userData.topo;
+  const out = new Set();
+  (payload.pairs || []).forEach(pair => {
+    const la = pair[0], lb = pair[1];
+    const i = topo.edges.findIndex(e => (e[0] === la && e[1] === lb) || (e[0] === lb && e[1] === la));
+    if (i >= 0) out.add(i);
+  });
+  return out;
 }
 
 function finishMeshEdit(obj, message) {
@@ -9072,6 +9315,11 @@ function hideAllHelpers() {
 function setMode(mode) {
   // A cut is aimed at one mesh in one mode; changing either abandons it.
   if (App.knife) cancelKnife(true);
+  /* Extrude mode is aimed at one selection in one mode for the same reason,
+     and the line below empties that selection. Left open it would stack
+     sections onto nothing and lose the ability to re-measure its own drag
+     direction, so commit what has been pulled and close it. */
+  if (App.pendingOp && App.pendingOp.live) confirmPendingOp();
   App.mode = mode;
   if (mode !== 'object') App.lastComponentMode = mode;
   App.selectedElements.clear();
@@ -9407,6 +9655,12 @@ const FREE_SCALE_CATCH_DEG = 18;
 
 let directCandidate = null;    // a touch that might become a drag
 let directDrag = null;
+/* Extrude mode's own pair, deliberately kept apart from those two: while
+   the mode is open, a press on the selection sets the extrusion's HEIGHT.
+   It must never become a directCandidate, which would slide the geometry
+   sideways instead. */
+let extrudeCandidate = null;
+let extrudeDrag = null;
 
 /* ---------------- Active transform tool ----------------
    One gesture does all three transforms; which one it does depends on the
@@ -11034,6 +11288,10 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   // that was mid-flight rather than fighting the pinch.
   if (activePointers.size > 1) {
     if (directDrag) { directDrag = null; dragCtx = null; axisGuide.visible = false; }
+    // A second finger is the camera, not a taller extrusion. The section
+    // keeps whatever height it had reached.
+    extrudeDrag = null;
+    extrudeCandidate = null;
     clearToolRingTimer();
     closeToolRing(false);
     // The camera is taking over, so the half-placed point is not a point.
@@ -11055,6 +11313,17 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   // finger actually travels. Region-select drags take priority.
   directCandidate = (App.selectDrag === 'off' && pointerOnSelection(ev))
     ? { x: ev.clientX, y: ev.clientY } : null;
+
+  /* Extrude mode owns every press while it is open. On the section you just
+     pulled: drag for height, tap for another one. Anywhere else the camera
+     still orbits, and a still tap ends the mode. No ring blooms - the ring
+     is how you got here. */
+  if (App.pendingOp && App.pendingOp.live) {
+    extrudeCandidate = pointerOnSelection(ev) ? { x: ev.clientX, y: ev.clientY } : null;
+    directCandidate = null;
+    clearToolRingTimer();
+    return;
+  }
 
   /* Holding still blooms a ring at the finger. WHICH ring depends on what
      is under it: on the selection you get that selection's tools, on empty
@@ -11112,6 +11381,14 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
   if (activePointers.size > 1) return;   // camera gesture - hands off
   if (App.knife) { knifePointerMove(ev); return; }
   if (toolRingActive) { updateToolRingHover(ev); return; }
+  if (extrudeDrag) { updateExtrudeDrag(ev); return; }
+  if (extrudeCandidate) {
+    if (Math.hypot(ev.clientX - extrudeCandidate.x, ev.clientY - extrudeCandidate.y) > dragStartPx(ev)) {
+      if (beginExtrudeDrag(ev)) { updateExtrudeDrag(ev); return; }
+      extrudeCandidate = null;
+    }
+    return;
+  }
   if (directDrag) { updateDirectDrag(ev); return; }
 
   // A candidate becomes a real drag only once the finger has travelled far
@@ -11195,6 +11472,8 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
   if (tapped >= 3) { cycleTransformMode(); pointerDown = null; return; }
   // pointerDown is cleared so the release doesn't also register as a tap and
   // change the selection out from under the move that just happened.
+  if (extrudeDrag) { endExtrudeDrag(); pointerDown = null; return; }
+  extrudeCandidate = null;
   if (directDrag) { endDirectDrag(); pointerDown = null; return; }
   directCandidate = null;
   if (boxDrag) {
@@ -11506,6 +11785,17 @@ function mergeRunIntoSelection(sel, tappedIndex, msg, noun) {
 }
 
 function handleDoubleTap(ev) {
+  /* Extrude mode has no double-tap meaning of its own - both taps mean what
+     one tap means. Two things went wrong while it did: a second tap off the
+     model landed on the cancel gesture below and threw away every stacked
+     section, on a gesture whose documented meaning is "done"; and a second
+     tap ON the model hit the bare return below, so stacking sections by
+     tapping quickly silently dropped every other tap. */
+  if (App.pendingOp && App.pendingOp.live) {
+    if (pointerOnSelection(ev)) stackExtrudeSection();
+    else confirmPendingOp();
+    return;
+  }
   // While an operation is being dialled in, a double-tap on empty space is the
   // cancel gesture.
   if (App.pendingOp) {
@@ -11627,6 +11917,14 @@ function onEmptySpaceTap(ev) {
 }
 
 function handleTap(ev) {
+  /* Extrude mode reads a tap as an instruction rather than a selection
+     change: on the section you just pulled it stacks another one; anywhere
+     else it means you are done. */
+  if (App.pendingOp && App.pendingOp.live) {
+    if (pointerOnSelection(ev)) stackExtrudeSection();
+    else confirmPendingOp();
+    return;
+  }
   // Selection is frozen while an operation is being dialled in - otherwise the
   // op would lose the components it's working on.
   if (App.pendingOp) return;
@@ -12654,6 +12952,12 @@ function pushHistory() {
 }
 
 function undo() {
+  /* A live op has pushed NOTHING onto the history yet - what is in front of
+     you is a preview sitting on top of the last committed step. Stepping the
+     index back here would take away that step as well as the preview, and
+     the mode bar deliberately points at Undo instead of carrying a Cancel.
+     So Undo means "take back the preview", and one press is exactly that. */
+  if (App.pendingOp && App.pendingOp.live) { cancelPendingOp(); return; }
   if (App.pendingOp) { App.pendingOp = null; hideOpBar(); }
   if (App.historyIndex <= 0) return;
   App.historyIndex--;
@@ -12661,6 +12965,8 @@ function undo() {
   scheduleAutosave();   // or a reload resurrects the edit that was just undone
 }
 function redo() {
+  // Same reasoning as undo: close the preview first, on its own terms.
+  if (App.pendingOp && App.pendingOp.live) { cancelPendingOp(); return; }
   if (App.pendingOp) { App.pendingOp = null; hideOpBar(); }
   if (App.historyIndex >= App.history.length - 1) return;
   App.historyIndex++;
@@ -14248,7 +14554,7 @@ HELP_SECTIONS.push(
     title: 'Shaping',
     lead: 'Component mode, from the ring on your selection. Several open a bar with a slider - set it, then confirm.',
     rows: [
-      ['extrude', 'Extrude', 'Pulls faces or edges out. Touching faces come out as one piece.'],
+      ['extrude', 'Extrude', 'Pulls faces or edges out. Drag the new part to place it, tap it for another section, tap away when done.'],
       ['inset', 'Inset', 'A border inside a face.'],
       ['bevel', 'Bevel', 'A narrow flat face along an edge. More segments rounds it.'],
       ['loop', 'Loop', 'New edge rings across the mesh, square to the edge you picked.'],
@@ -14614,6 +14920,9 @@ function refreshUI() {
       if (App.mode === 'object') {
         selectObjectClick(o.id, App.multiSelect);
       } else {
+        // Same reasoning as setMode: this empties the selection a live op is
+        // aimed at, so commit what has been pulled before navigating away.
+        if (App.pendingOp && App.pendingOp.live) confirmPendingOp();
         App.activeObjectId = o.id;
         App.selectedElements.clear();
         hideAllHelpers();
@@ -14925,6 +15234,14 @@ if (PICK_DEBUG) {
     runMirrored, markElements, resolveElements, symExpand,
     edgeLoopSelection, decideLoopCutFlip, loopCutTrial, applyPendingOp,
     captureObjectState, restoreObjectState, cancelPendingOp,
+    // Extrude mode, driveable without a pointer: run extrudeSelection, then
+    // setPendingAmount / stackExtrudeSection / confirmPendingOp.
+    confirmPendingOp, setPendingAmount, stackExtrudeSection,
+    measureExtrudeAxis, selectionCentroidWorld,
+    // The drag itself, driveable with a plain {clientX, clientY}.
+    axisTooFlat, beginExtrudeDrag, updateExtrudeDrag, endExtrudeDrag,
+    get extrudeDrag() { return extrudeDrag; },
+    setMode, undo, redo,
     /* The ring, driveable without waiting on the hold timer. That timer runs
        off the rAF loop, which a BACKGROUNDED TAB freezes outright - so a
        harness that presses and waits gets no bloom at all, however long it

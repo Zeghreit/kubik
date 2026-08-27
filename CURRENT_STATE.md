@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~13,800 lines)
-- Version at time of writing: **a2.30a**
+- Version at time of writing: **a2.31**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1640,6 +1640,115 @@ otherwise the inspector reports the position the object was reflected FROM.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
 
+## Extrude is a MODE (a2.31)
+
+Extrude used to be a thing that HAPPENED: it committed a 0.02 nub, toasted
+"drag the gizmo to place it", and handed you back to the ordinary move tool.
+That made it the only shaping op with no control of its own, and it is what
+"an extrude just happens, with no feedback" on the pre-2.0 list meant.
+
+It now opens a mode, built on the pending-op machinery every live op already
+uses (`beginPendingOp` snapshots, `applyPendingOp` re-runs from that snapshot
+on every tick, `confirmPendingOp` / `cancelPendingOp` end it). `op.live`
+marks it, and that flag is the whole switch:
+
+| gesture | meaning |
+|---|---|
+| drag on the new section | its height — out, or back in past zero |
+| **tap** the new section | stack ANOTHER section from where this one ended |
+| tap anywhere else, or Done | commit the lot, **one** Undo for all of it |
+| the grouping chips | live, and each one re-measures the drag direction |
+
+The bar is the same `#opBar` wearing a different face: no slider (the drag on
+the model IS the control), no Cancel, OK reads **Done**, and the label counts
+the sections — "Extrude ×3". `showExtrudeGroupingChooser`, the one-tap modal
+that used to ask Joined/Joined/Each, is GONE; its three options are now those
+live chips, filtered by `needsMultiple` against `payload.picked` — the count
+the user selected BEFORE symmetry expanded it, so one face plus its mirror
+still shows no chips, exactly as the chooser refused to ask.
+
+### Which way a drag pulls is MEASURED
+
+`measureExtrudeAxis` runs the op at two heights and reads where the
+selection's centroid actually went. One piece of code then answers
+Joined-own, Joined-avg, Each and edge extrude — none of which agree about
+direction — and it also detects the case that HAS no direction: two opposite
+faces in Each mode, whose centroid does not move at all. It runs once when
+the mode opens, once per stacked section, and once per grouping chip.
+
+It yields `{dir, scale}`, where scale is how far the centre travels per unit
+of amount: 1.000 for a plain face extrude, 0.707 for Each on two faces 90°
+apart. Every path divides by it, so the GEOMETRY keeps up with your finger
+rather than the number doing so.
+
+### The drag reads the axis's SCREEN direction, and that is not fussiness
+
+The first version slid along the axis in 3D with `axisParamFromPointer`,
+which is what every other axis drag here uses. **It blew up**, and the review
+caught it before it shipped. That function solves for the closest point
+between the view ray and the axis, so its denominator is the sine of the
+angle between them and world-units-per-pixel go as 1/sin. Measured at this
+app's own 50° fov, 800px high, camera 5 units out:
+
+| angle off the view axis | per 10px drag |
+|---|---|
+| 90° (side on) | 0.058 |
+| 20° | 0.172 |
+| 10° | 0.360 |
+| 2° | **2.507** — past the whole ±1.5 clamp in one twitch |
+| 0° | **null** — the press silently became an orbit |
+
+And **looking head-on at the face you are about to extrude is the normal way
+to work**, so that was the common case, not a corner one.
+
+The shipped rule instead projects the pointer's travel onto the direction the
+axis POINTS ON SCREEN (`axisScreenDir`, which the direct-drag axis picker
+already used), with the 1/sin gain **capped at 2**. Measured on the same
+cube, dragging 10px along that screen direction:
+
+| angle | path | per 10px |
+|---|---|---|
+| 90° | projected, gain 1.00 | 0.101 |
+| 45° | projected, gain 1.41 | 0.143 |
+| 30° | projected, gain 2.00 | 0.202 |
+| 20° / 10° / 7° | projected, gain 2.00 | 0.202 |
+| 3° / 0° | up-the-screen | 0.101 |
+
+From 30° out the geometry tracks your finger exactly; below that it merely
+slows down. Under `EXTRUDE_MIN_SIN` (0.1, about 6°) the axis projects to
+almost nothing and its screen direction is numerical noise, so the drag gives
+up on it and reads plain up-the-screen. **Projecting also settles the sign
+for free** — dragging the way the axis points grows the section whether the
+face looks toward you or away, which a hardcoded "up = grow" got backwards
+for every away-facing face.
+
+### Two things that look like details and are not
+
+- **`op.baseState`** is the mesh before the mode opened and never moves;
+  `op.state` walks forward with each stacked section. Cancel and one Undo
+  reach back past the whole stack. **Undo INSIDE the mode cancels the
+  preview** and does not touch `historyIndex` — nothing has been pushed yet,
+  so stepping the index back would have taken away the edit before it.
+- **`op.pulled`** is set by `setPendingAmount` only when the value actually
+  CHANGES. A section never pulled is dropped at commit rather than welding a
+  zero-height wall in (`edLogical` welds positions rounded to 1e-4, so a
+  zero-height section is not merely invisible — it is degenerate). The flag
+  is needed because the mode opens at `EXTRUDE_COMMIT_NUB` 0.02, not at zero:
+  a height test alone could not tell "opened and tapped away" from "pulled to
+  0.02 on purpose", and an 8px touch wobble promotes to a drag that lands on
+  the amount it started from.
+
+### What the mode must never be left open across
+
+Anything that empties `App.selectedElements` under it, because the mode is
+aimed at that selection: `setMode` and the object-list chips both commit a
+live op first. `extrudeSelection` also refuses to open over a knife or any
+other pending op — it would overwrite that op's snapshot and leave its
+geometry applied with no bar and nothing able to take it back. A double-tap
+has no separate meaning inside the mode: both taps mean what one tap means,
+or a quick second tap off the model would land on the cancel gesture and
+throw the whole stack away.
+
 ## Symmetry-aware ops (v1.97, completed v1.98)
 
 With symmetry on, every component op is mirrored. **How** depends on the op,
@@ -2047,9 +2156,11 @@ moving — no point drawing icons for a ring that is still changing.
 
 **5. Still open from before, not yet scheduled:**
 
-- **Acknowledging the moment an op lands.** An extrude just happens, with no
-  feedback. For something whose identity is a fidget this is the largest
-  remaining gap, and it is half of what "alive" was meant to mean.
+- ~~**Acknowledging the moment an op lands.**~~ **HALF DONE at a2.31** —
+  Extrude now opens a mode you are visibly inside of, and the height is a
+  drag rather than a thing that already happened. See "Extrude is a MODE"
+  above. Every OTHER immediate op — weld, merge, cap, flip, crease, dissolve
+  — still just happens with a toast, so the gap is narrower, not closed.
 - **More primitives** — cylinder, sphere, plane, from the original v1 spec.
   A DESIGN question, not three constructor calls: Add Cube owns a pole of
   the world ring alone as the one item that makes rather than toggles, and
