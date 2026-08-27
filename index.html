@@ -790,7 +790,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.30</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.30a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -798,7 +798,7 @@
   <div id="viewport">
     <div id="toast"></div>
     <div id="viewCube"></div>
-    <!-- The right rail (Xray / Grid / Aim assist / Snap) and the left-side
+    <!-- The right rail (Xray / Grid / Snap) and the left-side
          Symmetry button are gone as of v1.89. All five live in the ring that
          blooms on a long press over empty space, along with Add Cube and the
          select-gesture choice, which is what finally clears the viewport
@@ -984,7 +984,7 @@
         </div>
         <div class="drawer-note">Colour moved into materials: open the tray
           on the right edge and edit the material the selection wears.</div>
-        <div class="drawer-note">See-through, Floor grid, Aim assist and Snap are in the
+        <div class="drawer-note">See-through, Floor grid and Snap are in the
           ring that blooms when you press and hold on empty space.</div>
         <div class="drawer-note">Lighting: the pill under Symmetry picks the type.
           To aim it, hold two fingers anywhere on the model and slide with your other
@@ -1707,7 +1707,6 @@ const App = {
   // side too, which is what made a selected object look transparent before
   // this was a choice rather than the only behaviour.
   xraySelection: false,
-  aimAssist: true,    // ease the view in when vertex targets are crowded
   pendingOp: null,
   // The knife's points while a cut is being placed. Not a pendingOp: it
   // changes no geometry until OK, so there is nothing to re-run.
@@ -11672,7 +11671,6 @@ function handleTap(ev) {
       App.edgeAnchor = null;
     }
     toggleElement(pick.index, additive);
-    aimAssistAfterPick(pick);
     return;
   }
 
@@ -13165,8 +13163,6 @@ const HUB_TOOLS_WORLD = [
     on: () => App.xraySelection, run: toggleXray },
   { key: 'grid', icon: 'grid', label: 'Floor grid', half: 'top',
     on: () => grid.visible, run: toggleFloorGrid },
-  { key: 'aim', icon: 'camera', label: 'Aim assist', half: 'top',
-    on: () => App.aimAssist, run: toggleAimAssist },
   { key: 'snap', icon: 'snap', label: 'Snap', half: 'top',
     on: () => App.snap, run: toggleSnapping },
 
@@ -14220,8 +14216,7 @@ const HELP_SECTIONS = [
       ['lasso', 'Lasso select', 'Draw the shape freehand. Same ring.'],
       [null, 'Double tap, face', 'A strip of faces. Direction comes from the edge nearest your tap.'],
       [null, 'Double tap, edge', 'The whole loop. Tap one edge, double-tap another within 1.5s for the run between them.'],
-      ['eye', 'See-through', 'Lets the selection show through the surface.'],
-      ['camera', 'Aim assist', 'Eases the camera in after a tap, so the NEXT one is easier.']
+      ['eye', 'See-through', 'Lets the selection show through the surface.']
     ]
   },
   {
@@ -14499,12 +14494,6 @@ document.getElementById('btnTheme').addEventListener('click', () => {
    buttons are gone as of v1.89 and the world ring calls these directly.
    The bodies are unchanged apart from dropping the classList line, which
    the ring works out for itself from `on()`. */
-function toggleAimAssist() {
-  App.aimAssist = !App.aimAssist;
-  if (!App.aimAssist) camAnim = null;   // stop any nudge already in flight
-  toast(App.aimAssist ? 'Aim assist on' : 'Aim assist off');
-}
-
 function toggleFloorGrid() {
   grid.visible = !grid.visible;
   // Tied to the same toggle rather than a separate one - the contact
@@ -14724,120 +14713,13 @@ function focusOnObject(obj) {
   frameBox(box);
 }
 
-/* ---------------- Aim assist ----------------
-
-   A 2px dot with a 28px catch radius is easy to hit while the vertices are
-   spread out, and impossible to aim BETWEEN when they aren't. Rather than
-   asking you to pinch-zoom by hand before every fiddly selection, the view
-   does it for you: land a tap where the neighbours are crowded and the
-   camera eases in until they're comfortably apart.
-
-   It runs AFTER the pick, never before, so it can only ever make the NEXT
-   tap easier. It never changes what the tap you just made selected - which
-   is what keeps it from being the disorienting kind of help.
-
-   This replaced the old Smart camera, which drifted the view to a
-   three-quarter angle after every selection. That answered a question
-   nobody was asking - the angle was usually fine, and being moved for no
-   visible reason is worse than a slightly imperfect view. Aim assist only
-   moves when there is a measurable problem: targets too close together to
-   tell apart. Tagged v1.87-smartcam if it is ever wanted back. */
-
-/* These are expressed as multiples of the catch radius, because that is
-   what they are actually about. Two vertices are tellable apart when the
-   gap between them is comfortably wider than the target you're aiming
-   with; below that, your Voronoi cell is narrower than your fingertip.
-
-   v1.89 used a flat 30px and it may as well not have existed. Measured on a
-   unit cube, minimum vertex spacing runs 85px at the default framing, 61px
-   at camera distance 12, 42px at 18 and 30px at 26 - so a 30px trigger only
-   fired once the whole cube was a speck. At 2x the catch radius it engages
-   from distance ~13, which is where aiming actually starts to get hard. */
-const AIM_CROWD_PX = PICK_RADIUS_PX * 2;   // 56px - closer than this is crowded
-const AIM_ROOMY_PX = PICK_RADIUS_PX * 4;   // 112px - and this is comfortable
-const AIM_MAX_ZOOM = 0.33;  // never more than 3x closer in one move
-let aimAssistAt = 0;
-
-// Screen position of one logical vertex, or null if it's behind the camera.
-function logicalVertexPx(obj, l) {
-  const topo = obj.mesh.userData.topo;
-  const g = topo.logicalGroups[l];
-  if (!g) return null;
-  const pa = obj.mesh.geometry.attributes.position;
-  const p = new THREE.Vector3(pa.getX(g[0]), pa.getY(g[0]), pa.getZ(g[0]));
-  obj.mesh.localToWorld(p);
-  return { px: worldToScreenPx(p), world: p };
-}
-
-// How far the nearest OTHER visible vertex sits from this one, in pixels.
-function nearestVisibleNeighbourPx(obj, l, home) {
-  const topo = obj.mesh.userData.topo;
-  let best = Infinity;
-  for (let i = 0; i < topo.logicalCount; i++) {
-    if (i === l || !vertexVisible(obj, i)) continue;
-    const n = logicalVertexPx(obj, i);
-    if (!n || !n.px) continue;
-    best = Math.min(best, n.px.distanceTo(home));
-  }
-  return best;
-}
-
-function aimAssistAfterPick(pick) {
-  if (!App.aimAssist) return;
-  if (pick.type !== 'vertex' && pick.type !== 'edge') return;
-  // A tap that DESELECTED shouldn't pull the camera in after it.
-  if (!App.selectedElements.has(pick.index)) return;
-  const now = performance.now();
-  if (now - aimAssistAt < 700) return;        // one nudge per burst of taps
-  if (camAnim || directDrag || boxDrag) return;
-
-  const obj = findObject(App.activeObjectId);
-  if (!obj) return;
-
-  /* Edges crowd for exactly the same reason vertices do - their endpoints
-     are too close together - so they're measured the same way, from one
-     endpoint, and the view settles on the edge's midpoint. */
-  let anchorL = pick.index, hit = null;
-  if (pick.type === 'edge') {
-    const e = obj.mesh.userData.topo.edges[pick.index];
-    if (!e) return;
-    const a = logicalVertexPx(obj, e[0]), b = logicalVertexPx(obj, e[1]);
-    if (!a || !a.px || !b || !b.px) return;
-    anchorL = e[0];
-    hit = { px: a.px, world: a.world.clone().lerp(b.world, 0.5) };
-  } else {
-    hit = logicalVertexPx(obj, pick.index);
-  }
-  if (!hit || !hit.px) return;
-
-  const spacing = nearestVisibleNeighbourPx(obj, anchorL, hit.px);
-  if (!isFinite(spacing) || spacing >= AIM_CROWD_PX) return;   // roomy already
-
-  /* Screen spacing scales inversely with camera distance, so the factor that
-     turns "spacing" into "roomy" is simply the ratio between them. */
-  const factor = Math.max(spacing / AIM_ROOMY_PX, AIM_MAX_ZOOM);
-  const dir = new THREE.Vector3().subVectors(camera.position, orbit.target);
-  const dist = dir.length() || 1;
-  /* A floor, so a genuinely dense mesh can't be nudged into the near plane
-     one tap at a time. Past this point crowding is the model's, not the
-     view's, and no amount of dollying will fix it. */
-  if (dist * factor < 1.2) return;
-  dir.normalize();
-
-  // Bring the vertex most of the way to the centre, not all of it - keeping
-  // some of the model in frame is what stops this reading as a jump cut.
-  const target = orbit.target.clone().lerp(hit.world, 0.7);
-  aimAssistAt = now;
-  camAnim = {
-    fromPos: camera.position.clone(),
-    toPos: target.clone().addScaledVector(dir, dist * factor),
-    fromTarget: orbit.target.clone(),
-    toTarget: target,
-    start: now,
-    duration: 380   // quick enough to feel like a response to the tap
-  };
-}
-
+/* Aim assist lived here until a2.30a: after a vertex or edge tap it eased
+   the camera in when the neighbours were closer together than the catch
+   radius. It was the last of the Smart camera, and it went for the same
+   reason - being moved when you did not ask to be moved reads as the app
+   losing your place, and the measurement that justified it (targets too
+   close to tell apart) is not something you notice while it is happening.
+   Pinch-zoom is one gesture and it is yours. Do not rebuild it. */
 
 function focusOnAll() {
   if (!App.objects.length) { animateCameraTo(new THREE.Vector3(4.5, 3.5, 6), new THREE.Vector3(0, 0, 0)); return; }
@@ -15033,7 +14915,6 @@ if (PICK_DEBUG) {
     // a harness needs to see that it was SET even when the tab is hidden
     // and requestAnimationFrame never runs to apply it.
     get camAnim() { return camAnim; },
-    get aimThresholds() { return { crowd: AIM_CROWD_PX, roomy: AIM_ROOMY_PX, maxZoom: AIM_MAX_ZOOM }; },
     findObject, worldToScreenPx, vertexVisible, ensureHelpers,
     // Winding: __kubik.windingAudit() for every object, or (id) for one.
     auditWinding, windingAudit,
@@ -15079,8 +14960,8 @@ if (PICK_DEBUG) {
     mergeSelection, detachFacesSelection, mergeVerticesOp, detachFacesOp,
     bridgeSelection, mirrorSelectedObjects,
     combineObjectsInto, removeObjects,
-    // Screen-space spacing between visible vertices of the active object,
-    // which is the number aim assist actually keys off.
+    // Screen-space spacing between the visible vertices of the active
+    // object - how crowded a selection actually is, for a harness.
     vertexSpacing() {
       const obj = findObject(App.activeObjectId);
       if (!obj) return null;

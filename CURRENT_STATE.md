@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~13,800 lines)
-- Version at time of writing: **a2.30**
+- Version at time of writing: **a2.30a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -144,7 +144,7 @@ emulation on the SAME PerspectiveCamera - fov to 2, distance x~26.7,
 near to 5% of tele distance, far scaled up, and the FOG BAND shifted
 out by the same amount (fog silently ate the whole scene before that).
 A manual orbit gesture restores perspective exactly. animateCameraTo
-leaves the flat view first; aim assist works while flat. LAW: anything
+leaves the flat view first. LAW: anything
 that ever moves the camera far must carry far plane + fog band + near.
 
 **Crease = sharp edge in SHADING too (a2.16/a2.16a).** applyShading
@@ -1174,8 +1174,8 @@ interior.** Ask the edges.
   and nothing else. The four bottom buttons all take `#viewport` as their
   offsetParent; if one ever doesn't, suspect this.
 - **Nothing else.** There is no rail of toggles down either edge — See-
-  through, Floor grid, Aim assist, Snap, Add Cube and Tap/Box/Lasso select
-  all live in the world ring.
+  through, Floor grid, Snap, Add Cube and Tap/Box/Lasso select all live in
+  the world ring.
 
 ## Controls
 
@@ -1393,21 +1393,7 @@ declaration order, which is the one thing the angle formula reads.
 with back-face culling. Mirrored (negative-determinant) objects are
 sign-corrected.
 
-**Aim assist.** After a vertex or edge tap, if the nearest visible neighbour
-is closer than `AIM_CROWD_PX`, the camera eases in (380ms) until neighbours
-sit around `AIM_ROOMY_PX` apart, bringing the pick 70% of the way to centre.
-It runs AFTER the pick, so it can only make the NEXT tap easier and never
-changes what the tap just selected.
-
-The thresholds are **multiples of the catch radius** (2× and 4×), because
-that is what they are about: two vertices are tellable apart when the gap
-exceeds the target you aim with. A flat 30px was tried and may as well not
-have existed — measured on a unit cube, minimum vertex spacing is 85px at
-the default framing, 61px at camera distance 12, 42px at 18, 30px at 26. A
-30px trigger only fired once the cube was a speck.
-
-Bounded so it cannot run away: one nudge per 700ms, never more than 3×
-closer per move, and a distance floor of 1.2.
+**The camera never moves on a pick.** See the do-not-rebuild list.
 
 ## Why selection felt broken (v1.99e-g)
 
@@ -1568,10 +1554,18 @@ otherwise the inspector reports the position the object was reflected FROM.
   screen. Do not delete the hover label thinking it is this entry.
 - **Two-ring bloom menus.** Hover picks by angle only, so an outer ring is
   unreachable by construction.
-- **Smart camera.** Drifted the view to a three-quarter angle after every
-  selection. It answered a question nobody was asking, and being moved for
-  no visible reason is worse than a slightly imperfect view. Tagged
-  `v1.87-smartcam`.
+- **Smart camera, and Aim assist after it.** The first drifted the view to
+  a three-quarter angle after every selection; the second, its last
+  survivor, eased the camera in after a vertex or edge tap when the nearest
+  neighbour was closer than twice the catch radius. Both answered a question
+  nobody was asking. **Being moved when you did not ask to be moved reads as
+  the app losing your place**, and the measurement that justified the second
+  one - targets too close together to tell apart - is not something you
+  notice while it is happening. Pinch-zoom is one gesture and it is yours.
+  Tagged `v1.87-smartcam`; Aim assist went at a2.30a, taking `App.aimAssist`,
+  the world-ring toggle, `AIM_CROWD_PX` / `AIM_ROOMY_PX` / `AIM_MAX_ZOOM`,
+  `logicalVertexPx` and `nearestVisibleNeighbourPx` with it. `camAnim` and
+  `animateCameraTo` STAY - the double-tap framing still uses them.
 - **The edge rails.** Five buttons down the viewport sides, now in the world
   ring.
 
@@ -2215,7 +2209,7 @@ Every earlier miss came back as a vertex. Vertices did not regress (98–100%
 at every zoom), a plain cube is 27/27 edges and 7/7 vertices from either
 mode, and with ±8px of thumb jitter edges run 59% / 88% / 94% at those three
 spacings. Below ~20px spacing the targets are genuinely smaller than a thumb;
-that is what aim assist is for.
+that is what pinch-zoom is for.
 
 **The edge catch zone IS aligned with the drawn edge** — this was checked
 directly, not assumed: on a sparse mesh, taps placed exactly on the line hit
