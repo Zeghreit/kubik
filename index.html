@@ -770,7 +770,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.26</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.26a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -2752,10 +2752,18 @@ function applyMaskPatch(mat, d) {
            for an unbound attribute is (0,0,0,1), which would make hu 1.0 and
            measure every preview against a phantom unit box. Do not remove
            that pin as redundant. */
-        '  if (hu <= 0.0) return 1.0;',
+        '  if (hu == 0.0) return 1.0;',
+        // A shell that went through applyShading and found no model it could
+        // trust. Nothing, not everything - see the encoding note in the pass.
+        '  if (hu < 0.0) return 0.0;',
         '  float hv = vKubikRimB.w;',
         '  float into;',
-        '  if (hv < -1.5) {',
+        '  if (hv < -2.5) {',
+        // A ring: the outer rim and the inner hole are both edges.
+        '    vec3 dr = vKubikPos - vKubikRimA.xyz;',
+        '    float rr = length(dr);',
+        '    into = min(hu - rr, rr - vKubikRimB.x);',
+        '  } else if (hv < -1.5) {',
         // A triangle, exactly: barycentric weight times the opposite altitude.
         '    vec3 t = vKubikRimB.xyz * vKubikRimA.xyz;',
         '    into = min(t.x, min(t.y, t.z));',
@@ -3315,7 +3323,7 @@ function applyShading(obj) {
        smooth body - means there is no edge to band, so the rim steps aside
        and curvature answers alone, as it did before a2.25.
 
-       FOUR MODELS, AND THE MODEL IS CHECKED AGAINST THE BOUNDARY BEFORE IT
+       FIVE MODELS, AND THE MODEL IS CHECKED AGAINST THE BOUNDARY BEFORE IT
        IS USED. A lone triangle gets an EXACT answer and needs no check: a
        triangular face is one triangle with three unshared vertices, so the
        barycentric weights interpolate for free and the distance to side i
@@ -3401,11 +3409,28 @@ function applyShading(obj) {
       }
     });
 
-    /* A.w === 0            : no model - unrestricted, curvature alone
+    /* A.w === 0            : NO ATTRIBUTE - unrestricted, curvature alone.
+                              Only the material preview ball, which has never
+                              been through here and must still show the mask.
+       A.w  <  0            : this shell has no usable model - NO WEAR.
        A.w > 0, B.w  >  0   : rectangle, half-extents A.w along B.xyz, B.w across
        A.w > 0, B.w === 0   : axial band, half-length A.w along B.xyz
        A.w > 0, B.w === -1  : disc of radius A.w about A.xyz
-       A.w > 0, B.w === -2  : triangle - A.xyz altitudes, B.xyz barycentric  */
+       A.w > 0, B.w === -2  : triangle - A.xyz altitudes, B.xyz barycentric
+       A.w > 0, B.w === -3  : ring, outer radius A.w, inner B.x, about A.xyz
+
+       THE FALLBACK IS "NOTHING", AND THAT IS THE WHOLE POINT. a2.26 fell
+       back to unrestricted, which on a convex shell means the curvature gate
+       reads 1 and the FACE IS PAINTED SOLID. On a cube and a tube nearly
+       everything fits and it never showed; on a real model - a turret ring
+       with a hole in it, a long thin track strip - plenty of shells do not
+       fit, and every one of them came out as a solid blotch or as a smooth
+       surface that looked edged. Missing wear is a quiet, honest failure.
+       Solid wear is indistinguishable from the bug this feature started as.
+
+       A shell with NO sharp edge anywhere is a different thing and does
+       NOT land here - it keeps A.w at zero and curvature answers alone,
+       which is what puts the wear on a bevel. */
     const wantLen = posAttr.count * 4;
     let raA = geo.attributes.kubikRimA, raB = geo.attributes.kubikRimB;
     let rimA, rimB;
@@ -3417,6 +3442,20 @@ function applyShading(obj) {
       rimA = new Float32Array(wantLen); rimB = new Float32Array(wantLen);
       raA = null; raB = null;
     }
+    /* Every vertex that belongs to a shell starts at "no model". A shell
+       that finds one overwrites its own; every early return below then means
+       no wear without having to say so at each exit. */
+    shellVerts.forEach((vs, r) => {
+      /* Only a shell WITH a sharp edge can fail to model it. A shell with no
+         sharp edge anywhere - a bevelled or subdivided body, where every
+         join is smooth - is not a failure and must stay at zero, so
+         curvature answers alone and the wear lands on the rounding. That is
+         the whole "bevel it, then wear the bevel" workflow, and pre-marking
+         it as a failure silenced it completely. */
+      if (!shellBound.has(r)) return;
+      for (let i = 0; i < vs.length; i++) rimA[vs[i] * 4 + 3] = -1;
+    });
+
     const FIT = 0.2;   // a model may miss its own boundary by this much of its reach
     const rC = new THREE.Vector3(), rD = new THREE.Vector3(), rP = new THREE.Vector3();
     const rU = new THREE.Vector3(), rV = new THREE.Vector3(), rT = new THREE.Vector3();
@@ -3509,13 +3548,18 @@ function applyShading(obj) {
       }
       if (!haveBox) return;
 
-      let discR = 0;
+      /* Radii in plane. The MINIMUM matters as much as the maximum: a face
+         with a hole in it - a turret ring, anything Inset leaves behind - is
+         an annulus, and neither a box nor a disc can say where its inner rim
+         is. Common enough in this app to be worth its own model. */
+      let discR = 0, holeR = Infinity;
       if (flat) {
         for (let i = 0; i < vs.length; i++) {
           rD.fromBufferAttribute(posAttr, vs[i]).sub(rC);
           rD.addScaledVector(gn, -rD.dot(gn));
           const L = rD.length();
           if (L > discR) discR = L;
+          if (L < holeR) holeR = L;
         }
       }
 
@@ -3540,7 +3584,33 @@ function applyShading(obj) {
             if (m > eD) eD = m;
           }
         }
-        if (eR <= eD) { mode = 1; err = eR; } else { mode = 2; err = eD; }
+        let eRing = Infinity;
+        const ringDepth = (discR - holeR) * 0.5;
+        if (holeR > 0.05 * discR && ringDepth > 1e-6) {
+          /* Each rim against its OWN radius, the way the rectangle scores
+             each axis against its own half-extent. Normalising both by the
+             band WIDTH instead made the tolerance unreachable on any thin
+             ring: a 12-sided cap inset by more than a third of its radius
+             scored 0.23 and was rejected, which is exactly the shape this
+             model was added for. Polygon sag scales with the radius, not
+             with the width. */
+          eRing = 0;
+          let nearOut = Infinity, nearIn = Infinity;
+          for (let i = 0; i < bnd.length; i += 3) {
+            const rr = rP.set(bnd[i], bnd[i + 1], bnd[i + 2]).distanceTo(rC);
+            const oT = (discR - rr) / discR, iT = (rr - holeR) / holeR;
+            const m = Math.min(oT, iT);
+            if (m > eRing) eRing = m;
+            if (Math.abs(oT) < nearOut) nearOut = Math.abs(oT);
+            if (Math.abs(iT) < nearIn) nearIn = Math.abs(iT);
+          }
+          // Both rims have to actually be there, the same way the axial band
+          // insists on a boundary at both ends before it draws one.
+          if (!(nearOut <= FIT && nearIn <= FIT)) eRing = Infinity;
+        }
+        mode = 1; err = eR;
+        if (eD < err) { mode = 2; err = eD; }
+        if (eRing < err) { mode = 4; err = eRing; }
       } else if (bu > 1e-6) {
         /* An axial band is drawn at BOTH ends, so the boundary has to be at
            both ends. A dome closed by a sharp equator has one, and without
@@ -3563,9 +3633,11 @@ function applyShading(obj) {
 
       for (let i = 0; i < vs.length; i++) {
         const o = vs[i] * 4;
-        if (mode === 2) {
+        if (mode === 2 || mode === 4) {
           rimA[o] = rC.x; rimA[o + 1] = rC.y; rimA[o + 2] = rC.z; rimA[o + 3] = discR;
-          rimB[o + 3] = -1;
+          rimB[o] = mode === 4 ? holeR : 0;
+          rimB[o + 1] = 0; rimB[o + 2] = 0;
+          rimB[o + 3] = mode === 4 ? -3 : -1;
         } else {
           rimA[o] = rCen.x; rimA[o + 1] = rCen.y; rimA[o + 2] = rCen.z; rimA[o + 3] = bu;
           rimB[o] = rAx.x; rimB[o + 1] = rAx.y; rimB[o + 2] = rAx.z;

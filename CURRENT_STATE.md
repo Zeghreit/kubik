@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~12,000 lines)
-- Version at time of writing: **a2.26**
+- Version at time of writing: **a2.26a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1107,6 +1107,47 @@ answers axis for all 48 wall vertices - ONE centre, half-height 1.0 - and
 disc for its 24 cap vertices, while an 8-sided one answers rect for all 32
 wall vertices. Screenshots of both tubes confirm it: the 12-sided wall is
 clean with faint rims, the 8-sided one has a dark band down every seam.
+
+### a2.26a - the fallback was backwards, and a model for rings
+
+Zeghreit put a2.26 on a real model - a tank, nine objects - and it was still
+wrong in two ways at once: whole faces painted solid, and wear showing on
+surfaces that shade smooth. **Both were one cause.** On a cube and a tube
+nearly every shell finds a model, so it never showed in testing; on a real
+model plenty of shells do not fit, and the code fell back to *unrestricted*,
+which on any convex shell means the curvature gate reads 1 and **the face is
+painted solid**. A smooth turret wall painted solid looks exactly like wear
+on a soft edge.
+
+**A shell that has sharp edges but no model it can trust now paints
+NOTHING.** Missing wear is a quiet, honest failure. Solid wear is
+indistinguishable from the bug this whole line of work started as.
+
+**But a shell with NO sharp edge anywhere is not a failed model**, and
+pre-marking it as one silenced bevelled and subdivided bodies completely -
+where every join is smooth, there is no boundary, and curvature alone is
+precisely what puts the wear on the rounding. That is the "bevel it, then
+wear the bevel" workflow, and it is the reason `A.w === 0` has to keep
+meaning "leave it to curvature" rather than being folded into the failure
+case. Verified: a 16x8 sphere, every join 22.5 degrees, answers `free` at
+all 480 vertices.
+
+**A RING model, for a face with a hole in it** - a turret ring, anything
+Inset leaves behind. Outer radius in `A.w`, inner in `B.x`, `B.w === -3`.
+Its first scoring convention normalised both rims by the band WIDTH, which
+made the tolerance unreachable on any thin ring: a 12-sided cap inset by
+more than a third of its radius scored 0.23 and was rejected - exactly the
+shape the model was added for. **Polygon sag scales with the radius, not
+with the width**, so each rim is scored against its own radius, the way the
+rectangle scores each axis against its own half-extent. And both rims have
+to actually be present in the boundary, the same way the axial band insists
+on a boundary at both ends.
+
+Verified: a 12-sided annulus answers `ring` at both 0.5 and 0.75 hole ratio;
+an L-shaped face answers no-model, and therefore no wear rather than a solid
+face; a geometry with no rim attribute at all - the material preview ball -
+still reads unrestricted, so a thumbnail still shows the mask. Cube, grid,
+triangle, n-gon and both tubes unchanged.
 
 ## Screen layout
 
