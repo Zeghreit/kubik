@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~12,000 lines)
-- Version at time of writing: **a2.26a**
+- Version at time of writing: **a2.27a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1148,6 +1148,78 @@ an L-shaped face answers no-model, and therefore no wear rather than a solid
 face; a geometry with no rim attribute at all - the material preview ball -
 still reads unrestricted, so a thumbnail still shows the mask. Cube, grid,
 triangle, n-gon and both tubes unchanged.
+
+## a2.27 - WEAR IS ITS OWN QUESTION, NOT SHADING'S
+
+Zeghreit, after Smooth by angle put everything else right: *"all sets on its
+place except bevel on cylinder - let curvature prioritize creased and marked
+as sharp edges."*
+
+**`wear` is now a second map beside `sharp`.** `sharp` still decides
+shading and is untouched. `wear` is what the Edges mask treats as an edge,
+and it differs in two ways:
+
+- **A CREASE COUNTS.** Since a2.18 a crease has no say in shading at all - it
+  means only "hold this edge through Subdivide". But that is exactly the
+  statement *this is an edge of the form*, which is what wear wants. A fillet
+  round a cylinder is the case: shaded smooth on purpose, and still the thing
+  that should catch the light. There is nothing else in the app that can say
+  it.
+- **A hand 'sharp' mark comes first**, ahead of everything.
+
+**The face count still outranks a 'smooth' mark.** Wear looked like it had
+no reason to keep shading's precedence there, and it does: Object-mode Shade
+Smooth writes `'smooth'` onto every edge it touches, rim edges included,
+where it is incidental noise rather than a statement about that edge. Without
+the rule, one tap of Shade Smooth on an open plane silently deletes its whole
+outline and the mask paints nothing - with the shading identical either way,
+so there is no visual cue at all.
+
+**Creasing now re-runs `applyShading`.** a2.18 deliberately removed that call
+because a crease had stopped affecting shading; a2.27 gives it a second
+reader, so the call comes back with a comment saying which one. Without it a
+crease changed nothing on screen until some unrelated edit rebuilt the mesh -
+in the exact workflow the feature was added for.
+
+**The RING model is offered to curved shells too.** A flat annulus and a
+fillet round a cylinder's rim are the same measurement: a ring of vertices
+puts its own centroid on the axis either way. That is what lets the wear land
+on the fillet once its rims are creased. Verified: a 16-sided cylinder with a
+3-segment fillet - every join 30 degrees or less, so nothing is sharp and the
+whole body is one shell - splits on the creases and the fillet band takes the
+ring model at all 192 of its vertices.
+
+### The three traps this opened, all found by review
+
+**A MODEL MUST COVER THE SHELL, NOT JUST TOUCH ITS RIM.** On a curved band
+with one segment across it the vertices ARE the boundary, so the boundary
+test measures the model against the very points that defined it and cannot
+fail. A cylinder wall tapered by 2% scored a PERFECT ring while the surface
+between its rims sits nowhere near that annulus - and the whole wall came out
+solid, the exact failure a2.26a set out to end. Every model is now also
+checked against the shell's TRIANGLE CENTROIDS, which are interior points by
+construction.
+
+**AND EVERY BOUNDARY POINT MUST BE ON ONE OF THE RING'S TWO RIMS.** A plain
+cylinder wall's narrowest point is its waist, not a hole, and a negative
+score - a point outside the annulus - reads as a perfect fit to a maximum.
+One crease near the right radius was enough to paint a ring round the middle
+of a cylinder where there is no edge at all. Only the ABSOLUTE distance to
+the nearer rim catches that.
+
+**ONE CREASE MUST NOT WIPE AN OBJECT.** a2.26a's `A.w = -1` means "no model,
+no wear", and a single creased edge - for Subdivide, its only documented
+meaning - gives an otherwise smooth body a boundary that no model can fit. It
+took every bevel on the object down with it. So the give-up now hands the
+shell back to curvature **when curvature varies across it** - a bevelled body,
+where the strips read high and the flats read nothing, which is the right
+answer there. On a shell of near-uniform curvature it still refuses, because
+handing back there means solid.
+
+Verified: cube, coplanar grid, triangle, n-gon, flat annulus at two hole
+ratios, L-shape, smooth sphere and both tubes all unchanged; a tapered
+cylinder answers axial, not ring; a filleted cylinder with one crease keeps
+its wear instead of going blank.
 
 ## Screen layout
 

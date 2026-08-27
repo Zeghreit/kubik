@@ -770,7 +770,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.26a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.27a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -3170,8 +3170,35 @@ function applyShading(obj) {
        angle you chose today, which a baked set of marks could never do. */
     const cosLimit = Math.cos(effectiveSmoothAngle(obj.mesh));
     const pA = new THREE.Vector3(), pB = new THREE.Vector3();
+    const creaseMap = obj.mesh.userData.creases || {};
+    const hasCreases = Object.keys(creaseMap).length > 0;
     const sharp = new Map();
+    /* `wear` is what the Edges MASK treats as an edge, and it is not the
+       same question as shading (a2.27). Two differences, both asked for:
+
+       A CREASE COUNTS. Since a2.18 a crease has no say in shading at all -
+       it means only "hold this edge through Subdivide" - but that is exactly
+       the statement "this is an edge of the form", which is what wear wants.
+       A bevel round a cylinder is the case: shaded smooth on purpose, and
+       still the thing that should catch the light.
+
+       AND THE HAND MARKS COME FIRST, above the face-count rule. Shading has
+       to put the face count first, because a rim edge has nothing to blend
+       into whatever is written about it; wear has no such constraint, so
+       "I marked this smooth" is allowed to mean no wear. */
+    const wear = new Map();
     edgeFaces.forEach((fs, k) => {
+      let mark = null, creased = false;
+      if (hasMarks || hasCreases) {
+        const ends = edgeEnds.get(k);
+        if (ends) {
+          pA.fromBufferAttribute(posAttr, logicalGroups[ends[0]][0]);
+          pB.fromBufferAttribute(posAttr, logicalGroups[ends[1]][0]);
+          const ck = creaseKeyFor(pA, pB);
+          if (hasMarks) mark = marks[ck] || null;
+          if (hasCreases) creased = !!creaseMap[ck];
+        }
+      }
       /* The face count is checked FIRST, above the marks. An edge with one
          face is a rim with nothing to blend into and an edge with three is a
          seam that must not blend, whatever is written about it - and Shade
@@ -3179,16 +3206,25 @@ function applyShading(obj) {
          until a Bridge or a weld later gives that edge a second face. Then a
          stale mark nobody can see would beat the angle and put a smooth seam
          across a square join. */
-      if (fs.length !== 2) { sharp.set(k, true); return; }
-      if (hasMarks) {
-        const ends = edgeEnds.get(k);
-        pA.fromBufferAttribute(posAttr, logicalGroups[ends[0]][0]);
-        pB.fromBufferAttribute(posAttr, logicalGroups[ends[1]][0]);
-        const m = marks[creaseKeyFor(pA, pB)];
-        if (m === 'sharp') { sharp.set(k, true); return; }
-        if (m === 'smooth') { sharp.set(k, false); return; }
-      }
-      sharp.set(k, groupNormal[fs[0]].dot(groupNormal[fs[1]]) < cosLimit - SHARP_EPS);
+      let sh;
+      if (fs.length !== 2) sh = true;
+      else if (mark === 'sharp') sh = true;
+      else if (mark === 'smooth') sh = false;
+      else sh = groupNormal[fs[0]].dot(groupNormal[fs[1]]) < cosLimit - SHARP_EPS;
+      sharp.set(k, sh);
+      /* Crease and a hand 'sharp' mark come first - that is the whole
+         point. But the FACE COUNT still outranks a 'smooth' mark, for the
+         same reason shading gives it precedence: Object-mode Shade Smooth
+         writes 'smooth' onto every edge it touches, rim edges included,
+         where it is incidental noise and not a statement about that edge.
+         Without this, one tap of Shade Smooth on an open plane silently
+         deletes its entire outline and the mask paints nothing, with the
+         shading looking identical either way. */
+      wear.set(k, creased ? true
+                : mark === 'sharp' ? true
+                : fs.length !== 2 ? true
+                : mark === 'smooth' ? false
+                : sh);
     });
 
     /* One vertex at a time: split the fan of faces around it into islands
@@ -3351,12 +3387,13 @@ function applyShading(obj) {
       // A line neither face exposes separates nothing, whatever the angle
       // rule had to say about it.
       if (fs.length !== 2) return;
-      if (isOutline(k) && sharp.get(k)) return;
+      if (isOutline(k) && wear.get(k)) return;
       const r1 = sFind(fs[0]), r2 = sFind(fs[1]);
       if (r1 !== r2) shellP[r1] = r2;
     });
 
     const shellVerts = new Map(), shellTri0 = new Map(), shellTriN = new Map();
+    const shellTris = new Map();
     for (let ai = 0; ai < posAttr.count; ai++) {
       const g = groupOfAttr[ai];
       if (g < 0) continue;
@@ -3369,6 +3406,9 @@ function applyShading(obj) {
       const r = sFind(triGroup[t]);
       if (!shellTri0.has(r)) shellTri0.set(r, t);
       shellTriN.set(r, (shellTriN.get(r) || 0) + 1);
+      let tl = shellTris.get(r);
+      if (!tl) { tl = []; shellTris.set(r, tl); }
+      tl.push(t);
     }
     // The shell's own normal, not whichever member won the union-find race -
     // one collapsed quad mid-drag would otherwise call a flat face curved.
@@ -3389,8 +3429,8 @@ function applyShading(obj) {
     // to reject a model that fits its own face perfectly.
     const shellBound = new Map();
     const bp = new THREE.Vector3(), bq = new THREE.Vector3();
-    sharp.forEach((isSharp, k) => {
-      if (!isSharp || !isOutline(k)) return;
+    wear.forEach((isEdge, k) => {
+      if (!isEdge || !isOutline(k)) return;
       const ends = edgeEnds.get(k), fs = edgeFaces.get(k);
       if (!ends || !fs) return;
       const a0 = logicalGroups[ends[0]], a1 = logicalGroups[ends[1]];
@@ -3465,7 +3505,29 @@ function applyShading(obj) {
       const bnd = shellBound.get(r);
       if (!vs.length || !bnd || bnd.length < 3) return;   // no edge: curvature alone
       const t0 = shellTri0.get(r);
-      if (t0 === undefined) return;
+
+      /* NO MODEL. Hand the shell back to curvature only when curvature has
+         something to say about it - when it VARIES across the shell, which
+         is a bevelled or rounded body, where the strips read high and the
+         flats read nothing. That is the right answer there and the reason
+         zero means "leave it alone". On a shell of near-uniform curvature -
+         any flat face, any plain cylinder wall - handing back means solid,
+         the failure this sentinel exists to prevent, so it stays at -1.
+
+         This is what keeps ONE crease on a bevelled cube from deleting the
+         wear on the other eleven bevels: the crease gives the shell a
+         boundary, no model fits a boundary of one edge, and without this the
+         whole object went blank. */
+      const giveUp = () => {
+        let cMin = 9, cMax = -9;
+        for (let i = 0; i < vs.length; i++) {
+          const c = curv[vs[i]];
+          if (c < cMin) cMin = c;
+          if (c > cMax) cMax = c;
+        }
+        if (cMax - cMin >= 0.25) for (let i = 0; i < vs.length; i++) rimA[vs[i] * 4 + 3] = 0;
+      };
+      if (t0 === undefined) { giveUp(); return; }
 
       // ---- a lone triangle is exact, and neither box nor disc can do it --
       if (shellTriN.get(r) === 1 && vs.length === 3) {
@@ -3506,7 +3568,7 @@ function applyShading(obj) {
           if (o > offPlane) offPlane = o;
         }
       }
-      if (maxLen < 1e-6) return;
+      if (maxLen < 1e-6) { giveUp(); return; }
       /* A curved shell's member normals CANCEL - a tube wall sums to zero -
          and a near-zero vector answers every planarity test perfectly. The
          length guard is what tells "flat" from "closed around". */
@@ -3546,21 +3608,56 @@ function applyShading(obj) {
           if (flat) rCen.addScaledVector(rV, (vMin + vMax) * 0.5);
         }
       }
-      if (!haveBox) return;
+      if (!haveBox) { giveUp(); return; }
 
       /* Radii in plane. The MINIMUM matters as much as the maximum: a face
          with a hole in it - a turret ring, anything Inset leaves behind - is
          an annulus, and neither a box nor a disc can say where its inner rim
          is. Common enough in this app to be worth its own model. */
       let discR = 0, holeR = Infinity;
-      if (flat) {
-        for (let i = 0; i < vs.length; i++) {
-          rD.fromBufferAttribute(posAttr, vs[i]).sub(rC);
-          rD.addScaledVector(gn, -rD.dot(gn));
-          const L = rD.length();
-          if (L > discR) discR = L;
-          if (L < holeR) holeR = L;
+      for (let i = 0; i < vs.length; i++) {
+        rD.fromBufferAttribute(posAttr, vs[i]).sub(rC);
+        if (flat) rD.addScaledVector(gn, -rD.dot(gn));
+        const L = rD.length();
+        if (L > discR) discR = L;
+        if (L < holeR) holeR = L;
+      }
+
+      /* The ring is offered to ANY shell, flat or not. A flat annulus and
+         a bevel ring round a cylinder are the same measurement: a ring of
+         vertices puts its own centroid on the axis either way, so both rims
+         come back at consistent distances from it. This is what lets wear
+         land on a bevel once its edges are creased or marked sharp. */
+      let eRing = Infinity;
+      const ringDepth = (discR - holeR) * 0.5;
+      if (holeR > 0.05 * discR && ringDepth > 0.01 * discR) {
+        /* Each rim against its OWN radius, the way the rectangle scores each
+           axis against its own half-extent. Normalising both by the band
+           WIDTH made the tolerance unreachable on any thin ring: a 12-sided
+           cap inset past a third of its radius scored 0.23 and was rejected,
+           the exact shape the model was added for. Polygon sag scales with
+           the radius, not with the width. */
+        eRing = 0;
+        let nearOut = Infinity, nearIn = Infinity, offRim = 0;
+        for (let i = 0; i < bnd.length; i += 3) {
+          const rr = rP.set(bnd[i], bnd[i + 1], bnd[i + 2]).distanceTo(rC);
+          const oT = (discR - rr) / discR, iT = (rr - holeR) / holeR;
+          const m = Math.min(oT, iT);
+          if (m > eRing) eRing = m;
+          const dOut = Math.abs(oT), dIn = Math.abs(iT);
+          if (dOut < nearOut) nearOut = dOut;
+          if (dIn < nearIn) nearIn = dIn;
+          if (Math.min(dOut, dIn) > offRim) offRim = Math.min(dOut, dIn);
         }
+        /* Both rims have to be there - the axial band insists on the same at
+           both ends - and EVERY boundary point has to be on one of them.
+           Without that last test a plain cylinder wall passes: its narrowest
+           point is its waist, not a hole, and a lone crease anywhere near the
+           right radius was enough to have it paint a ring round the middle
+           where there is no edge at all. A negative score means the point is
+           outside the annulus, which the max quietly reads as a perfect fit,
+           so only the absolute distance can catch it. */
+        if (!(nearOut <= FIT && nearIn <= FIT && offRim <= FIT)) eRing = Infinity;
       }
 
       let mode = 0, err = Infinity;
@@ -3584,33 +3681,8 @@ function applyShading(obj) {
             if (m > eD) eD = m;
           }
         }
-        let eRing = Infinity;
-        const ringDepth = (discR - holeR) * 0.5;
-        if (holeR > 0.05 * discR && ringDepth > 1e-6) {
-          /* Each rim against its OWN radius, the way the rectangle scores
-             each axis against its own half-extent. Normalising both by the
-             band WIDTH instead made the tolerance unreachable on any thin
-             ring: a 12-sided cap inset by more than a third of its radius
-             scored 0.23 and was rejected, which is exactly the shape this
-             model was added for. Polygon sag scales with the radius, not
-             with the width. */
-          eRing = 0;
-          let nearOut = Infinity, nearIn = Infinity;
-          for (let i = 0; i < bnd.length; i += 3) {
-            const rr = rP.set(bnd[i], bnd[i + 1], bnd[i + 2]).distanceTo(rC);
-            const oT = (discR - rr) / discR, iT = (rr - holeR) / holeR;
-            const m = Math.min(oT, iT);
-            if (m > eRing) eRing = m;
-            if (Math.abs(oT) < nearOut) nearOut = Math.abs(oT);
-            if (Math.abs(iT) < nearIn) nearIn = Math.abs(iT);
-          }
-          // Both rims have to actually be there, the same way the axial band
-          // insists on a boundary at both ends before it draws one.
-          if (!(nearOut <= FIT && nearIn <= FIT)) eRing = Infinity;
-        }
         mode = 1; err = eR;
         if (eD < err) { mode = 2; err = eD; }
-        if (eRing < err) { mode = 4; err = eRing; }
       } else if (bu > 1e-6) {
         /* An axial band is drawn at BOTH ends, so the boundary has to be at
            both ends. A dome closed by a sharp equator has one, and without
@@ -3629,7 +3701,43 @@ function applyShading(obj) {
         mode = 3;
         err = Math.max(worst, nearHi, nearLo);
       }
-      if (!(err <= FIT)) return;   // does not fit: curvature alone
+      if (eRing < err) { mode = 4; err = eRing; }
+      if (!(err <= FIT)) { giveUp(); return; }
+
+      /* CONTAINMENT: the model has to COVER the shell, not merely touch its
+         rim. On a curved band with one segment across it the vertices ARE
+         the boundary, so the boundary test measures the model against the
+         very points that defined it and cannot fail - a slightly tapered
+         cylinder wall scored a PERFECT ring while its middle sits nowhere
+         near that annulus, and the whole wall came out solid. Triangle
+         centroids are interior points by construction, which is exactly what
+         the boundary test was missing. */
+      const tris = shellTris.get(r);
+      if (tris) {
+        const slack = -0.02 * maxLen;
+        for (let i = 0; i < tris.length; i++) {
+          const t = tris[i] * 3;
+          rP.set(0, 0, 0)
+            .add(rT.fromBufferAttribute(posAttr, index.getX(t)))
+            .add(rT.fromBufferAttribute(posAttr, index.getX(t + 1)))
+            .add(rT.fromBufferAttribute(posAttr, index.getX(t + 2)))
+            .divideScalar(3);
+          let into;
+          if (mode === 4) {
+            const rr = rP.distanceTo(rC);
+            into = Math.min(discR - rr, rr - holeR);
+          } else if (mode === 2) {
+            into = discR - rP.distanceTo(rC);
+          } else {
+            rD.copy(rP).sub(rCen);
+            const a = Math.abs(rD.dot(rAx));
+            into = mode === 1
+              ? Math.min(bu - a, bv - Math.sqrt(Math.max(0, rD.lengthSq() - a * a)))
+              : bu - a;
+          }
+          if (into < slack) { giveUp(); return; }
+        }
+      }
 
       for (let i = 0; i < vs.length; i++) {
         const o = vs[i] * 4;
@@ -8403,9 +8511,12 @@ function creaseSelection(on) {
   const want = (on === undefined) ? !allCreased : !!on;
   keys.forEach(k => { if (want) creases[k] = true; else delete creases[k]; });
 
-  /* No applyShading here any more. As of a2.18 a crease is ONLY a Subdivide
-     instruction - it says "hold this edge when you round the mesh" and has
-     no say in how the surface is shaded. Sharpness is its own mark. */
+  /* A crease still has NO say in shading - a2.18's split stands, and the
+     normals below are untouched by this. But since a2.27 the Edges MASK
+     reads creases, and that is computed inside applyShading, so this has to
+     run or a crease changes nothing until some unrelated edit rebuilds the
+     mesh. That is precisely the workflow it was added for. */
+  applyShading(obj);
   refreshElementColors(obj);
   hideRadialMenu();
   refreshUI();
@@ -8419,6 +8530,7 @@ function clearAllCreases() {
   if (!obj) { toast('Select an object first'); return; }
   obj.mesh.userData.creases = {};
   ensureHelpers(obj);
+  applyShading(obj);   // the Edges mask reads creases - see creaseSelection
   refreshElementColors(obj);
   refreshUI();
   pushHistory();
@@ -14743,7 +14855,7 @@ if (PICK_DEBUG) {
        wrong twice. The renderer is here so a harness can render and read
        the buffer in ONE synchronous block, which is the only way to sample
        a canvas that does not preserve its drawing buffer. */
-    renderer, applyShading, toEditable, rebuildFromEditable,
+    renderer, applyShading, toEditable, rebuildFromEditable, creaseKeyFor,
     bloomToolRing, updateToolRingHover, closeToolRing, placeRingLabel,
     currentHubTools, HUB_TOOLS_WORLD,
     /* The pickers, callable with a plain {clientX, clientY}. Driving these
