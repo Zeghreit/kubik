@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~13,800 lines)
-- Version at time of writing: **a2.29b**
+- Version at time of writing: **a2.29c**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -845,7 +845,7 @@ finger up still counted as one finger down and the camera never came back.
 **Desktop has no path to Turn and Strength** - user's decision, touch only.
 The pill still picks the type.
 
-## SHAPE MASKS: Cavity and Edges (a2.24 -> a2.29b)
+## SHAPE MASKS: Cavity and Edges (a2.24 -> a2.29c)
 
 Two mask types that take their weight from the model instead of a texture.
 Cavity darkens crevices, Edges wears the exposed edges. They stack, blend
@@ -1003,6 +1003,40 @@ both `applyMaskPatch`'s early-out and `ensureMaskPatches`. While those were
 two separate copies of the same test, `ensureMaskPatches` never learned
 about bevel, and a face extruded on a bevel-only material stayed flat
 forever.
+
+### Cross-masking: each kind stops at the other (a2.29c)
+
+**The field measures distance through SPACE. It has no idea where the
+surface goes.** So a recess whose floor is 0.12 below a lip 0.05 away is
+0.13 from a point on the flat top OUTSIDE it - well inside the range - and
+Cavity paints straight over the lip and out onto the open deck. On
+Zeghreit's tank that put rust along the top edge of every raised hull
+plate: the single most exposed line on the model, and the last place dirt
+would ever sit. The turret's inward extrude, whose rim is further from
+anything concave, looked perfect the whole time.
+
+**The other channel is the answer, and it is already in the same texture.**
+If the nearest edge of the OPPOSITE kind is closer than your own, you are
+on the wrong side of a corner from it - reaching your own edge means going
+round that corner, and neither dirt nor wear does that. So Cavity stops at
+the lip and Edges stops at the crease:
+
+    occ = smoothstep(-bar, bar, other - own)
+
+`bar` is 35% of the mask's own Width, so a wide band gets a wide handover
+and a tight one a tight one. Substance ships exactly this on every
+generator - "Ambient Occlusion Masking" and "Edges Masking, removes dirt
+from raised edges" - and it was the one item on the prior-art list that had
+not been built. It costs nothing: both numbers were already read.
+
+**Both channels EXACTLY zero is the no-field default**, the material preview
+ball, and it must not be cross-masked - a tie halves the result and every
+thumbnail in the tray goes pale. The probe caught that one, at -51.87 turning
+into -22.64.
+
+The pan test in the probe is this shape: a plate with a shallow square
+recess. Before, cavity over its whole mask read -12.43 and the dark band sat
+on the outer rim; after, -1.34, and it sits in the recess.
 
 ### The four architectures that did not work
 

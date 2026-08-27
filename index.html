@@ -770,7 +770,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.29b</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.29c</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -2898,6 +2898,25 @@ function applyMaskPatch(mat, d) {
            on a face nowhere near an edge of its own. */
         '  float d = (src == 2 ? kubikF0.r : kubikF0.g);',
         '  if (d > 0.99) return 0.0;',
+        /* CROSS-MASK. The field measures distance through SPACE and knows
+           nothing about which way the surface goes, so a cavity 0.2 away
+           paints straight over the lip between - which on a tank hull put
+           rust along the top edge of every raised deck plate, the most
+           exposed line on the model. The other channel is the answer, and
+           it is already in the same texture: if the NEAREST edge of the
+           opposite kind is closer than your own, you are on the wrong side
+           of a corner from it, and getting there means going round. Cavity
+           stops at the lip; Edges stops at the crease. Substance ships the
+           same thing on every generator, as "Ambient Occlusion Masking" and
+           "Edges Masking". Costs nothing - both numbers are already read. */
+        '  float other = (src == 2 ? kubikF0.g : kubikF0.r);',
+        '  float bar = max(0.05, 0.35 * width);',
+        /* Both channels EXACTLY zero is the no-field default - the material
+           preview ball, whose 1x1 black texture means "everywhere is an edge"
+           so a thumbnail can show what the mask does. Cross-masking a tie
+           halves it, and every thumbnail in the tray went pale. */
+        '  float occ = (d + other > 0.0) ? smoothstep(-bar, bar, other - d) : 1.0;',
+        '  if (occ <= 0.0) return 0.0;',
         '  if (noiseAmt > 0.0) {',
         /* Amplitude divided by the scale on purpose. Noisiness is how deep the
            bites are RELATIVE to how big they are; without this, turning the
@@ -2910,7 +2929,7 @@ function applyMaskPatch(mat, d) {
         '  }',
         '  d *= uKubikFieldRange;',
         '  float soft = clamp(blur, 0.0, 1.0);',
-        '  return 1.0 - smoothstep(w * (1.0 - soft), w, d);',
+        '  return occ * (1.0 - smoothstep(w * (1.0 - soft), w, d));',
         '}',
         /* ROUNDED EDGES, from the same field. The gradient of the distance
            to the convex edges points along the surface, away from the
