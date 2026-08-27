@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~12,000 lines)
-- Version at time of writing: **a2.28a**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~13,800 lines)
+- Version at time of writing: **a2.29b**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -845,7 +845,7 @@ finger up still counted as one finger down and the camera never came back.
 **Desktop has no path to Turn and Strength** - user's decision, touch only.
 The pill still picks the type.
 
-## SHAPE MASKS: Cavity and Edges (a2.24 -> a2.28a)
+## SHAPE MASKS: Cavity and Edges (a2.24 -> a2.29b)
 
 Two mask types that take their weight from the model instead of a texture.
 Cavity darkens crevices, Edges wears the exposed edges. They stack, blend
@@ -940,6 +940,69 @@ the falloff takes, 0 a hard line and 1 a fade all the way in. **Noise** how
 ragged the rim is. All three are live uniforms - a shape mask has no cloth
 to re-bake. `MASK_TYPES` carries per-type label and bounds for all three,
 written BEFORE the values or the range element snaps each to the old grid.
+
+### Round edges, and noise that warps (a2.29 -> a2.29b)
+
+Two things a survey of Substance, Blender and Marmoset said were missing.
+`claude/wear-shading-prior-art.md` in the project has the survey; its short
+version is that nobody publishes a distance-to-EDGE field, and the only
+prior technique that works on an unbevelled cube is Substance's ray-traced
+Sampling Radius, which is what a2.28 arrived at by another road.
+
+**Round edges is a bevel with no geometry.** Blender, Marmoset and Redshift
+all ship one; all three pay for ray probes, and Blender's own docs warn
+theirs costs a fifth of render time. Ours is nearly free, because the
+GRADIENT of the field already IS the direction to lean the normal. It lives
+in the material editor, not the mask panel - it is a property of the
+surface, not of a stack layer, and it works with no mask on the material at
+all.
+
+- **Four taps, not three.** Forward differences read `f(x)` and `f(x+h)`,
+  and within h/2 of an edge the second tap lands on the FAR side of the
+  distance function's V - so the normal leaned away and drew a raised ridge
+  instead of a chamfer. That zone is a fixed fraction of the field, so at
+  small widths it was most of the band. The tetrahedron (`e = vec2(1,-1)*h`)
+  straddles the valley in every direction.
+- **A gradient that is too short is not a direction - but too short means
+  NEARLY ZERO.** Past the field's range every tap reads the same clamped
+  1.0, the four cancel exactly, and what is left is 8-bit dust that
+  `normalize()` blows up into full-strength speckle. A true distance field's
+  gradient has a KNOWN magnitude, `4h^2/range`, so the bar is a physical
+  quantity rather than an epsilon - and getting the number wrong cost two
+  versions. `1e-12` was ten million times below the byte noise floor and
+  never fired once. Half of expect, its replacement, fired everywhere it
+  mattered: approaching an edge the taps straddle the V, so the sum
+  SHORTENS, and it is under half for the last 9% of the range. Every Round
+  edges below 0.09 was inert - the whole bottom of the slider - and
+  everything above it got a flat strip down the crest of each edge. The
+  length falls near an edge; **the direction does not**, and the direction is
+  all `kubikBevelN` uses. The bar is now 10% of expect, about five times the
+  quantisation floor. Both settings measured healthy at Round edges 0.5, so
+  the probe now also asserts 0.06 - which read exactly `0.00` before.
+- It runs after `normal_fragment_maps`, so a normal map still wins where one
+  exists; it is skipped under `FLAT_SHADED`; and it needs the custom
+  `uKubikNrmMat`, because `object.normalMatrix` is not declared for the
+  fragment stage.
+
+**Noise now WARPS the lookup instead of offsetting the result.** Adding
+noise to a coverage value moves the whole band in and out together;
+displacing the POSITION being sampled makes the rim itself wander, which is
+what erosion actually looks like. Substance calls the same node a Warp. The
+reach test still runs at the TRUE position (`kubikF0`), so noise can eat
+into a band but can never start one on a face with no edge near it.
+
+**Noise scale** joined Width, Blur and Noise, on shape types only. It is
+expressed relative to the width, so widening a band does not turn its grain
+into a different material - and the warp's AMPLITUDE is divided by it, so
+Noisiness means "how deep the bites are relative to how big they are". Left
+coupled, fine grain kept a coarse displacement and the top of the slider
+moved the lookup thirty features: a scramble, not a warp.
+
+**One predicate decides who gets patched.** `maskWantsPatch(d)` is read by
+both `applyMaskPatch`'s early-out and `ensureMaskPatches`. While those were
+two separate copies of the same test, `ensureMaskPatches` never learned
+about bevel, and a face extruded on a bevel-only material stayed flat
+forever.
 
 ### The four architectures that did not work
 

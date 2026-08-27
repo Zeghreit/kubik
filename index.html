@@ -770,7 +770,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.28a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.29b</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -864,6 +864,12 @@
         <input type="range" id="meMetal" min="0" max="1" step="0.01">
         <label>Roughness <span id="meRoughV"></span></label>
         <input type="range" id="meRough" min="0" max="1" step="0.01">
+        <!-- Shading only: no geometry is added and Rounded edges is
+             untouched. Blender, Marmoset and Redshift all ship this and all
+             pay for ray probes; here the distance field already knows where
+             the edges are, so it is a gradient and three extra taps. -->
+        <label>Round edges <span id="meBevelV"></span></label>
+        <input type="range" id="meBevel" min="0" max="1" step="0.02">
         <label>Masks</label>
         <!-- One row of chips picks WHICH mask you are editing, and one set of
              controls edits it. Four masks' worth of controls stacked in a
@@ -892,6 +898,10 @@
           <div id="mkDetailRow" style="display:flex; flex-direction:column; gap:8px;">
             <label id="mkDetailLbl">Detail <span id="mkDetailV"></span></label>
             <input type="range" id="mkDetail" min="1" max="5" step="1">
+          </div>
+          <div id="mkNScaleRow" style="display:none; flex-direction:column; gap:8px;">
+            <label>Noise scale <span id="mkNScaleV"></span></label>
+            <input type="range" id="mkNScale" min="0.2" max="6" step="0.2">
           </div>
           <label id="mkContrastLbl">Contrast <span id="mkContrastV"></span></label>
           <input type="range" id="mkContrast" min="0.5" max="3" step="0.1">
@@ -2037,9 +2047,10 @@ function saveMaterialLibrary() {
     const base = MATERIAL_DEFAULTS[d.id];
     if (d.color !== base.color || d.roughness !== base.roughness ||
         d.metalness !== base.metalness || d.envMapIntensity !== base.envMapIntensity ||
-        d.name !== base.name || (d.masks && d.masks.length)) {
+        d.name !== base.name || (d.masks && d.masks.length) || d.bevel) {
       presetOverrides[d.id] = { name: d.name, color: d.color, roughness: d.roughness,
-        metalness: d.metalness, envMapIntensity: d.envMapIntensity, masks: d.masks };
+        metalness: d.metalness, envMapIntensity: d.envMapIntensity,
+        masks: d.masks, bevel: d.bevel || 0 };
     }
   });
   try {
@@ -2222,7 +2233,7 @@ const MASK_DEFAULT = {
   on: true, type: 'fbm', blend: 'normal',
   colorOn: true, color: '#7a4a20',
   roughOn: false, rough: 0.25,
-  amount: 0.7, scale: 2, detail: 3, contrast: 1.4, seed: 1
+  amount: 0.7, scale: 2, detail: 3, contrast: 1.4, nscale: 1, seed: 1
 };
 const _maskTex = new Map();   // material id -> CanvasTexture
 
@@ -2596,11 +2607,21 @@ function bumpMaskGen(d) {
   if (d) d.maskGen = _maskGen++;
 }
 
+/* Whether a definition needs the shader patch at all. This existed in two
+   places - applyMaskPatch's early-out and ensureMaskPatches' repair test -
+   and when the bevel arrived only one of them learned about it. A bevel-only
+   material then agreed with itself that it needed nothing, so extruding a
+   face left the new faces flat while the old ones stayed rounded, with no
+   way back but reopening the editor. One predicate, read by both. */
+function maskWantsPatch(d) {
+  return !!maskOf(d) || (d && d.bevel > 0);
+}
+
 function applyMaskPatch(mat, d) {
   // Scrub what clones may have JSON-copied from older builds.
   delete mat.userData.kubikMasked;
   delete mat.userData.kubikMaskU;
-  const mk = maskOf(d);
+  const mk = maskWantsPatch(d);
   if (!mk) {
     if (_maskedMats.has(mat)) {
       _maskedMats.delete(mat);
@@ -2640,6 +2661,13 @@ function applyMaskPatch(mat, d) {
       uKubikSource: { value: [] },
       uKubikBlur: { value: [] },
       uKubikNoise: { value: [] },
+      uKubikNScale: { value: [] },
+      /* Shading-only rounded edges. Per MATERIAL, not per mask, because it
+         is a property of the surface rather than of a layer on it. */
+      // A shared file or a stale library can carry anything; without this a
+      // bevel of 50 shades every flat face as if it were fully rounded.
+      uKubikBevel: { value: Math.min(1, Math.max(0, d.bevel || 0)) },
+      uKubikNrmMat: { value: new THREE.Matrix3() },
       /* The field is per OBJECT, not per material, so onBeforeRender fills
          these in from whichever mesh is being drawn. Until then they name a
          1x1 black texture, which reads as distance zero - the right answer
@@ -2672,6 +2700,7 @@ function applyMaskPatch(mat, d) {
       u.uKubikSource.value.push(cm);
       u.uKubikBlur.value.push(cm && mk ? Math.min(1, Math.max(0, mk.contrast)) : 0.5);
       u.uKubikNoise.value.push(cm && mk ? Math.min(1, Math.max(0, mk.detail)) : 0);
+      u.uKubikNScale.value.push(cm && mk && mk.nscale > 0 ? Math.min(8, mk.nscale) : 1);
       if (live) u.uKubikCount.value = k + 1;   // highest live slot, so the loop can stop
     }
     return u;
@@ -2683,6 +2712,7 @@ function applyMaskPatch(mat, d) {
     // orphan the ones the compiled program is holding.
     u.uKubikMask.value = tex;
     u.uKubikCount.value = fresh.uKubikCount.value;
+    if (u.uKubikBevel) u.uKubikBevel.value = Math.min(1, Math.max(0, d.bevel || 0));
     for (let k = 0; k < MASK_SLOTS; k++) {
       u.uKubikColor.value[k].copy(fresh.uKubikColor.value[k]);
       u.uKubikAmount.value[k] = fresh.uKubikAmount.value[k];
@@ -2694,6 +2724,7 @@ function applyMaskPatch(mat, d) {
       u.uKubikSource.value[k] = fresh.uKubikSource.value[k];
       u.uKubikBlur.value[k] = fresh.uKubikBlur.value[k];
       u.uKubikNoise.value[k] = fresh.uKubikNoise.value[k];
+      u.uKubikNScale.value[k] = fresh.uKubikNScale.value[k];
     }
   };
 
@@ -2727,7 +2758,8 @@ function applyMaskPatch(mat, d) {
      ONLY when a shape mask is actually live. A material wearing nothing but
      Clouds has no use for a distance field, and baking one for it costs a
      megabyte and a stall on every geometry change. */
-  const wantsField = maskList(d).some(m => m && m.on && maskCurvMode(m) && (m.colorOn || m.roughOn));
+  const wantsField = (d.bevel > 0) ||
+    maskList(d).some(m => m && m.on && maskCurvMode(m) && (m.colorOn || m.roughOn));
   if (!wantsField) delete mat.onBeforeRender;
   else mat.onBeforeRender = function (renderer, scene, camera, geometry, object) {
     const f = ensureEdgeField(object);
@@ -2738,6 +2770,8 @@ function applyMaskPatch(mat, d) {
        of every newly applied shape mask renders as one solid face. */
     const u = maskUniStore(mat).get(_maskKey.get(mat));
     if (!u || !u.uKubikField) return;
+    // Written first: it belongs to the mesh, not to the field.
+    u.uKubikNrmMat.value.copy(object.normalMatrix);
     /* No field on this mesh - it has never been through applyShading. Put
        the default BACK rather than returning: leaving the uniform alone
        would hand it whatever mesh was drawn before this one. */
@@ -2774,6 +2808,9 @@ function applyMaskPatch(mat, d) {
         'uniform int   uKubikSource[' + MASK_SLOTS + '];',
         'uniform float uKubikBlur[' + MASK_SLOTS + '];',
         'uniform float uKubikNoise[' + MASK_SLOTS + '];',
+        'uniform float uKubikNScale[' + MASK_SLOTS + '];',
+        'uniform float uKubikBevel;',
+        'uniform mat3  uKubikNrmMat;',
         'uniform sampler2D uKubikField;',
         'uniform vec3  uKubikFieldMin;',
         'uniform vec3  uKubikFieldInv;',
@@ -2783,6 +2820,11 @@ function applyMaskPatch(mat, d) {
         // The weights are computed once, in <color_fragment>, and read again
         // later in <roughnessmap_fragment> - three runs colour first.
         'float kubikW[' + MASK_SLOTS + '];',
+        /* The field at the pixel's own position, read ONCE. Every mask needs
+           it to decide whether any edge is within reach, and the bevel needs
+           it for its falloff. color_fragment runs before normal_fragment in
+           three's standard shader, so it is set by the time the bevel asks. */
+        'vec2 kubikF0;',
         // One triplanar tap set, then the channel this mask owns. Picked by
         // a dot with a selector rather than s[i] so this stays legal if the
         // renderer ever falls back to WebGL1.
@@ -2837,18 +2879,89 @@ function applyMaskPatch(mat, d) {
            object. A distance at the top of the range means no edge is within
            reach at all, and must stay clean however wide the setting - that
            is what keeps a wide band from flooding the model. */
-        'float kubikEdgeW(int src, float width, float blur, float noiseAmt) {',
-        '  vec2 f = kubikField(vKubikPos);',
-        '  float d = (src == 2 ? f.r : f.g);',
-        '  if (d > 0.99) return 0.0;',
-        '  d *= uKubikFieldRange;',
+        /* WARPING the lookup, not offsetting the distance. Adding noise to
+           the distance ruffles the rim evenly; moving the sample point bites
+           chunks out of it, which is what worn paint does. Substance breaks
+           a clean mask boundary the same way, with Slope Blur or Warp driven
+           by a noise, rather than by perturbing the signal's value. */
+        'vec3 kubikWarp(vec3 p, float amt, float scale) {',
+        '  vec3 q = p * scale;',
+        '  return p + amt * vec3(kubikNoise3(q) - 0.5,',
+        '                        kubikNoise3(q + vec3(31.7, 11.3, 47.1)) - 0.5,',
+        '                        kubikNoise3(q + vec3(-19.3, 63.9, 7.7)) - 0.5);',
+        '}',
+        'float kubikEdgeW(int src, float width, float blur, float noiseAmt, float nscale) {',
         '  float w = max(width, 0.001) * uKubikFieldRange;',
+        /* Reach is decided HERE, at the pixel's true position. Deciding it
+           after the warp let a wide, noisy mask drag its lookup clean
+           through a thin wall and paint a rim from an edge on the far side,
+           on a face nowhere near an edge of its own. */
+        '  float d = (src == 2 ? kubikF0.r : kubikF0.g);',
+        '  if (d > 0.99) return 0.0;',
         '  if (noiseAmt > 0.0) {',
-        '    float ns = kubikNoise3(vKubikPos * (7.0 / max(w, 1e-4)));',
-        '    d += (ns - 0.5) * noiseAmt * w;',
+        /* Amplitude divided by the scale on purpose. Noisiness is how deep the
+           bites are RELATIVE to how big they are; without this, turning the
+           grain finer kept the same displacement, and at the top of the slider
+           the lookup moved thirty features - a scramble, not a warp. */
+        '    vec3 p = kubikWarp(vKubikPos, noiseAmt * w * 2.0 / max(nscale, 0.2),',
+        '                       nscale * 5.0 / max(w, 1e-4));',
+        '    vec2 f = kubikField(p);',
+        '    d = min(0.999, (src == 2 ? f.r : f.g));',
         '  }',
+        '  d *= uKubikFieldRange;',
         '  float soft = clamp(blur, 0.0, 1.0);',
         '  return 1.0 - smoothstep(w * (1.0 - soft), w, d);',
+        '}',
+        /* ROUNDED EDGES, from the same field. The gradient of the distance
+           to the convex edges points along the surface, away from the
+           nearest one; leaning the normal INTO that direction is exactly
+           what a chamfer does to the shading. At the edge, with a unit
+           tangent perpendicular to a unit normal, N - T lands at 45 degrees,
+           which is the right answer for a square corner.
+
+           Blender's Bevel node, Marmoset's Bevel and Redshift's Round
+           Corners all do this by tracing probe rays and all warn about the
+           cost. Here the field already knows where the edges are. */
+        'vec3 kubikBevelN(vec3 objN, float amt, float d0n) {',
+        '  float w = max(amt, 0.001) * uKubikFieldRange;',
+        '  float d0 = d0n * uKubikFieldRange;',
+        '  if (d0 > w) return objN;',
+        '  float h = uKubikFieldRange * 0.12;',
+        /* FORWARD differences were wrong, and wrong worst exactly where the
+           bevel should be roundest. Within h of the edge the forward tap
+           lands on the far side of the distance function's V, comes back
+           LARGER, and the normal leans away from the edge instead of into
+           it - a raised ridge with a seam down it. The zone is a fixed
+           fraction of the field, so at a small Round edges it was most of
+           the band. This is the four-tap tetrahedron, which straddles the
+           point and cannot pick the wrong side. */
+        '  vec2 e = vec2(1.0, -1.0) * h;',
+        '  vec3 g = e.xyy * kubikField(vKubikPos + e.xyy).r',
+        '         + e.yyx * kubikField(vKubikPos + e.yyx).r',
+        '         + e.yxy * kubikField(vKubikPos + e.yxy).r',
+        '         + e.xxx * kubikField(vKubikPos + e.xxx).r;',
+        /* For a real distance field that sum is 4h^2 / range in length.
+           NEAR ZERO means the field is FLAT here - a saturated region past the
+           range, where all four taps read the same clamped 1.0 - and what is
+           left is 8-bit quantisation noise, which normalize() would blow up
+           into full-strength speckle. Two wrong bars so far: 1e-12, ten million
+           times below the noise floor, never fired once; then half of expect,
+           which fired everywhere it mattered. Approaching an edge the taps
+           straddle the V, so the sum SHORTENS - it is under half for the last
+           0.09 of the range, which made every Round edges below that do nothing
+           at all and gave everything above it a flat strip down the crest of
+           each edge. Only the length falls; the DIRECTION stays true to within
+           a couple of degrees right down to the edge. Quantisation noise is
+           about 2% of expect, so the bar belongs just above that. */
+        '  float expect = 4.0 * h * h / uKubikFieldRange;',
+        '  if (dot(g, g) < expect * expect * 0.01) return objN;',
+        '  vec3 t = g - objN * dot(g, objN);',
+        // Nothing to lean along - the gradient is within 8 degrees of the normal.
+        '  if (dot(t, t) < dot(g, g) * 0.02) return objN;',
+        '  t = normalize(t);',
+        '  float k = 1.0 - clamp(d0 / w, 0.0, 1.0);',
+        '  k = k * k * (3.0 - 2.0 * k);',
+        '  return normalize(objN - t * k);',
         '}',
         'vec3 kubikBlend(vec3 base, vec3 top, int mode) {',
         '  if (mode == 1) return base * top;',
@@ -2866,14 +2979,25 @@ function applyMaskPatch(mat, d) {
         '                            step(0.5, base));',
         '  return top;',
         '}'].join('\n'))
+      .replace('#include <normal_fragment_maps>', ['#include <normal_fragment_maps>',
+        '#ifndef FLAT_SHADED',
+        'if (uKubikBevel > 0.0) {',
+        '  vec3 kbN = normalize(vKubikNrm);',
+        '  vec3 kbB = kubikBevelN(kbN, uKubikBevel, kubikF0.r);',
+        '  if (dot(kbB - kbN, kbB - kbN) > 1e-12) {',
+        '    normal = normalize(uKubikNrmMat * kbB) * faceDirection;',
+        '  }',
+        '}',
+        '#endif'].join('\n'))
       .replace('#include <color_fragment>', ['#include <color_fragment>',
         '{',
         '  vec3 kubikN = normalize(vKubikNrm);',
+        '  kubikF0 = kubikField(vKubikPos);',
         '  for (int i = 0; i < ' + MASK_SLOTS + '; i++) {',
         '    kubikW[i] = 0.0;',
         '    if (i >= uKubikCount) continue;',
         '    if (uKubikAmount[i] <= 0.0) continue;',
-        '    if (uKubikSource[i] > 0) kubikW[i] = kubikEdgeW(uKubikSource[i], uKubikScale[i], uKubikBlur[i], uKubikNoise[i]);',
+        '    if (uKubikSource[i] > 0) kubikW[i] = kubikEdgeW(uKubikSource[i], uKubikScale[i], uKubikBlur[i], uKubikNoise[i], uKubikNScale[i]);',
         '    else kubikW[i] = kubikTriplanar(vKubikPos, kubikN, uKubikScale[i], i);',
         '    if (uKubikColorOn[i] > 0.5) {',
         '      vec3 mixed = kubikBlend(diffuseColor.rgb, uKubikColor[i], uKubikBlend[i]);',
@@ -2917,7 +3041,7 @@ function ensureMaskPatches() {
     const fin = o.mesh.userData.finishes || {};
     mats.forEach((m, gi) => {
       const d = getMaterialDef(fin[gi] || 'standard');
-      if (!!maskOf(d) !== _maskedMats.has(m)) applyMaskPatch(m, d);
+      if (maskWantsPatch(d) !== _maskedMats.has(m)) applyMaskPatch(m, d);
     });
   });
 }
@@ -3164,7 +3288,6 @@ function disposeEdgeField(geo) {
 }
 const EDGE_FIELD_DIM = 64;      // hard cap per axis
 const EDGE_FIELD_STEPS = 40;    // grid steps across the longest side
-const EDGE_FIELD_REACH = 6;     // range, in grid steps
 
 let _edgeFieldNone = null;
 function edgeFieldNone() {
@@ -3199,6 +3322,13 @@ function bakeEdgeField(geo) {
      milliseconds - synchronously, inside the render. Coarsening the grid
      shrinks both terms at once, and a coarser distance field is a slightly
      softer band, which for weathering is no loss at all. */
+  /* RANGE is a fixed fraction of the object and does NOT follow the grid.
+     It used to be six grid steps, so coarsening for the budget widened it -
+     and the same material then read completely differently on a cube and on
+     its subdivided twin, because Width and Round edges are both fractions of
+     it. The budget may change the field's RESOLUTION; it must not change
+     what the numbers mean. */
+  const range = maxDim * 0.15;
   const ecount = src ? src.kind.length : 0;
   let lenSum = 0;
   for (let e = 0; e < ecount; e++) {
@@ -3208,12 +3338,11 @@ function bakeEdgeField(geo) {
   const avgLen = ecount ? lenSum / ecount : 0;
   let steps = EDGE_FIELD_STEPS;
   while (steps > 10) {
-    const side = 2 * EDGE_FIELD_REACH + 2 + avgLen * steps / maxDim;
+    const side = (2 * range + avgLen) * steps / maxDim + 2;
     if (ecount * side * side * side <= 2.5e6) break;
     steps = Math.floor(steps * 0.8);
   }
   const step = maxDim / steps;
-  const range = step * EDGE_FIELD_REACH;
   const minX = bb.min.x - range, minY = bb.min.y - range, minZ = bb.min.z - range;
   const spanX = sx + 2 * range, spanY = sy + 2 * range, spanZ = sz + 2 * range;
   const dx = Math.min(EDGE_FIELD_DIM, Math.max(4, Math.ceil(spanX / step) + 1));
@@ -13391,9 +13520,10 @@ function buildMatTray() {
   add.addEventListener('click', () => {
     const src = getMaterialDef(currentSelectionFinish() || 'standard');
     const id = 'mat_' + nextMaterialNum.toString(36) + '_' + (Date.now() % 46656).toString(36);
+    // (bevel travels with the copy below, like colour and roughness)
     MATERIALS.set(id, { id: id, preset: false, name: 'Material ' + nextMaterialNum++,
       color: src.color, roughness: src.roughness, metalness: src.metalness,
-      envMapIntensity: src.envMapIntensity });
+      envMapIntensity: src.envMapIntensity, bevel: src.bevel || 0 });
     saveMaterialLibrary();
     if ((App.mode === 'face' && App.selectedElements.size) ||
         (App.mode !== 'face' && (App.selectedObjectIds.size || App.activeObjectId))) {
@@ -13430,6 +13560,8 @@ const meMetal = document.getElementById('meMetal');
 const meRough = document.getElementById('meRough');
 const meMetalV = document.getElementById('meMetalV');
 const meRoughV = document.getElementById('meRoughV');
+const meBevel = document.getElementById('meBevel');
+const meBevelV = document.getElementById('meBevelV');
 
 function openMatEditor(id) {
   matEditingId = id;
@@ -13438,8 +13570,10 @@ function openMatEditor(id) {
   meColor.value = d.color || '#' + DEFAULT_MATERIAL_COLOR.toString(16).padStart(6, '0');
   meMetal.value = d.metalness;
   meRough.value = d.roughness;
+  meBevel.value = d.bevel || 0;
   meMetalV.textContent = d.metalness.toFixed(2);
   meRoughV.textContent = d.roughness.toFixed(2);
+  meBevelV.textContent = (d.bevel || 0).toFixed(2);
   meImg.src = (_matPreviews && _matPreviews[id]) || '';
   document.getElementById('meReset').style.display = d.preset ? '' : 'none';
   document.getElementById('meDelete').style.display = d.preset ? 'none' : '';
@@ -13461,8 +13595,15 @@ function meApplyLive() {
   d.color = meColor.value;
   d.metalness = parseFloat(meMetal.value);
   d.roughness = parseFloat(meRough.value);
+  const hadBevel = !!d.bevel;
+  d.bevel = parseFloat(meBevel.value);
   meMetalV.textContent = d.metalness.toFixed(2);
   meRoughV.textContent = d.roughness.toFixed(2);
+  meBevelV.textContent = d.bevel.toFixed(2);
+  /* Turning the bevel on or off is the one thing here that changes whether
+     the material needs a distance field at all, and that is decided inside
+     applyMaskPatch. Everything else is a uniform. */
+  if (hadBevel !== !!d.bevel) { bumpMaskGen(d); ensureMaskPatches(); }
   updateMaterialEverywhere(matEditingId);
 }
 
@@ -13477,7 +13618,7 @@ function meCommit() {
   meImg.src = _matPreviews[keep] || '';
 }
 
-[meColor, meMetal, meRough].forEach(el => {
+[meColor, meMetal, meRough, meBevel].forEach(el => {
   el.addEventListener('input', meApplyLive);
   el.addEventListener('change', () => { meApplyLive(); meCommit(); });
 });
@@ -13486,6 +13627,9 @@ document.getElementById('meReset').addEventListener('click', () => {
   const d = getMaterialDef(matEditingId);
   if (!d || !d.preset) return;
   Object.assign(d, MATERIAL_DEFAULTS[d.id]);
+  // Object.assign cannot clear a key the defaults do not have - the same
+  // reason d.masks is emptied by hand a line or two below.
+  d.bevel = 0;
   d.masks = [];     // Object.assign can't clear it (QA finding 5)
   rebakeMaskTexture(d);
   updateMaterialEverywhere(d.id);
@@ -13626,6 +13770,10 @@ function refreshMaskControls(d) {
   const isImg = spec.id === 'image';
   document.getElementById('mkImgRow').style.display = isImg ? 'flex' : 'none';
   document.getElementById('mkDetailRow').style.display = spec.detail ? 'flex' : 'none';
+  /* Noisiness and Noise Scale are separate sliders in every package that has
+     them - how much the rim breaks up, and how big the bites are. Only the
+     shape masks have a rim to break up. */
+  document.getElementById('mkNScaleRow').style.display = (spec.curv ? 'flex' : 'none');
   /* One slider doing two jobs. On a cloth mask it is the pattern's SCALE; on
      a shape mask it is the RANGE of curvature the mask reaches across, which
      lives in an entirely different set of numbers. Bounds are set BEFORE the
@@ -13683,6 +13831,9 @@ function refreshMaskControls(d) {
   document.getElementById('mkScaleV').textContent = Number(mk.scale).toFixed(2);
   document.getElementById('mkDetailV').textContent = mkNum(mk.detail);
   document.getElementById('mkContrastV').textContent = Number(mk.contrast).toFixed(1);
+  if (mk.nscale === undefined) mk.nscale = MASK_DEFAULT.nscale;
+  document.getElementById('mkNScale').value = mk.nscale;
+  document.getElementById('mkNScaleV').textContent = Number(mk.nscale).toFixed(1);
 }
 
 // The live sliders. `rebake` says whether this control changes the CLOTH.
@@ -13698,17 +13849,19 @@ function mkLive(rebake) {
   // both, and the slider's own step is what keeps a cloth mask on integers.
   mk.detail = parseFloat(document.getElementById('mkDetail').value);
   mk.contrast = parseFloat(document.getElementById('mkContrast').value);
+  if (maskCurvMode(mk)) mk.nscale = parseFloat(document.getElementById('mkNScale').value);
   document.getElementById('mkRoughV').textContent = mk.rough.toFixed(2);
   document.getElementById('mkAmountV').textContent = mk.amount.toFixed(2);
   document.getElementById('mkScaleV').textContent = mk.scale.toFixed(2);
   document.getElementById('mkDetailV').textContent = mkNum(mk.detail);
   document.getElementById('mkContrastV').textContent = mk.contrast.toFixed(1);
+  document.getElementById('mkNScaleV').textContent = mk.nscale.toFixed(1);
   // A shape mask has no cloth to re-bake: Blur and Noise are uniforms.
   if (rebake && !maskCurvMode(mk)) rebakeMaskTexture(d, mkEditing);   // only the channel being dragged
   updateMaterialEverywhere(d.id);
 }
 
-['mkColor', 'mkRough', 'mkAmount', 'mkScale'].forEach(id => {
+['mkColor', 'mkRough', 'mkAmount', 'mkScale', 'mkNScale'].forEach(id => {
   const el = document.getElementById(id);
   el.addEventListener('input', () => mkLive(false));
   el.addEventListener('change', () => { mkLive(false); meCommit(); });
