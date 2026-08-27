@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~12,000 lines)
-- Version at time of writing: **a2.27a**
+- Version at time of writing: **a2.28a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -845,381 +845,128 @@ finger up still counted as one finger down and the camera never came back.
 **Desktop has no path to Turn and Strength** - user's decision, touch only.
 The pill still picks the type.
 
-## a2.24 - CAVITY AND EDGES: masks that read the SHAPE
+## SHAPE MASKS: Cavity and Edges (a2.24 -> a2.28a)
 
-Two new mask types sit in the same list as Clouds and Scratches, and behave
-like any other mask - colour and/or roughness, a blend mode, an amount,
-stackable four deep. What is different is where their weight comes from:
-not a baked texture but the mesh's own curvature.
+Two mask types that take their weight from the model instead of a texture.
+Cavity darkens crevices, Edges wears the exposed edges. They stack, blend
+and drive colour and roughness like any other mask.
 
-**`kubikCurv`, one signed float per vertex.** Computed at the end of
-`applyShading`, which is the single funnel every object mesh passes through
-- `createCubeObject`, `restoreDoc`, `rebuildFromEditable` (and therefore all
-25 op call sites), `cloneObjectInto` via `geometry.clone()`.
+**They are built from the EDGES, and it took four wrong architectures to
+get there.** Everything before a2.28 inferred where a model's edges were
+from the FACES around them, and every version of that was even on some
+shapes and wrong on others. The failures are the useful part of this
+section - they are all the same mistake in different clothes.
 
-**0 IS FLAT, positive is a convex edge, negative is a cavity - and that sign
-convention is load-bearing.** WebGL hands an UNBOUND attribute a constant,
-so any geometry that never went through `applyShading` - the material
-preview ball is the one that exists - has to read as something harmless.
-Zero is that something. `mat.defaultAttributeValues.kubikCurv = [0]` pins
-the constant rather than trusting whatever the last draw call left in the
-slot. Verified by deleting the attribute at runtime with a Cavity mask at
-full strength: 0.00/255 change.
+### How it works now
 
-**The estimate** is the mean of `dot(normalise(neighbour - v), N)` around the
-one ring, negated. Neighbours ABOVE the tangent plane mean the surface
-closes in - a cavity. `N` is the GEOMETRIC normal, every triangle around the
-vertex whatever the shading islands say, because curvature is a fact about
-the shape and marking an edge sharp must not move it. The x2 is a range fit:
-a cube corner reads -0.577 raw and wants to be a full-strength edge.
+1. `applyShading` writes `geometry.userData.kubikEdges` - the endpoints of
+   every WEAR EDGE and whether it is convex or concave. This is O(E) and
+   runs on every frame of a drag without noticing.
+2. `bakeEdgeField` turns that list into a distance field over the object's
+   own box: how far each point is from the nearest convex edge (red) and the
+   nearest concave one (green). `ensureEdgeField` caches it on the geometry,
+   rebakes when the edge list changes, and never while a finger is down.
+3. `mat.onBeforeRender` binds that per-OBJECT field into the per-MATERIAL
+   uniforms. It is the only place the two meet.
+4. The shader reads the field at the pixel's object-space position, roughens
+   it with value noise, and returns `1 - smoothstep(w*(1-blur), w, d)`.
 
-**It reuses the normals pass's own working data** - `trisAt`, `incident`,
-`edgeEnds`, `triNormal`, `logicalGroups` - so it costs one more O(V+E)
-sweep, not a second topology build.
+A cube, a tube, a fillet, an L-plate and a ring all get identical treatment.
+There is nothing to fit and nothing to fall back from.
 
-**It has its OWN try/catch, and that is not decoration.** It sits after the
-per-island normals are written, inside a function whose outer catch answers
-a throw with `computeVertexNormals()`. Sharing the catch would mean a mask
-that failed to compute took every hard edge in the model down with it.
+**An edge is an edge if `wear` says so.** That map sits beside `sharp` and
+answers a different question. It counts a CREASE - which since a2.18 has no
+say in shading at all, but "hold this edge through Subdivide" is exactly
+"this is an edge of the form", and it is the only thing in the app that can
+say so about a fillet deliberately shaded smooth. A hand 'sharp' mark comes
+first. The FACE COUNT still outranks a 'smooth' mark, because Object-mode
+Shade Smooth writes 'smooth' onto rim edges wholesale and without the rule
+one tap on an open plane deletes its whole outline with no visual cue.
+`creaseSelection` and `clearAllCreases` call `applyShading` again for this;
+a2.18 had deliberately removed that call.
 
-**No texture, no bake, no recompile.** `bakeNoiseField` returns a flat field
-for these two types and their packed channel goes unused; the shader picks
-its source from a new `uKubikSource` uniform (0 texture, 1 cavity, 2 edges),
-so switching a mask between Clouds and Cavity is a uniform write.
+**An outline edge is not any edge.** An edge a face uses TWICE is that
+face's own triangulation - the diagonal of a quad - and `edgeUse` counts
+uses PER FACE so the test is `computeTopology`'s: some face uses it exactly
+once. Without it every quad has a phantom edge down its middle.
 
-**One slider, two meanings, said out loud.** `MASK_TYPES` already carried a
-`detail` LABEL per type; a2.24 adds `scale` and `contrast` labels the same
-way. On a shape mask Scale reads **Range** (0.05-1 instead of 0.25-20) and
-Contrast reads **Sharpness** (a falloff exponent in the shader, where for
-cloth it was spent at bake time). Bounds are written before the value, or
-the range element snaps 0.35 to the old grid. Crossing the cloth/shape line
-resets Scale once - a Scale of 12 is a Range past the widest crevice, and
-every shape mask would have opened as a solid wash.
+**Convex or concave: stand on one face and look at the OTHER face's far
+vertex.** Below this face's plane means the surface folds away and the edge
+sticks out. The plane is the local TRIANGLE's, not the face group's summed
+normal - on a warped face the sum points nowhere useful, and after Flip
+Normals it points inward and inverts every edge of it. Only for EXACTLY two
+faces: one is a rim and three is a seam, neither of which has a well-defined
+inside, and both are treated as exposed.
 
-**Applying one material to a second object finds THAT object's crevices**,
-with no decision to make: curvature is geometry data, not material data.
+### The field
 
-**`kubikCurv` is stripped from the glTF export.** `GLTFExporter` exports any
-attribute it does not recognise as `_KUBIKCURV`, which would put four bytes
-a vertex of Kubik bookkeeping into every `.glb` and land in Blender as a
-stray float attribute. OBJ and STL never read it.
+A 2D ATLAS of z-slices, not a 3D texture: `sampler3D` needs GLSL ES 3.00 and
+three compiles its built-in materials as 1.00. Two bilinear taps and a mix.
+The half-texel inset in `kubikFieldTap` is what keeps a tap inside its own
+tile; without it every tile boundary draws a line across the model.
 
-**Verified** in headless Chrome against the real app (`_probe.py`, an
-appended harness on a copy of index.html, reading pixels straight off the
-default framebuffer through `gl.readPixels` inside the same synchronous
-block as the render, and measuring over an EXACT object mask built by
-differencing a frame with the mesh hidden - not over the whole canvas, which
-is the mistake a2.22 made): default cube reads +1.000 at every one of its 24
-vertices; an Edges mask darkens the object by 51.9/255; a Cavity mask on a
-cube changes nothing, which is correct - a box has no crevices; a Clouds
-mask still darkens by 22.8/255, so the cloth path is untouched; a flat grid
-reads 0.000 at the middle vertex, the same grid tented reads +0.520 and
-valleyed -0.520. No shader compile errors.
+**RANGE is 15% of the object's largest dimension** and Width is a FRACTION
+of it, so one material reads the same on a matchbox and on a battleship.
+Past range the field saturates and the shader treats it as "nowhere near an
+edge", which is what stops a wide setting from flooding the object.
 
-**Debug handle gained `renderer`, `applyShading`, `toEditable`,
-`rebuildFromEditable`** so a harness can build a mesh whose answer is known
-instead of inferring curvature from whatever shape the ops happen to make.
-Inferring from the flattering case is exactly how the environment work went
-wrong twice.
+**The grid is a BUDGET, not a fixed resolution.** Cost is edges times the
+voxels each sweeps; at a fixed resolution a dense model is hundreds of
+milliseconds, synchronously, inside the render. Coarsening shrinks both
+terms at once and a coarser field is a slightly softer band, which for
+weathering is no loss. On top of that: throttled to 120ms, stamped AFTER the
+bake rather than before (or the throttle means "120ms between the STARTS"),
+skipped entirely while `activePointers.size` is non-zero, and installed only
+on a material that actually wears a shape mask.
 
-**Known, pre-existing, NOT introduced here:** `restoreDoc` installs a
-material definition from a project file only when the id is absent
-(`!MATERIALS.has(d.id)`). The three presets are always seeded, so masks
-added to *Solid / Plastic / Metal* are written into the JSON and silently
-dropped on open. Masks on custom materials travel fine. Affects every mask
-type equally; the fix is a policy decision - overwrite a preset the file
-disagrees with, or keep the local one - and is the user's to make.
+**The atlas is disposed with its geometry** - `disposeEdgeField` in
+`disposeObject`, `rebuildFromEditable` and `clearFillet`. `geometry.dispose`
+frees buffers, not something hanging off userData, and this is up to a
+megabyte. Undo alone disposes every object and rebuilds.
 
-## a2.25 - EDGES BANDS INWARD: the rim attributes
+**`buildExportGroup` clears `eg.userData`.** `BufferGeometry.copy` assigns
+userData by REFERENCE and `GLTFExporter` serialises it into `extras`;
+without this every `.glb` carried the edge list and the whole atlas.
 
-a2.24's Edges painted a plain cube SOLID and the width slider did nothing.
-Not a tuning problem: every vertex of a cube is convex, so the interpolated
-curvature is a CONSTANT 1 across each face, and no remapping of a constant
-produces a band. A second signal was needed.
+**The default when a mesh has no field is BLACK - distance zero, paint
+everything.** That is the material preview ball, whose thumbnail has to show
+what the mask does. And `onBeforeRender` puts that default back rather than
+returning, or the uniform keeps whichever mesh was drawn before.
 
-**Two more vec4s per vertex, `kubikRimA` and `kubikRimB`**, computed in the
-same pass as the curvature. Together they describe a BOX or a DISC lying in
-the face, so the fragment shader can work out how far into the face a pixel
-is, in object units, and paint a band of fixed width inward from the rim.
+### Three sliders
 
-```
-A.w  >  0, B.w > 0 : rectangle, half-extents A.w along B.xyz and B.w across
-A.w  >  0, B.w < 0 : disc of radius A.w about A.xyz
-A.w === 0          : NO DATA - unrestricted. What an unbound attribute
-                     reads as, and what the material preview ball gets.
-A.w  <  0          : a shell with no room for a band - paint nothing.
-```
+**Width** a fraction of the field's reach. **Blur** how much of that width
+the falloff takes, 0 a hard line and 1 a fade all the way in. **Noise** how
+ragged the rim is. All three are live uniforms - a shape mask has no cloth
+to re-bake. `MASK_TYPES` carries per-type label and bounds for all three,
+written BEFORE the values or the range element snaps each to the old grid.
 
-That last pair is a deliberate split. "No data" and "no room" are OPPOSITE
-answers - one must paint everything, the other nothing - and a single
-sentinel cannot say both. One sentinel was the first version, and it turned
-any sliver face solid.
+### The four architectures that did not work
 
-**A "face" here is a SHELL, not a geometry group.** Adjacent groups whose
-normals agree within 2 degrees are unioned first. This is the difference
-between working and looking broken: Subdivide makes one group per corner
-quad, so a box per group bands every internal quad boundary and a subdivided
-cube wears a CROSS on each face. With shells the band follows the flat
-region's outline, which is the same thing as the model's real edges.
-Verified: four separate coplanar quads (16 split vertices) come back as one
-centre with half-extents 1.0, not four centres at 0.5.
+Kept because each one looked right and measured healthy, and Zeghreit found
+every one of them in seconds on a real model.
 
-**Box or disc, decided by which model's own area is closer to the shell's.**
-A square fills its box completely and only 64% of its disc; a regular
-hexagon fills 83% of its disc and 75% of its box. So a quad gets the box - a
-disc would put the band on its corners only, which is exactly what the first
-attempt shipped and why it measured -0.71/255 at width 0.12, four dots and
-nothing else - and a cylinder cap gets the disc, where a box would band two
-of its six sides and miss the rest. Verified: an octagon answers disc, a
-quad answers rect.
+1. **Per-vertex curvature (a2.24).** Every vertex of a cube is convex, so
+   the field is a CONSTANT across each face and no remapping of a constant
+   makes a band. **Per-vertex data is blind BETWEEN vertices.**
+2. **A bounding box per flat region (a2.25).** Worked on a cube, put the
+   band on the corners of anything round, and drew a grid on a subdivided
+   one. Its first version measured a clean monotonic response to the width
+   slider and was still wrong - only the screenshot showed four corner dots
+   instead of a band. **A picture, not only a mean.**
+3. **Five fitted models, scored against the region's own rim (a2.26).** A
+   fixed 2-degree merge counted a 12-sided tube's 30-degree seams as edges
+   though they shade smooth: **"angled" is not "sharp"**, and if a rule about
+   edges exists twice in this file the two WILL disagree. Then: no model
+   meant "unrestricted", which on a convex shell paints SOLID - invisible on
+   a cube, everywhere on a nine-object tank.
+4. **The same, checked harder (a2.27a).** On a curved band with one segment
+   across it the vertices ARE the boundary, so the test measured each model
+   against the points that defined it and could not fail. A cylinder wall
+   tapered by 2% scored a perfect ring and came out solid.
 
-**The box axis comes from the shell's first triangle, trying all three of
-its edges and keeping the smallest area.** Two of those three are real sides
-and, on a quad, the third is the diagonal; the smallest-area test picks a
-side. Taking the first or the longest aligns the box with the diagonal of a
-square and runs the band corner to corner.
-
-**Everything is measured IN PLANE**, and the box is centred on the BOX, not
-on the centroid. Both were review findings with real repros: one vertex
-pulled off the plane inflates the across-extent and the band vanishes from
-the whole shell, and a triangle's centroid is not the centre of its box, so
-a centroid-centred box reaches past two of its three sides.
-
-**Curvature is a GATE now, not the shape.** `clamp(curv / 0.25, 0, 1)`
-multiplied by the rim term: on a cube it is a flat 1 and the width decides,
-on an open plane it is 0 and Edges correctly paints nothing. Cavity is
-unchanged and still pure curvature - it was never the broken one.
-
-**Edges' slider is WIDTH in object units (0.01-1), Cavity's is RANGE in
-curvature (0.05-1).** Different numbers entirely, so `MASK_TYPES` carries
-per-type bounds and a default, and any change of MEANING resets the value.
-`refreshMaskControls` also clamps the model into the bounds, or a foreign
-file's out-of-range scale would render at its true value, show a pinned
-thumb, and snap the moment any other slider moved.
-
-**Written through, not reallocated.** `applyShading` runs every frame of a
-vertex drag; two fresh Float32Arrays a frame is 1.6 MB of garbage per frame
-at 50k vertices.
-
-**Cost: 32 bytes a vertex on every object mesh**, on top of `kubikCurv`'s 4.
-These geometries otherwise carry position + normal = 24 bytes, so the Kubik
-attributes are now larger than everything else on the vertex. Acceptable on
-low-poly meshes and worth revisiting if Kubik ever grows a dense-mesh mode;
-the obvious move then is to compute the rim pass only while some material in
-the scene actually wears a shape mask.
-
-**Measured on the real app**, over an exact object mask: width 0.04 / 0.12 /
-0.4 / 1.0 give -2.87 / -9.97 / -29.44 / -45.45 out of 255, monotonic, where
-a2.24 gave one flat -51.9 at every width. Screenshots confirm a band along
-every edge rather than four corner dots - the numbers alone could not tell
-those apart, and the first rim model passed the numbers while failing the
-picture.
-
-**Known limit:** the model is a box or a disc, never the exact polygon. A
-triangle is the weak case - its hypotenuse is a diagonal of its own box - so
-a large triangular face gets an approximate band. Bevel and fillet corner
-triangles are small enough to be covered entirely at any usable width, which
-is the right look anyway.
-
-## a2.26 - THE BAND FOLLOWS SHARPNESS
-
-a2.25 grouped faces into shells with a fixed 2-degree coplanarity test, so a
-12-sided tube's vertical seams - 30 degrees, well inside the 33-degree
-default, shaded perfectly smooth - counted as edges and wore the band.
-Zeghreit's rule, and it is the right one: **the band goes where a hard edge
-is, which is exactly where the SHADING breaks.**
-
-**Shells now merge across every edge `sharp` says is not sharp** - the same
-map the normals use, so hand marks, migrated creases and the object's own
-angle threshold all feed it. A 12-sided tube's wall becomes ONE shell and
-its seams get nothing; at 8 sides the seams are 45 degrees, shade hard, and
-do get the band. Verified both ways.
-
-**AN OUTLINE EDGE IS NOT ANY EDGE**, and this cost an hour. An edge a face
-uses TWICE is that face's own triangulation - the diagonal of a quad - and
-`edgeFaces` cannot tell the two apart, so the "not exactly two faces" rule
-marked every quad diagonal SHARP. Shading never noticed, because both
-triangles are in the same island either way. The rim pass reads sharp edges
-as the shell's boundary, so every quad got a phantom boundary down its
-middle, every model scored a fit error of 1.00, and the whole feature fell
-back to unrestricted - a cube went solid again. `edgeUse` now counts uses
-PER FACE and the test is the one `computeTopology` already used: **some face
-uses it exactly once.**
-
-**A shell's boundary is its sharp OUTLINE edges, filed under the shells of
-those edges' own faces.** Walking the vertex fans instead files a midpoint
-under every shell that merely touches an endpoint, and one foreign point is
-enough to reject a model that fits its own face perfectly.
-
-**FOUR MODELS, AND THE MODEL IS CHECKED BEFORE IT IS USED.**
-
-- **A lone triangle is EXACT and needs no check.** A triangular face is one
-  triangle with three unshared vertices, so the barycentric weights
-  interpolate for free and the distance to a side is the weight at the
-  opposite corner times that corner's altitude. Neither a box nor a disc can
-  do a triangle - a right isoceles puts its hypotenuse straight through the
-  centre of its own bounding box - and a2.26's first draft rejected every
-  triangle and filled it solid, which is the bug this whole line of work
-  started from. Cone and pyramid sides, and anything Dissolve leaves behind.
-- **A flat shell tries a rectangle and a disc**, scored on the MIDPOINTS of
-  its own sharp outline edges. Midpoints, not vertices: a square's four
-  corners sit on its disc as neatly as on its box, and only the midpoints
-  tell the two apart.
-- **A curved shell tries an axial band** - a tube wall, where the band
-  belongs at the two rims. It is drawn at BOTH ends of the axis, so the
-  boundary has to be at both ends: a dome closed by a sharp equator would
-  otherwise score a perfect zero and then paint a cap on its pole, where
-  there is no edge at all.
-- Each constraint is scored against **its own** half-extent, or a long thin
-  face would be judged by its short axis. Miss by more than a fifth and the
-  model is not used: the shell falls back to curvature alone.
-
-**A curved shell's member normals CANCEL.** The shell normal is the sum over
-its groups, and a tube wall sums to zero - and a near-zero vector answers
-every planarity test perfectly. Caught by the tube reading as one disc
-instead of an axial wall. The length guard is what tells "flat" from "closed
-around". (It is a sum over the shell, not one member's normal, because the
-union-find root is arbitrary and one quad collapsed mid-drag would otherwise
-call a flat face curved.)
-
-**Attribute encoding**, both vec4s:
-
-```
-A.w === 0            no model - unrestricted, curvature alone
-A.w > 0, B.w  >  0   rectangle, half-extents A.w along B.xyz, B.w across
-A.w > 0, B.w === 0   axial band, half-length A.w along B.xyz
-A.w > 0, B.w === -1  disc of radius A.w about A.xyz
-A.w > 0, B.w === -2  triangle: A.xyz the altitudes, B.xyz the barycentric
-```
-
-`A.w === 0` only reads as "absent" because `applyMaskPatch` pins
-`defaultAttributeValues.kubikRimA` to all zeros. WebGL's own default for an
-unbound attribute is (0,0,0,**1**), which would make `hu` 1.0 and measure
-the material preview ball against a phantom unit box. **Do not remove that
-pin as redundant.**
-
-**Verified** on the real app: cube unchanged from a2.25 (-2.87 / -9.97 /
--29.44 / -45.45 at width 0.04 / 0.12 / 0.4 / 1.0); four coplanar quads still
-one shell with half-extents 1.0; an octagon answers disc and a quad rect; a
-right isoceles triangle with legs 2 answers `tri` with altitudes 1.414,
-2.000, 2.000 and barycentric (1,0,0) at its first corner; a 12-sided tube
-answers axis for all 48 wall vertices - ONE centre, half-height 1.0 - and
-disc for its 24 cap vertices, while an 8-sided one answers rect for all 32
-wall vertices. Screenshots of both tubes confirm it: the 12-sided wall is
-clean with faint rims, the 8-sided one has a dark band down every seam.
-
-### a2.26a - the fallback was backwards, and a model for rings
-
-Zeghreit put a2.26 on a real model - a tank, nine objects - and it was still
-wrong in two ways at once: whole faces painted solid, and wear showing on
-surfaces that shade smooth. **Both were one cause.** On a cube and a tube
-nearly every shell finds a model, so it never showed in testing; on a real
-model plenty of shells do not fit, and the code fell back to *unrestricted*,
-which on any convex shell means the curvature gate reads 1 and **the face is
-painted solid**. A smooth turret wall painted solid looks exactly like wear
-on a soft edge.
-
-**A shell that has sharp edges but no model it can trust now paints
-NOTHING.** Missing wear is a quiet, honest failure. Solid wear is
-indistinguishable from the bug this whole line of work started as.
-
-**But a shell with NO sharp edge anywhere is not a failed model**, and
-pre-marking it as one silenced bevelled and subdivided bodies completely -
-where every join is smooth, there is no boundary, and curvature alone is
-precisely what puts the wear on the rounding. That is the "bevel it, then
-wear the bevel" workflow, and it is the reason `A.w === 0` has to keep
-meaning "leave it to curvature" rather than being folded into the failure
-case. Verified: a 16x8 sphere, every join 22.5 degrees, answers `free` at
-all 480 vertices.
-
-**A RING model, for a face with a hole in it** - a turret ring, anything
-Inset leaves behind. Outer radius in `A.w`, inner in `B.x`, `B.w === -3`.
-Its first scoring convention normalised both rims by the band WIDTH, which
-made the tolerance unreachable on any thin ring: a 12-sided cap inset by
-more than a third of its radius scored 0.23 and was rejected - exactly the
-shape the model was added for. **Polygon sag scales with the radius, not
-with the width**, so each rim is scored against its own radius, the way the
-rectangle scores each axis against its own half-extent. And both rims have
-to actually be present in the boundary, the same way the axial band insists
-on a boundary at both ends.
-
-Verified: a 12-sided annulus answers `ring` at both 0.5 and 0.75 hole ratio;
-an L-shaped face answers no-model, and therefore no wear rather than a solid
-face; a geometry with no rim attribute at all - the material preview ball -
-still reads unrestricted, so a thumbnail still shows the mask. Cube, grid,
-triangle, n-gon and both tubes unchanged.
-
-## a2.27 - WEAR IS ITS OWN QUESTION, NOT SHADING'S
-
-Zeghreit, after Smooth by angle put everything else right: *"all sets on its
-place except bevel on cylinder - let curvature prioritize creased and marked
-as sharp edges."*
-
-**`wear` is now a second map beside `sharp`.** `sharp` still decides
-shading and is untouched. `wear` is what the Edges mask treats as an edge,
-and it differs in two ways:
-
-- **A CREASE COUNTS.** Since a2.18 a crease has no say in shading at all - it
-  means only "hold this edge through Subdivide". But that is exactly the
-  statement *this is an edge of the form*, which is what wear wants. A fillet
-  round a cylinder is the case: shaded smooth on purpose, and still the thing
-  that should catch the light. There is nothing else in the app that can say
-  it.
-- **A hand 'sharp' mark comes first**, ahead of everything.
-
-**The face count still outranks a 'smooth' mark.** Wear looked like it had
-no reason to keep shading's precedence there, and it does: Object-mode Shade
-Smooth writes `'smooth'` onto every edge it touches, rim edges included,
-where it is incidental noise rather than a statement about that edge. Without
-the rule, one tap of Shade Smooth on an open plane silently deletes its whole
-outline and the mask paints nothing - with the shading identical either way,
-so there is no visual cue at all.
-
-**Creasing now re-runs `applyShading`.** a2.18 deliberately removed that call
-because a crease had stopped affecting shading; a2.27 gives it a second
-reader, so the call comes back with a comment saying which one. Without it a
-crease changed nothing on screen until some unrelated edit rebuilt the mesh -
-in the exact workflow the feature was added for.
-
-**The RING model is offered to curved shells too.** A flat annulus and a
-fillet round a cylinder's rim are the same measurement: a ring of vertices
-puts its own centroid on the axis either way. That is what lets the wear land
-on the fillet once its rims are creased. Verified: a 16-sided cylinder with a
-3-segment fillet - every join 30 degrees or less, so nothing is sharp and the
-whole body is one shell - splits on the creases and the fillet band takes the
-ring model at all 192 of its vertices.
-
-### The three traps this opened, all found by review
-
-**A MODEL MUST COVER THE SHELL, NOT JUST TOUCH ITS RIM.** On a curved band
-with one segment across it the vertices ARE the boundary, so the boundary
-test measures the model against the very points that defined it and cannot
-fail. A cylinder wall tapered by 2% scored a PERFECT ring while the surface
-between its rims sits nowhere near that annulus - and the whole wall came out
-solid, the exact failure a2.26a set out to end. Every model is now also
-checked against the shell's TRIANGLE CENTROIDS, which are interior points by
-construction.
-
-**AND EVERY BOUNDARY POINT MUST BE ON ONE OF THE RING'S TWO RIMS.** A plain
-cylinder wall's narrowest point is its waist, not a hole, and a negative
-score - a point outside the annulus - reads as a perfect fit to a maximum.
-One crease near the right radius was enough to paint a ring round the middle
-of a cylinder where there is no edge at all. Only the ABSOLUTE distance to
-the nearer rim catches that.
-
-**ONE CREASE MUST NOT WIPE AN OBJECT.** a2.26a's `A.w = -1` means "no model,
-no wear", and a single creased edge - for Subdivide, its only documented
-meaning - gives an otherwise smooth body a boundary that no model can fit. It
-took every bevel on the object down with it. So the give-up now hands the
-shell back to curvature **when curvature varies across it** - a bevelled body,
-where the strips read high and the flats read nothing, which is the right
-answer there. On a shell of near-uniform curvature it still refuses, because
-handing back there means solid.
-
-Verified: cube, coplanar grid, triangle, n-gon, flat annulus at two hole
-ratios, L-shape, smooth sphere and both tubes all unchanged; a tapered
-cylinder answers axial, not ring; a filleted cylinder with one crease keeps
-its wear instead of going blank.
+The through-line: **a face can only ever say something about its own
+interior.** Ask the edges.
 
 ## Screen layout
 

@@ -770,7 +770,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.27a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.28a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -2194,18 +2194,29 @@ const MASK_TYPES = [
      shader's source code: 1 asks for concave, 2 for convex. Their Scale
      slider is a RANGE in curvature units and so wears a different label and
      different bounds. */
-  { id: 'cavity',    name: 'Cavity',    detail: null,      scale: 'Range', contrast: 'Sharpness', curv: 1,
-    sMin: 0.05, sMax: 1, sStep: 0.01, sDef: 0.35 },
-  /* Edges measures WIDTH, in object units, not a curvature range - see the
-     rim attribute in applyShading for why a range could never work here. */
-  { id: 'edges',     name: 'Edges',     detail: null,      scale: 'Width', contrast: 'Sharpness', curv: 2,
-    sMin: 0.01, sMax: 1, sStep: 0.01, sDef: 0.12 }
+  /* The two SHAPE masks measure distance from the model's own edges, so
+     all three of their sliders mean something different from a cloth
+     mask's. WIDTH is a fraction of the field's reach, which is itself a
+     fraction of the object, so a material reads the same at any size.
+     BLUR is how much of that width the falloff takes: 0 a hard line, 1 a
+     fade all the way in. NOISE ruffles the rim so it weathers rather than
+     being drawn with a pen. */
+  { id: 'cavity',    name: 'Cavity',    detail: 'Noise',   scale: 'Width', contrast: 'Blur', curv: 1,
+    sMin: 0.02, sMax: 1, sStep: 0.02, sDef: 0.25,
+    dMin: 0, dMax: 1, dStep: 0.05, dDef: 0,
+    cMin: 0, cMax: 1, cStep: 0.05, cDef: 0.5 },
+  { id: 'edges',     name: 'Edges',     detail: 'Noise',   scale: 'Width', contrast: 'Blur', curv: 2,
+    sMin: 0.02, sMax: 1, sStep: 0.02, sDef: 0.25,
+    dMin: 0, dMax: 1, dStep: 0.05, dDef: 0,
+    cMin: 0, cMax: 1, cStep: 0.05, cDef: 0.5 }
 ];
 function maskTypeOf(mk) {
   const t = mk && mk.type;
   return MASK_TYPES.find(x => x.id === t) || MASK_TYPES[0];
 }
 function maskCurvMode(mk) { return maskTypeOf(mk).curv || 0; }
+// 3 reads as 3, 0.35 reads as 0.35 - the same slider carries both now.
+function mkNum(v) { return (Math.abs(v - Math.round(v)) < 1e-6) ? String(Math.round(v)) : Number(v).toFixed(2); }
 const MASK_SIZE = 128;
 const MASK_DEFAULT = {
   on: true, type: 'fbm', blend: 'normal',
@@ -2553,6 +2564,7 @@ const _maskedMats = new WeakSet();
    nothing was reading. That is what froze the material previews: the shared
    preview material walks the whole library on every render, so it is
    forever leaving and returning to the same key. */
+const _matField = new WeakMap();   // material -> the last edge field it drew with
 const _maskUniforms = new WeakMap();
 const _maskKey = new WeakMap();   // mat -> the key it should compile under now
 let _maskGen = 1;
@@ -2597,21 +2609,14 @@ function applyMaskPatch(mat, d) {
          three has not thrown away, and this material may well come back to
          one of them - which is exactly the case that used to break. */
       mat.onBeforeCompile = function () {};
+      // Or every draw goes on baking a field for a mask that is gone.
+      delete mat.onBeforeRender;
       delete mat.customProgramCacheKey;   // back to three's default, not a constant of ours
       mat.needsUpdate = true;
     }
     return;
   }
   const tex = getMaskTexture(d);
-  /* A geometry with no kubikCurv - a preview sphere, anything that has not
-     been through applyShading - must read as FLAT. Zero is flat by
-     construction, and this pins the constant WebGL hands an unbound
-     attribute so it cannot inherit whatever the last draw call left there. */
-  /* Both defaults are the INERT answer. kubikRim all-zero gives a rim
-     radius of 0, so "how far into the face" is 0 everywhere and the rim
-     term returns 1 - no restriction, curvature alone, exactly as a2.24. */
-  mat.defaultAttributeValues = Object.assign({}, mat.defaultAttributeValues,
-    { kubikCurv: [0], kubikRimA: [0, 0, 0, 0], kubikRimB: [0, 0, 0, 0] });
 
   /* Everything about the stack rides UNIFORMS - how many masks, which
      components each drives, its blend mode, colour, roughness, amount and
@@ -2633,24 +2638,40 @@ function applyMaskPatch(mat, d) {
       uKubikRoughOn: { value: [] },
       uKubikRough: { value: [] },
       uKubikSource: { value: [] },
-      uKubikPow: { value: [] }
+      uKubikBlur: { value: [] },
+      uKubikNoise: { value: [] },
+      /* The field is per OBJECT, not per material, so onBeforeRender fills
+         these in from whichever mesh is being drawn. Until then they name a
+         1x1 black texture, which reads as distance zero - the right answer
+         for the preview ball, whose thumbnail has to show the mask. */
+      uKubikField: { value: (_matField.get(mat) || {}).tex || edgeFieldNone() },
+      uKubikFieldMin: { value: (_matField.get(mat) || {}).min ? _matField.get(mat).min.clone() : new THREE.Vector3() },
+      uKubikFieldInv: { value: (_matField.get(mat) || {}).inv ? _matField.get(mat).inv.clone() : new THREE.Vector3(1, 1, 1) },
+      uKubikFieldDim: { value: (_matField.get(mat) || {}).dim ? _matField.get(mat).dim.clone() : new THREE.Vector3(1, 1, 1) },
+      uKubikFieldTiles: { value: (_matField.get(mat) || {}).tiles ? _matField.get(mat).tiles.clone() : new THREE.Vector2(1, 1) },
+      uKubikFieldRange: { value: (_matField.get(mat) || {}).range || 1 }
     };
     for (let k = 0; k < MASK_SLOTS; k++) {
       const mk = list[k];
       const live = !!(mk && mk.on && (mk.colorOn || mk.roughOn));
       u.uKubikColor.value.push(new THREE.Color(mk && mk.color ? mk.color : '#ffffff'));
       u.uKubikAmount.value.push(live ? mk.amount : 0);
-      u.uKubikScale.value.push(mk && mk.scale ? mk.scale : 1);
+      /* A shape mask's Width is a FRACTION of the field's reach, so it has
+         to be clamped here and not only by the panel: an older library in
+         localStorage or a hand-edited project can carry a cloth mask's 12,
+         which would sail past the field's range and fill the object. */
+      const cmw = mk ? maskCurvMode(mk) : 0;
+      u.uKubikScale.value.push(cmw ? Math.min(1, Math.max(0.001, mk.scale))
+                                   : (mk && mk.scale ? mk.scale : 1));
       u.uKubikBlend.value.push(mk ? Math.max(0, MASK_BLENDS.indexOf(mk.blend || 'normal')) : 0);
       u.uKubikColorOn.value.push(live && mk.colorOn ? 1 : 0);
       u.uKubikRoughOn.value.push(live && mk.roughOn ? 1 : 0);
       u.uKubikRough.value.push(mk && typeof mk.rough === 'number' ? mk.rough : 0.5);
-      /* 0 = read the baked texture, 1 = concave, 2 = convex. Contrast is a
-         bake-time number for cloth masks and has already been spent by the
-         time the shader sees them, so the exponent is 1 for those. */
-      const cm = mk ? maskCurvMode(mk) : 0;
+      // 0 = read the baked cloth texture, 1 = concave edges, 2 = convex.
+      const cm = cmw;
       u.uKubikSource.value.push(cm);
-      u.uKubikPow.value.push(cm && mk && mk.contrast > 0 ? mk.contrast : 1);
+      u.uKubikBlur.value.push(cm && mk ? Math.min(1, Math.max(0, mk.contrast)) : 0.5);
+      u.uKubikNoise.value.push(cm && mk ? Math.min(1, Math.max(0, mk.detail)) : 0);
       if (live) u.uKubikCount.value = k + 1;   // highest live slot, so the loop can stop
     }
     return u;
@@ -2671,7 +2692,8 @@ function applyMaskPatch(mat, d) {
       u.uKubikRoughOn.value[k] = fresh.uKubikRoughOn.value[k];
       u.uKubikRough.value[k] = fresh.uKubikRough.value[k];
       u.uKubikSource.value[k] = fresh.uKubikSource.value[k];
-      u.uKubikPow.value[k] = fresh.uKubikPow.value[k];
+      u.uKubikBlur.value[k] = fresh.uKubikBlur.value[k];
+      u.uKubikNoise.value[k] = fresh.uKubikNoise.value[k];
     }
   };
 
@@ -2697,21 +2719,49 @@ function applyMaskPatch(mat, d) {
   const known = maskUniStore(mat).get(key);
   if (known && known.uKubikCount) refresh(known);
 
+  /* The one thing that is per OBJECT rather than per material. three calls
+     this with the mesh about to be drawn, which is the only place the two
+     meet: a material belongs to one mesh, but applyMaskPatch is handed the
+     material alone. Everything here is a cached lookup and a few writes.
+
+     ONLY when a shape mask is actually live. A material wearing nothing but
+     Clouds has no use for a distance field, and baking one for it costs a
+     megabyte and a stall on every geometry change. */
+  const wantsField = maskList(d).some(m => m && m.on && maskCurvMode(m) && (m.colorOn || m.roughOn));
+  if (!wantsField) delete mat.onBeforeRender;
+  else mat.onBeforeRender = function (renderer, scene, camera, geometry, object) {
+    const f = ensureEdgeField(object);
+    if (f) _matField.set(mat, f);
+    /* three runs this BEFORE it compiles, so on a material's very first draw
+       the uniforms do not exist yet. The stash above is what onBeforeCompile
+       reads a moment later, in this same frame - without it the first frame
+       of every newly applied shape mask renders as one solid face. */
+    const u = maskUniStore(mat).get(_maskKey.get(mat));
+    if (!u || !u.uKubikField) return;
+    /* No field on this mesh - it has never been through applyShading. Put
+       the default BACK rather than returning: leaving the uniform alone
+       would hand it whatever mesh was drawn before this one. */
+    if (!f) { u.uKubikField.value = edgeFieldNone(); u.uKubikFieldRange.value = 1; return; }
+    u.uKubikField.value = f.tex;
+    u.uKubikFieldMin.value.copy(f.min);
+    u.uKubikFieldInv.value.copy(f.inv);
+    u.uKubikFieldDim.value.copy(f.dim);
+    u.uKubikFieldTiles.value.copy(f.tiles);
+    u.uKubikFieldRange.value = f.range;
+  };
+
   if (wasPatched && !keyChanged) return;   // a slider tick: no recompile
 
   mat.onBeforeCompile = function (shader) {
     Object.assign(shader.uniforms, packUniforms());
     maskUniStore(mat).set(key, shader.uniforms);
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vKubikPos;\nvarying vec3 vKubikNrm;\nattribute float kubikCurv;\nvarying float vKubikCurv;\nattribute vec4 kubikRimA;\nvarying vec4 vKubikRimA;\nattribute vec4 kubikRimB;\nvarying vec4 vKubikRimB;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvKubikPos = position;\nvKubikNrm = normal;\nvKubikCurv = kubikCurv;\nvKubikRimA = kubikRimA;\nvKubikRimB = kubikRimB;');
+      .replace('#include <common>', '#include <common>\nvarying vec3 vKubikPos;\nvarying vec3 vKubikNrm;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvKubikPos = position;\nvKubikNrm = normal;');
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', ['#include <common>',
         'varying vec3 vKubikPos;',
         'varying vec3 vKubikNrm;',
-        'varying float vKubikCurv;',
-        'varying vec4 vKubikRimA;',
-        'varying vec4 vKubikRimB;',
         'uniform sampler2D uKubikMask;',
         'uniform int   uKubikCount;',
         'uniform vec3  uKubikColor[' + MASK_SLOTS + '];',
@@ -2722,7 +2772,14 @@ function applyMaskPatch(mat, d) {
         'uniform float uKubikRoughOn[' + MASK_SLOTS + '];',
         'uniform float uKubikRough[' + MASK_SLOTS + '];',
         'uniform int   uKubikSource[' + MASK_SLOTS + '];',
-        'uniform float uKubikPow[' + MASK_SLOTS + '];',
+        'uniform float uKubikBlur[' + MASK_SLOTS + '];',
+        'uniform float uKubikNoise[' + MASK_SLOTS + '];',
+        'uniform sampler2D uKubikField;',
+        'uniform vec3  uKubikFieldMin;',
+        'uniform vec3  uKubikFieldInv;',
+        'uniform vec3  uKubikFieldDim;',
+        'uniform vec2  uKubikFieldTiles;',
+        'uniform float uKubikFieldRange;',
         // The weights are computed once, in <color_fragment>, and read again
         // later in <roughnessmap_fragment> - three runs colour first.
         'float kubikW[' + MASK_SLOTS + '];',
@@ -2743,53 +2800,55 @@ function applyMaskPatch(mat, d) {
         '         + texture2D(uKubikMask, q.xy) * w.z;',
         '  return kubikPick(s, ch);',
         '}',
-        'float kubikRimW(float width) {',
-        '  float hu = vKubikRimA.w;',
-        /* No model for this shell - or no attribute at all, which is the
-           material preview ball. Unrestricted: curvature answers alone.
-           This test only reads as "absent" because applyMaskPatch pins
-           defaultAttributeValues.kubikRimA to all zeros: WebGL's own default
-           for an unbound attribute is (0,0,0,1), which would make hu 1.0 and
-           measure every preview against a phantom unit box. Do not remove
-           that pin as redundant. */
-        '  if (hu == 0.0) return 1.0;',
-        // A shell that went through applyShading and found no model it could
-        // trust. Nothing, not everything - see the encoding note in the pass.
-        '  if (hu < 0.0) return 0.0;',
-        '  float hv = vKubikRimB.w;',
-        '  float into;',
-        '  if (hv < -2.5) {',
-        // A ring: the outer rim and the inner hole are both edges.
-        '    vec3 dr = vKubikPos - vKubikRimA.xyz;',
-        '    float rr = length(dr);',
-        '    into = min(hu - rr, rr - vKubikRimB.x);',
-        '  } else if (hv < -1.5) {',
-        // A triangle, exactly: barycentric weight times the opposite altitude.
-        '    vec3 t = vKubikRimB.xyz * vKubikRimA.xyz;',
-        '    into = min(t.x, min(t.y, t.z));',
-        '  } else {',
-        '    vec3 d = vKubikPos - vKubikRimA.xyz;',
-        '    if (hv < 0.0) {',
-        '      into = hu - length(d);',
-        '    } else {',
-        '      float a = abs(dot(d, vKubikRimB.xyz));',
-        '      if (hv == 0.0) into = hu - a;',
-        '      else into = min(hu - a, hv - sqrt(max(0.0, dot(d, d) - a * a)));',
-        '    }',
-        '  }',
-        '  return 1.0 - smoothstep(0.0, max(width, 0.0001), max(0.0, into));',
+        /* One z-slice of the field. The half-texel inset keeps a bilinear
+           tap inside its own tile: without it the filter reaches into the
+           neighbouring slice's pixels and every tile boundary draws a line
+           across the model. */
+        'vec2 kubikFieldTap(vec2 g, float z) {',
+        '  float zi = clamp(z, 0.0, uKubikFieldDim.z - 1.0);',
+        '  float tx = mod(zi, uKubikFieldTiles.x);',
+        '  float ty = floor(zi / uKubikFieldTiles.x);',
+        '  vec2 inTile = (g * (uKubikFieldDim.xy - 1.0) + 0.5) / uKubikFieldDim.xy;',
+        '  return texture2D(uKubikField, (vec2(tx, ty) + inTile) / uKubikFieldTiles).rg;',
         '}',
-        'float kubikCurvW(float p, float sharp, int mode) {',
-        '  float w;',
-        '  if (mode == 2) {',
-        /* Convexity is a GATE here, not the shape: on a cube it is a flat 1
-           and the rim decides, on an open plane it is 0 and Edges correctly
-           paints nothing. The shape comes from the width. */
-        '    w = clamp(vKubikCurv / 0.25, 0.0, 1.0) * kubikRimW(p);',
-        '  } else {',
-        '    w = clamp(-vKubikCurv / max(0.02, p), 0.0, 1.0);',
+        'vec2 kubikField(vec3 p) {',
+        '  vec3 g = clamp((p - uKubikFieldMin) * uKubikFieldInv, 0.0, 1.0);',
+        '  float z = g.z * (uKubikFieldDim.z - 1.0);',
+        '  float z0 = floor(z);',
+        '  return mix(kubikFieldTap(g.xy, z0), kubikFieldTap(g.xy, z0 + 1.0), z - z0);',
+        '}',
+        // Value noise, for a rim that weathers instead of being drawn with a pen.
+        'float kubikHash3(vec3 p) {',
+        '  p = fract(p * 0.3183099 + vec3(0.71, 0.113, 0.419));',
+        '  p *= 17.0;',
+        '  return fract(p.x * p.y * p.z * (p.x + p.y + p.z));',
+        '}',
+        'float kubikNoise3(vec3 x) {',
+        '  vec3 i = floor(x), f = fract(x);',
+        '  f = f * f * (3.0 - 2.0 * f);',
+        '  return mix(mix(mix(kubikHash3(i), kubikHash3(i + vec3(1.0, 0.0, 0.0)), f.x),',
+        '                 mix(kubikHash3(i + vec3(0.0, 1.0, 0.0)), kubikHash3(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),',
+        '             mix(mix(kubikHash3(i + vec3(0.0, 0.0, 1.0)), kubikHash3(i + vec3(1.0, 0.0, 1.0)), f.x),',
+        '                 mix(kubikHash3(i + vec3(0.0, 1.0, 1.0)), kubikHash3(i + vec3(1.0, 1.0, 1.0)), f.x), f.y), f.z);',
+        '}',
+        /* How far this pixel is from the nearest edge of the kind asked for,
+           softened by blur and roughened by noise. Width is a FRACTION of
+           the field's range, so one material reads the same on any size of
+           object. A distance at the top of the range means no edge is within
+           reach at all, and must stay clean however wide the setting - that
+           is what keeps a wide band from flooding the model. */
+        'float kubikEdgeW(int src, float width, float blur, float noiseAmt) {',
+        '  vec2 f = kubikField(vKubikPos);',
+        '  float d = (src == 2 ? f.r : f.g);',
+        '  if (d > 0.99) return 0.0;',
+        '  d *= uKubikFieldRange;',
+        '  float w = max(width, 0.001) * uKubikFieldRange;',
+        '  if (noiseAmt > 0.0) {',
+        '    float ns = kubikNoise3(vKubikPos * (7.0 / max(w, 1e-4)));',
+        '    d += (ns - 0.5) * noiseAmt * w;',
         '  }',
-        '  return pow(w, max(0.05, sharp));',
+        '  float soft = clamp(blur, 0.0, 1.0);',
+        '  return 1.0 - smoothstep(w * (1.0 - soft), w, d);',
         '}',
         'vec3 kubikBlend(vec3 base, vec3 top, int mode) {',
         '  if (mode == 1) return base * top;',
@@ -2814,7 +2873,7 @@ function applyMaskPatch(mat, d) {
         '    kubikW[i] = 0.0;',
         '    if (i >= uKubikCount) continue;',
         '    if (uKubikAmount[i] <= 0.0) continue;',
-        '    if (uKubikSource[i] > 0) kubikW[i] = kubikCurvW(uKubikScale[i], uKubikPow[i], uKubikSource[i]);',
+        '    if (uKubikSource[i] > 0) kubikW[i] = kubikEdgeW(uKubikSource[i], uKubikScale[i], uKubikBlur[i], uKubikNoise[i]);',
         '    else kubikW[i] = kubikTriplanar(vKubikPos, kubikN, uKubikScale[i], i);',
         '    if (uKubikColorOn[i] > 0.5) {',
         '      vec3 mixed = kubikBlend(diffuseColor.rgb, uKubikColor[i], uKubikBlend[i]);',
@@ -2892,6 +2951,7 @@ function createCubeObject(name, position) {
 function disposeObject(obj) {
   scene.remove(obj.mesh);
   disposeHelpersOnly(obj);
+  disposeEdgeField(obj.mesh.geometry);
   obj.mesh.geometry.dispose();
   (Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material]).forEach(m => m.dispose());
 }
@@ -3077,6 +3137,167 @@ function rewriteEdgeMarks(obj, snap) {
   obj.mesh.userData.creases = creases;
 }
 
+/* ---------------- The edge distance field (a2.28) ----------------
+
+   A small grid over the object's own box, holding how far each point is
+   from the nearest CONVEX edge (red) and the nearest CONCAVE one (green).
+   The fragment shader reads it at the pixel's object-space position, so the
+   band follows the edges exactly and needs no per-face model of any kind.
+
+   Stored as a 2D ATLAS of z-slices rather than a 3D texture on purpose:
+   sampler3D needs GLSL ES 3.00, and three.js compiles its built-in
+   materials as 1.00. Two bilinear taps and a mix cost less than finding
+   that out the hard way on someone's phone.
+
+   RANGE is 15% of the object's largest dimension - the widest a wear band
+   can sensibly be - and Width is a FRACTION of it, so one material reads
+   the same on a matchbox and on a battleship. Beyond range the field
+   saturates and the shader treats it as "nowhere near an edge", which is
+   what stops a wide setting from flooding the whole object. */
+let _wearGen = 0;
+/* geometry.dispose() frees buffers, not the atlas hanging off userData, and
+   this one is 600 KB to 1 MB. Undo alone disposes every object and rebuilds. */
+function disposeEdgeField(geo) {
+  const f = geo && geo.userData && geo.userData.kubikField;
+  if (f && f.tex) f.tex.dispose();
+  if (geo && geo.userData) geo.userData.kubikField = null;
+}
+const EDGE_FIELD_DIM = 64;      // hard cap per axis
+const EDGE_FIELD_STEPS = 40;    // grid steps across the longest side
+const EDGE_FIELD_REACH = 6;     // range, in grid steps
+
+let _edgeFieldNone = null;
+function edgeFieldNone() {
+  if (!_edgeFieldNone) {
+    /* Black is distance ZERO - everywhere is an edge. That is deliberately
+       the answer for a mesh with no field at all, which is the material
+       preview ball: a thumbnail has to show what the mask does. */
+    _edgeFieldNone = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1, THREE.RGBAFormat);
+    _edgeFieldNone.needsUpdate = true;
+  }
+  return _edgeFieldNone;
+}
+
+function distToSegment(px, py, pz, ax, ay, az, bx, by, bz) {
+  const ex = bx - ax, ey = by - ay, ez = bz - az;
+  const ll = ex * ex + ey * ey + ez * ez;
+  let t = ll > 1e-20 ? ((px - ax) * ex + (py - ay) * ey + (pz - az) * ez) / ll : 0;
+  t = t < 0 ? 0 : (t > 1 ? 1 : t);
+  const dx = px - (ax + ex * t), dy = py - (ay + ey * t), dz = pz - (az + ez * t);
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+function bakeEdgeField(geo) {
+  const src = geo.userData.kubikEdges;
+  if (!geo.boundingBox) geo.computeBoundingBox();
+  const bb = geo.boundingBox;
+  if (!bb) return null;
+  const sx = bb.max.x - bb.min.x, sy = bb.max.y - bb.min.y, sz = bb.max.z - bb.min.z;
+  const maxDim = Math.max(sx, sy, sz, 1e-4);
+  /* A BUDGET, not a fixed grid. The cost is edges x the voxels each one
+     sweeps, and on a dense model at a fixed resolution that is hundreds of
+     milliseconds - synchronously, inside the render. Coarsening the grid
+     shrinks both terms at once, and a coarser distance field is a slightly
+     softer band, which for weathering is no loss at all. */
+  const ecount = src ? src.kind.length : 0;
+  let lenSum = 0;
+  for (let e = 0; e < ecount; e++) {
+    const o = e * 6;
+    lenSum += Math.abs(src.pos[o] - src.pos[o + 3]) + Math.abs(src.pos[o + 1] - src.pos[o + 4]) + Math.abs(src.pos[o + 2] - src.pos[o + 5]);
+  }
+  const avgLen = ecount ? lenSum / ecount : 0;
+  let steps = EDGE_FIELD_STEPS;
+  while (steps > 10) {
+    const side = 2 * EDGE_FIELD_REACH + 2 + avgLen * steps / maxDim;
+    if (ecount * side * side * side <= 2.5e6) break;
+    steps = Math.floor(steps * 0.8);
+  }
+  const step = maxDim / steps;
+  const range = step * EDGE_FIELD_REACH;
+  const minX = bb.min.x - range, minY = bb.min.y - range, minZ = bb.min.z - range;
+  const spanX = sx + 2 * range, spanY = sy + 2 * range, spanZ = sz + 2 * range;
+  const dx = Math.min(EDGE_FIELD_DIM, Math.max(4, Math.ceil(spanX / step) + 1));
+  const dy = Math.min(EDGE_FIELD_DIM, Math.max(4, Math.ceil(spanY / step) + 1));
+  const dz = Math.min(EDGE_FIELD_DIM, Math.max(4, Math.ceil(spanZ / step) + 1));
+  const hx = spanX / (dx - 1), hy = spanY / (dy - 1), hz = spanZ / (dz - 1);
+  const tilesX = Math.ceil(Math.sqrt(dz));
+  const tilesY = Math.ceil(dz / tilesX);
+  const texW = dx * tilesX, texH = dy * tilesY;
+  const data = new Uint8Array(texW * texH * 4);
+  data.fill(255);   // 255 = at or past range = nowhere near an edge
+
+  const n = src ? src.kind.length : 0;
+  for (let e = 0; e < n; e++) {
+    const o = e * 6;
+    const ax = src.pos[o], ay = src.pos[o + 1], az = src.pos[o + 2];
+    const bx = src.pos[o + 3], by = src.pos[o + 4], bz = src.pos[o + 5];
+    const ch = src.kind[e] === 2 ? 1 : 0;
+    const i0 = Math.max(0, Math.floor((Math.min(ax, bx) - range - minX) / hx));
+    const i1 = Math.min(dx - 1, Math.ceil((Math.max(ax, bx) + range - minX) / hx));
+    const j0 = Math.max(0, Math.floor((Math.min(ay, by) - range - minY) / hy));
+    const j1 = Math.min(dy - 1, Math.ceil((Math.max(ay, by) + range - minY) / hy));
+    const k0 = Math.max(0, Math.floor((Math.min(az, bz) - range - minZ) / hz));
+    const k1 = Math.min(dz - 1, Math.ceil((Math.max(az, bz) + range - minZ) / hz));
+    for (let k = k0; k <= k1; k++) {
+      const pz = minZ + k * hz;
+      const tx = (k % tilesX) * dx, ty = Math.floor(k / tilesX) * dy;
+      for (let j = j0; j <= j1; j++) {
+        const py = minY + j * hy;
+        const row = ((ty + j) * texW + tx) * 4;
+        for (let i = i0; i <= i1; i++) {
+          const d = distToSegment(minX + i * hx, py, pz, ax, ay, az, bx, by, bz);
+          if (d >= range) continue;
+          const v = (d / range) * 255 | 0;
+          const at = row + i * 4 + ch;
+          if (v < data[at]) data[at] = v;
+        }
+      }
+    }
+  }
+
+  const tex = new THREE.DataTexture(data, texW, texH, THREE.RGBAFormat);
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearFilter;
+  tex.generateMipmaps = false;
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.needsUpdate = true;
+  return {
+    tex, range,
+    min: new THREE.Vector3(minX, minY, minZ),
+    inv: new THREE.Vector3(1 / spanX, 1 / spanY, 1 / spanZ),
+    dim: new THREE.Vector3(dx, dy, dz),
+    tiles: new THREE.Vector2(tilesX, tilesY)
+  };
+}
+
+/* Baked lazily, from the render, and never more than once every 120ms -
+   applyShading runs on every frame of a vertex drag and this does not want
+   to. A field one or two frames stale is invisible; a bake per frame is not. */
+const EDGE_FIELD_MS = 120;
+function ensureEdgeField(mesh) {
+  const geo = mesh && mesh.geometry;
+  if (!geo || !geo.userData.kubikEdges) return null;
+  const want = geo.userData.kubikEdges.gen;
+  let f = geo.userData.kubikField;
+  if (f && f.gen === want) return f;
+  /* Never while a finger is down. The stale field is invisible mid-drag,
+     and on a dense model this pass is the kind of work that turns a drag
+     into a slideshow. It catches up on the frame after the release. */
+  if (f && typeof activePointers !== 'undefined' && activePointers.size) return f;
+  const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
+  if (f && now - f.at < EDGE_FIELD_MS) return f;
+  let built = null;
+  try { built = bakeEdgeField(geo); } catch (err) { console.error('edge field bake failed', err); }
+  if (!built) return f || null;
+  if (f && f.tex) f.tex.dispose();
+  built.gen = want;
+  // Stamped AFTER the bake. Stamping before turns the throttle into "120ms
+  // between the STARTS", so a 200ms bake would run 60% of the wall clock.
+  built.at = (typeof performance !== 'undefined' && performance.now) ? performance.now() : now;
+  geo.userData.kubikField = built;
+  return built;
+}
+
 function applyShading(obj) {
   const geo = obj.mesh.geometry;
   // Safe baseline: if anything below throws, the mesh is still shaded.
@@ -3139,6 +3360,8 @@ function applyShading(obj) {
        did: all six faces of a cube scored a fit error of 1.00 and fell back
        to unrestricted. */
     const edgeUse = new Map();     // key -> uses PER FACE, parallel to edgeFaces
+    const edgeOpp = new Map();     // key -> a vertex of each face that is NOT on it
+    const edgeTri = new Map();     // key -> the triangle of each face that carries it
     const edgeFaces = new Map();   // key -> face groups along it
     const edgeEnds = new Map();    // key -> [a, b]
     const incident = new Map();    // logical vertex -> its edge keys
@@ -3149,15 +3372,21 @@ function applyShading(obj) {
         if (a === b) continue;
         const lo = a < b ? a : b, hi = a < b ? b : a;
         const k = lo * nLog + hi;
-        let fs = edgeFaces.get(k), cs;
+        let fs = edgeFaces.get(k), cs, ops, ots;
         if (!fs) {
-          fs = []; cs = []; edgeFaces.set(k, fs); edgeUse.set(k, cs); edgeEnds.set(k, [lo, hi]);
+          fs = []; cs = []; ops = []; ots = [];
+          edgeFaces.set(k, fs); edgeUse.set(k, cs); edgeOpp.set(k, ops);
+          edgeTri.set(k, ots); edgeEnds.set(k, [lo, hi]);
           let ia = incident.get(lo); if (!ia) { ia = []; incident.set(lo, ia); } ia.push(k);
           let ib = incident.get(hi); if (!ib) { ib = []; incident.set(hi, ib); } ib.push(k);
-        } else cs = edgeUse.get(k);
+        } else { cs = edgeUse.get(k); ops = edgeOpp.get(k); ots = edgeTri.get(k); }
         const g = triGroup[t];
         let gi = fs.indexOf(g);
-        if (gi < 0) { gi = fs.length; fs.push(g); cs.push(0); }
+        if (gi < 0) {
+          gi = fs.length; fs.push(g); cs.push(0);
+          ops.push(index.getX(t * 3 + (e + 2) % 3));
+          ots.push(t);
+        }
         cs[gi]++;
       }
     }
@@ -3268,500 +3497,84 @@ function applyShading(obj) {
     });
     geo.attributes.normal.needsUpdate = true;
 
-    /* ---- Curvature, for the Cavity and Edges masks (a2.24) --------------
+    /* ---- The WEAR EDGES, for the Cavity and Edges masks (a2.28) ---------
 
-       Signed, one number per LOGICAL vertex, written to every attribute
-       vertex that vertex owns. The sign convention is chosen so a MISSING
-       attribute is harmless: 0 is flat, positive is a convex edge, negative
-       is a cavity. WebGL hands an unbound attribute a constant, and any
-       other convention would make a geometry that has never been through
-       here render as one deep crevice.
+       Four versions of this feature tried to infer where a model's edges are
+       from the FACES around them - curvature per vertex, then a bounding box
+       or disc or ring per flat region, each fitted and scored and rejected.
+       Every one of them was even on some shapes and wrong on others, because
+       a face can only ever say something about its own interior.
 
-       The estimate is the mean of dot(neighbour - v, N) around the one
-       ring. Neighbours ABOVE the tangent plane mean the surface closes in
-       around the vertex - a cavity - so the raw number is negated. The
-       normal used is the GEOMETRIC one, every triangle around the vertex
-       whatever the shading islands say, because curvature is a fact about
-       the shape and marking an edge sharp must not move it.
+       So this says nothing about faces. It writes down the EDGES, and the
+       band is then simply how far a pixel is from the nearest one - which is
+       the same thing the edge overlay draws, only wider and softer. A cube,
+       a tube, a fillet, an L-plate and a ring all get identical treatment,
+       and there is nothing left to fit or fall back from.
 
-       The x2 is a range fit, not a fudge: a cube corner reads -0.577 and
-       wants to be a full-strength edge. */
+       An edge is an edge if `wear` says so: creased, hand-marked sharp, an
+       open rim, or over the object's own smoothing angle. CONVEX ones feed
+       Edges and CONCAVE ones feed Cavity, told apart by which side of a
+       face's plane its neighbour's far vertex falls on.
+
+       This only writes the LIST, which is O(E) and safe to run on every
+       frame of a drag. The distance field is baked from it in
+       ensureEdgeField, lazily and throttled, and only for an object that is
+       actually wearing a shape mask. */
     try {
-    const curv = new Float32Array(posAttr.count);
-    const nv = new THREE.Vector3(), pv = new THREE.Vector3(), pw = new THREE.Vector3();
-    trisAt.forEach((tris, l) => {
-      const ais = logicalGroups[l];
-      if (!ais || !ais.length) return;
-      nv.set(0, 0, 0);
-      for (let i = 0; i < tris.length; i++) nv.add(triNormal[tris[i]]);
-      if (nv.lengthSq() < 1e-12) return;
-      nv.normalize();
-      const inc = incident.get(l);
-      if (!inc || !inc.length) return;
-      pv.fromBufferAttribute(posAttr, ais[0]);
-      let acc = 0, n = 0;
-      for (let i = 0; i < inc.length; i++) {
-        const ends = edgeEnds.get(inc[i]);
-        if (!ends) continue;
-        const o = ends[0] === l ? ends[1] : ends[0];
-        const oa = logicalGroups[o];
-        if (!oa || !oa.length) continue;
-        pw.fromBufferAttribute(posAttr, oa[0]).sub(pv);
-        if (pw.lengthSq() < 1e-12) continue;
-        acc += pw.normalize().dot(nv); n++;
-      }
-      if (!n) return;
-      const sv = Math.max(-1, Math.min(1, (-acc / n) * 2));
-      for (let i = 0; i < ais.length; i++) curv[ais[i]] = sv;
-    });
-    /* Written through when the vertex count has not moved, so anything
-       already holding the attribute keeps holding it. */
-    const ca = geo.attributes.kubikCurv;
-    if (ca && ca.array.length === curv.length) { ca.array.set(curv); ca.needsUpdate = true; }
-    else geo.setAttribute('kubikCurv', new THREE.BufferAttribute(curv, 1));
-
-    /* ---- Rim geometry, so Edges can band INWARD on a flat face ----------
-
-       CURVATURE ALONE CANNOT DO IT, and not for want of tuning: every
-       vertex of a cube is convex, so the field is a CONSTANT 1 across the
-       whole face, and no remapping of a constant produces a band. That is
-       what "Edges fills whole faces and Range won't help" was.
-
-       So each vertex also carries its FACE's centroid and its own distance
-       from it - (cx, cy, cz, r), one vec4. Interpolated, the w channel
-       approximates the rim radius in the direction of the pixel, so
-       `w - length(pos - centre)` is how far INTO the face that pixel is, in
-       object units. A band of a fixed width then hugs every edge of a big
-       face and covers a small face entirely, which is exactly the right
-       behaviour on a dense mesh: no per-quad grid pattern, the rim term
-       simply goes inert and curvature decides alone.
-
-       WHAT A "FACE" IS HERE IS A SHELL: the run of geometry groups joined
-       across every edge THE SHADING DOES NOT BREAK. It uses the same
-       `sharp` map the normals use above - hand marks, migrated creases, and
-       the object's own angle threshold - so the band lands on hard edges
-       and nowhere else. A 12-sided tube meets itself at 30 degrees, under
-       the 33-degree default, so its seams shade smooth, merge into ONE wall
-       shell and get nothing; only the rims against the caps are sharp. At 8
-       sides those seams are 45 degrees, shade hard, and do get the band -
-       which is what your eye says too. Subdivide is the other end of it:
-       one group per corner quad, all smooth, all one shell.
-
-       AN OUTLINE EDGE IS NOT ANY EDGE. An edge a face uses TWICE is that
-       face's own triangulation - the diagonal of a quad - and is not part
-       of its outline; `edgeUse` counts uses PER FACE and the test is the
-       same one `computeTopology` uses, "SOME face uses it exactly once".
-       Getting this wrong is not subtle: every quad had a phantom boundary
-       down its diagonal, every model scored a fit error of 1.00, and the
-       whole feature fell back to unrestricted.
-
-       A shell's BOUNDARY is its sharp outline edges. None at all - a closed
-       smooth body - means there is no edge to band, so the rim steps aside
-       and curvature answers alone, as it did before a2.25.
-
-       FIVE MODELS, AND THE MODEL IS CHECKED AGAINST THE BOUNDARY BEFORE IT
-       IS USED. A lone triangle gets an EXACT answer and needs no check: a
-       triangular face is one triangle with three unshared vertices, so the
-       barycentric weights interpolate for free and the distance to side i
-       is the weight at the opposite corner times that corner's altitude.
-       Otherwise a flat shell tries a rectangle and a disc, a curved one an
-       axial band, and each is scored by how far from zero it puts the
-       MIDPOINTS of the shell's own sharp outline edges. Midpoints, not
-       vertices: a square's four corners sit on its disc as neatly as on its
-       box and only the midpoints tell the two apart. Each constraint is
-       scored against its OWN half-extent, or a long thin face would be
-       judged by its short axis. A model that misses by more than a fifth is
-       not used and the shell falls back to curvature alone. */
-    const gN = groupsSrc.length;
+    /* An edge a face uses TWICE is that face's own triangulation - the
+       diagonal of a quad - and is not part of its outline. Same test
+       computeTopology uses: SOME face uses it exactly once. */
     const isOutline = (k) => {
       const cs = edgeUse.get(k);
       if (!cs) return false;
       for (let i = 0; i < cs.length; i++) if (cs[i] === 1) return true;
       return false;
     };
-
-    const shellP = new Int32Array(gN);
-    for (let g = 0; g < gN; g++) shellP[g] = g;
-    const sFind = (g) => { while (shellP[g] !== g) { shellP[g] = shellP[shellP[g]]; g = shellP[g]; } return g; };
-    edgeFaces.forEach((fs, k) => {
-      // A line neither face exposes separates nothing, whatever the angle
-      // rule had to say about it.
-      if (fs.length !== 2) return;
-      if (isOutline(k) && wear.get(k)) return;
-      const r1 = sFind(fs[0]), r2 = sFind(fs[1]);
-      if (r1 !== r2) shellP[r1] = r2;
-    });
-
-    const shellVerts = new Map(), shellTri0 = new Map(), shellTriN = new Map();
-    const shellTris = new Map();
-    for (let ai = 0; ai < posAttr.count; ai++) {
-      const g = groupOfAttr[ai];
-      if (g < 0) continue;
-      const r = sFind(g);
-      let l = shellVerts.get(r);
-      if (!l) { l = []; shellVerts.set(r, l); }
-      l.push(ai);
-    }
-    for (let t = 0; t < triCount; t++) {
-      const r = sFind(triGroup[t]);
-      if (!shellTri0.has(r)) shellTri0.set(r, t);
-      shellTriN.set(r, (shellTriN.get(r) || 0) + 1);
-      let tl = shellTris.get(r);
-      if (!tl) { tl = []; shellTris.set(r, tl); }
-      tl.push(t);
-    }
-    // The shell's own normal, not whichever member won the union-find race -
-    // one collapsed quad mid-drag would otherwise call a flat face curved.
-    const shellN = new Map();
-    for (let g = 0; g < gN; g++) {
-      const n = groupNormal[g];
-      if (!n || n.lengthSq() < 1e-12) continue;
-      const r = sFind(g);
-      let v = shellN.get(r);
-      if (!v) { v = new THREE.Vector3(); shellN.set(r, v); }
-      v.add(n);
-    }
-    shellN.forEach(v => { if (v.lengthSq() > 1e-12) v.normalize(); });
-
-    // The boundary, as midpoints, filed under the shells of the edge's OWN
-    // faces. Walking the vertex fans instead files a midpoint under every
-    // shell that merely touches an endpoint, and one foreign point is enough
-    // to reject a model that fits its own face perfectly.
-    const shellBound = new Map();
-    const bp = new THREE.Vector3(), bq = new THREE.Vector3();
+    const wePos = [], weKind = [];
+    const wA = new THREE.Vector3(), wB = new THREE.Vector3();
+    const wM = new THREE.Vector3(), wO = new THREE.Vector3();
     wear.forEach((isEdge, k) => {
       if (!isEdge || !isOutline(k)) return;
       const ends = edgeEnds.get(k), fs = edgeFaces.get(k);
-      if (!ends || !fs) return;
+      const ops = edgeOpp.get(k), ots = edgeTri.get(k);
+      if (!ends || !fs || !fs.length) return;
       const a0 = logicalGroups[ends[0]], a1 = logicalGroups[ends[1]];
       if (!a0 || !a0.length || !a1 || !a1.length) return;
-      bp.fromBufferAttribute(posAttr, a0[0]);
-      bq.fromBufferAttribute(posAttr, a1[0]);
-      bp.add(bq).multiplyScalar(0.5);
-      let last = -1;
-      for (let i = 0; i < fs.length; i++) {
-        const r = sFind(fs[i]);
-        if (r === last) continue;
-        last = r;
-        let l = shellBound.get(r);
-        if (!l) { l = []; shellBound.set(r, l); }
-        l.push(bp.x, bp.y, bp.z);
+      wA.fromBufferAttribute(posAttr, a0[0]);
+      wB.fromBufferAttribute(posAttr, a1[0]);
+      /* Convex or concave. Stand on one face and look at the OTHER face's
+         far vertex: below this face's plane means the surface folds away
+         from you and the edge sticks out. A rim with one face has no other
+         side and is an exposed edge by definition. */
+      let convex = true;
+      /* EXACTLY two faces. One is a rim and three is a seam - neither has a
+         well-defined inside, and asking the question of the two
+         lowest-numbered faces answers about the wrong pair. A wall bridged
+         onto the shared edge of two coplanar plate halves used to come back
+         convex, so the textbook cavity at its base was painted by Edges.
+
+         And the plane is the local TRIANGLE's, not the face group's summed
+         normal: on a warped face the sum points nowhere useful, and after
+         Flip Normals it points inward, which inverted every edge of it. */
+      if (fs.length === 2 && ops.length >= 2 && ots.length >= 1) {
+        const n0 = triNormal[ots[0]];
+        if (n0 && n0.lengthSq() > 1e-12) {
+          wM.copy(wA).add(wB).multiplyScalar(0.5);
+          wO.fromBufferAttribute(posAttr, ops[1]).sub(wM);
+          convex = wO.dot(n0) < 0;
+        }
       }
+      wePos.push(wA.x, wA.y, wA.z, wB.x, wB.y, wB.z);
+      weKind.push(convex ? 1 : 2);
     });
-
-    /* A.w === 0            : NO ATTRIBUTE - unrestricted, curvature alone.
-                              Only the material preview ball, which has never
-                              been through here and must still show the mask.
-       A.w  <  0            : this shell has no usable model - NO WEAR.
-       A.w > 0, B.w  >  0   : rectangle, half-extents A.w along B.xyz, B.w across
-       A.w > 0, B.w === 0   : axial band, half-length A.w along B.xyz
-       A.w > 0, B.w === -1  : disc of radius A.w about A.xyz
-       A.w > 0, B.w === -2  : triangle - A.xyz altitudes, B.xyz barycentric
-       A.w > 0, B.w === -3  : ring, outer radius A.w, inner B.x, about A.xyz
-
-       THE FALLBACK IS "NOTHING", AND THAT IS THE WHOLE POINT. a2.26 fell
-       back to unrestricted, which on a convex shell means the curvature gate
-       reads 1 and the FACE IS PAINTED SOLID. On a cube and a tube nearly
-       everything fits and it never showed; on a real model - a turret ring
-       with a hole in it, a long thin track strip - plenty of shells do not
-       fit, and every one of them came out as a solid blotch or as a smooth
-       surface that looked edged. Missing wear is a quiet, honest failure.
-       Solid wear is indistinguishable from the bug this feature started as.
-
-       A shell with NO sharp edge anywhere is a different thing and does
-       NOT land here - it keeps A.w at zero and curvature answers alone,
-       which is what puts the wear on a bevel. */
-    const wantLen = posAttr.count * 4;
-    let raA = geo.attributes.kubikRimA, raB = geo.attributes.kubikRimB;
-    let rimA, rimB;
-    if (raA && raB && raA.array.length === wantLen && raB.array.length === wantLen) {
-      // applyShading runs every frame of a vertex drag; two fresh
-      // Float32Arrays a frame is pure garbage.
-      rimA = raA.array; rimB = raB.array; rimA.fill(0); rimB.fill(0);
-    } else {
-      rimA = new Float32Array(wantLen); rimB = new Float32Array(wantLen);
-      raA = null; raB = null;
-    }
-    /* Every vertex that belongs to a shell starts at "no model". A shell
-       that finds one overwrites its own; every early return below then means
-       no wear without having to say so at each exit. */
-    shellVerts.forEach((vs, r) => {
-      /* Only a shell WITH a sharp edge can fail to model it. A shell with no
-         sharp edge anywhere - a bevelled or subdivided body, where every
-         join is smooth - is not a failure and must stay at zero, so
-         curvature answers alone and the wear lands on the rounding. That is
-         the whole "bevel it, then wear the bevel" workflow, and pre-marking
-         it as a failure silenced it completely. */
-      if (!shellBound.has(r)) return;
-      for (let i = 0; i < vs.length; i++) rimA[vs[i] * 4 + 3] = -1;
-    });
-
-    const FIT = 0.2;   // a model may miss its own boundary by this much of its reach
-    const rC = new THREE.Vector3(), rD = new THREE.Vector3(), rP = new THREE.Vector3();
-    const rU = new THREE.Vector3(), rV = new THREE.Vector3(), rT = new THREE.Vector3();
-    const rCen = new THREE.Vector3(), rAx = new THREE.Vector3();
-    const tA = new THREE.Vector3(), tB = new THREE.Vector3(), tC = new THREE.Vector3();
-    shellVerts.forEach((vs, r) => {
-      const bnd = shellBound.get(r);
-      if (!vs.length || !bnd || bnd.length < 3) return;   // no edge: curvature alone
-      const t0 = shellTri0.get(r);
-
-      /* NO MODEL. Hand the shell back to curvature only when curvature has
-         something to say about it - when it VARIES across the shell, which
-         is a bevelled or rounded body, where the strips read high and the
-         flats read nothing. That is the right answer there and the reason
-         zero means "leave it alone". On a shell of near-uniform curvature -
-         any flat face, any plain cylinder wall - handing back means solid,
-         the failure this sentinel exists to prevent, so it stays at -1.
-
-         This is what keeps ONE crease on a bevelled cube from deleting the
-         wear on the other eleven bevels: the crease gives the shell a
-         boundary, no model fits a boundary of one edge, and without this the
-         whole object went blank. */
-      const giveUp = () => {
-        let cMin = 9, cMax = -9;
-        for (let i = 0; i < vs.length; i++) {
-          const c = curv[vs[i]];
-          if (c < cMin) cMin = c;
-          if (c > cMax) cMax = c;
-        }
-        if (cMax - cMin >= 0.25) for (let i = 0; i < vs.length; i++) rimA[vs[i] * 4 + 3] = 0;
-      };
-      if (t0 === undefined) { giveUp(); return; }
-
-      // ---- a lone triangle is exact, and neither box nor disc can do it --
-      if (shellTriN.get(r) === 1 && vs.length === 3) {
-        const i0t = index.getX(t0 * 3), i1t = index.getX(t0 * 3 + 1), i2t = index.getX(t0 * 3 + 2);
-        tA.fromBufferAttribute(posAttr, i0t);
-        tB.fromBufferAttribute(posAttr, i1t);
-        tC.fromBufferAttribute(posAttr, i2t);
-        const l0 = tB.distanceTo(tC), l1 = tC.distanceTo(tA), l2 = tA.distanceTo(tB);
-        rD.copy(tB).sub(tA).cross(rT.copy(tC).sub(tA));
-        const area2 = rD.length();   // twice the area
-        if (area2 > 1e-10 && l0 > 1e-6 && l1 > 1e-6 && l2 > 1e-6) {
-          const h0 = area2 / l0, h1 = area2 / l1, h2 = area2 / l2;
-          const idx = [i0t, i1t, i2t];
-          for (let j = 0; j < 3; j++) {
-            const o = idx[j] * 4;
-            rimA[o] = h0; rimA[o + 1] = h1; rimA[o + 2] = h2;
-            rimA[o + 3] = Math.min(h0, h1, h2);
-            rimB[o] = j === 0 ? 1 : 0;
-            rimB[o + 1] = j === 1 ? 1 : 0;
-            rimB[o + 2] = j === 2 ? 1 : 0;
-            rimB[o + 3] = -2;
-          }
-          return;
-        }
-      }
-
-      rC.set(0, 0, 0);
-      for (let i = 0; i < vs.length; i++) rC.add(rT.fromBufferAttribute(posAttr, vs[i]));
-      rC.divideScalar(vs.length);
-      const gn = shellN.get(r);
-      let maxLen = 0, offPlane = 0;
-      for (let i = 0; i < vs.length; i++) {
-        rD.fromBufferAttribute(posAttr, vs[i]).sub(rC);
-        const L = rD.length();
-        if (L > maxLen) maxLen = L;
-        if (gn) {
-          const o = Math.abs(rD.dot(gn));
-          if (o > offPlane) offPlane = o;
-        }
-      }
-      if (maxLen < 1e-6) { giveUp(); return; }
-      /* A curved shell's member normals CANCEL - a tube wall sums to zero -
-         and a near-zero vector answers every planarity test perfectly. The
-         length guard is what tells "flat" from "closed around". */
-      const flat = !!gn && gn.lengthSq() > 0.5 && offPlane <= 0.02 * maxLen;
-
-      /* The axis must lie along a real SIDE. Two of the shell's first
-         triangle's three edges are sides and, on a quad, the third is the
-         diagonal; the smallest-area box picks a side. */
-      let bestArea = Infinity, bu = 0, bv = 0, haveBox = false;
-      const tri = [index.getX(t0 * 3), index.getX(t0 * 3 + 1), index.getX(t0 * 3 + 2)];
-      for (let e = 0; e < 3; e++) {
-        rU.fromBufferAttribute(posAttr, tri[(e + 1) % 3]).sub(rT.fromBufferAttribute(posAttr, tri[e]));
-        if (flat) rU.addScaledVector(gn, -rU.dot(gn));
-        if (rU.lengthSq() < 1e-12) continue;
-        rU.normalize();
-        if (flat) rV.copy(gn).cross(rU);
-        let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
-        for (let i = 0; i < vs.length; i++) {
-          rD.fromBufferAttribute(posAttr, vs[i]).sub(rC);
-          // In plane. A vertex pulled off the plane otherwise inflates the
-          // across-extent and the band leaves the whole shell.
-          if (flat) rD.addScaledVector(gn, -rD.dot(gn));
-          const a = rD.dot(rU);
-          const b = flat ? rD.dot(rV) : Math.sqrt(Math.max(0, rD.lengthSq() - a * a));
-          if (a < uMin) uMin = a;
-          if (a > uMax) uMax = a;
-          if (b < vMin) vMin = b;
-          if (b > vMax) vMax = b;
-        }
-        const hu = (uMax - uMin) * 0.5, hv = (vMax - vMin) * 0.5;
-        const area = (hu + 1e-6) * (hv + 1e-6);
-        if (area < bestArea) {
-          bestArea = area; bu = hu; bv = hv; haveBox = true;
-          rAx.copy(rU);
-          // The box CENTRE, not the centroid.
-          rCen.copy(rC).addScaledVector(rU, (uMin + uMax) * 0.5);
-          if (flat) rCen.addScaledVector(rV, (vMin + vMax) * 0.5);
-        }
-      }
-      if (!haveBox) { giveUp(); return; }
-
-      /* Radii in plane. The MINIMUM matters as much as the maximum: a face
-         with a hole in it - a turret ring, anything Inset leaves behind - is
-         an annulus, and neither a box nor a disc can say where its inner rim
-         is. Common enough in this app to be worth its own model. */
-      let discR = 0, holeR = Infinity;
-      for (let i = 0; i < vs.length; i++) {
-        rD.fromBufferAttribute(posAttr, vs[i]).sub(rC);
-        if (flat) rD.addScaledVector(gn, -rD.dot(gn));
-        const L = rD.length();
-        if (L > discR) discR = L;
-        if (L < holeR) holeR = L;
-      }
-
-      /* The ring is offered to ANY shell, flat or not. A flat annulus and
-         a bevel ring round a cylinder are the same measurement: a ring of
-         vertices puts its own centroid on the axis either way, so both rims
-         come back at consistent distances from it. This is what lets wear
-         land on a bevel once its edges are creased or marked sharp. */
-      let eRing = Infinity;
-      const ringDepth = (discR - holeR) * 0.5;
-      if (holeR > 0.05 * discR && ringDepth > 0.01 * discR) {
-        /* Each rim against its OWN radius, the way the rectangle scores each
-           axis against its own half-extent. Normalising both by the band
-           WIDTH made the tolerance unreachable on any thin ring: a 12-sided
-           cap inset past a third of its radius scored 0.23 and was rejected,
-           the exact shape the model was added for. Polygon sag scales with
-           the radius, not with the width. */
-        eRing = 0;
-        let nearOut = Infinity, nearIn = Infinity, offRim = 0;
-        for (let i = 0; i < bnd.length; i += 3) {
-          const rr = rP.set(bnd[i], bnd[i + 1], bnd[i + 2]).distanceTo(rC);
-          const oT = (discR - rr) / discR, iT = (rr - holeR) / holeR;
-          const m = Math.min(oT, iT);
-          if (m > eRing) eRing = m;
-          const dOut = Math.abs(oT), dIn = Math.abs(iT);
-          if (dOut < nearOut) nearOut = dOut;
-          if (dIn < nearIn) nearIn = dIn;
-          if (Math.min(dOut, dIn) > offRim) offRim = Math.min(dOut, dIn);
-        }
-        /* Both rims have to be there - the axial band insists on the same at
-           both ends - and EVERY boundary point has to be on one of them.
-           Without that last test a plain cylinder wall passes: its narrowest
-           point is its waist, not a hole, and a lone crease anywhere near the
-           right radius was enough to have it paint a ring round the middle
-           where there is no edge at all. A negative score means the point is
-           outside the annulus, which the max quietly reads as a perfect fit,
-           so only the absolute distance can catch it. */
-        if (!(nearOut <= FIT && nearIn <= FIT && offRim <= FIT)) eRing = Infinity;
-      }
-
-      let mode = 0, err = Infinity;
-      if (flat) {
-        let eR = Infinity, eD = Infinity;
-        if (bu > 1e-6 && bv > 1e-6) {
-          eR = 0;
-          for (let i = 0; i < bnd.length; i += 3) {
-            rD.set(bnd[i], bnd[i + 1], bnd[i + 2]).sub(rCen);
-            const a = Math.abs(rD.dot(rAx));
-            const b = Math.sqrt(Math.max(0, rD.lengthSq() - a * a));
-            // each constraint against its OWN reach
-            const m = Math.min((bu - a) / bu, (bv - b) / bv);
-            if (m > eR) eR = m;
-          }
-        }
-        if (discR > 1e-6) {
-          eD = 0;
-          for (let i = 0; i < bnd.length; i += 3) {
-            const m = (discR - rP.set(bnd[i], bnd[i + 1], bnd[i + 2]).distanceTo(rC)) / discR;
-            if (m > eD) eD = m;
-          }
-        }
-        mode = 1; err = eR;
-        if (eD < err) { mode = 2; err = eD; }
-      } else if (bu > 1e-6) {
-        /* An axial band is drawn at BOTH ends, so the boundary has to be at
-           both ends. A dome closed by a sharp equator has one, and without
-           this check it scores a perfect zero and then paints a cap on the
-           pole, where there is no edge at all. */
-        let worst = 0, nearHi = Infinity, nearLo = Infinity;
-        for (let i = 0; i < bnd.length; i += 3) {
-          rD.set(bnd[i], bnd[i + 1], bnd[i + 2]).sub(rCen);
-          const sa = rD.dot(rAx);
-          const m = (bu - Math.abs(sa)) / bu;
-          if (m > worst) worst = m;
-          const hiM = (bu - sa) / bu, loM = (bu + sa) / bu;
-          if (hiM < nearHi) nearHi = hiM;
-          if (loM < nearLo) nearLo = loM;
-        }
-        mode = 3;
-        err = Math.max(worst, nearHi, nearLo);
-      }
-      if (eRing < err) { mode = 4; err = eRing; }
-      if (!(err <= FIT)) { giveUp(); return; }
-
-      /* CONTAINMENT: the model has to COVER the shell, not merely touch its
-         rim. On a curved band with one segment across it the vertices ARE
-         the boundary, so the boundary test measures the model against the
-         very points that defined it and cannot fail - a slightly tapered
-         cylinder wall scored a PERFECT ring while its middle sits nowhere
-         near that annulus, and the whole wall came out solid. Triangle
-         centroids are interior points by construction, which is exactly what
-         the boundary test was missing. */
-      const tris = shellTris.get(r);
-      if (tris) {
-        const slack = -0.02 * maxLen;
-        for (let i = 0; i < tris.length; i++) {
-          const t = tris[i] * 3;
-          rP.set(0, 0, 0)
-            .add(rT.fromBufferAttribute(posAttr, index.getX(t)))
-            .add(rT.fromBufferAttribute(posAttr, index.getX(t + 1)))
-            .add(rT.fromBufferAttribute(posAttr, index.getX(t + 2)))
-            .divideScalar(3);
-          let into;
-          if (mode === 4) {
-            const rr = rP.distanceTo(rC);
-            into = Math.min(discR - rr, rr - holeR);
-          } else if (mode === 2) {
-            into = discR - rP.distanceTo(rC);
-          } else {
-            rD.copy(rP).sub(rCen);
-            const a = Math.abs(rD.dot(rAx));
-            into = mode === 1
-              ? Math.min(bu - a, bv - Math.sqrt(Math.max(0, rD.lengthSq() - a * a)))
-              : bu - a;
-          }
-          if (into < slack) { giveUp(); return; }
-        }
-      }
-
-      for (let i = 0; i < vs.length; i++) {
-        const o = vs[i] * 4;
-        if (mode === 2 || mode === 4) {
-          rimA[o] = rC.x; rimA[o + 1] = rC.y; rimA[o + 2] = rC.z; rimA[o + 3] = discR;
-          rimB[o] = mode === 4 ? holeR : 0;
-          rimB[o + 1] = 0; rimB[o + 2] = 0;
-          rimB[o + 3] = mode === 4 ? -3 : -1;
-        } else {
-          rimA[o] = rCen.x; rimA[o + 1] = rCen.y; rimA[o + 2] = rCen.z; rimA[o + 3] = bu;
-          rimB[o] = rAx.x; rimB[o + 1] = rAx.y; rimB[o + 2] = rAx.z;
-          rimB[o + 3] = mode === 1 ? bv : 0;
-        }
-      }
-    });
-    if (raA) { raA.needsUpdate = true; raB.needsUpdate = true; }
-    else {
-      geo.setAttribute('kubikRimA', new THREE.BufferAttribute(rimA, 4));
-      geo.setAttribute('kubikRimB', new THREE.BufferAttribute(rimB, 4));
-    }
+    geo.userData.kubikEdges = {
+      pos: new Float32Array(wePos),
+      kind: new Uint8Array(weKind),
+      gen: ++_wearGen
+    };
     } catch (cerr) {
-      /* No attribute means flat, which is the harmless answer. The normals
-         above are already written and STAY written. */
-      console.error('curvature pass failed, masks will read flat', cerr);
+      geo.userData.kubikEdges = { pos: new Float32Array(0), kind: new Uint8Array(0), gen: ++_wearGen };
+      console.error('wear-edge pass failed, shape masks will find nothing', cerr);
     }
   } catch (err) {
     console.error('applyShading failed, using flat normals', err);
@@ -4156,6 +3969,7 @@ function rebuildFromEditable(obj, edIn) {
   geo.computeBoundingBox();
 
   disposeHelpersOnly(obj);
+  disposeEdgeField(obj.mesh.geometry);
   obj.mesh.geometry.dispose();
   obj.mesh.geometry = geo;
   // Every op in the app funnels through here, which is the only place that
@@ -6307,6 +6121,7 @@ function clearFillet(obj) {
   const ud = obj.mesh.userData;
   if (ud.filletMesh) {
     obj.mesh.remove(ud.filletMesh);
+    disposeEdgeField(ud.filletMesh.geometry);
     ud.filletMesh.geometry.dispose();
     (Array.isArray(ud.filletMesh.material) ? ud.filletMesh.material : [ud.filletMesh.material])
       .forEach(m => m.dispose());
@@ -12754,9 +12569,11 @@ function buildExportGroup() {
     const source = (App.fillet && o.mesh.userData.filletMesh) ? o.mesh.userData.filletMesh : o.mesh;
     const mats = Array.isArray(source.material) ? source.material : [source.material];
     const eg = source.geometry.clone();
-    eg.deleteAttribute('kubikCurv');
-    eg.deleteAttribute('kubikRimA');
-    eg.deleteAttribute('kubikRimB');
+    /* BufferGeometry.copy assigns userData by REFERENCE, and GLTFExporter
+       serialises it into `extras`. Without this every .glb carried the edge
+       list as a 12000-key object plus the whole distance atlas as an array
+       of 600000 numbers, per object. */
+    eg.userData = {};
     const m = new THREE.Mesh(eg, mats.map(mm => { const c = mm.clone(); c.visible = true; return c; }));
     m.position.copy(o.mesh.position);
     m.quaternion.copy(o.mesh.quaternion);
@@ -13809,24 +13626,40 @@ function refreshMaskControls(d) {
   const isImg = spec.id === 'image';
   document.getElementById('mkImgRow').style.display = isImg ? 'flex' : 'none';
   document.getElementById('mkDetailRow').style.display = spec.detail ? 'flex' : 'none';
-  if (spec.detail) {
-    document.getElementById('mkDetailLbl').firstChild.nodeValue = spec.detail + ' ';
-  }
   /* One slider doing two jobs. On a cloth mask it is the pattern's SCALE; on
      a shape mask it is the RANGE of curvature the mask reaches across, which
      lives in an entirely different set of numbers. Bounds are set BEFORE the
      value is written further down, or the browser clamps 0.35 up to 0.25's
      grid and the mask silently loses its setting. */
+  /* Every one of the three sliders is one control doing two jobs, so all
+     three take their label and their bounds from the type. Bounds are set
+     BEFORE the values are written further down, or the range element snaps
+     each to the old grid and the mask silently loses its settings. */
   const curvMode = spec.curv || 0;
-  const sc = document.getElementById('mkScale');
-  document.getElementById('mkScaleLbl').firstChild.nodeValue = (spec.scale || 'Scale') + ' ';
-  sc.min = String(spec.sMin !== undefined ? spec.sMin : 0.25);
-  sc.max = String(spec.sMax !== undefined ? spec.sMax : 20);
-  sc.step = String(spec.sStep !== undefined ? spec.sStep : 0.25);
-  const scLo = parseFloat(sc.min), scHi = parseFloat(sc.max);
-  if (!(mk.scale >= scLo)) mk.scale = scLo;
-  else if (mk.scale > scHi) mk.scale = scHi;
-  document.getElementById('mkContrastLbl').firstChild.nodeValue = (spec.contrast || 'Contrast') + ' ';
+  const fit = (el, lbl, name, lo, hi, st, get, set) => {
+    document.getElementById(lbl).firstChild.nodeValue = name + ' ';
+    const e = document.getElementById(el);
+    e.min = String(lo); e.max = String(hi); e.step = String(st);
+    const v = get();
+    if (!(v >= lo)) set(lo); else if (v > hi) set(hi);
+  };
+  fit('mkScale', 'mkScaleLbl', spec.scale || 'Scale',
+      spec.sMin !== undefined ? spec.sMin : 0.25,
+      spec.sMax !== undefined ? spec.sMax : 20,
+      spec.sStep !== undefined ? spec.sStep : 0.25,
+      () => mk.scale, v => { mk.scale = v; });
+  fit('mkContrast', 'mkContrastLbl', spec.contrast || 'Contrast',
+      spec.cMin !== undefined ? spec.cMin : 0.5,
+      spec.cMax !== undefined ? spec.cMax : 3,
+      spec.cStep !== undefined ? spec.cStep : 0.1,
+      () => mk.contrast, v => { mk.contrast = v; });
+  if (spec.detail) {
+    fit('mkDetail', 'mkDetailLbl', spec.detail,
+        spec.dMin !== undefined ? spec.dMin : 1,
+        spec.dMax !== undefined ? spec.dMax : 5,
+        spec.dStep !== undefined ? spec.dStep : 1,
+        () => mk.detail, v => { mk.detail = v; });
+  }
   // "New pattern" rolls a seed. A picture has none, and neither does a shape.
   document.getElementById('mkSeed').style.display = (isImg || curvMode) ? 'none' : '';
   const prev = document.getElementById('mkImgPrev');
@@ -13848,7 +13681,7 @@ function refreshMaskControls(d) {
   document.getElementById('mkContrast').value = mk.contrast;
   document.getElementById('mkAmountV').textContent = Number(mk.amount).toFixed(2);
   document.getElementById('mkScaleV').textContent = Number(mk.scale).toFixed(2);
-  document.getElementById('mkDetailV').textContent = String(mk.detail);
+  document.getElementById('mkDetailV').textContent = mkNum(mk.detail);
   document.getElementById('mkContrastV').textContent = Number(mk.contrast).toFixed(1);
 }
 
@@ -13861,14 +13694,17 @@ function mkLive(rebake) {
   mk.rough = parseFloat(document.getElementById('mkRough').value);
   mk.amount = parseFloat(document.getElementById('mkAmount').value);
   mk.scale = parseFloat(document.getElementById('mkScale').value);
-  mk.detail = parseInt(document.getElementById('mkDetail').value, 10);
+  // Noise is a fraction; Detail was always a whole number. parseFloat reads
+  // both, and the slider's own step is what keeps a cloth mask on integers.
+  mk.detail = parseFloat(document.getElementById('mkDetail').value);
   mk.contrast = parseFloat(document.getElementById('mkContrast').value);
   document.getElementById('mkRoughV').textContent = mk.rough.toFixed(2);
   document.getElementById('mkAmountV').textContent = mk.amount.toFixed(2);
   document.getElementById('mkScaleV').textContent = mk.scale.toFixed(2);
-  document.getElementById('mkDetailV').textContent = String(mk.detail);
+  document.getElementById('mkDetailV').textContent = mkNum(mk.detail);
   document.getElementById('mkContrastV').textContent = mk.contrast.toFixed(1);
-  if (rebake) rebakeMaskTexture(d, mkEditing);   // only the channel being dragged
+  // A shape mask has no cloth to re-bake: Blur and Noise are uniforms.
+  if (rebake && !maskCurvMode(mk)) rebakeMaskTexture(d, mkEditing);   // only the channel being dragged
   updateMaterialEverywhere(d.id);
 }
 
@@ -13912,9 +13748,16 @@ document.getElementById('mkType').addEventListener('change', () => {
      and Cavity's Range and Edges' Width are different numbers again, so
      every type carries its own default and any change of meaning resets. */
   const spec = maskTypeOf(mk);
-  const nowDef = spec.sDef !== undefined ? spec.sDef : MASK_DEFAULT.scale;
-  const wasDef = wasSpec.sDef !== undefined ? wasSpec.sDef : MASK_DEFAULT.scale;
-  if (nowDef !== wasDef) mk.scale = nowDef;
+  const pick = (sp, key, fb) => (sp[key] !== undefined ? sp[key] : fb);
+  if (pick(spec, 'sDef', MASK_DEFAULT.scale) !== pick(wasSpec, 'sDef', MASK_DEFAULT.scale)) {
+    mk.scale = pick(spec, 'sDef', MASK_DEFAULT.scale);
+  }
+  if (pick(spec, 'cDef', MASK_DEFAULT.contrast) !== pick(wasSpec, 'cDef', MASK_DEFAULT.contrast)) {
+    mk.contrast = pick(spec, 'cDef', MASK_DEFAULT.contrast);
+  }
+  if (pick(spec, 'dDef', MASK_DEFAULT.detail) !== pick(wasSpec, 'dDef', MASK_DEFAULT.detail)) {
+    mk.detail = pick(spec, 'dDef', MASK_DEFAULT.detail);
+  }
   rebakeMaskTexture(d, mkEditing);
   updateMaterialEverywhere(d.id);
   saveMaterialLibrary();
