@@ -530,9 +530,7 @@
   #lightHud .lh-v { font-size: 15px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
   #lightHud .lh-k { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .06em; }
   #lightHud .lh-hint { font-size: 10px; color: var(--text-dim); }
-  #lightHud .lh-on { color: var(--accent); }
 
-  #objectStrip { gap: 8px; }
   .objChip {
     display: inline-flex; align-items: center; gap: 8px; background: var(--panel2);
     border: 1px solid var(--line); border-radius: var(--r-md); padding: 6px 12px 6px 8px;
@@ -758,10 +756,6 @@
     font-size: 13px; color: var(--text);
   }
   .help-row .ic { display: flex; color: var(--accent); flex-shrink: 0; }
-  #helpGestures {
-    margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--line);
-    font-size: 12px; color: var(--text-dim); line-height: 1.7;
-  }
   .insp-row { display: flex; align-items: center; gap: 4px; margin-top: 5px; }
   .insp-label { font-size: 11px; color: var(--text-dim); width: 34px; flex-shrink: 0; }
   .insp-row input {
@@ -790,7 +784,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.32</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.33</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1907,9 +1901,6 @@ function applyTheme(name) {
     refreshElementColors(o); // puts the selection colour back on top
   });
 
-  const picker = document.getElementById('colorPicker');
-  if (picker) picker.value = t.swatch;
-
   const btn = document.getElementById('btnTheme');
   if (btn) {
     btn.textContent = 'Theme: ' + t.label;
@@ -1969,26 +1960,6 @@ function updateStrokeResolution() {
   const w = viewportEl.clientWidth || 1, h = viewportEl.clientHeight || 1;
   gizmoStrokes.forEach(l => l.material.resolution.set(w, h));
 }
-
-// World-space radius of whatever's selected, so the move bars can lie on its
-// edges instead of floating at some arbitrary distance.
-function selectionRadius() {
-  const box = new THREE.Box3();
-  let any = false;
-  if (App.mode === 'object') {
-    App.selectedObjectIds.forEach(id => {
-      const o = findObject(id);
-      if (o) { box.expandByObject(o.mesh); any = true; }
-    });
-  } else {
-    const obj = findObject(App.activeObjectId);
-    if (obj && App.selectedElements.size) { box.expandByObject(obj.mesh); any = true; }
-  }
-  if (!any || box.isEmpty()) return 0;
-  const size = box.getSize(new THREE.Vector3());
-  return Math.max(size.x, size.y, size.z) * 0.5;
-}
-
 
 
 /* The old TransformControls-era names are kept so the ~20 call sites around
@@ -3865,11 +3836,25 @@ function applyShading(obj) {
     } catch (cerr) {
       geo.userData.kubikEdges = { pos: new Float32Array(0), kind: new Uint8Array(0), gen: ++_wearGen };
       console.error('wear-edge pass failed, shape masks will find nothing', cerr);
+      warnOnce('wear', 'Shape masks are off on this model — the edge pass failed');
     }
   } catch (err) {
     console.error('applyShading failed, using flat normals', err);
+    warnOnce('shade', 'Smooth shading failed on this model — showing flat faces');
     geo.computeVertexNormals();
   }
+}
+
+/* The fallbacks above are right; the SILENCE was not. This runs on a phone,
+   where there is no console to read, so a model that quietly lost its shape
+   masks or its smooth shading just looks wrong. Said once per reason per
+   session - applyShading runs on every edit and a toast per frame would be
+   its own bug. */
+const _warned = new Set();
+function warnOnce(key, msg) {
+  if (_warned.has(key)) return;
+  _warned.add(key);
+  toast(msg);
 }
 
 /* Old files carry per-face smoothGroups and creases that also hardened
@@ -4010,10 +3995,14 @@ function shadeSelection(smooth) {
     edgesForShading(obj).forEach(ei => {
       const k = edgeKeyAt(obj, ei);
       if (!k) return;
+      /* Only a real change counts. Shading flat what is already flat used to
+         report a number and push a step that changed nothing. */
       if (smooth) {
         if (marks[k] === 'sharp') return;   // a hand mark outranks the command
+        if (marks[k] === 'smooth') return;
         marks[k] = 'smooth';
       } else {
+        if (marks[k] === 'sharp') return;
         marks[k] = 'sharp';
       }
       n++;
@@ -4023,6 +4012,7 @@ function shadeSelection(smooth) {
   });
   hideRadialMenu();
   refreshUI();
+  if (!n) { toast(smooth ? 'Already smooth there' : 'Already flat there'); return; }
   pushHistory();
   toast((smooth ? 'Shaded smooth - ' : 'Shaded flat - ') + n + ' edge(s)');
 }
@@ -5701,6 +5691,24 @@ function computeEdgeAverageNormal(ed, topo, la, lb) {
 
 const EXTRUDE_OFFSET = 0.4;
 
+/* WHY THE LAST OP DID NOTHING.
+
+   Every geometry worker here returns a bare `false` or `0` when it decides it
+   cannot proceed, and applyPendingOp threw every one of those away - so the
+   bar reported "<op> applied" over a mesh that had not moved, and pushed a
+   history step, so the next Undo press looked broken too. A silent no-op is
+   the worst failure mode in this app; one that affirmatively claims success
+   is worse still.
+
+   Bridge already had this channel (`op.lastWhy`) and it works; this is the
+   same idea reachable from inside a worker, which cannot see the pending op.
+   Set at the point of refusal, read once by applyPendingOp, cleared there. */
+let opRefusal = null;
+function refuseOp(why, value) {
+  opRefusal = why;
+  return value === undefined ? false : value;
+}
+
 // Extrudes one face group outward along its normal. The cap keeps the same
 // group slot (so its color/material is unchanged); new side walls are
 // appended as a new group. Returns the (unchanged) group index of the cap.
@@ -5832,9 +5840,6 @@ function polygonTriangles(ed, loop) {
 /* Connect: draws a new edge between selected vertices, cutting whichever face
    they both sit on into two faces. Repeats until no more valid connections
    remain, so selecting 3+ corners of a face carves it up in one go. */
-const INSET_RATIO = 0.25;
-const BEVEL_RATIO = 0.2;
-
 function loopCentroid(ed, loop) {
   const c = new THREE.Vector3();
   loop.forEach(ai => c.add(vecAt(ed, ai)));
@@ -5899,17 +5904,6 @@ function chooseRingOffset(ed, ringA, ringB) {
   }
   // Every rotation welds: nothing to choose between them, take the cheapest.
   return best >= 0 ? best : fallback;
-}
-
-function bestRingOffset(ed, ringA, ringB) {
-  const n = ringA.length;
-  let best = 0, bestCost = Infinity;
-  for (let k = 0; k < n; k++) {
-    let cost = 0;
-    for (let i = 0; i < n; i++) cost += vecAt(ed, ringA[i]).distanceToSquared(vecAt(ed, ringB[(i + k) % n]));
-    if (cost < bestCost) { bestCost = cost; best = k; }
-  }
-  return { k: best, cost: bestCost };
 }
 
 /* How the two rims are matched up, and which way round the walls go.
@@ -6455,9 +6449,6 @@ function creaseSet(obj) {
   if (!obj.mesh.userData.creases) obj.mesh.userData.creases = {};
   return obj.mesh.userData.creases;
 }
-function isCreased(obj, pa, pb) {
-  return !!creaseSet(obj)[creaseKeyFor(pa, pb)];
-}
 
 /* ---------------- Subdivision ----------------
    Every face is split into one quad per corner, meeting at the face centre.
@@ -6670,7 +6661,13 @@ function insetRegionOp(obj, groupIndices, ratio, shapeMode) {
   });
   const rim = [];
   count.forEach((c, k) => { if (c === 1) rim.push(directed.get(k)); });
-  if (rim.length < 3) return false;
+  /* Every edge shared with another selected face means the patch has no
+     border - select every face of a cube and there is nothing to inset
+     towards. Organic and Keep shape both land here; Each does not, because
+     it works one face at a time. */
+  if (rim.length < 3) {
+    return refuseOp('that selection has no border — every edge is shared with another selected face');
+  }
 
   const next = new Map();
   rim.forEach(([a, b]) => next.set(a, b));
@@ -6807,7 +6804,9 @@ function extrudeRegionOp(obj, groupIndices, offset, useOwnNormals, sym) {
   });
   const rim = [];
   count.forEach((c, k) => { if (c === 1) rim.push(directed.get(k)); });
-  if (rim.length < 3) return false;
+  if (rim.length < 3) {
+    return refuseOp('that selection has no border — every edge is shared with another selected face');
+  }
 
   /* A region can be SEVERAL disconnected patches - a face and its mirror are
      usually nowhere near each other - so walk every rim loop, not just the
@@ -6848,8 +6847,21 @@ function extrudeRegionOp(obj, groupIndices, offset, useOwnNormals, sym) {
     });
   }
   if (avgDir.lengthSq() < 1e-12) { avgDir.set(0, 0, 0); faceNormals.forEach(n => avgDir.add(n)); }
-  if (avgDir.lengthSq() < 1e-12) return false;
-  avgDir.normalize();
+  /* Two faces pointing opposite ways sum to nothing. The symmetry branch
+     above rescues that only while symmetry is ON - with it off, the top and
+     bottom of a cube returned false here, the drag did nothing however far
+     you pulled, and the bar still said "Extruded".
+
+     It only ever mattered to the modes that USE one shared direction. Joined
+     by own normals - the DEFAULT for a multi-face selection - wants avgDir as
+     nothing but a fallback, so it is no longer refused: each vertex follows
+     the faces it belongs to, and opposite faces grow apart, which is what was
+     being asked for. */
+  const sharedDir = avgDir.lengthSq() >= 1e-12;
+  if (sharedDir) avgDir.normalize();
+  else if (!useOwnNormals) {
+    return refuseOp('those faces point opposite ways — try Each, or Joined ↗');
+  }
 
   // Which side of the plane a vertex is on: +1, -1, or 0 for on it.
   const symSide = (l) => {
@@ -7405,7 +7417,7 @@ function edgeLoopOp(obj, startLogicalEdge, positions) {
 
   const startKey = edgeKey(startLogicalEdge[0], startLogicalEdge[1]);
   const startGroups = edgeToGroups.get(startKey) || [];
-  if (!startGroups.length) return 0;
+  if (!startGroups.length) return refuseOp('that edge borders no face', 0);
 
   // Steps from face to face across opposite edges, only through quads.
   function walk(fromKey, gi, seen) {
@@ -7429,7 +7441,15 @@ function edgeLoopOp(obj, startLogicalEdge, positions) {
   const seen = new Set();
   let chain = walk(startKey, startGroups[0], seen);
   if (startGroups[1] !== undefined) chain = chain.concat(walk(startKey, startGroups[1], seen));
-  if (!chain.length) return 0;
+  /* `walk` steps only through quads, so an edge whose faces are triangles or
+     n-gons produces no chain at all. Two taps from a cube reach it: Split an
+     edge, then loop cut between the two five-sided faces that made. It used
+     to return 0 here and the bar reported "Loop applied" over an untouched
+     mesh - and applyPendingOp's own comment claimed edgeLoopSelection said
+     so, which it never did. */
+  if (!chain.length) {
+    return refuseOp('a ring can only cross four-sided faces, and that edge runs into one that is not', 0);
+  }
 
   chain.forEach(({ gi, entry, exit }) => {
     const lp = attrLoops[gi];
@@ -7974,6 +7994,9 @@ function applyPendingOp() {
 
   restoreObjectState(obj, op.state);
   ensureHelpers(obj);
+  // Cleared before the run, read after it: whatever the worker says here is
+  // about THIS re-run, not the last one.
+  opRefusal = null;
 
   /* A SETTLED live extrude has no preview of its own. A rotate or a scale
      turned everything pulled so far into real geometry, so what you are
@@ -7995,6 +8018,9 @@ function applyPendingOp() {
         ensureHelpers(obj);
         extrudeFaceGroup(obj, gi, op.amount);
       });
+      // Per-face modes are not all-or-nothing: one awkward face refusing does
+      // not make the op a no-op, and reporting it as one would be a lie.
+      opRefusal = null;
     } else {
       ensureHelpers(obj);
       extrudeRegionOp(obj, op.payload.groups, op.amount, op.groupMode === 'own', op.sym);
@@ -8027,6 +8053,10 @@ function applyPendingOp() {
     const la = findLogicalByPosition(obj, op.payload.pa);
     const lb = findLogicalByPosition(obj, op.payload.pb);
     if (la >= 0 && lb >= 0) edgeLoopOp(obj, [la, lb], ts);
+    // The starting edge rides as coordinates because every re-run renumbers.
+    // If it cannot be found the mesh moved under the op, which the knife
+    // already says out loud and this did not.
+    else refuseOp('the edge it started from is not there any more');
     ensureHelpers(obj);
 
     /* The mirrored ring, cut in the SAME re-run, so the op bar previews both
@@ -8102,10 +8132,12 @@ function applyPendingOp() {
 
   } else if (op.kind === 'inset') {
     if (op.groupMode === 'each') {
+      let any = false;
       op.payload.groups.forEach(gi => {
         ensureHelpers(obj);
-        insetRegionOp(obj, [gi], op.amount, 'organic');
+        if (insetRegionOp(obj, [gi], op.amount, 'organic')) any = true;
       });
+      if (any) opRefusal = null;
     } else {
       ensureHelpers(obj);
       insetRegionOp(obj, op.payload.groups, op.amount, op.groupMode);
@@ -8123,6 +8155,7 @@ function applyPendingOp() {
       if (la >= 0 && lb >= 0) pairs.push([la, lb]);
     });
     if (pairs.length) bevelEdgesOp(obj, pairs, op.amount, op.segments || 1, op.groupMode || 'flat');
+    else refuseOp('those edges are not there any more');
     ensureHelpers(obj);
 
   } else if (op.kind === 'autosmooth') {
@@ -8159,6 +8192,10 @@ function applyPendingOp() {
       ensureHelpers(o);
     });
   }
+
+  /* Bridge has always carried its own reason and reports it before the bar
+     ever opens; everything else gets it from the worker that refused. */
+  if (op.kind !== 'bridge') op.lastWhy = opRefusal;
 
   App.selectedElements = resultSelection;
   setActiveObjectHelpersVisible(obj, App.mode);
@@ -8339,6 +8376,28 @@ function confirmPendingOp() {
   if (App.knife) { applyKnife(); return; }
   const op = App.pendingOp;
   if (!op) return;
+  /* An op that DECLINED must not leave a history step behind claiming it
+     did something. Extrude on two opposite faces, a loop cut into a face
+     that is not a quad, Inset on a closed selection - each did nothing, said
+     "applied", and left an empty step that made the next Undo press look
+     broken as well. */
+  if (op.lastWhy) {
+    const oW = findObject(op.objId);
+    const whyW = op.lastWhy, labelW = OP_SPECS[op.kind].label;
+    App.pendingOp = null;
+    hideOpBar();
+    if (oW) {
+      restoreObjectState(oW, op.baseState || op.state);
+      ensureHelpers(oW);
+      App.selectedElements = new Set(op.selectionBefore);
+      setActiveObjectHelpersVisible(oW, App.mode);
+      refreshElementColors(oW);
+    }
+    refreshUI();
+    refreshGizmoAttachment();
+    toast(labelW + ' did nothing — ' + whyW);
+    return;
+  }
   /* A section pulled to nothing is not a section. Extrude mode always has
      one open, so committing as-is would weld a zero-height wall into the
      mesh every time you tapped away without dragging. Drop it - and if it
@@ -8407,6 +8466,10 @@ function confirmPendingOp() {
        destructive thing this tool does. */
     toast('Smooth below ' + Math.round(op.amount) + '\u00b0' +
       (op.clearedMarks ? ' \u2014 cleared ' + op.clearedMarks + ' edge mark(s)' : ''));
+  } else if (op.kind === 'bridge' && op.badWinding) {
+    // The bar has said "folds over" the whole time it was open; the toast
+    // used to drop it at the last moment and report a clean success.
+    toast('Bridge applied — it folds over itself');
   } else if (op.live) {
     toast('Extruded' + (op.sections > 1 ? ' ×' + op.sections : ''));
   } else {
@@ -8965,7 +9028,18 @@ function creaseSelection(on) {
      state; called with nothing it decides from what is there. */
   const allCreased = keys.every(k => !!creases[k]);
   const want = (on === undefined) ? !allCreased : !!on;
-  keys.forEach(k => { if (want) creases[k] = true; else delete creases[k]; });
+  /* Counted, not assumed. Asking to clear a crease that was never there used
+     to report "1 crease(s) cleared" and push a history step that changed
+     nothing - so the next Undo press appeared dead as well. */
+  let changed = 0;
+  keys.forEach(k => {
+    if (want) { if (!creases[k]) { creases[k] = true; changed++; } }
+    else if (creases[k]) { delete creases[k]; changed++; }
+  });
+  if (!changed) {
+    toast(want ? 'Already creased' : 'No creases on that edge');
+    return;
+  }
 
   /* A crease still has NO say in shading - a2.18's split stands, and the
      normals below are untouched by this. But since a2.27 the Edges MASK
@@ -8977,7 +9051,7 @@ function creaseSelection(on) {
   hideRadialMenu();
   refreshUI();
   pushHistory();
-  toast(want ? keys.length + ' edge(s) creased' : keys.length + ' crease(s) cleared');
+  toast(want ? changed + ' edge(s) creased' : changed + ' crease(s) cleared');
 }
 
 function clearAllCreases() {
@@ -9005,7 +9079,11 @@ function clearAllCreases() {
 function bridgeSelection() {
   const obj = findObject(App.activeObjectId);
   if (!obj) { toast('Select an object first'); return; }
-  if (App.pendingOp || App.knife) return;
+  if (App.knife) { toast('Finish the cut first'); return; }
+  if (App.pendingOp) {
+    toast('Finish the ' + ((OP_SPECS[App.pendingOp.kind] || {}).label || 'operation') + ' first');
+    return;
+  }
   ensureHelpers(obj);
 
   let payload;
@@ -9590,7 +9668,6 @@ let dragCtx = null;
    they're damped hardest. Translation stays close to 1:1 - dragging should
    feel like the object is under your finger. */
 const ROTATE_BASE = 0.26;
-const SCALE_BASE = 0.30;
 const MIN_SCALE_FACTOR = 0.02;
 
 // Snapshots what's selected so every frame of a drag is applied to the
@@ -10073,7 +10150,10 @@ function hideKnifeBar() {
 }
 
 function startKnife() {
-  if (App.pendingOp) return;
+  if (App.pendingOp) {
+    toast('Finish the ' + ((OP_SPECS[App.pendingOp.kind] || {}).label || 'operation') + ' first');
+    return;
+  }
   if (App.mode === 'object') { toast('Knife cuts a mesh - switch to Component mode'); return; }
   const obj = findObject(App.activeObjectId);
   if (!obj) { toast('Tap an object first'); return; }
@@ -12604,6 +12684,10 @@ function flipObjectInPlace(obj, plane) {
 }
 
 function mirrorSelectedObjects(axis, apart) {
+  // Every UI path passes one, but a missing axis used to reach
+  // activeMirrorPlane and throw on undefined rather than doing the obvious
+  // thing - the axis the Symmetry pill is already set to.
+  axis = axis || App.symmetryAxis || 'y';
   if (App.mode !== 'object') { toast('Mirror works in Object mode'); return; }
   const ids = Array.from(App.selectedObjectIds);
   if (!ids.length) { toast('Select an object to mirror'); return; }
@@ -12892,10 +12976,19 @@ function serializeDoc() {
           envMapIntensity: m.envMapIntensity,
           themed: !!m.userData.themedDefault
         })),
-        smoothGroups: o.mesh.userData.smoothGroups || {},
-        finishes: o.mesh.userData.finishes || {},
-        creases: o.mesh.userData.creases || {},
-        edgeShade: o.mesh.userData.edgeShade || {},
+        /* COPIES. These four were live references, so every doc already in
+           the history aliased the very maps the next op was about to mutate
+           - and edgeShadeSet/creaseSet hand back the live object and write
+           into it. The result: Mark Sharp, Shade smooth and Shade flat could
+           not be undone. Measured - mark an edge sharp, press Undo, and the
+           mark was still there, because the step being restored had been
+           edited in place along with the mesh. Autosave and the .json export
+           read the same function, so they were writing a snapshot that kept
+           changing under them too. */
+        smoothGroups: { ...(o.mesh.userData.smoothGroups || {}) },
+        finishes: { ...(o.mesh.userData.finishes || {}) },
+        creases: { ...(o.mesh.userData.creases || {}) },
+        edgeShade: { ...(o.mesh.userData.edgeShade || {}) },
         /* DEGREES in the file, radians in memory. A bare number in JSON with
            no unit is a trap: anything that later wrote 33 meaning degrees
            would be read as 33 RADIANS, and the model would shade like
@@ -12997,7 +13090,22 @@ function restoreDoc(doc, opts = {}) {
     od.geometry.groups.forEach(gr => geo.addGroup(gr.start, gr.count, gr.materialIndex));
     geo.computeBoundingSphere();
     geo.computeBoundingBox();
-    const look = keepLook ? liveLook.get(od.id) : null;
+    /* Keeping the LIVE look across an undo only works while the two agree
+       about what the face groups ARE. `liveLook` is indexed by the object's
+       CURRENT numbering; the geometry being restored can have one group more
+       or fewer, and applying one to the other BY INDEX put the materials back
+       shifted - the face you painted grey again, its neighbour wearing its
+       material, and one group left unstamped with no finishes entry, which
+       renders unmasked and ignores every edit to the material it appears to
+       wear. Saving then persisted the damage.
+
+       Measured, three taps from a cube: paint face 3 plastic and face 5
+       metal, delete face 1, Undo - plastic and metal came back on faces 2
+       and 4. When the counts disagree the RESTORED step's own materials win:
+       they are what that step actually looked like. */
+    const liveLook0 = keepLook ? liveLook.get(od.id) : null;
+    const look = (liveLook0 && liveLook0.surfaces.length === od.materials.length)
+      ? liveLook0 : null;
     const finishes = look ? look.finishes : (od.finishes || {});
     const mats = od.materials.map((md, i) => {
       const src = (look && look.surfaces[i]) ? look.surfaces[i] : md;
@@ -13081,6 +13189,24 @@ function pushHistory() {
   if (App.fillet) refreshFillets();
   scheduleAutosave();
   const doc = serializeDoc();
+  /* A step identical to the one already at the cursor is not a step. Ops
+     reach this honestly - mirroring an already-symmetric object reproduces
+     it exactly, and several tools report a count of things they touched
+     without changing any of them - and each one left an Undo press that
+     appeared broken. Undo is the one thing that has to be trustworthy, so
+     the cheapest way to keep it so is to not record nothing.
+
+     Two stringifies per committed edit. Autosave already serializes on the
+     same path, so this is not a new order of cost. */
+  const cur = App.history[App.historyIndex];
+  /* Compared on the MODEL only. `nextId` counts objects that have ever
+     existed, so an op that builds a temporary and throws it away bumps it,
+     and `selection` moves on its own - neither is something an Undo press
+     should have anything to take back. */
+  const modelSig = d => JSON.stringify({
+    objects: d.objects, environment: d.environment, materialLib: d.materialLib
+  });
+  if (cur && modelSig(cur) === modelSig(doc)) { refreshUI(); return; }
   App.history = App.history.slice(0, App.historyIndex + 1);
   App.history.push(doc);
   App.historyIndex++;
@@ -13975,13 +14101,6 @@ function wireEdgeSwitch(el, onPick, axis) {
     onPick(first);
   });
   el.addEventListener('pointercancel', () => { press = null; });
-}
-
-function setObjComponentMode(want) {
-  const isObj = App.mode === 'object';
-  if (want === 'object' && !isObj) setMode('object');
-  else if (want === 'component' && isObj) setMode(App.lastComponentMode);
-  else refreshObjComponentBtn();   // already there - just re-settle the knob
 }
 
 hubBtnEl.addEventListener('pointerdown', (ev) => ev.stopPropagation());
@@ -15387,6 +15506,8 @@ if (PICK_DEBUG) {
     measureExtrudeAxis, selectionCentroidWorld,
     // The drag itself, driveable with a plain {clientX, clientY}.
     axisTooFlat, beginExtrudeDrag, updateExtrudeDrag, endExtrudeDrag,
+    restoreDoc, serializeDoc, refuseOp, pushHistory, toast,
+    get opRefusal() { return opRefusal; },
     settleExtrudeSection, openExtrudeSection, beginDirectDrag, updateDirectDrag,
     endDirectDrag, setTransformTool,
     get extrudeDrag() { return extrudeDrag; },
@@ -15425,6 +15546,14 @@ if (PICK_DEBUG) {
     creaseSelection, deleteSelection, weldSelection, connectSelection,
     mergeSelection, detachFacesSelection, mergeVerticesOp, detachFacesOp,
     bridgeSelection, mirrorSelectedObjects,
+    /* The rest of the op set, so one harness can sweep ALL of them rather
+       than the handful that happened to be exported. Every one of these is
+       already a single tap away in the rings. */
+    subdivideSelection, fillHolesSelection, flipNormalsSelection,
+    autoSmoothSelection, markSharpSelection, shadeSelection,
+    growSelection, shrinkSelection, collapseSelection,
+    duplicateSelection, separateSelection, joinSelection,
+    switchToComponentType, selectObjectClick, startKnife, cancelKnife,
     combineObjectsInto, removeObjects,
     // Screen-space spacing between the visible vertices of the active
     // object - how crowded a selection actually is, for a harness.

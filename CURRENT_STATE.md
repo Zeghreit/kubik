@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~13,800 lines)
-- Version at time of writing: **a2.32**
+- Version at time of writing: **a2.33**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1146,6 +1146,143 @@ every one of them in seconds on a real model.
 The through-line: **a face can only ever say something about its own
 interior.** Ask the edges.
 
+## The a2.33 audit — every op run, and what it found
+
+A whole session spent testing rather than building. Three passes: a dead-code
+scan, a silent-failure scan, and a harness that runs **every** operation and
+checks the same invariants each time. Five defects, of which the first was
+three taps from a cube and corrupted saved files.
+
+### 1. Undo re-dressed the geometry from the LIVE materials, by index
+
+`restoreDoc` keeps the current look across an undo (`keepAppearance`), which
+is right — undo should not rewind a paint job. It applied it **by index**,
+with no check that the two agree about how many face groups there are.
+
+Measured, three taps from a cube: paint face 3 plastic and face 5 metal,
+delete face 1, press Undo. The materials came back on faces **2 and 4**, the
+face actually painted was grey again, and one group was left unstamped — with
+no `finishes` entry, which `reconcileFinishes` describes as belonging to the
+Solid preset invisibly: it renders unmasked and ignores every edit to the
+material it appears to wear. `serializeDoc` then persisted all of that.
+
+The fix is a length guard. When the counts disagree the RESTORED step's own
+materials win, because they are what that step actually looked like.
+
+**The rest of that bug class is closed**, and it is worth writing down why the
+per-op search kept coming up empty: `finishes` is no longer a hand-maintained
+map but is DERIVED by `reconcileFinishes` from the material array on every
+rebuild; `smoothGroups` is dead at runtime (migrated to position-keyed
+`edgeShade` on load); the live marks are position-keyed and immune to
+renumbering by construction; and `captureObjectState` snapshots all five maps.
+
+### 2. A history entry was a VIEW of the live marks, not a copy
+
+`serializeDoc` wrote `creases`, `edgeShade`, `finishes` and `smoothGroups` as
+the live objects. Every doc already in the history therefore aliased the very
+maps the next op was about to mutate, and `edgeShadeSet` / `creaseSet` hand
+back the live object and write into it.
+
+Consequence: **Mark Sharp, Shade smooth and Shade flat could not be undone.**
+Measured — mark an edge sharp, press Undo, the mark is still there, because
+the step being restored had been edited in place along with the mesh.
+Autosave and the `.json` export read the same function.
+
+Four spread copies. A snapshot has to be a snapshot.
+
+### 3. Three ops did nothing and reported success
+
+`confirmPendingOp` ended `toast(label + ' applied')` unconditionally and
+`applyPendingOp` discarded every worker's return value. Bridge was the only op
+with a failure channel. So:
+
+- **Extrude two opposite faces** (symmetry off) — their normals sum to zero.
+  It fired on `own`, the DEFAULT grouping, which never needed a shared
+  direction in the first place. Now `own` extrudes them apart as asked, and
+  only the modes that really need one shared direction refuse.
+- **Loop cut into a non-quad** — two taps from a cube: Split an edge, then cut
+  between the two five-sided faces that made. `applyPendingOp`'s own comment
+  claimed `edgeLoopSelection` checked for this. It never did.
+- **Inset a closed selection** — every face of a cube: no rim, nothing to
+  inset towards.
+
+All three dragged, did nothing, said "applied", and left a history step — so
+the next Undo press looked broken too.
+
+**The fix is one channel, not three patches.** `refuseOp(why, value)` sets
+`opRefusal` at the point of refusal; `applyPendingOp` clears it before the run
+and hands it to `op.lastWhy` after; `confirmPendingOp` restores the snapshot,
+pushes NO history and says `"<Op> did nothing — <why>"`. Bridge keeps its own
+`lastWhy` and is unchanged. Per-face modes clear the flag when at least one
+face worked: one awkward face refusing does not make the op a no-op.
+
+### 4. An Undo press that does nothing is now impossible to record
+
+`pushHistory` compares the new doc against the one already at the cursor and
+returns without recording an identical one. Compared on the MODEL only —
+`nextId` counts objects that ever existed, so an op that builds a temporary
+bumps it, and `selection` moves on its own; neither is something Undo should
+have anything to take back. Two stringifies per committed edit, on a path
+that already serializes for autosave.
+
+Crease, Shade and Mark Sharp were also counting things they had not changed
+("1 crease(s) cleared" over an uncreased edge). They count real changes now
+and say "No creases on that edge" instead.
+
+### 5. Smaller, but the same principle
+
+- **Knife and Bridge refused silently** while an op bar was open, where
+  Extrude says "Finish the … first". They say it too now.
+- **`applyShading`'s two catches** logged to a console this app's users do not
+  have. `warnOnce` says it on screen, once per reason per session.
+- **A bridge that folds over** said so in the bar's label the whole time and
+  then reported a clean "Bridge applied" at OK. The toast carries it now.
+- **Mirror threw on a missing axis** instead of using the one the Symmetry
+  pill is set to.
+
+### Removed: twelve things nothing reached
+
+Verified by whole-file identifier count (exactly one occurrence — the
+declaration) and by reading each site. `selectionRadius` (sized the v1.57
+move bars), `bestRingOffset` (superseded duplicate of `chooseRingOffset`,
+without the weld avoidance that stopped 2/4/6-section bridges coming out
+non-manifold), `isCreased`, `setObjComponentMode` (superseded by
+`toggleObjComponentMode`), `INSET_RATIO`, `BEVEL_RATIO`, `SCALE_BASE`, the CSS
+for `.lh-on`, `#objectStrip` and `#helpGestures`, and the `colorPicker` DOM
+lookup left behind when the drawer's colour picker went — the only
+`getElementById` in the file aimed at an id that does not exist, silent
+because of its own `if` guard. 54 lines. A declaration diff before and after
+confirms exactly seven names left and nothing else moved.
+
+`windingAudit()` is reachable only from `window.__kubik` and STAYS: it is a
+test hook, not dead code.
+
+## The ops sweep — `_ops_probe.py`
+
+38 cases, every user-facing op in every mode it works in, each run from the
+same cube. For each: the op changed something OR said something (never
+neither), winding, `material[]` and `finishes` still agreeing with the face
+groups, exactly one history step for a change and none for a refusal, and
+**Undo restoring the document exactly**.
+
+Three things make it trustworthy, all learned by getting them wrong first:
+
+- **It measures history by `historyIndex`, not `history.length`.** Every case
+  undoes itself, so the next push truncates and refills the same slot and the
+  length never moves — which read as "no history step" for ops that had
+  pushed one perfectly well.
+- **It compares `serializeDoc().objects`, not a hand-rolled fingerprint.**
+  The probe and `pushHistory` cannot then disagree about what a change is. A
+  hand-rolled one called Mirror on a symmetric cube a no-op and blamed the app
+  for recording it; the document differed.
+- **The object is re-fetched after every undo.** `restoreDoc` disposes every
+  object and builds new ones, so a held reference is a stale one.
+
+Two cases are marked as expecting broken winding, because they are: flipping
+one face of a closed cube inverts it against its neighbours by definition, and
+a flap extruded from an edge of a closed mesh hangs off an edge that already
+had two faces.
+
 ## Screen layout
 
 - **Top-left** hamburger → drawer. **Top-centre** tool/mode readout.
@@ -1614,9 +1751,11 @@ otherwise the inspector reports the position the object was reflected FROM.
 
 - v1.79 made **winding correctness load-bearing** by switching to FrontSide
   culling. Anything producing reversed winding can render or pick wrongly.
-  Mirror is handled (negative-determinant flip in `combineObjectsInto`);
-  **extrude, bridge and subdivide are still unmeasured** — but no longer
-  invisible: run the op under `?debug=1` and read the `[winding]` line.
+  Mirror is handled (negative-determinant flip in `combineObjectsInto`).
+  **Extrude, bridge and subdivide are MEASURED as of a2.33** — the ops sweep
+  audits winding after every one of its 38 cases and all of them are clean
+  except the two that cannot be (see "The ops sweep"). Under `?debug=1` any
+  op still reports its own `[winding]` line.
 - **Symmetry only mirrors vertices that already have a twin.** It keeps a
   symmetric model symmetric; it cannot restore lost symmetry.
 - Symmetry applies to component edits only, never object drags.
