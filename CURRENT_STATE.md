@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~13,800 lines)
-- Version at time of writing: **a2.33**
+- Version at time of writing: **a2.34**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1778,6 +1778,119 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## Set flow (a2.34)
+
+A loop settles onto the curve the surrounding mesh already implies. It is on
+all three component rings and it is also a switch on Loop cut.
+
+**What the two tools it comes from actually do**, checked rather than
+remembered. Maya's **Edit Edge Flow** "adjusts the position of edges to fit
+the curvature of the surrounding mesh" and has exactly one option, *Adjust
+Edge Flow*, 0 to 1, default 1, where 0 "moves the selected edges to the
+middle of the other nearby edges, creating a flat transition"; its docs
+recommend no more than two non-adjacent loops at a time. Blender's
+**EdgeFlow** add-on (BenjaminSauder) does the same job "via a spline
+interpolation such that it respects the flow of the surrounding geometry" —
+**a Hermite spline with control points taken from the neighbouring edge
+loops** — with Mix, Tension, Iterations and a Min Angle guard, and ships
+*Set Linear* (the flat end as its own tool) and *Set Vertex Curve* for
+vertex selections.
+
+### The maths, and why the obvious version of it is wrong
+
+For each vertex the caller supplies the two vertices ACROSS the loop, `a`
+and `b`, and where the vertex belongs between them, `t`. Then with `a2` and
+`b2` the next ones out:
+
+```
+T0 = tangent at a, in the direction of travel, scaled by |b - a|
+T1 = tangent at b, same
+v' = lerp(a, b, t) + amount * (H(t) - lerp(a, b, t))
+```
+
+Three things in that line are load-bearing:
+
+- **The straight position is subtracted, not assumed.** A Hermite's own
+  baseline is a smoothstep, not a lerp, so at any `t` other than the middle —
+  which is every vertex of a slid loop cut — building it in directly would
+  drag the loop toward the centre as a side effect.
+- **amount 0 is exactly Maya's flat transition** and 1 is the curve, so the
+  range carries on to 2 and over-bends, which is how a low-poly cage is made
+  to read rounder than it is.
+- **The tangent DIRECTION is where all the accuracy lives.** The obvious
+  estimate — the outer chord `a2 -> a` alone — is wrong by half the angle the
+  span turns through, because the two chords meeting at `a` do not cover
+  equal arcs: the outer one is one ring step, the span across is two.
+  `weightedTangent` weights each chord direction by the OTHER's length (the
+  non-uniform Catmull-Rom tangent), which on a circle is exact.
+
+Measured on a five-loop arc of radius 2 with the middle loop flattened onto
+its chord (1.8794) and flowed back at 1:
+
+| tangent estimate | radius returned | error |
+|---|---|---|
+| outer chord alone | 2.0504 | 2.5% proud |
+| uniform Catmull-Rom | 1.9228 | 3.9% shy |
+| **chord-length weighted** | **1.9964** | **0.18%** |
+
+What is left is the cubic's own error against a circle, not the estimate's.
+
+### Two neighbours is not the same as two neighbours ACROSS
+
+The first version accepted any vertex with exactly two non-loop neighbours.
+Where a selection turns a CORNER there are exactly two — and they sit at
+right angles on the SAME side. The curve then runs between two points that
+are not across anything: measured, a vertex thrown 0.87 units on a DEAD FLAT
+grid, in all three modes, on a surface whose implied curve is a straight
+line and where nothing at all may move.
+
+So the pair has to be genuinely opposed: `FLOW_MIN_OPPOSITION`, 110 degrees
+at the vertex. A loop on any smooth surface reads near 180 (a
+20-degree-per-step arc reads 176); a right-angled corner reads 90 and is
+refused, as is the corner of a cube's own edge loop, where "across" means no
+more than it does on the flat grid.
+
+### What each mode reads as "the loop"
+
+| mode | vertices | edges that run ALONG it |
+|---|---|---|
+| Vertex | the selection | edges with both ends selected |
+| Edge | the endpoints of the selection | the selected edges |
+| Face | the rim of the patch | the edges appearing once around it |
+
+Face mode is the rim on purpose: after an Inset or an Extrude the new rim
+settles onto the curve running through the face inside it and the surface
+outside it. A patch one face wide has nothing on the inside of its rim and
+is refused, which is correct rather than a gap.
+
+### Loop cut's Flow switch
+
+Flow is not a third SPACING — Even and Slide answer where the loop goes,
+Flow answers what shape it takes when it gets there, and you want both. So
+it is an independent switch (`OP_SPECS.toggle`, rendered by
+`refreshOpToggle`) rather than a chip in that exclusive row, the way Maya's
+Multi-Cut carries edge flow separately from where the loop lands.
+
+**The inserted vertices are recovered, not tracked.** Every one of them lies
+on an edge that no longer exists, so `loopCutBeforeState` records the edges
+before the cut and `loopCutFlowItems` finds the vertex's original span as
+"the vanished edge it sits on", with its own `t` along it. That needs no
+instrumentation inside `edgeLoopOp`, it covers the mirrored ring in the same
+pass, and handing the flow the ORIGINAL span rather than the immediate
+neighbours is what makes two sections and a slid loop come out right.
+Measured on the same arc: Flow off lands exactly on the chord (1.9696 =
+R·cos 10°), Flow on at 1.9998; two sections at 1.9998 each; a slide at 0.2
+and 0.8 both at 1.9999.
+
+### Seats
+
+Set flow holds **seat 8** in all three component rings. The Edge ring had
+exactly one free bearing and that was it, so the choice was one bearing
+everywhere for Set flow or one for Shade — and **Shade moved to seat 11 in
+the Face ring**, keeping 8 in the Object ring where shading a whole model
+belongs. Seat 8 already read as "how the surface behaves"; Set flow is that
+idea with topology behind it instead of normals.
 
 ## Extrude is a MODE (a2.31, Rotate/Scale at a2.32)
 
