@@ -517,7 +517,13 @@
   #lightMenu button.active { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
   /* Only while two fingers are held. Placed high and centred so the hand
      doing the sliding is nowhere near it. */
-  #lightHud {
+  /* Soft mode rings the mode button rather than replacing its icon: the
+     icon still has to say WHICH component type you are picking, because soft
+     is a way of dragging and not a way of selecting. A halo around a point is
+     also, literally, the thing the mode does. */
+  #hubBtn.soft { box-shadow: 0 0 0 3px var(--bg), 0 0 0 6px var(--accent), 0 6px 18px rgb(var(--shadow) / .16); }
+
+  #lightHud, #softHud {
     position: absolute; left: 50%; transform: translateX(-50%);
     top: calc(var(--edge) + 8px); z-index: 18; display: none;
     align-items: center; gap: 14px;
@@ -526,10 +532,10 @@
     box-shadow: 0 8px 24px rgb(var(--shadow) / .18);
     pointer-events: none; white-space: nowrap;
   }
-  #lightHud.show { display: flex; }
-  #lightHud .lh-v { font-size: 15px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
-  #lightHud .lh-k { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .06em; }
-  #lightHud .lh-hint { font-size: 10px; color: var(--text-dim); }
+  #lightHud.show, #softHud.show { display: flex; }
+  #lightHud .lh-v, #softHud .lh-v { font-size: 15px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+  #lightHud .lh-k, #softHud .lh-k { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .06em; }
+  #lightHud .lh-hint, #softHud .lh-hint { font-size: 10px; color: var(--text-dim); }
 
   .objChip {
     display: inline-flex; align-items: center; gap: 8px; background: var(--panel2);
@@ -815,7 +821,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.36a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.37</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -866,6 +872,14 @@
       <div><div class="lh-k" id="lhTurnK">Turn</div><div class="lh-v" id="lhTurn">0&deg;</div></div>
       <div><div class="lh-k" id="lhStrK">Strength</div><div class="lh-v" id="lhStr">1.00</div></div>
       <div class="lh-hint">one finger turns &middot; two change strength</div>
+    </div>
+
+    <!-- Same place and same weight as the light HUD, and for the same reason:
+         the radius is judged by what happens to the MODEL, so the readout
+         goes as far from the sliding hand as the screen allows. -->
+    <div id="softHud">
+      <div><div class="lh-k">Soft radius</div><div class="lh-v" id="softHudV">0.00</div></div>
+      <div class="lh-hint" id="softHudN">&nbsp;</div>
     </div>
 
     <!-- Anchored to the viewport, not to any corner box: this blooms at an
@@ -1730,6 +1744,19 @@ const App = {
      what every session opens with. */
   transformMode: 'axis',   // free | axis - switched by three-finger tap
   lastComponentMode: 'face', // resumed when the Object/Component toggle re-enters Component mode
+  /* Soft selection (a2.37). A third position on the mode button rather than a
+     switch of its own: Object edits whole objects, Component edits one vertex,
+     Soft edits a vertex and the neighbourhood around it. `mode` still says
+     which COMPONENT TYPE you are picking - soft is a way of dragging, not a
+     way of selecting, and every branch that reads `mode` is unaffected.
+
+     The radius is in WORLD units, seeded from the object the first time you
+     turn Soft on for it so a 0.1-unit bead and a 40-unit terrain both start
+     somewhere usable. Not persisted: it belongs to the mesh in front of you,
+     the way transformTool does. */
+  soft: false,
+  softRadius: 0,        // 0 = not seeded yet; seedSoftRadius fills it in
+  softRadiusFor: null,  // which object that measurement was taken against
   selectDrag: 'off',   // 'off' | 'box' | 'lasso'
   snap: false,
   /* Lighting is a SCENE property, so it lives here and travels in the
@@ -9938,6 +9965,18 @@ function syncHelperGeometry(obj) {
   syncSelectionOverlay(obj);
 }
 
+/* setCol writes one flat colour; this writes the blend between two, which is
+   what a falloff needs - a vertex at half weight is drawn half way to the
+   selection colour. Kept beside it rather than folded into it because every
+   other caller wants the flat one and would pay for a lerp it never uses. */
+function setColMix(arr, i, hexA, hexB, t) {
+  const ar = (hexA >> 16 & 255) / 255, ag = (hexA >> 8 & 255) / 255, ab = (hexA & 255) / 255;
+  const br = (hexB >> 16 & 255) / 255, bg = (hexB >> 8 & 255) / 255, bb = (hexB & 255) / 255;
+  arr[i * 3] = ar + (br - ar) * t;
+  arr[i * 3 + 1] = ag + (bg - ag) * t;
+  arr[i * 3 + 2] = ab + (bb - ab) * t;
+}
+
 function refreshElementColors(obj) {
   const points = obj.mesh.userData.vertexPoints;
   const lines = obj.mesh.userData.edgeLines;
@@ -9951,8 +9990,18 @@ function refreshElementColors(obj) {
   if (points) {
     const col = points.geometry.attributes.color.array;
     const showSel = App.mode === 'vertex';
+    /* The falloff, drawn. Every vertex the drag would carry is tinted toward
+       the selection colour by exactly the weight it will be moved with, so the
+       reach and the SHAPE of the reach are both visible before you commit to
+       anything - which is the whole reason the radius is a gesture and not a
+       number in a box. Only on the object being edited; the field is computed
+       for that one. */
+    const field = (App.soft && obj.id === App.activeObjectId) ? refreshSoftField(obj) : null;
     for (let l = 0; l < topo.logicalCount; l++) {
-      setCol(col, l, (showSel && App.selectedElements.has(l)) ? SELECT_COLOR : UNSELECT_VERT_COLOR);
+      if (showSel && App.selectedElements.has(l)) { setCol(col, l, SELECT_COLOR); continue; }
+      const w = field ? field.get(l) : undefined;
+      if (w === undefined) { setCol(col, l, UNSELECT_VERT_COLOR); continue; }
+      setColMix(col, l, UNSELECT_VERT_COLOR, SELECT_COLOR, w);
     }
     points.geometry.attributes.color.needsUpdate = true;
   }
@@ -10162,6 +10211,11 @@ function setMode(mode) {
   // A setup is real work in the scene, so switching mode keeps it - the same
   // call a live op gets one line above.
   if (App.geoSetup) finishGeoSetup(true);
+  /* Object mode has no components to fall off from, so Soft cannot survive
+     the trip. Coming back through the button re-enters Component, not Soft,
+     which is what makes the three positions a cycle rather than a memory. */
+  if (mode === 'object') App.soft = false;
+  clearSoftField();
   App.mode = mode;
   if (mode !== 'object') App.lastComponentMode = mode;
   App.selectedElements.clear();
@@ -10321,6 +10375,226 @@ function refreshGizmoAttachment() {
 
 let dragCtx = null;
 
+/* ---------------- Soft selection (a2.37) ----------------
+
+   DISTANCE IS MEASURED ALONG THE SURFACE, not through space. Straight-line
+   distance is one line of code and wrong on anything folded: the far wall of
+   a thin box, or the other side of a crease, is millimetres away through the
+   air and half a model away across the mesh, and dragging one would drag the
+   other. Walking the edges is what makes the tool trustworthy on the shapes
+   people actually make - and it also means a second object standing nearby is
+   never touched, because there is no path to it.
+
+   So this is Dijkstra over the edge graph, with world-space edge lengths,
+   seeded from every selected vertex at once and stopped at the radius. World
+   space rather than local because the radius is a number the user dialled
+   against what they can SEE, and a scaled object would otherwise take a
+   different bite than an unscaled one at the same setting. */
+
+// A binary heap, because the alternative at this size is a re-sort per pop.
+// Small enough to read in one go, which is why it is here rather than
+// borrowed: an unbounded frontier on a subdivided mesh is thousands of nodes.
+function softHeap() {
+  const d = [], k = [];   // parallel arrays: distance, key
+  return {
+    size: () => d.length,
+    push(dist, key) {
+      d.push(dist); k.push(key);
+      let i = d.length - 1;
+      while (i > 0) {
+        const p = (i - 1) >> 1;
+        if (d[p] <= d[i]) break;
+        [d[p], d[i]] = [d[i], d[p]]; [k[p], k[i]] = [k[i], k[p]];
+        i = p;
+      }
+    },
+    pop() {
+      const top = { dist: d[0], key: k[0] };
+      const ld = d.pop(), lk = k.pop();
+      if (d.length) {
+        d[0] = ld; k[0] = lk;
+        let i = 0;
+        for (;;) {
+          const l = 2 * i + 1, r = l + 1;
+          let m = i;
+          if (l < d.length && d[l] < d[m]) m = l;
+          if (r < d.length && d[r] < d[m]) m = r;
+          if (m === i) break;
+          [d[m], d[i]] = [d[i], d[m]]; [k[m], k[i]] = [k[i], k[m]];
+          i = m;
+        }
+      }
+      return top;
+    }
+  };
+}
+
+/* THE FALLOFF. One smooth cosine ease: 1 at the centre, 0 at the radius, flat
+   at both ends so neither the selection nor the boundary shows a crease. It is
+   what every package defaults to, and the one you would pick nine times in
+   ten. Deliberately the only curve - a menu of seven is more than a
+   one-handed fidget needs, and none of the other six changes what the tool
+   is FOR. */
+function softFalloff(t) {
+  if (t <= 0) return 1;
+  if (t >= 1) return 0;
+  return 0.5 * (1 + Math.cos(Math.PI * t));
+}
+
+/* Every logical vertex within `radius` of the seeds, by surface distance,
+   mapped to its weight. Seeds themselves are 1. Vertices at or past the
+   radius are left out entirely rather than stored as 0 - a drag walks this
+   map, and an entry that cannot move is work for nothing.
+
+   Returns null when there is nothing to do, so callers can test one value
+   instead of a size. */
+/* The positions and the adjacency, memoised. The radius slide changes the
+   radius on every pointermove, and without this each frame rebuilt a Vector3
+   per vertex and a two-entry array per edge before the walk even started -
+   tens of thousands of allocations per frame on a subdivided mesh, on the one
+   gesture where the user is watching for smooth feedback. None of it depends
+   on the radius; all of it depends on the mesh, which is not moving.
+
+   Keyed on the object, the position attribute's own version, and the world
+   matrix - element by element, because a moved or scaled object changes world
+   lengths without touching either of the other two. */
+let softGraph = null;   // { objId, version, m: Float64Array(16), wp, adj }
+let softGraphBuilds = 0;   // how many times it was actually rebuilt
+
+function sameMatrix(el, cached) {
+  for (let i = 0; i < 16; i++) if (el[i] !== cached[i]) return false;
+  return true;
+}
+
+function softGraphFor(obj) {
+  const topo = obj.mesh.userData.topo;
+  const pa = obj.mesh.geometry.attributes.position;
+  obj.mesh.updateMatrixWorld();
+  const el = obj.mesh.matrixWorld.elements;
+  if (softGraph && softGraph.objId === obj.id && softGraph.version === pa.version &&
+      softGraph.count === topo.logicalCount && sameMatrix(el, softGraph.m)) {
+    return softGraph;
+  }
+  const wp = new Array(topo.logicalCount);
+  const tmp = new THREE.Vector3();
+  for (let l = 0; l < topo.logicalCount; l++) {
+    const g = topo.logicalGroups[l];
+    if (!g || !g.length) continue;
+    // logicalGroups[l][0] is representative: every index in the group is the
+    // same point by construction.
+    tmp.set(pa.getX(g[0]), pa.getY(g[0]), pa.getZ(g[0])).applyMatrix4(obj.mesh.matrixWorld);
+    wp[l] = tmp.clone();
+  }
+  const adj = new Map();
+  topo.edges.forEach(([a, b]) => {
+    if (!wp[a] || !wp[b]) return;
+    const len = wp[a].distanceTo(wp[b]);
+    if (!adj.has(a)) adj.set(a, []);
+    if (!adj.has(b)) adj.set(b, []);
+    adj.get(a).push([b, len]);
+    adj.get(b).push([a, len]);
+  });
+  softGraph = { objId: obj.id, version: pa.version, count: topo.logicalCount,
+                m: Float64Array.from(el), wp, adj };
+  /* Counted, not timed. A headless harness runs under virtual time, where
+     performance.now() jumps rather than ticks, so "is this faster" cannot be
+     measured there at all - but "did it rebuild" is exact. */
+  softGraphBuilds++;
+  return softGraph;
+}
+
+function softWeights(obj, seeds, radius) {
+  if (!obj || !seeds || !seeds.size || !(radius > 0)) return null;
+  const topo = obj.mesh.userData.topo;
+  if (!topo || !topo.edges.length) return null;
+
+  const g = softGraphFor(obj);
+  const wp = g.wp, adj = g.adj;
+
+  const dist = new Map();
+  const heap = softHeap();
+  seeds.forEach(l => { if (wp[l]) { dist.set(l, 0); heap.push(0, l); } });
+
+  while (heap.size()) {
+    const { dist: d, key: l } = heap.pop();
+    // Stale entry: this vertex was reached again by a shorter path after it
+    // was queued. Cheaper than a decrease-key.
+    if (d > (dist.get(l) ?? Infinity)) continue;
+    const nb = adj.get(l);
+    if (!nb) continue;
+    for (const [m, len] of nb) {
+      const nd = d + len;
+      if (nd >= radius) continue;              // past the edge of the field
+      if (nd < (dist.get(m) ?? Infinity)) { dist.set(m, nd); heap.push(nd, m); }
+    }
+  }
+
+  const out = new Map();
+  dist.forEach((d, l) => {
+    const w = seeds.has(l) ? 1 : softFalloff(d / radius);
+    if (w > 0) out.set(l, w);
+  });
+  return out.size ? out : null;
+}
+
+/* A radius that means something on THIS mesh. A quarter of the object's
+   bounding-box diagonal reaches a useful way across a cube and does not
+   swallow a terrain whole, and it is measured in world units so a scaled
+   object is treated as the size it looks. */
+function seedSoftRadius(obj) {
+  if (!obj) return;
+  App.softRadiusFor = obj.id;
+  const g = obj.mesh.geometry;
+  if (!g.boundingBox) g.computeBoundingBox();
+  const size = g.boundingBox.getSize(new THREE.Vector3());
+  obj.mesh.updateMatrixWorld();
+  const sc = new THREE.Vector3().setFromMatrixScale(obj.mesh.matrixWorld);
+  App.softRadius = Math.max(0.02, size.multiply(sc).length() * 0.25);
+}
+
+/* The weights the TINT reads, kept off the drag path. Recomputed only when
+   something it depends on actually changed - the signature includes the
+   position attribute's own version, so a mesh that just moved re-reads rather
+   than colouring by where it used to be. */
+let softField = null;      // Map<logical, weight> or null
+let softFieldSig = '';
+
+function softSeeds(obj) {
+  const topo = obj.mesh.userData.topo;
+  const seeds = new Set();
+  if (App.mode === 'vertex') App.selectedElements.forEach(l => seeds.add(l));
+  else if (App.mode === 'edge') App.selectedElements.forEach(ei => { if (topo.edges[ei]) topo.edges[ei].forEach(l => seeds.add(l)); });
+  else if (App.mode === 'face') App.selectedElements.forEach(gi => { if (topo.faceGroups[gi]) topo.faceGroups[gi].logicalVerts.forEach(l => seeds.add(l)); });
+  return seeds;
+}
+
+function refreshSoftField(obj) {
+  if (!App.soft || !obj || App.mode === 'object' || !App.selectedElements.size) {
+    softField = null; softFieldSig = ''; return null;
+  }
+  /* Re-measured HERE rather than only when Soft is switched on, because the
+     active object changes on paths that never pass through setSoft: tapping
+     another object's surface, the outliner chip, and loading a file - which
+     also carries App.soft and the old radius across, onto a document whose
+     object ids commonly collide with the previous one's.
+
+     A radius is a length in one object's world. Carrying 0.03 from a bead onto
+     a 40-unit terrain gives a Soft mode that does nothing at all while the
+     button says it is on, and that is the failure this project keeps killing.
+     Re-dialling costs one slide; being silently inert costs trust. */
+  if (!(App.softRadius > 0) || App.softRadiusFor !== obj.id) seedSoftRadius(obj);
+  const pa = obj.mesh.geometry.attributes.position;
+  const sig = [obj.id, App.mode, App.softRadius.toFixed(4), pa.version,
+               App.selectedElements.size,
+               Array.from(App.selectedElements).sort((a, b) => a - b).join(',')].join('|');
+  if (sig === softFieldSig) return softField;
+  softFieldSig = sig;
+  softField = softWeights(obj, softSeeds(obj), App.softRadius);
+  return softField;
+}
+
+function clearSoftField() { softField = null; softFieldSig = ''; softGraph = null; }
+
 /* Base damping factors, multiplied by App.sensitivity (the Gizmo speed
    slider). Rotation and scale feel violent at 1:1 on a touch screen, so
    they're damped hardest. Translation stays close to 1:1 - dragging should
@@ -10351,18 +10625,80 @@ function captureDragContext(pivot) {
     if (App.mode === 'face') App.selectedElements.forEach(gi => { if (topo.faceGroups[gi]) topo.faceGroups[gi].logicalVerts.forEach(l => logicalIds.add(l)); });
     ctx.type = 'elements';
     ctx.objId = obj.id;
-    ctx.entries = Array.from(logicalIds).map(l => {
+    const at = (l) => {
       const ai = topo.logicalGroups[l][0];
       const q = new THREE.Vector3(pa.getX(ai), pa.getY(ai), pa.getZ(ai));
       obj.mesh.localToWorld(q);
-      return { logical: l, world: q };
-    });
+      return q;
+    };
+    ctx.entries = Array.from(logicalIds).map(l => ({ logical: l, world: at(l), w: 1 }));
+
+    /* Soft selection widens the snapshot rather than the selection: the
+       neighbourhood rides along as extra entries carrying a weight, and what
+       is SELECTED is untouched - so lifting your finger leaves the same
+       vertices picked you started with, and every op that reads the selection
+       still sees exactly what you chose.
+
+       The field is FROZEN here for the length of the drag. Recomputing it per
+       frame would re-weight vertices as they move, and the falloff would smear
+       outward under your own finger.
+
+       Not while an extrude section is live: that branch borrows this same path
+       to move the section it just pulled, and a falloff over a wall that is
+       mid-extrusion is not a thing anybody asked for. */
+    const softLive = App.soft && !(App.pendingOp && App.pendingOp.live);
+    const field = softLive ? softWeights(obj, logicalIds, App.softRadius) : null;
+    if (field) {
+      field.forEach((w, l) => {
+        if (logicalIds.has(l)) return;        // already in, at full weight
+        ctx.entries.push({ logical: l, world: at(l), w });
+      });
+    }
+    ctx.soft = !!field;
+
     // Marks travel by logical edge for the length of the drag - see
     // snapshotEdgeMarks.
     ctx.marks = snapshotEdgeMarks(obj);
     ctx.mirrorMap = App.symmetry ? buildSymmetryMap(obj, App.symmetryAxis) : null;
     // Snapshot the plane with the map: it must not move mid-drag.
     ctx.mirrorOffset = App.symmetry ? symmetryPlane(obj, App.symmetryAxis).offset : 0;
+
+    /* THE INVARIANT SYMMETRY RELIES ON: an entry writes ITSELF and its mirror
+       partner, so the entries and their partners must be disjoint sets. Every
+       selection satisfied that by accident until soft selection arrived - the
+       field spreads outward in all directions, so the moment it crosses the
+       plane the mirror partner of a selected vertex is ALSO an entry, later in
+       the list and carrying a fraction of the weight.
+
+       What that did: entry A wrote A at full travel and A' at its mirror;
+       entry A' then overwrote A' with its own weighted move and overwrote A
+       with the mirror of THAT. The vertex under your finger ended up at a
+       fraction of the distance, and on a drag along the mirror axis it went
+       BACKWARDS - measured at -0.25 on a 1.0 drag.
+
+       So a partner that already has an entry of its own loses that entry: it
+       is written by the vertex it mirrors, which is what symmetry means. The
+       selection is walked first, so it always wins the claim. This also
+       settles the older order-dependent case of selecting a vertex and its own
+       mirror and dragging both.
+
+       Runs HERE, after ctx.mirrorMap exists - the first attempt sat next to
+       the soft entries a few lines up, where the map is still undefined, so
+       the whole filter quietly skipped and the probe caught it unchanged. */
+    if (ctx.mirrorMap) {
+      const claimed = new Set();
+      const kept = [];
+      ctx.entries.forEach(e => {
+        const p = ctx.mirrorMap.get(e.logical);
+        // A vertex ON the plane is its own partner: it writes only itself
+        // (clamped), so it claims nothing and can never be claimed away.
+        const mirrors = p !== undefined && p !== e.logical;
+        if (mirrors && claimed.has(e.logical)) return;
+        kept.push(e);
+        if (mirrors) claimed.add(p);
+      });
+      ctx.entries = kept;
+    }
   }
   return ctx;
 }
@@ -10389,7 +10725,15 @@ function applyDeltaToSelection(deltaMatrix) {
       topo.logicalGroups[logical].forEach(ai => pa.setXYZ(ai, v.x, v.y, v.z));
     };
     dragCtx.entries.forEach(entry => {
-      const newWorld = entry.world.clone().applyMatrix4(deltaMatrix);
+      /* The weight scales the RESULT, not the matrix. Blending the matrix
+         itself would need it decomposed and the rotation slerped, and for a
+         partial scale it is not even well defined; lerping from where the
+         vertex was to where the full transform would have put it gives the
+         same answer for a move and the right-looking answer for a rotate or a
+         scale, in one line. Undefined weight means an ordinary drag. */
+      const moved = entry.world.clone().applyMatrix4(deltaMatrix);
+      const newWorld = (entry.w === undefined || entry.w >= 1)
+        ? moved : entry.world.clone().lerp(moved, entry.w);
       const local = obj.mesh.worldToLocal(newWorld);
       setLocal(entry.logical, local);
       if (dragCtx.mirrorMap) {
@@ -10602,6 +10946,122 @@ function maybeResumeOrbit() {
   }
   if (typeof orbit.state === 'number') orbit.state = -1;   // _STATE.NONE
   orbit.enabled = true;
+}
+
+/* THE RADIUS, BY GESTURE. Three fingers sliding sets it, and only while Soft
+   is on. Nothing else is displaced: three fingers already handed the whole
+   gesture to the camera, and a three-finger TAP still cycles Free/Axis,
+   because a tap is judged on stillness and this needs real travel to engage -
+   the same line that separates the light hold from an orbit.
+
+   It is deliberately not a slider. The radius is judged by watching the dots
+   light up on the MODEL, and you cannot watch a slider and the model at once -
+   the same argument that gave lighting a gesture instead of a panel.
+
+   MULTIPLICATIVE, not additive. A radius is a scale, and the meshes here run
+   from a 0.1-unit bead to a 40-unit terrain; a fixed number of units per pixel
+   is either useless or uncontrollable on one of them. A third of the screen
+   multiplies by e in either direction, which reaches "one vertex" and "the
+   whole object" from anywhere in between. */
+const SOFT_SLIDE_ENGAGE_PX = 16;   // past the tap threshold, so a tap is never stolen
+const SOFT_RADIUS_MIN = 0.005;
+const SOFT_RADIUS_MAX = 1e4;
+let softSlide = null;              // { x0, r0 } while three fingers are sizing it
+/* Where every finger was at the moment the third one landed. The travel that
+   arms this gesture has to be measured from THERE, not from each pointer's own
+   lifetime maximum: two fingers mid-orbit have already travelled hundreds of
+   pixels, so a lifetime maximum meant a third finger - or a palm - touching
+   the glass engaged on its very first move, killed the orbit outright and
+   started rewriting the radius with hand movement meant for the camera. In
+   Soft mode "two fingers that have already moved" is the ordinary state, so
+   that was not a rare collision. */
+let softArm = null;                // Map<pointerId, {x, y}> from the third touch
+
+function softArmSnapshot() {
+  softArm = new Map();
+  activePointers.forEach((p, id) => {
+    softArm.set(id, { x: p.lastX !== undefined ? p.lastX : p.x, y: p.lastY !== undefined ? p.lastY : p.y });
+  });
+}
+
+function softSlideOrigin() {
+  let sx = 0, n = 0;
+  activePointers.forEach(p => { sx += (p.lastX !== undefined ? p.lastX : p.x); n++; });
+  return n ? sx / n : 0;
+}
+
+// How far the hand has travelled SINCE it was armed, as the largest single
+// finger's travel - three fingers rarely agree, and the most committed one is
+// the intent.
+function softSlideTravel() {
+  if (!softArm) return 0;
+  let m = 0;
+  activePointers.forEach((p, id) => {
+    const a = softArm.get(id);
+    if (!a) return;
+    const d = Math.hypot((p.lastX !== undefined ? p.lastX : p.x) - a.x,
+                         (p.lastY !== undefined ? p.lastY : p.y) - a.y);
+    if (d > m) m = d;
+  });
+  return m;
+}
+
+/* Re-baselined whenever the number of fingers changes, so a fourth landing or
+   one lifting does not jump the value it lands on - softSlideOrigin averages
+   whatever is currently down, and that mean moves discontinuously. The light
+   hold re-baselines for exactly this reason. */
+function softSyncSlide() {
+  if (!softSlide) return;
+  softSlide.x0 = softSlideOrigin();
+  softSlide.r0 = App.softRadius;
+}
+
+function engageSoftSlide() {
+  const obj = findObject(App.activeObjectId);
+  if (obj && !(App.softRadius > 0)) seedSoftRadius(obj);
+  softSlide = { x0: softSlideOrigin(), r0: App.softRadius };
+  /* Same reasoning as the light hold: OrbitControls checks `enabled` on every
+     event, so clearing it mid-gesture stops it where it stands - and it is NOT
+     switched back on here, because handing it back with fingers still down
+     drops it into a dolly whose starting distance it never measured. */
+  orbit.enabled = false;
+  tapArmed = false;
+  clearToolRingTimer();
+  clearLightHoldTimer();
+  if (directDrag) { directDrag = null; dragCtx = null; axisGuide.visible = false; }
+  directCandidate = null;
+  document.getElementById('softHud').classList.add('show');
+  refreshSoftHud();
+  if (navigator.vibrate) { try { navigator.vibrate(12); } catch (e) {} }
+}
+
+function softSlideMove() {
+  if (!softSlide) return;
+  const dx = softSlideOrigin() - softSlide.x0;
+  const w = Math.max(240, window.innerWidth);
+  const r = softSlide.r0 * Math.exp(dx / (w * 0.33));
+  App.softRadius = Math.min(SOFT_RADIUS_MAX, Math.max(SOFT_RADIUS_MIN, r));
+  const obj = findObject(App.activeObjectId);
+  // Live, so the reach is something you WATCH rather than a number you guess
+  // at. The field is cheap enough to rebuild per frame at these sizes.
+  if (obj) { refreshSoftField(obj); refreshElementColors(obj); }
+  refreshSoftHud();
+}
+
+function refreshSoftHud() {
+  const v = document.getElementById('softHudV');
+  const n = document.getElementById('softHudN');
+  if (v) v.textContent = App.softRadius >= 10 ? App.softRadius.toFixed(1) : App.softRadius.toFixed(3);
+  if (n) n.textContent = softField ? softField.size + ' vertices' : 'nothing selected';
+}
+
+function endSoftSlide() {
+  softArm = null;
+  if (!softSlide) return;
+  softSlide = null;
+  document.getElementById('softHud').classList.remove('show');
+  orbitResumePending = true;
+  maybeResumeOrbit();
 }
 
 // Which pointers are the sliding hand: everything that is not an anchor.
@@ -11895,13 +12355,46 @@ function switchToComponentType(newType) {
   if (obj) setActiveObjectHelpersVisible(obj, newType);
 }
 
-// The lower-left toggle: Object mode edits whole objects: Component mode
-// resumes whichever of vertex/edge/face you were last working in, and free
-// taps pick their own type from there.
-function toggleObjComponentMode() {
-  if (App.mode === 'object') setMode(App.lastComponentMode);
-  else setMode('object');
+/* The lower-left button, three positions since a2.37: Object edits whole
+   objects, Component edits the one thing you picked, Soft edits it and the
+   neighbourhood around it. Object -> Component -> Soft -> Object.
+
+   Soft is NOT a fourth value of App.mode. It is Component with a falloff, so
+   `mode` goes on naming the component type you are picking and every branch
+   in the app that reads it is untouched - and leaving Soft leaves you exactly
+   where you were, still in the same component type, with the same selection.
+   Which is also why the button keeps showing the component icon and grows a
+   ring instead of swapping to some fourth pictogram. */
+function setSoft(on) {
+  App.soft = !!on;
+  if (App.soft) {
+    /* A radius that means something on THIS mesh. A fixed default is either
+       invisible on a terrain or swallows a bead whole, and you cannot tell
+       which until you drag.
+
+       Re-measured when Soft is turned on for a DIFFERENT object, not just the
+       first time ever. A radius is a length in that object's world: 0.4 is a
+       useful bite out of a unit cube and does nothing at all on a 40-unit
+       terrain, and a tool that appears to do nothing is the failure this
+       project keeps having to kill. One three-finger slide re-dials it, so
+       carrying a stale number across is the worse of the two. */
+    const obj = findObject(App.activeObjectId);
+    if (obj && (!(App.softRadius > 0) || App.softRadiusFor !== obj.id)) seedSoftRadius(obj);
+  }
+  clearSoftField();
+  const obj = findObject(App.activeObjectId);
+  if (obj) { refreshSoftField(obj); refreshElementColors(obj); }
+  refreshUI();
 }
+
+function cycleEditMode() {
+  if (App.mode === 'object') { setSoft(false); setMode(App.lastComponentMode); }
+  else if (!App.soft) { setSoft(true); toast('Soft \u00b7 three fingers slide to size it'); }
+  else { setSoft(false); setMode('object'); }
+}
+// Kept under its old name too: the keyboard shortcut and anything else that
+// learned it should still reach the button's behaviour, whatever that is now.
+function toggleObjComponentMode() { cycleEditMode(); }
 
 function pickFaceOnActive(ev) {
   const obj = findObject(App.activeObjectId);
@@ -12156,6 +12649,15 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
      are the sliding hand, not a new selection. Checked before the camera
      bail-out below, which would otherwise swallow them. */
   if (lightHold) { lightSyncSlide(); return; }
+  /* A finger arriving mid-slide belongs to the slide, not to the camera. The
+     bail-out below would set orbit.enabled back to TRUE in the middle of a
+     gesture OrbitControls has been shut out of - the exact state
+     maybeResumeOrbit exists to avoid - and would move the mean the radius is
+     measured from without re-baselining it, jumping the radius in one frame. */
+  if (softSlide) { softSyncSlide(); return; }
+  // The third finger arms the radius slide: from here, travel is measured.
+  if (App.soft && activePointers.size >= 3) softArmSnapshot();
+  else if (activePointers.size < 3) softArm = null;
   lightHoldCandidate();
 
   // A second finger means the camera is taking over - abandon any transform
@@ -12264,6 +12766,14 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
 renderer.domElement.addEventListener('pointermove', (ev) => {
   trackPointerMove(ev);
   if (lightHold) { lightSlideMove(); return; }
+  /* Three fingers sizing the falloff. Checked before the camera bail-out
+     below, which would otherwise swallow them, and engaged on TRAVEL so a
+     three-finger tap still reaches cycleTransformMode on release. */
+  if (softSlide) { softSlideMove(); return; }
+  if (App.soft && !lightHold && softArm && activePointers.size >= 3 &&
+      softSlideTravel() > SOFT_SLIDE_ENGAGE_PX) {
+    engageSoftSlide(); softSlideMove(); return;
+  }
   /* Any real travel means this was a drag or an orbit, never a hold. The
      selection ring's timer is also cancelled below when its candidate is
      promoted to a drag; this covers the empty-space case, which has no
@@ -12328,6 +12838,18 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
     return;
   }
   clearLightHoldTimer();
+  /* A finger leaving ends the sizing - three is the gesture, and two of them
+     is an orbit. trackPointerUp still has to run: it is what removes this
+     pointer from the tracker, and skipping it leaks the pointer and corrupts
+     every tap after this one. */
+  if (softSlide) {
+    trackPointerUp(ev);
+    endSoftSlide();
+    pointerDown = null;
+    directCandidate = null;
+    return;
+  }
+  softArm = null;   // fewer than three fingers: nothing left to arm
   // Cleared unconditionally, first - a release before the hold threshold
   // fires must cancel it outright, or a bloom would appear over a finger
   // that's already lifted.
@@ -14126,6 +14648,14 @@ function restoreDoc(doc, opts = {}) {
      cylinder, and a tap on empty space would delete it. Undo and Redo close
      the setup themselves; this covers Load, which does not. */
   if (App.geoSetup) { App.geoSetup = null; hideGeoBar(); }
+  /* Every mesh below is rebuilt, and a rebuilt position attribute starts at
+     version 0 again - so the soft field's signature, which leans on that
+     version to notice a changed mesh, reads identical across an undo and hands
+     back the PREVIOUS mesh's field. Drawn on the new one, that is a tint
+     claiming a reach the drag would not take, which is the one thing the tint
+     exists to prevent. The drag itself was always safe (it recomputes), but a
+     lying picture is worse than none. */
+  clearSoftField();
   // Undo is about shape. Colour, finish and the current selection are carried
   // across untouched, so stepping back through geometry never quietly repaints
   // your model or drops what you had picked.
@@ -15262,7 +15792,7 @@ function wireEdgeSwitch(el, onPick, axis) {
 }
 
 hubBtnEl.addEventListener('pointerdown', (ev) => ev.stopPropagation());
-hubBtnEl.addEventListener('click', (ev) => { ev.stopPropagation(); toggleObjComponentMode(); });
+hubBtnEl.addEventListener('click', (ev) => { ev.stopPropagation(); cycleEditMode(); });
 
 // The pill is horizontal, so the axis is x: swipe left/right, or tap a half.
 wireEdgeSwitch(symPillEl, (first) => setSymmetry(first), 'x');
@@ -15916,7 +16446,7 @@ const helpOverlayEl = document.getElementById('helpOverlay');
    here matches what is on screen. */
 const HELP_QUICKSTART = [
   'Hold on empty space until the ring blooms, slide to Add geo, lift, then pick a shape.',
-  'Round button, bottom-left, switches Object and Component.',
+  'Round button, bottom-left, cycles Object, Component and Soft.',
   'Tap a face. Hold it - its own tools bloom. Slide to Extrude, lift.',
   'Drag the new face into place. Undo is bottom-centre.',
   'Symmetry pill, under the view cube: every edit mirrors as you make it.',
@@ -15955,10 +16485,13 @@ const HELP_SECTIONS = [
     rows: [
       [null, 'Two-finger tap', 'Move / Rotate / Scale. The top readout says which.'],
       [null, 'Three-finger tap', 'Free / Axis.'],
+      [null, 'Three-finger slide', 'In Soft, sizes the falloff. The dots light up to show its reach.'],
       [null, 'Axis', 'Decided in the first few pixels and held until you lift.'],
       [null, 'Free rotate', 'Axis from the direction you swipe.'],
       [null, 'Free scale', 'Screen axes, so depth is reachable. Matching none scales evenly.'],
-      ['snap', 'Snap', 'Moves in steps. Step size is in the drawer.']
+      ['snap', 'Snap', 'Moves in steps. Step size is in the drawer.'],
+      [null, 'Soft', 'Third tap on the mode button. What you drag carries its neighbours with it, fading out over the radius. The button wears a ring while it is on.'],
+      [null, 'Soft reach', 'Measured ALONG the surface, so the far side of a fold stays put and a separate object is never touched.']
     ]
   },
   {
@@ -16499,6 +17032,13 @@ window.addEventListener('resize', onResize);
     activePointers.delete(ev.pointerId);
     if (lightHold && lightHold.anchors.has(ev.pointerId)) releaseLightHold();
     else if (lightHold) lightSyncSlide();
+    /* A cancelled touch has to end the radius slide as surely as a lift does -
+       and cancellations are routine on a phone: a notification, a system edge
+       gesture, an incoming call. Left open it was not merely untidy: the HUD
+       stayed on screen, orbit stayed disabled so the camera was dead, and the
+       next SINGLE finger anywhere on the canvas fell into the slide branch and
+       rewrote the radius by most of a screen width. */
+    endSoftSlide();
     maybeResumeOrbit();
     if (activePointers.size === 0) { tapArmed = false; tapPeakCount = 0; clearLightHoldTimer(); }
     // A lost pointer mid-hold must not leave a bloom stuck open with no
@@ -16555,9 +17095,14 @@ function refreshObjComponentBtn() {
   if (hubBtnEl) {
     // The button shows the mode you are IN, same as it always did.
     hubBtnEl.innerHTML = icon(isObj ? 'object' : App.mode, 24);
+    // Soft keeps the component icon and grows a ring - the icon still has to
+    // say which type you are picking.
+    hubBtnEl.classList.toggle('soft', !isObj && App.soft);
     hubBtnEl.title = isObj
       ? 'Object mode - tap to edit components'
-      : 'Component mode (' + App.mode + ') - tap to edit whole objects';
+      : (App.soft
+          ? 'Soft (' + App.mode + ') - three fingers slide to size it, tap for Object'
+          : 'Component mode (' + App.mode + ') - tap for Soft');
   }
 
   if (symPillEl) {
@@ -16727,6 +17272,21 @@ if (PICK_DEBUG) {
     /* The rest of the op set, so one harness can sweep ALL of them rather
        than the handful that happened to be exported. Every one of these is
        already a single tap away in the rings. */
+    // Soft selection: the field, its seeds and the radius seeder. The drag
+    // reads softWeights directly, so a harness can ask for exactly what a
+    // drag would have got without pretending to be a finger.
+    softWeights, softFalloff, softSeeds, seedSoftRadius, refreshSoftField, clearSoftField,
+    setSoft, cycleEditMode, engageSoftSlide, softSlideMove, endSoftSlide, refreshSoftHud,
+    get softSlide() { return softSlide; },
+    refreshUI, refreshElementColors, refreshObjComponentBtn,
+    get softField() { return softField; },
+    get softFieldSig() { return softFieldSig; },
+    get softGraphBuilds() { return softGraphBuilds; },
+    get dragCtx() { return dragCtx; },
+    /* The delta itself, so a harness can hand the drag an exact transform.
+       three.js is loaded as a MODULE here, so `THREE` is not a global and a
+       probe has no way to build one - hence THREE alongside it. */
+    applyDeltaToSelection, captureDragContext, THREE,
     logicalPos, findLogicalByPosition, edgeKey, groupLogicalLoop,
     buildPrimitiveEditable, setPrimitiveGeometry, createPrimitiveObject,
     primParams, PRIM_SPECS,

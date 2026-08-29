@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~16,800 lines)
-- Version at time of writing: **a2.36a**
+- Version at time of writing: **a2.37**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1366,9 +1366,10 @@ Three things about the ring are load-bearing:
 **Ring radius** scales from the CLOSEST pair of items, not the item count,
 so unevenly grouped sets still get real spacing.
 
-**Object / Component** is the round button, bottom-left. It shows the mode
-you are in and cycles on tap. (A two-position edge slider was tried at v1.89
-and reverted at v1.92.)
+**Object / Component / Soft** is the round button, bottom-left. It shows the
+mode you are in and cycles on tap — three positions since a2.37, with Soft
+wearing a ring around the component icon rather than an icon of its own.
+(A two-position edge slider was tried at v1.89 and reverted at v1.92.)
 
 **Symmetry** is the horizontal pill under the view cube. Left half on,
 right half off; tap a half or swipe toward it. Object symmetry only — the
@@ -1778,6 +1779,156 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## Soft selection (a2.37)
+
+**The mode button has three positions now: Object, Component, Soft.** In Soft,
+what you drag carries its neighbourhood with it, fading out over a radius.
+**Three fingers sliding sets that radius**, and the vertex dots light up to
+show its reach as you slide.
+
+### Soft is not a fourth mode — it is a way of DRAGGING
+
+`App.soft` is a boolean; `App.mode` still says which component type you are
+picking. That is the whole reason this was cheap and safe: every branch in the
+app that reads `App.mode` is untouched, leaving Soft leaves you in the same
+component type with the same selection, and the button keeps showing the
+component icon and grows a ring rather than swapping to a fourth pictogram.
+
+`cycleEditMode` runs Object → Component → Soft → Object. `setMode('object')`
+turns Soft off, so coming back in through the button re-enters Component — the
+three positions are a cycle, not a memory.
+
+### Distance is measured ALONG the surface
+
+`softWeights(obj, seeds, radius)` — Dijkstra over `topo.edges` with world-space
+edge lengths, seeded from every selected vertex at once, stopped at the radius.
+`softHeap` is a small binary heap, there because an unbounded frontier on a
+subdivided mesh is thousands of nodes and the alternative is a re-sort per pop.
+
+Straight-line distance is one line of code and wrong on anything folded: the
+far wall of a thin box is millimetres away through the air and half a model
+away across the mesh. **Measured**: a 4×4 slab 0.2 units thick, radius 1.0 —
+the far wall is untouched, the field is the near side only. A separate object
+is never reached at all, because there is no path to it.
+
+World space rather than local because the radius is a number dialled against
+what you can SEE; a scaled object would otherwise take a different bite at the
+same setting.
+
+**One falloff curve**, `softFalloff` — a cosine ease, 1 at the centre, 0 at the
+radius, flat at both ends so neither the selection nor the boundary shows a
+crease. Deliberately the only curve: a menu of seven is more than a one-handed
+fidget needs, and none of the other six changes what the tool is for.
+
+### The weight scales the RESULT, not the matrix
+
+In `applyDeltaToSelection`, an entry carries `w` and lands at
+`lerp(where it was, where the full transform would put it, w)`. Blending the
+matrix itself would need it decomposed and the rotation slerped, and for a
+partial scale is not even well defined. One line, and **Move, Rotate and Scale
+all fall off** because all three already funnel through this one function.
+
+`captureDragContext` widens the SNAPSHOT, not the selection: the neighbourhood
+rides along as extra entries. Lifting your finger leaves the same vertices
+picked you started with, and every op still sees exactly what you chose. The
+field is **frozen** at drag start — recomputing it per frame would re-weight
+vertices as they move and the falloff would smear outward under your own
+finger. Not applied while an extrude section is live; that branch borrows the
+same path.
+
+### Symmetry: the invariant nobody knew was there
+
+An entry writes ITSELF and its mirror partner, so **entries and their partners
+must be disjoint**. Every selection satisfied that by accident until soft
+selection arrived — the field spreads in all directions, so the moment it
+crosses the plane the mirror partner of a selected vertex is also an entry,
+later in the list, carrying a fraction of the weight. Entry A wrote A at full
+travel and A′ at its mirror; entry A′ then overwrote A′ with its own weighted
+move and overwrote A with the mirror of that. **The vertex under your finger
+went backwards** — measured at −0.25 on a 1.0 drag along the mirror axis.
+
+So a partner that already has an entry loses that entry; it is written by the
+vertex it mirrors, which is what symmetry means. The selection is walked first
+and always wins the claim. This also settles the older order-dependent case of
+selecting a vertex and its own mirror and dragging both.
+
+The filter has to run **after `ctx.mirrorMap` is assigned**. The first attempt
+sat with the soft entries a few lines earlier, where the map is still
+undefined, so the whole thing silently skipped — the probe caught it unchanged.
+
+### The gesture
+
+`SOFT_SLIDE_ENGAGE_PX` → `endSoftSlide`. Three fingers already handed the whole
+gesture to the camera, and a three-finger TAP still cycles Free/Axis, because a
+tap is judged on stillness and this needs real travel. Not a slider: the radius
+is judged by watching the dots on the MODEL, and you cannot watch a slider and
+the model at once — the same argument that gave lighting a gesture.
+
+**Multiplicative.** A radius is a scale, and the meshes here run from a
+0.1-unit bead to a 40-unit terrain; a fixed number of units per pixel is either
+useless or uncontrollable on one of them. A third of the screen multiplies by e.
+
+Four things the review caught here, all of them the difference between a
+gesture that works and one that eats the app:
+
+- **Travel is measured from when the THIRD finger landed** (`softArm`), not
+  from each pointer's lifetime maximum. Two fingers mid-orbit have travelled
+  hundreds of pixels, so a lifetime maximum meant a third finger or a palm
+  engaged on its first move, killed the orbit and started rewriting the radius
+  with movement meant for the camera. In Soft, "two fingers that have already
+  moved" is the ordinary state.
+- **A finger arriving mid-slide belongs to the slide** (`softSyncSlide`).
+  Otherwise the two-finger bail-out set `orbit.enabled = true` in the middle of
+  a gesture OrbitControls had been shut out of — the exact state
+  `maybeResumeOrbit` exists to avoid — and moved the mean the radius is
+  measured from without re-baselining, jumping the radius in one frame.
+- **`pointercancel` / `pointerleave` end it.** Cancellations are routine on a
+  phone. Left open, the HUD stayed up, orbit stayed disabled so the camera was
+  dead, and the next SINGLE finger anywhere fell into the slide branch and
+  rewrote the radius by most of a screen width.
+- `orbit.enabled` is never handed back with fingers still down; it goes through
+  `orbitResumePending` / `maybeResumeOrbit`, same as the light hold.
+
+### The radius belongs to the object it was measured against
+
+`seedSoftRadius` takes a quarter of the object's world-space bounding-box
+diagonal and records `App.softRadiusFor`. `refreshSoftField` re-measures
+whenever the active object is not that one — **not** only when Soft is switched
+on, because the active object changes on paths that never pass through
+`setSoft`: tapping another object's surface, the outliner chip, and loading a
+file (which also carries `App.soft` and the old radius onto a document whose
+object ids commonly collide with the previous one's).
+
+A radius is a length in one object's world. Carrying 0.03 from a bead onto a
+40-unit terrain gives a Soft mode that does nothing while the button says it is
+on — the failure this project keeps having to kill. Re-dialling costs one
+slide; being silently inert costs trust.
+
+### The tint, and why it must not lie
+
+`refreshElementColors` tints every vertex in the field toward the selection
+colour **by exactly the weight it will be dragged with** (`setColMix`), so the
+reach and the SHAPE of the reach are both visible before you commit. That is
+the whole reason the radius is a gesture rather than a number in a box.
+
+Which is why `restoreDoc` calls `clearSoftField()`. The field's signature leans
+on the position attribute's `version` to notice a changed mesh, and a rebuilt
+attribute starts at version 0 — so **two restores in a row** (undo then redo,
+or any two loads) produced identical signatures for different meshes and the
+second handed back the first one's field. The drag was always safe, since it
+recomputes; a lying picture is worse than none.
+
+`softGraph` memoises the world positions and the adjacency per (object,
+attribute version, world matrix). The slide changes the radius every frame and
+none of that depends on the radius. **Measured**: 200 radius changes on a
+1490-vertex sphere rebuild the graph once, not 200 times. Counted rather than
+timed, because a headless run is under virtual time where `performance.now()`
+jumps rather than ticks and a rebuild and a cache hit both measure 0.00 ms.
+
+Probes: `_soft_probe.py` (the field and the weighted drag, including the thin
+slab), `_soft2_probe.py` (the three positions, the gesture, the tint) and
+`_soft3_probe.py` (the eight review defects, each with a control).
 
 ## Primitives, and Add geo (a2.36)
 
