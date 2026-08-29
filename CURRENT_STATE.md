@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~16,800 lines)
-- Version at time of writing: **a2.41**
+- Version at time of writing: **a2.42**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1788,6 +1788,120 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## Circularize (a2.42)
+
+**Pulls a selected loop onto the circle it is trying to be.** Its own best-fit
+plane, its own centre and radius, blended from where the loop is to where the
+circle is by the op-bar slider. Seat **8.5** in all three component rings —
+beside Set flow, because they are the same kind of thing: reshaping a loop
+rather than adding to it. `toolRingAngles` sorts by seat and spreads evenly, so
+a fractional seat is a legal bearing; the Edge ring was full at 14 and without
+the fraction something would have had to be evicted.
+
+- **Amount is a blend, not a distance.** 0 leaves the loop alone, 1 puts it
+  exactly on the circle. One range means the same thing on a screw hole and on
+  a hundred-unit ring. Opens at 1: "make it round" is the request, pulling back
+  is the fine-tuning.
+- **Even** is a bar toggle (the mechanism Set flow's option added at a2.34).
+  Off, each vertex keeps the angle it already has, which preserves the loop's
+  spacing. On, it becomes a regular polygon — what you want after a knife cut
+  or a messy bridge.
+- Works from Vertex, Edge or Face mode. Face mode uses the RIM of the patch,
+  the same once-only edge test Inset and Set flow use.
+
+### Islands: the part that is easy to leave out
+
+Two rims picked together — the top and bottom of a tube, or a loop and its
+mirror partner after `symExpand` — are **two circles**. One plane and one
+centre across both drags them together, and with symmetry on it folds the model
+in half on the first frame of the slider.
+
+- Adjacency comes from the **loop edges the selection names**, not from every
+  mesh edge joining two selected vertices. The two rims of a tube are joined by
+  the band's own vertical edges, and that reading glues them into one island
+  and fits a single circle through the whole cylinder.
+- Islands are **walked** (runs first, from their degree-1 ends; then cycles),
+  which produces the ring ORDER the plane fit and the even spacing both need,
+  and a `closed` flag.
+- A vertex with **three or more** loop neighbours is a junction, and a junction
+  has no circle to be on. `circularizeIslands` returns `null` and the caller
+  refuses **before the bar opens**, rather than fitting something meaningless.
+- **Vertex mode narrows its own loop edges**: whichever faces the selection
+  fully covers are treated as chosen, and the edges INSIDE that patch are
+  dropped, leaving its border. That is what lets "select every vertex of a
+  one-segment cylinder" round both rims instead of reading as one junction.
+  **Unless the narrowing takes everything** — a closed surface has no border,
+  so on a whole cube every edge goes and the selection looks unconnected. The
+  unnarrowed set is kept in that case, so a solid reads as the branching
+  surface it is and gets refused.
+- With **no connectivity at all** and symmetry off, the whole selection is read
+  as one circle — three vertices tapped across a grid. Not with symmetry on:
+  then the picks and their partners are two groups and one circle across them
+  straddles the plane. The test is the symmetry SETTING, not "did symExpand add
+  anything" — someone who selected both halves by hand defeats that.
+
+### The maths, and the three things that are not obvious
+
+- **Newell for the plane**, not a cross product of two edges: stable when the
+  points are nearly collinear. It sums a POLYGON, so the ORDER matters — four
+  coplanar corners in the order TL, BR, TR, BL come back "degenerate". Hence
+  the walk. A scattered island has no walk, so it gets a provisional normal
+  from the widest triangle among a sample spread ACROSS the set (not the first
+  sixteen — those arrive in tap order and can all lie along one side), then an
+  angle sort, then Newell.
+- **THE CENTROID IS NOT THE CENTRE.** They agree on a regular polygon and
+  disagree badly on an arc, where the centroid sits inside the bow rather than
+  at the centre of curvature. With the centroid, "round these three corners of
+  a cube face" — three points that already lie exactly on a circle and must not
+  move at all — pushed the middle one a third of a unit out of the cube. The
+  fit is Kasa's algebraic least-squares circle, which returns that circle
+  exactly.
+- **The fit has to agree with the walk.** A circle fitted to points that do not
+  SURROUND it can slide anywhere: four arc vertices with a third of their
+  radius in noise fit a circle whose centre lands among them, the run then
+  wraps around that centre, and Even spreads those four points right round the
+  ring. So a closed island must sweep at least π about the fitted centre and an
+  open run at most π; otherwise the fit is dropped for the centroid and the
+  mean radius. Less accurate on clean input, and unable to turn an arc inside
+  out.
+- **Even's phase is least-squares** (a circular mean), the rotation that moves
+  the points least — not "start from the first vertex". A vertex anchor breaks
+  symmetry, because the mirror image of a loop has a different first vertex, so
+  the halves come out as regular polygons rotated against each other. The
+  circular mean is invariant to where the walk started AND to which way it
+  went.
+- **The winding comes from the signed area**, not from the sign of the
+  unwrapped span. The unwrap folds any step wider than half a turn, which a rim
+  with a reflex corner near the centre really does have, and reading direction
+  off the fold laid such a rim out backwards against its own winding.
+- **An open run is an ARC, not a ring.** Even spaces it between its two ends.
+  Spreading n points over a full 360 turns a five-vertex arc into a pentagon
+  and tears the mesh open at both ends.
+
+### Writing it back
+
+Through `toEditable` / `rebuildFromEditable`, which is what Set flow does and
+for two reasons that are invisible until you skip it: the rebuild is what drops
+the cached topology so the selection dots and edge highlights follow the mesh
+instead of hanging in the air, and it is what re-runs `applyShading`, without
+which a bare `computeVertexNormals` melts a flat-shaded model smooth on the
+first frame of the slider. Crease and Sharp marks are keyed by POSITION, so
+they are snapshotted against logical pairs and rewritten after — skipped if the
+vertex count changed, because two targets landing on the same point weld and
+renumber, and the snapshot holds old ids.
+
+### Known limits
+
+- One degenerate island among several is skipped silently: `moved` is an OR, so
+  if one loop of a multi-loop selection cannot be fitted the others still
+  report "applied". Harmless for a mirrored pair, which fail together.
+- The scattered reading is unavailable while symmetry is on — by design, above.
+- An open run sweeping more than 180° always falls back to the centroid, so a
+  genuinely lopsided long arc is circularized about its middle rather than its
+  true centre.
+- Committing at amount 0 says "Circularize applied" over an untouched mesh. No
+  empty history step (`pushHistory` dedupes identical documents), so cosmetic.
 
 ## Snap to geometry (a2.41)
 

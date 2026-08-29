@@ -868,7 +868,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.41</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.42</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -8333,6 +8333,15 @@ const OP_SPECS = {
   setflow: {
     label: 'Set flow', min: 0, max: 2, step: 0.01, start: 1
   },
+  /* The amount is a BLEND, not a distance: 0 leaves the loop alone, 1 puts it
+     exactly on its circle. That is what lets one range mean the same thing on
+     a screw hole and on a hundred-unit ring, where a distance slider would
+     need re-scaling per selection. It opens at 1 because "make it round" is
+     the request; pulling back is the fine-tuning. */
+  circularize: {
+    label: 'Circularize', min: 0, max: 1, step: 0.01, start: 1,
+    toggle: { key: 'even', label: 'Even', tip: 'Space the points equally around the circle' }
+  },
   inset: {
     label: 'Inset', min: 0.02, max: 0.9, step: 0.01, start: 0.25,
     options: [
@@ -8621,6 +8630,23 @@ function applyPendingOp() {
     ensureHelpers(obj);
     // Set flow moves vertices and touches no topology, so what was selected
     // when it opened is still exactly what is selected now.
+    resultSelection = new Set(op.payload.selection);
+
+  } else if (op.kind === 'circularize') {
+    ensureHelpers(obj);
+    // Same rule as Set flow: a loop that is already its own circle is a
+    // refusal, not a silent success with an empty history step behind it.
+    /* At amount 0 the blend is the identity, so "nothing moved" is the
+       slider sitting at the bottom rather than a loop that is already round,
+       and refusing there puts a false explanation on screen. */
+    const why = {};
+    if (!circularizeApply(obj, op.payload.verts, op.amount, op.even,
+                          op.payload.keys, op.payload.scatterOk, why) && op.amount > 1e-6) {
+      refuseOp(why.flat ? 'no circle fits that loop \u2014 it is a straight run or a spike'
+                        : 'that is already as round as it gets');
+    }
+    ensureHelpers(obj);
+    // Vertices move, topology does not, so the selection survives untouched.
     resultSelection = new Set(op.payload.selection);
 
   } else if (op.kind === 'loopcut') {
@@ -9211,6 +9237,527 @@ function flowSelectionItems(obj) {
     });
   }
   return flowItemsForLoop(obj, verts, loopKeys);
+}
+
+/* ---------------- Circularize (a2.42) ----------------
+
+   Fit the selected loop to a circle: its own best-fit plane, its own centre,
+   its own mean radius, blended from where it is to where the circle is.
+
+   It is the natural partner to Set flow and sits beside it on the ring for
+   that reason - both take a loop and reshape it rather than adding to it. Set
+   flow asks "what curve does the surface around this imply"; Circularize asks
+   "what circle is this trying to be". A bevelled hole, a bridged tube and a
+   knife cut around a cylinder all come out almost-round and none of them come
+   out round.
+
+   NOTHING HERE NEEDS AN ORDERED LOOP. The plane, the centre and the radius are
+   all set operations, and the even spacing sorts by angle IN that plane rather
+   than walking the topology - which means it works identically on a vertex
+   selection, an edge loop and a face rim, and does not care whether the ring
+   closes. Walking the topology would have been the obvious approach and would
+   have needed three different implementations and a special case for a run
+   that does not close. */
+
+/* Newell's method: the area-weighted normal of a polygon, which is the plane
+   it lies closest to and is stable when the points are nearly collinear -
+   where a cross product of two edges is noise.
+
+   It sums a POLYGON, so the order it is given matters: hand it a scrambled
+   set and it sums a self-intersecting shape whose signed areas cancel, and
+   four coplanar corners in the order TL, BR, TR, BL come back as "degenerate".
+   Every caller here therefore hands it a walked ring or an angle-sorted one.
+
+   Points arrive centred and divided by their own extent. Newell's magnitude
+   goes with AREA, so on raw coordinates a fixed epsilon is a size test in
+   disguise: a ring a fifth of a millimetre across measures 1e-13 and would be
+   thrown out as degenerate. */
+function bestFitPlane(pts) {
+  const n = new THREE.Vector3();
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    n.x += (a.y - b.y) * (a.z + b.z);
+    n.y += (a.z - b.z) * (a.x + b.x);
+    n.z += (a.x - b.x) * (a.y + b.y);
+  }
+  if (n.lengthSq() < 1e-12) return null;
+  return n.normalize();
+}
+
+/* The plane for one island. An island that was WALKED already carries a real
+   ring order and goes straight to Newell. A scattered one - vertices tapped
+   with no edges between them - has no order at all, so a provisional normal
+   comes from the widest triangle among them (the triple least sensitive to
+   noise), the points are sorted around that, and Newell then refines it.
+
+   The triple search is capped, and it SAMPLES ACROSS the set rather than
+   taking the first sixteen: the points arrive in click order, so the first
+   sixteen of a long free selection can all lie along one side and give a
+   near-collinear normal that the area test is too loose to catch. */
+function circlePlane(cp, ordered) {
+  if (ordered) return bestFitPlane(cp);
+  const cap = 16;
+  const stride = Math.max(1, Math.floor(cp.length / cap));
+  const s = [];
+  for (let i = 0; i < cp.length && s.length < cap; i += stride) s.push(cp[i]);
+  const ab = new THREE.Vector3(), ac = new THREE.Vector3(), cr = new THREE.Vector3();
+  let best = null, bestArea = 0;
+  for (let i = 0; i < s.length; i++) {
+    for (let j = i + 1; j < s.length; j++) {
+      for (let k = j + 1; k < s.length; k++) {
+        ab.subVectors(s[j], s[i]);
+        ac.subVectors(s[k], s[i]);
+        cr.crossVectors(ab, ac);
+        const a = cr.lengthSq();
+        if (a > bestArea) { bestArea = a; best = cr.clone(); }
+      }
+    }
+  }
+  if (!best || bestArea < 1e-12) return null;
+  const n0 = best.normalize();
+  const u0 = circleFrameU(cp, n0);
+  if (!u0) return null;
+  const w0 = new THREE.Vector3().crossVectors(n0, u0);
+  const sorted = cp.slice().sort((p, q) =>
+    Math.atan2(p.dot(w0), p.dot(u0)) - Math.atan2(q.dot(w0), q.dot(u0)));
+  return bestFitPlane(sorted) || n0;
+}
+
+/* Where angle zero points. The first point that is not sat on the centre, so
+   the answer does not depend on which way the world axes happen to face. */
+function circleFrameU(cp, normal) {
+  for (const p of cp) {
+    const v = p.clone().projectOnPlane(normal);
+    if (v.lengthSq() > 1e-12) return v.normalize();
+  }
+  return null;
+}
+
+/* The least-squares circle through 2D points (Kasa's algebraic fit): solve
+   z = 2ax + 2by + c for z = x*x + y*y, then the centre is (a, b) and the
+   radius is sqrt(c + a*a + b*b).
+
+   THE CENTROID IS NOT THE CENTRE. They agree on a regular polygon and
+   disagree badly on an arc, where the centroid sits inside the bow rather
+   than at the centre of curvature. With the centroid, "round off these three
+   corners of a cube face" - three points that already lie exactly on a circle
+   and must therefore not move at all - pushed the middle one a third of a
+   unit out of the cube. This returns that circle exactly.
+
+   Null when the system is singular, which means the points are collinear and
+   no circle passes through them; the caller falls back to the centroid. */
+function fitCircle2D(xs, ys) {
+  const n = xs.length;
+  let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, sz = 0, sxz = 0, syz = 0;
+  for (let i = 0; i < n; i++) {
+    const x = xs[i], y = ys[i], z = x * x + y * y;
+    sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y;
+    sz += z; sxz += x * z; syz += y * z;
+  }
+  const m = [[2 * sxx, 2 * sxy, sx], [2 * sxy, 2 * syy, sy], [2 * sx, 2 * sy, n]];
+  const r = [sxz, syz, sz];
+  const det3 = a =>
+    a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) -
+    a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) +
+    a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+  const D = det3(m);
+  // Scale-free, because the caller hands over points of unit extent.
+  if (!isFinite(D) || Math.abs(D) < 1e-12) return null;
+  const col = kk => m.map((row, i) => row.map((v, j) => (j === kk ? r[i] : v)));
+  const a = det3(col(0)) / D, b = det3(col(1)) / D, c = det3(col(2)) / D;
+  const rr = c + a * a + b * b;
+  if (!isFinite(a) || !isFinite(b) || !(rr > 0)) return null;
+  return { x: a, y: b, r: Math.sqrt(rr) };
+}
+
+/* How far the walk sweeps around a candidate centre, unwrapped step by step
+   and signed. A closed ring seen from inside itself sweeps very nearly a full
+   turn; a run that does not enclose its centre sweeps a fraction of one. */
+function windingSpan(xs, ys, cx, cy) {
+  let prev = Math.atan2(ys[0] - cy, xs[0] - cx), total = 0;
+  for (let i = 1; i < xs.length; i++) {
+    const a = Math.atan2(ys[i] - cy, xs[i] - cx);
+    let d = a - prev;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    total += d;
+    prev = a;
+  }
+  return total;
+}
+
+/* Which of the selected vertices belong to the SAME loop, in ring order.
+
+   This is the part that is easy to leave out and impossible to live without.
+   Two rims picked together - the top and bottom of a tube, a rim and its
+   mirror partner - are two circles. Fitting one plane and one centre across
+   both would drag them toward each other and, with symmetry on, fold the
+   model in half on the first frame of the slider.
+
+   Adjacency comes from the LOOP edges the selection names, not from every
+   mesh edge joining two selected vertices: the two rims of a tube are joined
+   by the band's own vertical edges, and that reading glues them into one
+   island and fits a single circle through the whole cylinder.
+
+   Returns null - not an empty list - when the selection genuinely branches: a
+   vertex with three or more loop neighbours is at a junction, and a junction
+   has no single circle to be on. The caller turns that into a message before
+   the bar opens rather than fitting something meaningless. */
+function circularizeIslands(obj, verts, keys, scatterOk) {
+  const topo = obj.mesh.userData.topo;
+  const set = new Set(verts);
+  const adj = new Map();
+  set.forEach(l => adj.set(l, []));
+  const keySet = new Set(keys || []);
+  let anyEdge = false;
+  topo.edges.forEach(e => {
+    if (!set.has(e[0]) || !set.has(e[1])) return;
+    if (!keySet.has(edgeKey(e[0], e[1]))) return;
+    adj.get(e[0]).push(e[1]);
+    adj.get(e[1]).push(e[0]);
+    anyEdge = true;
+  });
+  for (const nb of adj.values()) if (nb.length > 2) return null;
+
+  /* Walked, not flood-filled: with every degree at most 2 an island is a ring
+     or a run, and walking is what produces the ORDER the plane fit and the
+     even spacing both need. Runs are walked first, from their ends - starting
+     in the middle of a run would split it into two islands and circularize
+     each half separately. */
+  const seen = new Set(), islands = [];
+  const walkFrom = start => {
+    const ids = [start];
+    seen.add(start);
+    let prev = -1, cur = start;
+    for (;;) {
+      const next = adj.get(cur).find(n => n !== prev && !seen.has(n));
+      if (next === undefined) break;
+      seen.add(next); ids.push(next); prev = cur; cur = next;
+    }
+    return ids;
+  };
+  set.forEach(l => { if (!seen.has(l) && adj.get(l).length === 1) islands.push({ ids: walkFrom(l), closed: false }); });
+  set.forEach(l => { if (!seen.has(l)) islands.push({ ids: walkFrom(l), closed: adj.get(l).length === 2 }); });
+
+  /* Vertices picked by hand across a grid have no edges between them, so they
+     come back as singletons and circularizing each alone would do nothing at
+     all. When there is no connectivity AT ALL, the whole selection IS the
+     loop - the only reading left, and what the person asking for a circle
+     through three scattered points meant.
+
+     The test is "nothing here is joined to anything", not "no island reached
+     three". Two picked edges are two runs of two: real connectivity, nothing
+     to guess at, and reading them as one four-point circle would drag both
+     edges onto a ring neither belongs to. */
+  if (anyEdge || !scatterOk || set.size < 3) return islands.filter(g => g.ids.length >= 3);
+  return [{ ids: Array.from(set), closed: true, scattered: true }];
+}
+
+/* Where each vertex of one island wants to be, as a Map from logical id to a
+   world position. Null when the island cannot describe a circle at all.
+
+   `even` spaces the points equally instead of leaving each at the angle it
+   already has. Keeping the angles preserves whatever spacing the loop had -
+   right when the loop is already regular and you only want it flattened and
+   rounded. Even makes it a regular polygon, which is what you want after a
+   knife cut or a messy bridge. Both are useful and neither is the obvious
+   default, which is why it is a toggle rather than a decision made here. */
+function circleTargets(obj, island, even) {
+  const ids = island.ids;
+  if (ids.length < 3) return null;
+
+  const world = ids.map(l => obj.mesh.localToWorld(logicalPos(obj, l).clone()));
+  const mid = new THREE.Vector3();
+  world.forEach(p => mid.add(p));
+  mid.divideScalar(world.length);
+
+  // Everything below works on the loop scaled to unit extent, so no threshold
+  // in here is secretly a "must be bigger than this many units" test.
+  let size = 0;
+  world.forEach(p => { size = Math.max(size, p.distanceTo(mid)); });
+  if (!(size > 0)) return null;
+  const cp = world.map(p => p.clone().sub(mid).divideScalar(size));
+
+  const normal = circlePlane(cp, !island.scattered);
+  if (!normal) return null;
+  const u = circleFrameU(cp, normal);
+  if (!u) return null;
+  const w = new THREE.Vector3().crossVectors(normal, u).normalize();
+
+  const xs = cp.map(p => p.dot(u)), ys = cp.map(p => p.dot(w));
+  let fit = fitCircle2D(xs, ys);
+  /* A circle fitted to points that do not SURROUND it can slide anywhere.
+     Four vertices of an arc with a third of their radius in noise fit a
+     circle whose centre lands among them; the run then wraps around that
+     centre, and asking for even spacing spreads those four points right round
+     the ring instead of along the arc they came from. So the fit has to agree
+     with the walk: a closed ring must sweep most of a turn about its centre,
+     an open run at most half of one. When it does not, the centroid and the
+     mean radius are the safer answer - less accurate on clean input, and
+     unable to turn an arc inside out. A scattered selection has no walk to
+     check against, so it takes the fit as given. */
+  if (fit && !island.scattered) {
+    const sweep = Math.abs(windingSpan(xs, ys, fit.x, fit.y));
+    if (island.closed ? sweep < Math.PI : sweep > Math.PI) fit = null;
+  }
+  let cx, cy, R;
+  if (fit) {
+    cx = fit.x; cy = fit.y; R = fit.r;
+  } else {
+    /* No usable circle: either the points are collinear and none passes
+       through them, or the one that does disagrees with the walk. The
+       centroid and the mean radius are what is left, and it is an honest
+       answer - the loop rounds about its own middle. */
+    cx = 0; cy = 0;
+    R = xs.reduce((t, x, i) => t + Math.hypot(x, ys[i]), 0) / xs.length;
+  }
+  if (!isFinite(R) || !(R > 1e-6)) return null;
+
+  const angles = xs.map((x, i) => Math.atan2(ys[i] - cy, x - cx));
+  if (even) {
+    /* RING ORDER, from the walk - not the order of the current angles. The
+       two agree only when the loop is star-shaped about its own centre; on an
+       L-shaped rim the reflex corner sorts out of sequence by angle, gets
+       handed a slot on the far side of the circle, and the loop comes back
+       permuted with its faces folded through each other.
+
+       The phase is the LEAST-SQUARES one, the rotation that moves the points
+       least, rather than "start from the first vertex". A vertex anchor is
+       what breaks symmetry: the mirror image of a loop has a different first
+       vertex, so the two halves come out as regular polygons rotated against
+       each other. A circular mean has no anchor to disagree about, and is
+       invariant both to where the walk started and to which way it went. */
+    const un = [angles[0]];
+    for (let i = 1; i < angles.length; i++) {
+      let d = angles[i] - angles[i - 1];
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      un.push(un[i - 1] + d);
+    }
+    const span = un[un.length - 1] - un[0];
+    if (island.closed) {
+      /* A scattered island has no walk, so its `ids` are in TAP order - laying
+         the slots out in that order permutes the ring and folds the faces
+         through each other. Sorting by the angle each point already has is
+         the only ordering available, and it is the right one. */
+      const seq = ids.map((l, i) => i);
+      if (island.scattered) seq.sort((p, q) => angles[p] - angles[q]);
+      /* Which way the ring winds, from its SIGNED AREA in this frame rather
+         than from the sign of the unwrapped span. The unwrap folds any step
+         wider than half a turn, which a rim with a reflex corner near the
+         centre really does have, and the fold flips the span negative - so
+         reading the direction off it laid such a rim out backwards against
+         its own winding. The area cannot fold. */
+      let area2 = 0;
+      for (let i = 0; i < seq.length; i++) {
+        const a = seq[i], b = seq[(i + 1) % seq.length];
+        area2 += xs[a] * ys[b] - xs[b] * ys[a];
+      }
+      const step = ((Math.PI * 2) / ids.length) * (area2 < 0 ? -1 : 1);
+      let sx = 0, sy = 0;
+      seq.forEach((idx, kk) => {
+        const d = angles[idx] - kk * step;
+        sx += Math.cos(d); sy += Math.sin(d);
+      });
+      const phase = Math.atan2(sy, sx);
+      seq.forEach((idx, kk) => { angles[idx] = phase + kk * step; });
+    } else {
+      /* An open run is an ARC, not a ring. Spreading its points over a full
+         360 turns a five-vertex arc into a pentagon and tears the mesh open
+         at both ends, so "even" here means equally spaced BETWEEN the two
+         ends. Unwrapped along the walk, so an arc lying across the atan2 seam
+         is not read inside out. */
+      const step = span / (ids.length - 1);
+      for (let i = 0; i < ids.length; i++) angles[i] = un[0] + i * step;
+    }
+  }
+
+  const out = new Map();
+  ids.forEach((l, i) => {
+    const a = angles[i];
+    out.set(l, mid.clone()
+      .addScaledVector(u, (cx + Math.cos(a) * R) * size)
+      .addScaledVector(w, (cy + Math.sin(a) * R) * size));
+  });
+  return out;
+}
+
+/* Moves the loops a fraction of the way onto their circles. Returns false when
+   nothing actually moved, so the op can refuse rather than claim a success
+   over an untouched mesh - the rule a2.33 put in place. `why` carries back
+   WHICH kind of nothing, so the message is not a guess: a loop that is
+   already round and a loop no circle could be fitted to are different
+   answers and used to share one sentence.
+
+   Written through toEditable / rebuildFromEditable rather than straight into
+   the position attribute, which is what Set flow does and for two reasons
+   that are invisible until you skip it: the rebuild is what drops the cached
+   topology so the selection dots and edge highlights follow the mesh instead
+   of hanging in the air, and it is what re-runs applyShading, without which
+   a bare computeVertexNormals melts a flat-shaded model smooth on the first
+   frame of the slider. */
+function circularizeApply(obj, verts, amount, even, keys, scatterOk, why) {
+  const islands = circularizeIslands(obj, verts, keys, scatterOk);
+  if (!islands || !islands.length) return false;
+  const topo = obj.mesh.userData.topo;
+  const lcBefore = topo.logicalCount;
+  const moves = [];
+  let fitted = 0;
+  // Islands are disjoint by construction, so each is read live and collected
+  // without ever seeing another island's new positions.
+  islands.forEach(island => {
+    const targets = circleTargets(obj, island, even);
+    if (!targets) return;
+    fitted++;
+    targets.forEach((target, l) => {
+      const now = obj.mesh.localToWorld(logicalPos(obj, l).clone());
+      const want = now.clone().lerp(target, amount);
+      if (want.distanceToSquared(now) < 1e-14) return;
+      moves.push({ l, p: obj.mesh.worldToLocal(want) });
+    });
+  });
+  if (why && !fitted) why.flat = true;
+  if (!moves.length) return false;
+
+  // Both mark maps are keyed by POSITION, so moving a vertex orphans every
+  // mark on its edges. Topology does not change here, so the snapshot taken
+  // against logical pairs rewrites them exactly - the same fix the drag path
+  // uses.
+  const marks = snapshotEdgeMarks(obj);
+  const ed = toEditable(obj.mesh);
+  moves.forEach(m => {
+    (topo.logicalGroups[m.l] || []).forEach(ai => {
+      ed.positions[ai * 3] = m.p.x;
+      ed.positions[ai * 3 + 1] = m.p.y;
+      ed.positions[ai * 3 + 2] = m.p.z;
+    });
+  });
+  rebuildFromEditable(obj, ed);
+  if (marks) {
+    ensureHelpers(obj);
+    /* Only when the vertex count survived. Two targets can land on the same
+       point - a loop with two vertices at the same angle - and the rebuild
+       welds them, which renumbers everything. The snapshot holds OLD logical
+       ids, and feeding those to logicalPos after a renumber reads off the end
+       of the array. */
+    if (obj.mesh.userData.topo.logicalCount === lcBefore) rewriteEdgeMarks(obj, marks);
+  }
+  return true;
+}
+
+/* The vertices Circularize will move, from whichever component type you are
+   in. The same three answers Set flow uses, minus the along-the-loop edges it
+   needs and this does not - a circle is defined by the points alone. */
+function circularizeVerts(obj) {
+  const topo = obj.mesh.userData.topo;
+  const verts = new Set(), loopKeys = new Set();
+  if (App.mode === 'vertex') {
+    App.selectedElements.forEach(l => { if (l < topo.logicalCount) verts.add(l); });
+    topo.edges.forEach(e => {
+      if (verts.has(e[0]) && verts.has(e[1])) loopKeys.add(edgeKey(e[0], e[1]));
+    });
+    /* "Both ends are selected" is not the same as "runs along a loop", and on
+       a solid the difference is the whole operation. Select every vertex of a
+       one-segment cylinder to round both rims and the side edges qualify too,
+       which makes every vertex a junction. So: whichever faces the selection
+       fully covers are treated as chosen, and the edges INSIDE that patch -
+       the ones two of its faces share - are dropped. What is left is exactly
+       the patch's border, which is the same answer Face mode gives for the
+       same region. A selection that covers no whole face loses nothing. */
+    const seen = new Map();
+    topo.faceGroups.forEach((_, gi) => {
+      const lp = groupLogicalLoop(obj, gi);
+      if (!lp.length || !lp.every(l => verts.has(l))) return;
+      for (let i = 0; i < lp.length; i++) {
+        const k = edgeKey(lp[i], lp[(i + 1) % lp.length]);
+        seen.set(k, (seen.get(k) || 0) + 1);
+      }
+    });
+    const kept = new Set(loopKeys);
+    seen.forEach((c, k) => { if (c > 1) kept.delete(k); });
+    /* Unless it takes EVERYTHING. A closed surface has no border, so on a
+       whole cube or a capped cylinder the rule above deletes all twelve edges
+       and leaves a selection that looks unconnected - which used to send the
+       cube down the scattered path and fit one circle through all eight
+       corners, flattening it into a ring on the first frame of the slider.
+       Keeping the unnarrowed set instead makes it read as what it is, a
+       branching surface, and it gets refused with a message that says so. */
+    if (kept.size) { loopKeys.clear(); kept.forEach(k => loopKeys.add(k)); }
+  } else if (App.mode === 'edge') {
+    App.selectedElements.forEach(ei => {
+      const e = topo.edges[ei];
+      if (!e) return;
+      verts.add(e[0]); verts.add(e[1]);
+      loopKeys.add(edgeKey(e[0], e[1]));
+    });
+  } else if (App.mode === 'face') {
+    // The rim, the same test Inset and Set flow use: edges that appear once
+    // around the selected faces.
+    const count = new Map(), ends = new Map();
+    App.selectedElements.forEach(gi => {
+      const lp = groupLogicalLoop(obj, gi);
+      for (let i = 0; i < lp.length; i++) {
+        const a = lp[i], b = lp[(i + 1) % lp.length], k = edgeKey(a, b);
+        count.set(k, (count.get(k) || 0) + 1);
+        if (!ends.has(k)) ends.set(k, [a, b]);
+      }
+    });
+    count.forEach((c, k) => {
+      if (c !== 1) return;
+      const e = ends.get(k);
+      verts.add(e[0]); verts.add(e[1]);
+      loopKeys.add(k);
+    });
+  }
+  return { verts, loopKeys };
+}
+
+function circularizeSelection() {
+  if (App.knife) { toast('Finish the cut first'); return; }
+  if (App.pendingOp) {
+    toast('Finish the ' + ((OP_SPECS[App.pendingOp.kind] || {}).label || 'operation') + ' first');
+    return;
+  }
+  if (App.mode === 'object') { toast('Circularize works on vertices, edges or faces'); return; }
+  const obj = findObject(App.activeObjectId);
+  if (!obj || !App.selectedElements.size) { toast('Select a loop to circularize'); return; }
+  ensureHelpers(obj);
+  symExpand(obj);
+  const { verts, loopKeys } = circularizeVerts(obj);
+  /* A set of unconnected picks can be read as one circle, but never with
+     symmetry on: then the picks and their mirror partners are two groups, and
+     one circle across them straddles the plane and pulls the halves together.
+     The test is the SYMMETRY SETTING, not "did symExpand add anything" -
+     someone who selected both halves by hand defeats that, and gets the fold
+     the check exists to prevent. */
+  const scatterOk = !App.symmetry;
+  if (verts.size < 3) {
+    toast(App.mode === 'face'
+      ? 'Nothing to circularize — that patch has no rim'
+      : 'Circularize needs at least three points');
+    return;
+  }
+  /* Checked BEFORE the bar opens, not inside the op. A patch has no circle,
+     and answering anyway means fitting one through a whole cylinder band and
+     flattening it into a disc on the first frame of the slider. */
+  const islands = circularizeIslands(obj, verts, Array.from(loopKeys), scatterOk);
+  if (!islands) {
+    toast('Circularize wants a loop, not a patch — that selection has a junction in it');
+    return;
+  }
+  if (!islands.length) {
+    toast(App.symmetry
+      ? 'Those points are not a loop — turn symmetry off to circularize a free selection'
+      : 'Those points are not a loop');
+    return;
+  }
+  /* The keys ride WITH the op: it is re-run from the snapshot on every
+     slider frame, and the loops it is meant to see are the ones that were
+     selected when it opened, not whatever the live selection is by then. */
+  beginPendingOp('circularize', obj, {
+    verts: Array.from(verts), keys: Array.from(loopKeys), scatterOk,
+    selection: Array.from(App.selectedElements)
+  });
 }
 
 function setFlowSelection() {
@@ -16601,6 +17148,10 @@ const ICON = {
   sphere:  '<circle cx="12" cy="12" r="8"/><ellipse cx="12" cy="12" rx="3.6" ry="8"/>',
   torus:   '<ellipse cx="12" cy="12" rx="9" ry="6"/><ellipse cx="12" cy="12" rx="3.4" ry="2.1"/>',
   plane:   '<path d="M2.5 16.5L10 7.5h11.5L14 16.5z"/>',
+  /* Points sitting ON a circle, which is the whole operation in one picture.
+     A bare circle would have read as the pivot glyph at ring size and the
+     dots are what tell them apart at 26px. */
+  circ:    '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="4" r="1.8" fill="currentColor" stroke="none"/><circle cx="18.9" cy="16" r="1.8" fill="currentColor" stroke="none"/><circle cx="5.1" cy="16" r="1.8" fill="currentColor" stroke="none"/>',
   flow:    '<path d="M4.5 4C2.8 8.5 2.8 15.5 4.5 20"/><path d="M19.5 4c1.7 4.5 1.7 11.5 0 16"/><path d="M12 4c-.9 4.5-.9 11.5 0 16"/>',
   sharp:   '<path d="M3 18L12 6l9 12"/><circle cx="12" cy="6" r="1.8" fill="currentColor" stroke="none"/>',
   /* The draughtsman's angle mark, arc and all. Tried a peak with one hard
@@ -16662,6 +17213,14 @@ const HUB_TOOLS_VERTEX = [
      everywhere for Set flow or one for Shade - and Shade is the older, less
      used of the two in Face mode, so it moves to 11 there. */
   { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 8, ring: 1, run: setFlowSelection },
+  /* Circularize takes the FRACTIONAL seat 8.5 in all three component
+     rings - beside Set flow, because they are the same kind of thing:
+     reshaping a loop rather than adding to it. toolRingAngles sorts by
+     seat and spreads evenly, so a fraction is a legal bearing and this
+     one buys Circularize a single position everywhere without moving
+     anything. The Edge ring was FULL at 14 seats; without the fraction
+     something would have had to be evicted to make room. */
+  { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 8.5, ring: 1, run: circularizeSelection },
   { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 0, run: deleteSelection },
   { key: 'grow', icon: 'grow', label: 'Grow', seat: 12, ring: 1, run: growSelection },
   { key: 'shrink', icon: 'shrink', label: 'Shrink', seat: 13, ring: 1, run: shrinkSelection },
@@ -16697,6 +17256,7 @@ const HUB_TOOLS_EDGE = [
      place. Sharp inherits Crease's old seat because it inherits the meaning
      the glyph always had; Crease moves one along. */
   { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 8, ring: 1, run: setFlowSelection },
+  { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 8.5, ring: 1, run: circularizeSelection },
   { key: 'sharp', icon: 'sharp', label: 'Mark Sharp', seat: 10, ring: 1, run: markSharpSelection },
   { key: 'crease', icon: 'crease', label: 'Crease', seat: 11, ring: 1, run: () => creaseSelection() },
   { key: 'grow', icon: 'grow', label: 'Grow', seat: 12, ring: 1, run: growSelection },
@@ -16717,6 +17277,7 @@ const HUB_TOOLS_FACE = [
   // in all three component rings; it keeps 8 in the Object ring, which is
   // where shading a whole model belongs anyway.
   { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 8, ring: 1, run: setFlowSelection },
+  { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 8.5, ring: 1, run: circularizeSelection },
   { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 11, ring: 1, run: toggleShading },
   { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 9, ring: 1, run: flipNormalsSelection },
   { key: 'grow', icon: 'grow', label: 'Grow', seat: 12, ring: 1, run: growSelection },
@@ -17898,6 +18459,7 @@ HELP_SECTIONS.push(
       ['bevel', 'Bevel', 'A narrow flat face along an edge. More segments rounds it.'],
       ['loop', 'Loop', 'New edge rings across the mesh, square to the edge you picked. Flow curves them to follow the surface.'],
       ['flow', 'Set flow', 'Settles a loop onto the curve the mesh around it implies. 0 is flat, 1 matches it, past that over-bends.'],
+      ['circ', 'Circularize', 'Pulls a loop onto a true circle. Even spaces the points equally round it. Several loops at once are rounded one by one.'],
       ['knife', 'Knife', 'Press and slide to place points, lift. Back removes one, OK cuts. Each run must cross a face side to side.'],
       ['split', 'Split', 'A midpoint on every selected edge.'],
       ['detach', 'Detach', 'The selected faces leave as their own object.'],
@@ -18735,9 +19297,11 @@ if (PICK_DEBUG) {
     primParams, PRIM_SPECS,
     openGeoRing, startGeoSetup, applyGeoParams, finishGeoSetup, geoStep,
     syncGeoBar, armStickyRing,
-    HUB_TOOLS_GEO,
+    HUB_TOOLS_GEO, HUB_TOOLS_VERTEX, HUB_TOOLS_EDGE, HUB_TOOLS_FACE,
     get geoSetup() { return App.geoSetup; },
     setFlowSelection, setFlowApply, flowSelectionItems, loopCutFlowItems, weightedTangent,
+    circularizeSelection, circularizeApply, circularizeVerts, circularizeIslands,
+    circleTargets, bestFitPlane, circlePlane, circleFrameU, fitCircle2D, windingSpan,
     targetWeld, targetWeldOnce, weldVerticesOp, handleDoubleTap, handleTap,
     loopCutBeforeState, neighbourMap, continuationOf, hermiteAt,
     subdivideSelection, fillHolesSelection, flipNormalsSelection,
