@@ -784,7 +784,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.33</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.34</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -851,6 +851,7 @@
     <div id="opBar">
       <span id="opLabel">Extrude</span>
       <div class="group" id="opGrouping"></div>
+      <div class="group" id="opToggleWrap"><button id="opToggle"></button></div>
       <div class="stepper" id="opSegments">
         <button id="opSegMinus" title="Fewer loops">−</button>
         <span id="opSegValue">1</span>
@@ -5691,6 +5692,156 @@ function computeEdgeAverageNormal(ed, topo, la, lb) {
 
 const EXTRUDE_OFFSET = 0.4;
 
+/* ---------------- SET FLOW ----------------
+
+   A loop settles onto the curve the surrounding mesh already implies.
+
+   Maya calls it Edit Edge Flow: "adjusts the position of edges to fit the
+   curvature of the surrounding mesh", one slider, 0 to 1, opening at 1,
+   where 0 "moves the selected edges to the middle of the other nearby
+   edges, creating a flat transition". Blender's EdgeFlow add-on does the
+   same job "via a spline interpolation such that it respects the flow of
+   the surrounding geometry" - a HERMITE spline whose control points come
+   from the neighbouring edge loops. This is that, with Maya's two ends as 0
+   and 1 and room past it to over-bend.
+
+   For each vertex v being moved the caller supplies the two vertices ACROSS
+   the loop from it, a and b, and where v sits between them, t. Then:
+
+     a2, b2   the next vertices out, continuing the same line
+     T0 = unit(a - a2) * |b - a|      tangent at a, in the direction of travel
+     T1 = unit(b2 - b) * |b - a|      tangent at b, same
+     H(t)     the Hermite curve through a and b with those tangents
+
+   and the result is the STRAIGHT position blended toward the curve:
+
+     v' = lerp(a, b, t) + amount * (H(t) - lerp(a, b, t))
+
+   at amount 0 that is exactly Maya's flat transition, at 1 the curve, and
+   past 1 it over-bends. Note the straight baseline is subtracted rather
+   than assumed: a Hermite's own base is a smoothstep, not a lerp, so at any
+   t other than the middle - which is every vertex of a slid loop cut -
+   assuming it would drag the loop toward the centre as a side effect.
+
+   EVERY new position is computed from the ORIGINAL ones and applied at the
+   end. Two loops next to each other would otherwise give different answers
+   depending on which was visited first, which is what Maya's own
+   documentation is warning about when it says results are unpredictable
+   past two adjacent loops. */
+
+// logical -> its neighbours, straight off the edge list.
+function neighbourMap(topo) {
+  const nbr = new Map();
+  topo.edges.forEach(e => {
+    if (!nbr.has(e[0])) nbr.set(e[0], []);
+    if (!nbr.has(e[1])) nbr.set(e[1], []);
+    nbr.get(e[0]).push(e[1]);
+    nbr.get(e[1]).push(e[0]);
+  });
+  return nbr;
+}
+
+/* The neighbour of `at` that best continues the line arriving from `from` -
+   the next vertex out along the ring. Anything turning back on itself is
+   refused: a tangent estimated from a vertex on the wrong side of `at`
+   points the curve backwards. */
+function continuationOf(obj, nbr, at, from) {
+  const pAt = logicalPos(obj, at);
+  const heading = pAt.clone().sub(logicalPos(obj, from));
+  if (heading.lengthSq() < 1e-18) return -1;
+  heading.normalize();
+  let best = -1, bestDot = 0.1;      // must genuinely carry on, not turn
+  (nbr.get(at) || []).forEach(n => {
+    if (n === from) return;
+    const d = logicalPos(obj, n).sub(pAt);
+    if (d.lengthSq() < 1e-18) return;
+    const dot = d.normalize().dot(heading);
+    if (dot > bestDot) { bestDot = dot; best = n; }
+  });
+  return best;
+}
+
+/* One tangent direction from the two chords meeting at a vertex, each
+   weighted by the OTHER's length, so an uneven pair of spans still reads the
+   true direction of travel. Returns a UNIT vector; the caller scales it. */
+function weightedTangent(dIn, dOut) {
+  const li = dIn.length(), lo = dOut.length();
+  if (li < 1e-9) return lo < 1e-9 ? new THREE.Vector3(1, 0, 0) : dOut.clone().normalize();
+  if (lo < 1e-9) return dIn.clone().normalize();
+  const t = dIn.clone().multiplyScalar(lo / li).add(dOut.clone().multiplyScalar(li / lo));
+  return t.lengthSq() < 1e-18 ? dOut.clone().normalize() : t.normalize();
+}
+
+// Hermite basis, the standard one.
+function hermiteAt(p0, t0, p1, t1, t) {
+  const t2 = t * t, t3 = t2 * t;
+  const h00 = 2 * t3 - 3 * t2 + 1, h10 = t3 - 2 * t2 + t;
+  const h01 = -2 * t3 + 3 * t2, h11 = t3 - t2;
+  return new THREE.Vector3(
+    h00 * p0.x + h10 * t0.x + h01 * p1.x + h11 * t1.x,
+    h00 * p0.y + h10 * t0.y + h01 * p1.y + h11 * t1.y,
+    h00 * p0.z + h10 * t0.z + h01 * p1.z + h11 * t1.z
+  );
+}
+
+/* items: [{ v, a, b, t }] - the vertex to move, the two across it, and
+   where along them it belongs. Returns how many actually moved. */
+function setFlowApply(obj, items, amount) {
+  if (!items.length) return 0;
+  const topo = obj.mesh.userData.topo;
+  const nbr = neighbourMap(topo);
+  const moves = [];
+
+  items.forEach(it => {
+    const pa = logicalPos(obj, it.a), pb = logicalPos(obj, it.b);
+    const chord = pb.clone().sub(pa);
+    const len = chord.length();
+    if (len < 1e-9) return;
+    const dir = chord.clone().divideScalar(len);
+
+    const a2 = continuationOf(obj, nbr, it.a, it.b);
+    const b2 = continuationOf(obj, nbr, it.b, it.a);
+    /* The tangent DIRECTION is where all the accuracy lives, and the obvious
+       estimate - the outer chord alone, a2 -> a - is wrong by half the angle
+       the span turns through, because the two chords meeting at `a` do not
+       cover equal arcs: the outer one is one ring step, the span across is
+       two. Weighting each chord direction by the OTHER one's length is the
+       standard non-uniform Catmull-Rom tangent, and on a circle it is exact.
+
+       Measured on a five-loop arc of radius 2 with the middle loop flattened
+       onto its chord, then flowed back at 1: the outer chord alone returned
+       it to 2.0504 (2.5% proud), plain uniform Catmull-Rom to 1.9228 (3.9%
+       shy), this to 1.9964 - two tenths of one percent, and what is left is
+       the cubic's own error rather than the estimate's.
+
+       No continuation on a side - a boundary, or a pole - means no curvature
+       to read there, so that end contributes the chord itself and the vertex
+       simply keeps to the straight line. */
+    const inA = a2 >= 0 ? pa.clone().sub(logicalPos(obj, a2)) : chord.clone();
+    const outB = b2 >= 0 ? logicalPos(obj, b2).sub(pb) : chord.clone();
+    const T0 = weightedTangent(inA, chord).multiplyScalar(len);
+    const T1 = weightedTangent(chord, outB).multiplyScalar(len);
+
+    const base = pa.clone().lerp(pb, it.t);
+    const curve = hermiteAt(pa, T0, pb, T1, it.t);
+    const target = base.clone().add(curve.sub(base).multiplyScalar(amount));
+    if (target.distanceToSquared(logicalPos(obj, it.v)) < 1e-14) return;
+    moves.push({ l: it.v, p: target });
+  });
+
+  if (!moves.length) return 0;
+  const ed = toEditable(obj.mesh);
+  moves.forEach(m => {
+    (topo.logicalGroups[m.l] || []).forEach(ai => {
+      ed.positions[ai * 3] = m.p.x;
+      ed.positions[ai * 3 + 1] = m.p.y;
+      ed.positions[ai * 3 + 2] = m.p.z;
+    });
+  });
+  rebuildFromEditable(obj, ed);
+  return moves.length;
+}
+
 /* WHY THE LAST OP DID NOTHING.
 
    Every geometry worker here returns a bare `false` or `0` when it decides it
@@ -7774,6 +7925,12 @@ const OP_SPECS = {
       { key: 'each', needsMultiple: true, label: 'Each' }
     ]
   },
+  /* 0 is Maya's flat transition, 1 matches the surrounding curvature - its
+     default, and where this opens - and the range carries on to 2 so a
+     low-poly cage can be over-bent into looking rounder than it is. */
+  setflow: {
+    label: 'Set flow', min: 0, max: 2, step: 0.01, start: 1
+  },
   inset: {
     label: 'Inset', min: 0.02, max: 0.9, step: 0.01, start: 0.25,
     options: [
@@ -7827,7 +7984,13 @@ const OP_SPECS = {
        merely where a plain cube turns over. */
     label: 'Smooth by angle', min: 0, max: 180, step: 1, start: 33, multi: true
   },
+  /* Flow is not a third SPACING - Even and Slide answer where the loop
+     goes, Flow answers what shape it takes when it gets there, and you want
+     both. So it is a switch of its own rather than a chip in that row, the
+     way Maya's Multi-Cut carries edge flow as a separate setting from where
+     the loop lands. */
   loopcut: {
+    toggle: { key: 'flow', label: 'Flow', tip: 'The new loop follows the surface curve' },
     // The amount is a slide position along the ring, 0..1, centred at 0.5.
     // With several loops it shifts the whole evenly-spaced set toward one
     // side rather than moving them independently.
@@ -8045,8 +8208,24 @@ function applyPendingOp() {
       if (idx >= 0) resultSelection.add(idx);
     });
 
+  } else if (op.kind === 'setflow') {
+    ensureHelpers(obj);
+    // Nothing moved means the loop was already where the flow wants it -
+    // a refusal, not a success, or the bar would claim "applied" over an
+    // untouched mesh and leave a history step that undoes to nothing.
+    if (!setFlowApply(obj, op.payload.items, op.amount)) {
+      refuseOp('that loop already sits on the curve around it');
+    }
+    ensureHelpers(obj);
+    // Set flow moves vertices and touches no topology, so what was selected
+    // when it opened is still exactly what is selected now.
+    resultSelection = new Set(op.payload.selection);
+
   } else if (op.kind === 'loopcut') {
     ensureHelpers(obj);
+    // Recorded before any cutting, so the ring can be recovered afterwards
+    // as "the edges that are no longer there".
+    const flowBefore = op.flow ? loopCutBeforeState(obj) : null;
     const ts = loopCutPositions(op.segments || 1, op.groupMode || 'even', op.amount);
     // The starting edge is stored as coordinates: every re-run rebuilds the
     // mesh from the snapshot and renumbers everything, so ids would be stale.
@@ -8081,6 +8260,15 @@ function applyPendingOp() {
           ensureHelpers(obj);
         }
       }
+    }
+
+    /* Both rings are in by now, so one pass covers the mirrored one too.
+       Full strength, not a second slider: an inserted loop either follows
+       the surface or it does not, and the Set flow tool is there for the
+       cases that want dialling. */
+    if (flowBefore) {
+      const fitems = loopCutFlowItems(obj, flowBefore);
+      if (fitems.length) { setFlowApply(obj, fitems, 1); ensureHelpers(obj); }
     }
 
   } else if (op.kind === 'bridge') {
@@ -8226,12 +8414,13 @@ function showOpBar() {
   document.getElementById('opSegments').style.display = wantsSegments ? '' : 'none';
   document.getElementById('opSegValue').textContent = op.segments || 1;
   refreshOpGrouping();
+  refreshOpToggle();
   refreshOpAmountVisibility();
   /* Extrude MODE borrows this bar and wears it differently: no slider (the
      drag on the model is the control), no Cancel (tap away, or Undo), and
      the label counts the sections stacked so far. */
   if (op.live) {
-    ['opSlider', 'opValue', 'opSegments', 'opCancel'].forEach(id => {
+    ['opSlider', 'opValue', 'opSegments', 'opToggleWrap', 'opCancel'].forEach(id => {
       document.getElementById(id).style.display = 'none';
     });
     document.getElementById('opOk').textContent = 'Done';
@@ -8264,6 +8453,31 @@ function availableOpOptions(op) {
   const segs = op.segments || 1;
   return spec.options.filter(o => (many || !o.needsMultiple) && !(o.minSegments && segs < o.minSegments));
 }
+
+/* An INDEPENDENT switch, beside the exclusive chips rather than in them.
+   Only Loop cut has one so far; the spec declares it and this renders it,
+   so the next op that needs one costs a line. */
+function refreshOpToggle() {
+  const op = App.pendingOp;
+  const wrap = document.getElementById('opToggleWrap');
+  const btn = document.getElementById('opToggle');
+  const spec = op && OP_SPECS[op.kind];
+  const t = spec && spec.toggle;
+  wrap.style.display = t ? 'inline-flex' : 'none';
+  if (!t) return;
+  btn.textContent = t.label;
+  btn.title = t.tip || '';
+  btn.classList.toggle('active', !!op[t.key]);
+}
+
+document.getElementById('opToggle').addEventListener('click', () => {
+  const op = App.pendingOp;
+  const spec = op && OP_SPECS[op.kind];
+  if (!spec || !spec.toggle) return;
+  op[spec.toggle.key] = !op[spec.toggle.key];
+  refreshOpToggle();
+  applyPendingOp();
+});
 
 function refreshOpGrouping() {
   const op = App.pendingOp;
@@ -8319,6 +8533,9 @@ function refreshOpAmountVisibility() {
 
 function hideOpBar() {
   opBarEl.classList.remove('show');
+  // The chooser bars (Mirror, Extrude grouping) drive this bar by hand and
+  // know nothing about the toggle, so it goes away with the bar itself.
+  document.getElementById('opToggleWrap').style.display = 'none';
   ['opSlider', 'opValue', 'opOk', 'opCancel'].forEach(id => { document.getElementById(id).style.display = ''; });
   document.getElementById('opOk').textContent = '✓ OK';
 }
@@ -8509,6 +8726,168 @@ function cancelPendingOp() {
      saying nothing. */
   toast(op.live && op.settled ? 'Extrude finished'
     : OP_SPECS[op.kind].label + ' cancelled');
+}
+
+/* The two vertices ACROSS the loop from v are its neighbours the loop does
+   not itself run through. On a quad grid a loop vertex has four - two
+   along, two across. Anything else (a pole, a boundary, a stray vertex)
+   has no well-defined pair to curve between and is left exactly where it
+   is rather than guessed at.
+
+   COUNTING them is not enough, and this was got wrong first: where the
+   selection turns a CORNER there are exactly two non-loop neighbours and
+   they sit at right angles on the SAME side, not opposite one another. The
+   curve then runs between two points that are not across anything and the
+   vertex is thrown outside its own quad - measured at 0.87 units on a dead
+   flat grid, which is a surface whose implied curve is a straight line and
+   where nothing at all may move. So the pair has to be genuinely opposed.
+
+   The threshold is 110 degrees at the vertex. A loop on any smooth surface
+   reads near 180 (a 20-degree-per-step arc is 176); a right-angled corner
+   reads exactly 90 and is refused, as is the corner of a cube's own edge
+   loop, where "across" has no more meaning than it does on the flat grid. */
+const FLOW_MIN_OPPOSITION = -0.34;    // cos 110 degrees
+
+function flowItemsForLoop(obj, verts, loopKeys) {
+  const nbr = neighbourMap(obj.mesh.userData.topo);
+  const items = [];
+  verts.forEach(v => {
+    const across = (nbr.get(v) || []).filter(n => !loopKeys.has(edgeKey(v, n)));
+    if (across.length !== 2) return;
+    const pv = logicalPos(obj, v);
+    const da = logicalPos(obj, across[0]).sub(pv);
+    const db = logicalPos(obj, across[1]).sub(pv);
+    if (da.lengthSq() < 1e-18 || db.lengthSq() < 1e-18) return;
+    if (da.normalize().dot(db.normalize()) > FLOW_MIN_OPPOSITION) return;
+    items.push({ v, a: across[0], b: across[1], t: 0.5 });
+  });
+  return items;
+}
+
+/* What counts as "the loop" depends on which component type you are in, and
+   all three answers are the same shape: a set of vertices to move, and the
+   edges that run ALONG the thing they belong to. */
+function flowSelectionItems(obj) {
+  const topo = obj.mesh.userData.topo;
+  const verts = new Set(), loopKeys = new Set();
+
+  if (App.mode === 'vertex') {
+    App.selectedElements.forEach(l => { if (l < topo.logicalCount) verts.add(l); });
+    // An edge runs along the loop when both its ends are picked.
+    topo.edges.forEach(e => {
+      if (verts.has(e[0]) && verts.has(e[1])) loopKeys.add(edgeKey(e[0], e[1]));
+    });
+
+  } else if (App.mode === 'edge') {
+    App.selectedElements.forEach(ei => {
+      const e = topo.edges[ei];
+      if (!e) return;
+      verts.add(e[0]); verts.add(e[1]);
+      loopKeys.add(edgeKey(e[0], e[1]));
+    });
+
+  } else if (App.mode === 'face') {
+    /* The RIM of the patch - the edges that appear exactly once around the
+       selected faces, the same test Inset uses to find its border. That is
+       what makes Set flow useful straight after an Inset or an Extrude: the
+       new rim settles onto the curve running through the face inside it and
+       the surface outside it. */
+    const count = new Map(), ends = new Map();
+    App.selectedElements.forEach(gi => {
+      const lp = groupLogicalLoop(obj, gi);
+      for (let i = 0; i < lp.length; i++) {
+        const a = lp[i], b = lp[(i + 1) % lp.length], k = edgeKey(a, b);
+        count.set(k, (count.get(k) || 0) + 1);
+        if (!ends.has(k)) ends.set(k, [a, b]);
+      }
+    });
+    count.forEach((c, k) => {
+      if (c !== 1) return;
+      const e = ends.get(k);
+      verts.add(e[0]); verts.add(e[1]);
+      loopKeys.add(k);
+    });
+  }
+  return flowItemsForLoop(obj, verts, loopKeys);
+}
+
+function setFlowSelection() {
+  if (App.knife) { toast('Finish the cut first'); return; }
+  if (App.pendingOp) {
+    toast('Finish the ' + ((OP_SPECS[App.pendingOp.kind] || {}).label || 'operation') + ' first');
+    return;
+  }
+  if (App.mode === 'object') { toast('Set flow works on vertices, edges or faces'); return; }
+  const obj = findObject(App.activeObjectId);
+  if (!obj || !App.selectedElements.size) { toast('Select a loop to flow'); return; }
+  ensureHelpers(obj);
+  // Per-element, like Extrude and Crease, so the union with the mirror is
+  // the right way to be symmetric about it.
+  symExpand(obj);
+  const items = flowSelectionItems(obj);
+  if (!items.length) {
+    toast(App.mode === 'face'
+      ? 'Nothing to flow — that patch has no rim with mesh on both sides'
+      : 'Nothing to flow — a loop needs mesh on both sides of it');
+    return;
+  }
+  beginPendingOp('setflow', obj, { items, selection: Array.from(App.selectedElements) });
+}
+
+/* Which original edge each vertex a loop cut ADDED was inserted into, and
+   where along it. Every one of them lies on an edge that no longer exists -
+   the cut split it - so the ring is recovered by looking at which edges
+   disappeared, without instrumenting edgeLoopOp at all.
+
+   Handing the flow the ORIGINAL span rather than the vertex's immediate
+   neighbours is what lets it curve properly at two sections and more, and
+   passing the vertex's own t is what keeps a slid loop where the slider put
+   it instead of dragging it back to the middle. */
+function loopCutFlowItems(obj, before) {
+  const topo = obj.mesh.userData.topo;
+  const now = new Set();
+  topo.edges.forEach(e => now.add(edgePosKey(logicalPos(obj, e[0]), logicalPos(obj, e[1]))));
+  const split = before.edges.filter(e => !now.has(e.key));
+  if (!split.length) return [];
+
+  const items = [];
+  for (let l = 0; l < topo.logicalCount; l++) {
+    const p = logicalPos(obj, l);
+    if (before.verts.has(posKey(p))) continue;          // was already there
+    let bestT = -1, bestE = null, bestD = 1e-4;
+    split.forEach(e => {
+      const ab = e.b.clone().sub(e.a);
+      const len2 = ab.lengthSq();
+      if (len2 < 1e-18) return;
+      const t = p.clone().sub(e.a).dot(ab) / len2;
+      if (t <= 1e-4 || t >= 1 - 1e-4) return;
+      const d = p.distanceTo(e.a.clone().addScaledVector(ab, t));
+      if (d < bestD) { bestD = d; bestT = t; bestE = e; }
+    });
+    if (!bestE) continue;
+    const la = findLogicalByPosition(obj, bestE.a);
+    const lb = findLogicalByPosition(obj, bestE.b);
+    if (la >= 0 && lb >= 0) items.push({ v: l, a: la, b: lb, t: bestT });
+  }
+  return items;
+}
+
+// Position-keyed, order-independent, so an edge can be recognised across a
+// rebuild that renumbered everything.
+function edgePosKey(pa, pb) {
+  const a = posKey(pa), b = posKey(pb);
+  return a < b ? a + '|' + b : b + '|' + a;
+}
+
+function loopCutBeforeState(obj) {
+  const topo = obj.mesh.userData.topo;
+  const verts = new Set(), edges = [];
+  for (let l = 0; l < topo.logicalCount; l++) verts.add(posKey(logicalPos(obj, l)));
+  topo.edges.forEach(e => {
+    const a = logicalPos(obj, e[0]), b = logicalPos(obj, e[1]);
+    edges.push({ a, b, key: edgePosKey(a, b) });
+  });
+  return { verts, edges };
 }
 
 /* ---------------- Extrude mode (a2.31) ----------------
@@ -9505,7 +9884,13 @@ function setMode(mode) {
      and the line below empties that selection. Left open it would stack
      sections onto nothing and lose the ability to re-measure its own drag
      direction, so commit what has been pulled and close it. */
+  /* A live op is committed, because what has been pulled is real work. Any
+     OTHER pending op is cancelled: its bar previews something the user has
+     not accepted, and the line below empties the selection it is aimed at.
+     Left open it kept its bar - and, since a2.34, a live Flow switch - over
+     a mode it no longer belongs to. */
   if (App.pendingOp && App.pendingOp.live) confirmPendingOp();
+  else if (App.pendingOp) cancelPendingOp();
   App.mode = mode;
   if (mode !== 'object') App.lastComponentMode = mode;
   App.selectedElements.clear();
@@ -10145,6 +10530,7 @@ function refreshKnifeBar() {
 function hideKnifeBar() {
   hideOpBar();
   document.getElementById('opGrouping').style.display = 'none';
+  document.getElementById('opToggleWrap').style.display = 'none';
   knifeDots.visible = false;
   knifeLine.visible = false;
 }
@@ -12830,10 +13216,9 @@ function showMirrorChooser(axis) {
     el.appendChild(b);
   });
   document.getElementById('opLabel').textContent = 'Mirror';
-  document.getElementById('opSlider').style.display = 'none';
-  document.getElementById('opValue').style.display = 'none';
-  document.getElementById('opSegments').style.display = 'none';
-  document.getElementById('opOk').style.display = 'none';
+  ['opSlider', 'opValue', 'opSegments', 'opToggleWrap', 'opOk'].forEach(id => {
+    document.getElementById(id).style.display = 'none';
+  });
   opBarEl.classList.add('show');
 }
 
@@ -13573,6 +13958,12 @@ const ICON = {
      between two marks that mean quite different things. The stem sits
      outside the curve, against empty background, so it is the part that
      survives the size. */
+  /* Three loops seen edge-on: the outer two bow the way the surface does,
+     the middle one follows them. Deliberately NOT the smooth glyph's single
+     hump - that one says "shading", this one says "topology". Strokes sit
+     ~7 units apart, well clear of the ~1.8u where detail fuses at ring
+     size, and nothing here is dashed or diagonal. */
+  flow:    '<path d="M4.5 4C2.8 8.5 2.8 15.5 4.5 20"/><path d="M19.5 4c1.7 4.5 1.7 11.5 0 16"/><path d="M12 4c-.9 4.5-.9 11.5 0 16"/>',
   sharp:   '<path d="M3 18L12 6l9 12"/><circle cx="12" cy="6" r="1.8" fill="currentColor" stroke="none"/>',
   /* The draughtsman's angle mark, arc and all. Tried a peak with one hard
      side and one round one, which is a truer picture of what the tool does -
@@ -13626,6 +14017,13 @@ const HUB_TOOLS_VERTEX = [
   { key: 'connect', icon: 'connect', label: 'Connect', seat: 0, ring: 0, run: connectSelection },
   { key: 'weld', icon: 'weld', label: 'Weld', seat: 1, ring: 0, run: weldSelection },
   { key: 'merge', icon: 'merge', label: 'Merge', seat: 2, ring: 0, run: mergeSelection },
+  /* Set flow holds seat 8 in all three component rings. Seat 8 was Shade's
+     bearing and reads as "how the surface behaves"; Set flow is that idea
+     with topology behind it instead of normals. The Edge ring had exactly
+     one seat free and this was it, so the choice was between one bearing
+     everywhere for Set flow or one for Shade - and Shade is the older, less
+     used of the two in Face mode, so it moves to 11 there. */
+  { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 8, ring: 1, run: setFlowSelection },
   { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 0, run: deleteSelection },
   { key: 'grow', icon: 'grow', label: 'Grow', seat: 12, ring: 1, run: growSelection },
   { key: 'shrink', icon: 'shrink', label: 'Shrink', seat: 13, ring: 1, run: shrinkSelection },
@@ -13660,6 +14058,7 @@ const HUB_TOOLS_EDGE = [
      the "off", which is what freed a seat for a second mark in the first
      place. Sharp inherits Crease's old seat because it inherits the meaning
      the glyph always had; Crease moves one along. */
+  { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 8, ring: 1, run: setFlowSelection },
   { key: 'sharp', icon: 'sharp', label: 'Mark Sharp', seat: 10, ring: 1, run: markSharpSelection },
   { key: 'crease', icon: 'crease', label: 'Crease', seat: 11, ring: 1, run: () => creaseSelection() },
   { key: 'grow', icon: 'grow', label: 'Grow', seat: 12, ring: 1, run: growSelection },
@@ -13676,7 +14075,11 @@ const HUB_TOOLS_FACE = [
   { key: 'bridge', icon: 'bridge', label: 'Bridge', seat: 5, ring: 0, run: bridgeSelection },
   { key: 'cap', icon: 'cap', label: 'Cap holes', seat: 6, ring: 1, run: fillHolesSelection },
   { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 1, run: deleteSelection },
-  { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 8, ring: 1, run: toggleShading },
+  // Shade gives up seat 8 to Set flow here so Set flow can hold one bearing
+  // in all three component rings; it keeps 8 in the Object ring, which is
+  // where shading a whole model belongs anyway.
+  { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 8, ring: 1, run: setFlowSelection },
+  { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 11, ring: 1, run: toggleShading },
   { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 9, ring: 1, run: flipNormalsSelection },
   { key: 'grow', icon: 'grow', label: 'Grow', seat: 12, ring: 1, run: growSelection },
   { key: 'shrink', icon: 'shrink', label: 'Shrink', seat: 13, ring: 1, run: shrinkSelection }
@@ -14823,7 +15226,8 @@ HELP_SECTIONS.push(
       ['extrude', 'Extrude', 'Pulls faces or edges out. Drag the new part as far as you like, tap it for another section, tap away when done. Two-finger tap switches to Rotate or Scale and they work on it as usual.'],
       ['inset', 'Inset', 'A border inside a face.'],
       ['bevel', 'Bevel', 'A narrow flat face along an edge. More segments rounds it.'],
-      ['loop', 'Loop', 'New edge rings across the mesh, square to the edge you picked.'],
+      ['loop', 'Loop', 'New edge rings across the mesh, square to the edge you picked. Flow curves them to follow the surface.'],
+      ['flow', 'Set flow', 'Settles a loop onto the curve the mesh around it implies. 0 is flat, 1 matches it, past that over-bends.'],
       ['knife', 'Knife', 'Press and slide to place points, lift. Back removes one, OK cuts. Each run must cross a face side to side.'],
       ['split', 'Split', 'A midpoint on every selected edge.'],
       ['detach', 'Detach', 'The selected faces leave as their own object.'],
@@ -15186,9 +15590,10 @@ function refreshUI() {
       if (App.mode === 'object') {
         selectObjectClick(o.id, App.multiSelect);
       } else {
-        // Same reasoning as setMode: this empties the selection a live op is
-        // aimed at, so commit what has been pulled before navigating away.
+        // Same reasoning as setMode: this empties the selection the op is
+        // aimed at. A live one is committed, any other cancelled.
         if (App.pendingOp && App.pendingOp.live) confirmPendingOp();
+        else if (App.pendingOp) cancelPendingOp();
         App.activeObjectId = o.id;
         App.selectedElements.clear();
         hideAllHelpers();
@@ -15549,6 +15954,9 @@ if (PICK_DEBUG) {
     /* The rest of the op set, so one harness can sweep ALL of them rather
        than the handful that happened to be exported. Every one of these is
        already a single tap away in the rings. */
+    logicalPos, findLogicalByPosition, edgeKey, groupLogicalLoop,
+    setFlowSelection, setFlowApply, flowSelectionItems, loopCutFlowItems, weightedTangent,
+    loopCutBeforeState, neighbourMap, continuationOf, hermiteAt,
     subdivideSelection, fillHolesSelection, flipNormalsSelection,
     autoSmoothSelection, markSharpSelection, shadeSelection,
     growSelection, shrinkSelection, collapseSelection,
