@@ -867,7 +867,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.39a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.40</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -3515,6 +3515,7 @@ function disposeHelpersOnly(obj) {
   if (ud.edgeLines) { obj.mesh.remove(ud.edgeLines); ud.edgeLines.geometry.dispose(); ud.edgeLines.material.dispose(); ud.edgeLines = null; }
   if (ud.faceOverlays) { ud.faceOverlays.forEach(o => { obj.mesh.remove(o); o.geometry.dispose(); o.material.dispose(); }); ud.faceOverlays = null; }
   disposeSelectionOverlay(obj);
+  disposeSoftOverlay(obj);
   ud.topo = null;
 }
 
@@ -10058,6 +10059,9 @@ function syncHelperGeometry(obj) {
   // The overlay is rebuilt rather than nudged - it holds only the selected
   // few, so this is cheaper than tracking which of its vertices moved.
   syncSelectionOverlay(obj);
+  // The falloff overlay is NOT rebuilt here: its field is frozen for the
+  // length of the drag, so only the positions have moved.
+  refreshSoftOverlayPositions(obj);
 }
 
 /* setCol writes one flat colour; this writes the blend between two, which is
@@ -10085,18 +10089,17 @@ function refreshElementColors(obj) {
   if (points) {
     const col = points.geometry.attributes.color.array;
     const showSel = App.mode === 'vertex';
-    /* The falloff, drawn. Every vertex the drag would carry is tinted toward
-       the selection colour by exactly the weight it will be moved with, so the
-       reach and the SHAPE of the reach are both visible before you commit to
-       anything - which is the whole reason the radius is a gesture and not a
-       number in a box. Only on the object being edited; the field is computed
-       for that one. */
-    const field = (App.soft && obj.id === App.activeObjectId) ? refreshSoftField(obj) : null;
+    /* The base dots stay quiet. Until a2.40 they carried the falloff as a hue
+       blend, which was the cheapest place to put it but the wrong one: a 2px
+       dot has almost no area to carry a gradient, it said nothing at all about
+       edges or faces, and hue is a poor way to read "how much" - the eye reads
+       fading far better than it reads a shift toward red.
+
+       The falloff now has its own overlay with real per-vertex alpha, on the
+       same principle as the selection overlay: the base helpers stay quiet and
+       a separate object makes the affected few loud. */
     for (let l = 0; l < topo.logicalCount; l++) {
-      if (showSel && App.selectedElements.has(l)) { setCol(col, l, SELECT_COLOR); continue; }
-      const w = field ? field.get(l) : undefined;
-      if (w === undefined) { setCol(col, l, UNSELECT_VERT_COLOR); continue; }
-      setColMix(col, l, UNSELECT_VERT_COLOR, SELECT_COLOR, w);
+      setCol(col, l, (showSel && App.selectedElements.has(l)) ? SELECT_COLOR : UNSELECT_VERT_COLOR);
     }
     points.geometry.attributes.color.needsUpdate = true;
   }
@@ -10132,6 +10135,7 @@ function refreshElementColors(obj) {
     overlays.forEach(o => { o.visible = false; });
   }
   syncSelectionOverlay(obj);
+  syncSoftOverlay(obj);
 }
 
 /* ---------------- Selection overlay ----------------
@@ -10160,7 +10164,17 @@ const SEL_EDGE_PX = 3.5;     // vs a 1px hairline
 function disposeSelectionOverlay(obj) {
   const ud = obj.mesh.userData;
   if (ud.selPoints) { obj.mesh.remove(ud.selPoints); ud.selPoints.geometry.dispose(); ud.selPoints.material.dispose(); ud.selPoints = null; }
-  if (ud.selLines) { obj.mesh.remove(ud.selLines); ud.selLines.geometry.dispose(); ud.selLines.material.dispose(); ud.selLines = null; }
+  if (ud.selLines) {
+    obj.mesh.remove(ud.selLines); ud.selLines.geometry.dispose(); ud.selLines.material.dispose();
+    /* Taken out of the stroke list, which it never was. syncSelectionOverlay
+       pushes on every rebuild and syncHelperGeometry rebuilds it on every
+       frame of a drag - so Edge mode appended a dead LineSegments2 sixty times
+       a second, and updateStrokeResolution walked all of them on every resize.
+       Pre-existing; found while adding a list the falloff overlay also uses. */
+    const i = gizmoStrokes.indexOf(ud.selLines);
+    if (i >= 0) gizmoStrokes.splice(i, 1);
+    ud.selLines = null;
+  }
 }
 
 function syncSelectionOverlay(obj) {
@@ -10216,6 +10230,306 @@ function syncSelectionOverlay(obj) {
       // every other Line2 in the app.
       gizmoStrokes.push(seg);
     }
+  }
+}
+
+/* ---------------- The soft falloff, drawn (a2.40) ----------------
+
+   Every component the drag would carry, shown at exactly the strength it will
+   be carried with - so the reach AND the shape of the reach are readable
+   before you commit to anything. That is the whole reason the radius is a
+   gesture rather than a number in a box: you are meant to watch the model,
+   not a slider.
+
+   FADING, not hue. Three.js supports per-vertex alpha when the colour
+   attribute has four components (USE_COLOR_ALPHA), so the dots and the face
+   tint carry the weight as real transparency and the gradient across a face is
+   genuinely smooth. Fat lines are the exception - LineSegmentsGeometry's
+   setColors is hardcoded to three components in this version, with no alpha
+   available at all - so edges fade by colour instead, from the wireframe
+   colour toward the selection colour. Same reading, different mechanism,
+   because the mechanism was not on offer.
+
+   Which layers appear follows the component type, because that is what "the
+   things this drag will move" means: dots always, since they are the clearest
+   read of a field at any size; edges in Edge mode; the surface tint in Face
+   mode. */
+const SOFT_DOT_PX = 5;          // between the 2px base and the 7px selected
+const SOFT_EDGE_PX = 2.2;       // between the hairline and the 3.5px selected
+const SOFT_FACE_ALPHA = 0.5;    // a tint over the surface, never a coat of paint
+
+function disposeSoftOverlay(obj) {
+  const ud = obj.mesh.userData;
+  ud.softPointIds = null; ud.softLineIds = null; ud.softFaceIds = null;
+  ['softPoints', 'softLines', 'softFaces'].forEach(k => {
+    const o = ud[k];
+    if (!o) return;
+    obj.mesh.remove(o);
+    o.geometry.dispose();
+    o.material.dispose();
+    // Taken out of the stroke list too - it is walked on every resize, and a
+    // disposed line left in it is both wasted work and a leak.
+    const i = gizmoStrokes.indexOf(o);
+    if (i >= 0) gizmoStrokes.splice(i, 1);
+    ud[k] = null;
+  });
+}
+
+/* Which edges touch a given vertex, cached on the topology beside vertAdj.
+   Without it the edge layer walked every edge in the mesh to find the handful
+   inside the field - and it is rebuilt on every pointermove of the radius
+   slide, so "every edge in the mesh" was the per-frame cost on exactly the
+   meshes where a falloff matters. */
+function ensureVertEdges(obj) {
+  const topo = obj.mesh.userData.topo;
+  if (topo.vertEdges) return topo.vertEdges;
+  const m = new Map();
+  topo.edges.forEach((e, i) => {
+    [e[0], e[1]].forEach(l => {
+      let a = m.get(l);
+      if (!a) { a = []; m.set(l, a); }
+      a.push(i);
+    });
+  });
+  topo.vertEdges = m;
+  return m;
+}
+
+function syncSoftOverlay(obj) {
+  if (!obj || !obj.mesh || !obj.mesh.userData.topo) return;
+  disposeSoftOverlay(obj);
+  // The field is computed for the object being edited, so only that one has
+  // anything to draw.
+  if (!App.soft || App.mode === 'object' || obj.id !== App.activeObjectId) return;
+  /* And not while an extrude section is live: that drag deliberately ignores
+     the falloff (see captureDragContext), so drawing one would promise a reach
+     the drag will not take. */
+  if (App.pendingOp && App.pendingOp.live) return;
+  const field = refreshSoftField(obj);
+  if (!field) return;
+
+  const topo = obj.mesh.userData.topo;
+  const pa = obj.mesh.geometry.attributes.position;
+  const seeds = softSeeds(obj);
+  const sel = new THREE.Color(SELECT_COLOR);
+  const unsel = new THREE.Color(UNSELECT_EDGE_COLOR);
+  const at = (l) => {
+    const g = topo.logicalGroups[l];
+    return g ? [pa.getX(g[0]), pa.getY(g[0]), pa.getZ(g[0])] : null;
+  };
+
+  /* ---- Dots ---- */
+  const pos = [], col = [], ptIds = [];
+  field.forEach((w, l) => {
+    // The seeds are already drawn loud by the selection overlay; drawing them
+    // again here would only fight it.
+    if (seeds.has(l)) return;
+    const p = at(l);
+    if (!p) return;
+    ptIds.push(l);
+    pos.push(p[0], p[1], p[2]);
+    col.push(sel.r, sel.g, sel.b, w);
+  });
+  if (pos.length) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 4));
+    const mat = new THREE.PointsMaterial({
+      size: SOFT_DOT_PX * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1),
+      sizeAttenuation: false, map: vertexDotTexture(),
+      vertexColors: true, transparent: true, depthWrite: false, depthTest: false, fog: false
+    });
+    /* No alphaTest, deliberately. The selected dots use one to keep a crisp
+       round edge, but here it would CLIP the falloff: every vertex weaker than
+       the threshold would vanish outright, turning a gradient into a hard
+       circle - which is precisely the thing this overlay exists to show is not
+       happening. depthWrite is already off, so blending is well behaved. */
+    const pts = new THREE.Points(geo, mat);
+    /* Fractional on purpose. The base helpers sit at 10 / 9 / 8 and the
+       selection overlay at 12 / 11; an equal renderOrder leaves three.js to
+       break the tie on object id, which happened to come out right and was
+       enforced by nothing. These sit strictly between the two. */
+    pts.renderOrder = 10.6;
+    obj.mesh.add(pts);
+    obj.mesh.userData.softPoints = pts;
+    obj.mesh.userData.softPointIds = ptIds;
+  }
+
+  /* ---- Edges, in Edge mode ---- */
+  if (App.mode === 'edge') {
+    const epos = [], ecol = [], edIds = [];
+    const vertEdges = ensureVertEdges(obj);
+    // Only edges that touch the field can be in it, so the field is what is
+    // walked - not the mesh.
+    const cand = new Set();
+    field.forEach((w, l) => { const es = vertEdges.get(l); if (es) es.forEach(i => cand.add(i)); });
+    const mix = (c, w) => { c.push(unsel.r + (sel.r - unsel.r) * w,
+                                   unsel.g + (sel.g - unsel.g) * w,
+                                   unsel.b + (sel.b - unsel.b) * w); };
+    cand.forEach((i) => {
+      const e = topo.edges[i];
+      if (!e) return;
+      const wa = field.get(e[0]), wb = field.get(e[1]);
+      // Both ends, or the edge is only half in the field and drawing it would
+      // claim a reach the drag does not have.
+      if (wa === undefined || wb === undefined) return;
+      if (App.selectedElements.has(i)) return;          // the selection's own
+      const a = at(e[0]), b = at(e[1]);
+      if (!a || !b) return;
+      edIds.push(i);
+      epos.push(a[0], a[1], a[2], b[0], b[1], b[2]);
+      mix(ecol, wa); mix(ecol, wb);
+    });
+    if (epos.length) {
+      const geo = new LineSegmentsGeometry();
+      geo.setPositions(epos);
+      geo.setColors(ecol);
+      // depthTest off on all three layers, so the field gives one answer
+      // about what is behind the model rather than three.
+      const mat = new LineMaterial({
+        linewidth: SOFT_EDGE_PX, worldUnits: false, vertexColors: true,
+        transparent: true, opacity: 0.95, depthTest: false, depthWrite: false
+      });
+      mat.resolution.set(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
+      const seg = new LineSegments2(geo, mat);
+      seg.renderOrder = 10.5;
+      obj.mesh.add(seg);
+      obj.mesh.userData.softLines = seg;
+      obj.mesh.userData.softLineIds = edIds;
+      gizmoStrokes.push(seg);
+    }
+  }
+
+  /* ---- The surface, in Face mode ---- */
+  if (App.mode === 'face') {
+    const index = obj.mesh.geometry.index;
+    const fpos = [], fcol = [], fIds = [];
+    // Candidates from the field, not from the mesh: a face can only be in the
+    // field if one of its corners is, and vertAdj already answers that.
+    ensureAdjacency(obj);
+    const vertAdj = topo.vertAdj;
+    const cand = new Set();
+    field.forEach((w, l) => { const fs = vertAdj && vertAdj.get(l); if (fs) fs.forEach(gi => cand.add(gi)); });
+    cand.forEach((gi) => {
+      const fg = topo.faceGroups[gi];
+      if (!fg || !index) return;
+      // Only faces the drag actually carries - every corner has to be in.
+      const verts = fg.logicalVerts || [];
+      if (!verts.length || !verts.every(l => field.has(l))) return;
+      if (App.selectedElements.has(gi)) return;         // the selection's own
+      fIds.push(gi);
+      for (let t = 0; t < fg.triCount; t++) {
+        const ti = fg.triStart + t;
+        for (let k = 0; k < 3; k++) {
+          const ai = index.getX(ti * 3 + k);
+          const l = topo.logicalOf[ai];
+          const w = field.get(l);
+          fpos.push(pa.getX(ai), pa.getY(ai), pa.getZ(ai));
+          /* Per CORNER, not per face. The alpha is interpolated across the
+             triangle by the renderer, so a face that straddles the edge of the
+             field fades across itself rather than stepping - which is what the
+             falloff actually does, and a stepped one would misreport it. */
+          fcol.push(sel.r, sel.g, sel.b, (w === undefined ? 0 : w) * SOFT_FACE_ALPHA);
+        }
+      }
+    });
+    if (fpos.length) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(fpos, 3));
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(fcol, 4));
+      const mat = new THREE.MeshBasicMaterial({
+        vertexColors: true, transparent: true, depthWrite: false,
+        /* depthTest OFF and DoubleSide, exactly as the existing face overlays
+           are built - and for two reasons this layer got wrong on the first
+           pass by copying the selection overlay instead.
+
+           This geometry is a copy of the mesh's own vertex positions parented
+           to the same object, so it is coplanar with the surface it tints. The
+           opaque mesh fills the depth buffer first and gl.LESS fails on
+           equality: depth-tested, the tint either vanishes outright or
+           speckles. There is no polygon offset here to lean on.
+
+           FrontSide was the same mistake twice: a mirrored object has negative
+           scale and reversed winding, so front-face culling hides exactly the
+           half you wanted to see - which is why refreshXrayMode says so about
+           the mesh itself. Being unconditional also means X-ray cannot leave
+           this layer stale, since there is no flag baked in to go stale. */
+        depthTest: false, side: THREE.DoubleSide
+      });
+      const m = new THREE.Mesh(geo, mat);
+      m.renderOrder = 10.4;
+      obj.mesh.add(m);
+      obj.mesh.userData.softFaces = m;
+      obj.mesh.userData.softFaceIds = fIds;
+    }
+  }
+}
+
+/* The overlay's POSITIONS, refreshed without rebuilding it.
+
+   A drag moves the mesh every frame. The base dots and the wireframe are
+   nudged in place by syncHelperGeometry and the selection overlay is rebuilt
+   there; the falloff overlay was doing neither, so it hung in space over a
+   model that had moved out from under it - and stayed there after the drag
+   ended, since nothing on that path calls refreshElementColors.
+
+   Rebuilding it per frame is not the answer: the field is FROZEN for the
+   length of a drag (captureDragContext), so the weights, the vertex list and
+   the colours are all still correct. Only the positions moved. Writing them
+   into the buffers that already exist is a few hundred floats instead of a
+   fresh geometry, a fresh material and a GPU upload per frame. */
+function refreshSoftOverlayPositions(obj) {
+  const ud = obj.mesh.userData;
+  const topo = ud.topo;
+  if (!topo || (!ud.softPoints && !ud.softLines && !ud.softFaces)) return;
+  const pa = obj.mesh.geometry.attributes.position;
+  const at = (l) => {
+    const g = topo.logicalGroups[l];
+    return g ? g[0] : -1;
+  };
+
+  if (ud.softPoints && ud.softPointIds) {
+    const p = ud.softPoints.geometry.attributes.position;
+    ud.softPointIds.forEach((l, i) => {
+      const ai = at(l);
+      if (ai >= 0) p.setXYZ(i, pa.getX(ai), pa.getY(ai), pa.getZ(ai));
+    });
+    p.needsUpdate = true;
+  }
+
+  if (ud.softLines && ud.softLineIds) {
+    // A fat line keeps its ends in an interleaved instance buffer, so it is
+    // rewritten through setPositions rather than poked at directly.
+    const pos = [];
+    ud.softLineIds.forEach(ei => {
+      const e = topo.edges[ei];
+      if (!e) return;
+      const a = at(e[0]), b = at(e[1]);
+      if (a < 0 || b < 0) return;
+      pos.push(pa.getX(a), pa.getY(a), pa.getZ(a), pa.getX(b), pa.getY(b), pa.getZ(b));
+    });
+    if (pos.length === ud.softLineIds.length * 6) ud.softLines.geometry.setPositions(pos);
+  }
+
+  if (ud.softFaces && ud.softFaceIds) {
+    const index = obj.mesh.geometry.index;
+    const p = ud.softFaces.geometry.attributes.position;
+    let w = 0;
+    if (index) {
+      ud.softFaceIds.forEach(gi => {
+        const fg = topo.faceGroups[gi];
+        if (!fg) return;
+        for (let t = 0; t < fg.triCount; t++) {
+          const ti = fg.triStart + t;
+          for (let c = 0; c < 3; c++) {
+            const ai = index.getX(ti * 3 + c);
+            if (w < p.count) p.setXYZ(w, pa.getX(ai), pa.getY(ai), pa.getZ(ai));
+            w++;
+          }
+        }
+      });
+    }
+    p.needsUpdate = true;
   }
 }
 
@@ -10288,6 +10602,7 @@ function hideAllHelpers() {
     // down here or a mode switch leaves a stale red selection floating over
     // a model that no longer has anything selected.
     disposeSelectionOverlay(o);
+    disposeSoftOverlay(o);
     if (o.mesh.userData.vertexPoints) o.mesh.userData.vertexPoints.visible = false;
     if (o.mesh.userData.edgeLines) o.mesh.userData.edgeLines.visible = false;
     if (o.mesh.userData.faceOverlays) o.mesh.userData.faceOverlays.forEach(x => x.visible = false);
@@ -18101,6 +18416,8 @@ if (PICK_DEBUG) {
     // reads softWeights directly, so a harness can ask for exactly what a
     // drag would have got without pretending to be a finger.
     softWeights, softFalloff, softSeeds, seedSoftRadius, refreshSoftField, clearSoftField,
+    syncSoftOverlay, disposeSoftOverlay, gizmoStrokes, refreshSoftOverlayPositions,
+    ensureVertEdges, syncHelperGeometry,
     setSoft, cycleEditMode, engageSoftSlide, softSlideMove, endSoftSlide, refreshSoftHud,
     enterIsolation, exitIsolation, reconcileIsolation, applyIsolation, objectPickable,
     unhideObject, isolationOn,

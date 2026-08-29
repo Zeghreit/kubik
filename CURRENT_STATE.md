@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~16,800 lines)
-- Version at time of writing: **a2.39a**
+- Version at time of writing: **a2.40**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1789,6 +1789,92 @@ otherwise the inspector reports the position the object was reflected FROM.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
 
+## The soft falloff, drawn (a2.40)
+
+**Every component the drag would carry, shown at the strength it will be
+carried with** — so the reach and the *shape* of the reach are both readable
+before you commit to anything. That is the whole reason the radius is a gesture
+rather than a number in a box: you are meant to watch the model.
+
+Three layers, following the component type, because that is what "the things
+this drag will move" means: **dots always** (the clearest read of a field at
+any size), **edges in Edge mode**, a **surface tint in Face mode**.
+
+### Fading, not hue
+
+Until a2.40 the falloff was a hue blend on the base 2px dots. That was the
+cheapest place to put it and the wrong one: a 2px dot has almost no area to
+carry a gradient, it said nothing whatever about edges or faces, and hue is a
+poor way to read *how much* — the eye reads fading far better than a shift
+toward red.
+
+three.js gives per-vertex alpha when the colour attribute has **four**
+components (`USE_COLOR_ALPHA`), so the dots and the face tint carry the weight
+as real transparency, and the tint's alpha is interpolated **per corner**, so a
+face straddling the edge of the field fades across itself rather than stepping.
+
+**Fat lines are the exception.** `LineSegmentsGeometry.setColors` is hardcoded
+to three components in r184 — there is no per-vertex alpha on a Line2 at all —
+so edges fade by colour instead, from the wireframe colour toward the selection
+colour. Same reading, different mechanism, because the mechanism was not on
+offer. Worth knowing before anyone tries to "fix" the inconsistency.
+
+The base helpers went quiet again, on the same principle as the selection
+overlay: the shared buffers stay dull and a separate object makes the affected
+few loud.
+
+### Three things this got wrong first, all worth keeping
+
+**The tint is coplanar with the surface it tints.** It is a copy of the mesh's
+own vertex positions parented to the same object, so with `depthTest` on, the
+opaque mesh fills the depth buffer first and `gl.LESS` fails on equality — the
+tint either vanishes outright or speckles. `depthTest: false` and
+`side: DoubleSide`, exactly as the existing face overlays are built. The first
+pass copied the *selection* overlay instead and inherited neither. DoubleSide
+matters for the same reason `refreshXrayMode` documents: a mirrored object has
+negative scale and reversed winding, so front-face culling hides exactly the
+half you wanted to see.
+
+**It has to follow the mesh through a drag.** Positions are read at build time,
+and a drag moves vertices every frame — so the overlay hung in space over a
+model that had moved out from under it, and stayed there after the drag ended,
+because nothing on that path calls `refreshElementColors`. But rebuilding per
+frame is not the answer either: the field is **frozen** for the length of a
+drag (`captureDragContext`), so the weights, the vertex list and the colours
+are all still right and only the positions moved. `refreshSoftOverlayPositions`
+writes them into the buffers that already exist — a few hundred floats instead
+of a fresh geometry, material and GPU upload every frame. Called from
+`syncHelperGeometry`, beside the selection overlay's rebuild.
+
+**The walks are bounded by the FIELD, not by the mesh.** `refreshElementColors`
+runs on every pointermove of the radius slide, and the first version walked
+every edge and every face group each time, allocating two `THREE.Color` objects
+per surviving edge. On a subdivided mesh at a large radius that was hundreds of
+thousands of array pushes and megabytes of throwaway buffers *per pointer
+event* — worst on exactly the meshes where a falloff matters most. Candidates
+now come from the field through `vertAdj` (faces) and a new cached
+`topo.vertEdges` (edges).
+
+### Known limits
+
+- **Symmetry partners are not drawn.** With symmetry on, the drag also writes
+  each entry's mirror partner, and those are not in the field unless they fall
+  inside the radius on their own. The picture therefore shows *less* than the
+  drag will move — the safe direction to be wrong in, but wrong.
+- An unselected edge whose two endpoints are both selected is drawn by neither
+  overlay, so it reads at base strength between two full-weight ends.
+
+Also fixed here, pre-existing: `disposeSelectionOverlay` never removed its line
+from `gizmoStrokes` while `syncSelectionOverlay` pushed on every rebuild — and
+`syncHelperGeometry` rebuilds it every frame of a drag, so Edge mode appended a
+dead `LineSegments2` sixty times a second, which `updateStrokeResolution` then
+walked on every resize.
+
+Probe: `_sviz_probe.py` — including that each dot's alpha equals that vertex's
+weight exactly, that the tint fades across a face, that the overlay moves with
+the mesh mid-drag without being rebuilt, and that the stroke list holds steady
+across thirty frames.
+
 ## The pivot (a2.39)
 
 **Rotate and scale turn around a point you can put where you like.** World
@@ -2146,10 +2232,11 @@ slide; being silently inert costs trust.
 
 ### The tint, and why it must not lie
 
-`refreshElementColors` tints every vertex in the field toward the selection
-colour **by exactly the weight it will be dragged with** (`setColMix`), so the
-reach and the SHAPE of the reach are both visible before you commit. That is
-the whole reason the radius is a gesture rather than a number in a box.
+The falloff is drawn by its own overlay, on dots, edges and faces, with real
+per-vertex alpha — **see "The soft falloff, drawn (a2.40)" above**, which
+replaced the hue tint the base dots carried at a2.37. The reach and the SHAPE
+of the reach are both visible before you commit, which is the whole reason the
+radius is a gesture rather than a number in a box.
 
 Which is why `restoreDoc` calls `clearSoftField()`. The field's signature leans
 on the position attribute's `version` to notice a changed mesh, and a rebuilt
