@@ -528,6 +528,23 @@
      forgotten isolation reads as "my work is gone". So the chip is persistent,
      says how many are hidden, and is itself the way out. Accent-bordered
      because it is a state the app is IN, not a thing you can ignore. */
+  #pivotBar {
+    position: absolute; left: calc(10px + env(safe-area-inset-left)); right: calc(10px + env(safe-area-inset-right));
+    bottom: calc(166px + env(safe-area-inset-bottom));
+    /* Above the op and geo bars, which share this slot. They cannot be open at
+       the same time any more, but the one that carries the only way out of a
+       mode should not be the one that loses a paint order argument. */
+    z-index: 18; display: none; align-items: center; justify-content: center;
+    flex-wrap: wrap; gap: 10px;
+    background: var(--panel2); border: 1px solid var(--accent);
+    border-radius: var(--r-md); padding: 8px 12px; box-shadow: 0 8px 24px rgb(var(--shadow) / .16);
+  }
+  #pivotBar.show { display: flex; }
+  #pivotBarK { font-size: 12px; font-weight: 600; color: var(--text); }
+  #pivotBarH { font-size: 11px; color: var(--text-dim); }
+  #pivotBar button { min-height: 36px; }
+  #pivotDone { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
+
   #isoChip {
     position: absolute; left: 50%; transform: translateX(-50%);
     top: calc(var(--edge) + 8px); z-index: 19; display: none;
@@ -849,7 +866,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.38</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.39</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -905,6 +922,15 @@
     <!-- Same place and same weight as the light HUD, and for the same reason:
          the radius is judged by what happens to the MODEL, so the readout
          goes as far from the sliding hand as the screen allows. -->
+    <!-- Open only while the pivot is being placed. It says what the drag is
+         for, which is what lets the whole viewport be the handle instead of a
+         17px dot. -->
+    <div id="pivotBar">
+      <span id="pivotBarK">Placing the pivot</span>
+      <span id="pivotBarH">drag anywhere</span>
+      <button id="pivotDone" class="ok">✓ Done</button>
+    </div>
+
     <div id="isoChip">
       <span class="ic-k">Isolated</span>
       <span class="ic-n" id="isoChipN"></span>
@@ -1808,6 +1834,22 @@ const App = {
      a file cannot open showing one object out of twenty and read as though the
      rest were lost. Same reasoning that keeps the camera out of the file. */
   hidden: new Set(),
+  /* THE PIVOT (a2.39). It has always existed - every rotate and scale in the
+     app already turns around App.pivot - but it was invisible and recomputed
+     to the centre of the selection on every drag, so "turn this around THAT
+     corner" was not expressible.
+
+     'auto' keeps exactly that behaviour. 'custom' pins it to a world point and
+     leaves it there: it is a place in the scene, not a property of the
+     selection, so moving the object does not drag it along. Blender's 3D
+     cursor is the same idea and the same reasoning - a mark you put down
+     stays where you put it, or it is not a mark.
+
+     View state, like the camera and like isolate: never written to the
+     document, never a history step. */
+  pivotMode: 'auto',    // auto | custom
+  pivotPoint: null,     // THREE.Vector3 in WORLD space while custom
+  pivotPlacing: false,  // the bar is open and a drag moves the pivot
   softRadiusFor: null,  // which object that measurement was taken against
   selectDrag: 'off',   // 'off' | 'box' | 'lasso'
   snap: false,
@@ -10106,6 +10148,11 @@ function refreshElementColors(obj) {
 
    Rebuilt from scratch on every selection change. The arrays are the size
    of the selection, not the mesh, so this stays cheap. */
+/* Not the accent, and not the selection colour. The pivot must not read as
+   "something that is selected" - it is a place, not a thing you are editing. */
+const PIVOT_COLOR = 0xffc857;
+const PIVOT_CORE_COLOR = 0x1a1d24;
+
 const SEL_DOT_PX = 7;        // vs 2px for unselected
 const SEL_EDGE_PX = 3.5;     // vs a 1px hairline
 
@@ -10430,9 +10477,53 @@ function getOrCreatePivot() {
 // and drifts off the selection - a bit further with every drag. Rotate and
 // scale then work around a point that isn't the centre any more, which is
 // what made them feel wrong.
+/* The centre of whatever is selected, in world space, or null if nothing is.
+   Pulled out of recenterPivot because the "put the pivot on the selection"
+   op needs the same answer without the side effect. */
+function selectionCenterWorld() {
+  const center = new THREE.Vector3();
+  if (App.mode === 'object') {
+    const ids = Array.from(App.selectedObjectIds).filter(id => findObject(id));
+    if (!ids.length) return null;
+    ids.forEach(id => center.add(findObject(id).mesh.position));
+    return center.divideScalar(ids.length);
+  }
+  const obj = findObject(App.activeObjectId);
+  if (!obj || !App.selectedElements.size) return null;
+  ensureHelpers(obj);
+  const topo = obj.mesh.userData.topo;
+  const pa = obj.mesh.geometry.attributes.position;
+  const ids = new Set();
+  if (App.mode === 'vertex') App.selectedElements.forEach(l => ids.add(l));
+  if (App.mode === 'edge') App.selectedElements.forEach(ei => { if (topo.edges[ei]) topo.edges[ei].forEach(l => ids.add(l)); });
+  if (App.mode === 'face') App.selectedElements.forEach(gi => { if (topo.faceGroups[gi]) topo.faceGroups[gi].logicalVerts.forEach(l => ids.add(l)); });
+  if (!ids.size) return null;
+  ids.forEach(l => {
+    const ai = topo.logicalGroups[l][0];
+    const q = new THREE.Vector3(pa.getX(ai), pa.getY(ai), pa.getZ(ai));
+    obj.mesh.localToWorld(q);
+    center.add(q);
+  });
+  return center.divideScalar(ids.size);
+}
+
 function recenterPivot() {
   const pivot = App.pivot;
   if (!pivot) return;
+
+  /* A pinned pivot is not recomputed - that is the whole point of pinning it.
+     Recentring runs at the start and end of every drag, so without this line a
+     custom pivot would survive exactly until the next time you touched
+     anything. */
+  if (App.pivotMode === 'custom' && App.pivotPoint) {
+    pivot.position.copy(App.pivotPoint);
+    pivot.quaternion.identity();
+    pivot.scale.set(1, 1, 1);
+    pivot.updateMatrix();
+    pivot.updateMatrixWorld(true);
+    return;
+  }
+
   const center = new THREE.Vector3();
 
   if (App.mode === 'object') {
@@ -10466,6 +10557,147 @@ function recenterPivot() {
   pivot.updateMatrixWorld(true);
 }
 
+/* ---------------- The pivot marker (a2.39) ----------------
+
+   Two dots, one inside the other, which reads as a ring rather than yet
+   another vertex. It has to be unmistakable: at 2px the mesh dots and at 7px
+   the selected ones are already dots, and a pivot that could be mistaken for a
+   vertex is worse than no marker - you would aim at it.
+
+   Constant screen size (`sizeAttenuation:false`) and no depth test, so it is
+   findable from any distance and never buried inside the model it sits in. */
+const PIVOT_DOT_PX = 17;
+const PIVOT_CORE_PX = 7;
+let pivotMarker = null;
+
+function ensurePivotMarker() {
+  if (pivotMarker) return pivotMarker;
+  const dpr = renderer.getPixelRatio ? renderer.getPixelRatio() : 1;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0], 3));
+  const ring = new THREE.Points(geo, new THREE.PointsMaterial({
+    size: PIVOT_DOT_PX * dpr, sizeAttenuation: false, map: vertexDotTexture(),
+    alphaTest: 0.4, transparent: true, depthWrite: false, depthTest: false, fog: false
+  }));
+  const core = new THREE.Points(geo, new THREE.PointsMaterial({
+    size: PIVOT_CORE_PX * dpr, sizeAttenuation: false, map: vertexDotTexture(),
+    alphaTest: 0.4, transparent: true, depthWrite: false, depthTest: false, fog: false
+  }));
+  ring.renderOrder = 998; core.renderOrder = 999;
+  ring.material.color.setHex(PIVOT_COLOR);
+  core.material.color.setHex(PIVOT_CORE_COLOR);
+  pivotMarker = new THREE.Group();
+  pivotMarker.add(ring); pivotMarker.add(core);
+  pivotMarker.visible = false;
+  scene.add(pivotMarker);
+  return pivotMarker;
+}
+
+/* Shown only while the pivot is pinned, or while you are placing it. In auto
+   it sits on the selection and drawing it there would be one more dot over the
+   thing you are trying to look at, saying something you already know. */
+function refreshPivotMarker() {
+  const m = ensurePivotMarker();
+  const on = App.pivotMode === 'custom' && !!App.pivotPoint;
+  m.visible = on;
+  if (on) m.position.copy(App.pivotPoint);
+}
+
+function setPivotPoint(p) {
+  if (!p) return false;
+  App.pivotMode = 'custom';
+  App.pivotPoint = p.clone();
+  recenterPivot();
+  refreshPivotMarker();
+  refreshGizmoAttachment();
+  refreshUI();
+  return true;
+}
+
+function setPivotAuto(quiet) {
+  App.pivotMode = 'auto';
+  App.pivotPoint = null;
+  App.pivotPlacing = false;
+  refreshPivotBar();
+  recenterPivot();
+  refreshPivotMarker();
+  refreshGizmoAttachment();
+  refreshUI();
+  if (!quiet) toast('Pivot back to the selection');
+}
+
+// To the centre of what is selected - in any mode. In Vertex mode with one
+// vertex picked that is the corner itself, which is the case worth having.
+function pivotToSelection() {
+  const c = selectionCenterWorld();
+  if (!c) { toast('Select something first'); return false; }
+  setPivotPoint(c);
+  toast('Pivot on the selection');
+  return true;
+}
+
+/* To the object's own centre - the middle of its bounding box in world space,
+   not its origin. The origin is wherever the geometry happened to be built
+   around and is regularly nowhere near the shape; the box centre is the point
+   a person means by "the middle of it". */
+function pivotToObjectCentre() {
+  const ids = App.mode === 'object'
+    ? Array.from(App.selectedObjectIds)
+    : (App.activeObjectId ? [App.activeObjectId] : []);
+  const objs = ids.map(findObject).filter(Boolean);
+  if (!objs.length) { toast('Select an object first'); return false; }
+  const box = new THREE.Box3();
+  objs.forEach(o => box.expandByObject(o.mesh));
+  if (box.isEmpty()) { toast('Select an object first'); return false; }
+  setPivotPoint(box.getCenter(new THREE.Vector3()));
+  toast('Pivot on the object centre');
+  return true;
+}
+
+/* By hand. The bar opens, and a drag anywhere moves the marker - through the
+   ordinary transform machinery, so Free and Axis mean here exactly what they
+   mean everywhere else, and the axis guide draws itself the same way.
+
+   Starting it from wherever the pivot is now (the selection centre, if it was
+   in auto) rather than from nothing: you nudge a mark that exists instead of
+   conjuring one out of a blank screen. */
+function beginPivotPlacing() {
+  /* Everything else aimed at the old gesture is resolved first - the same
+     opening Add geo has, and for the same reason: the world ring blooms in any
+     mode, so this can arrive over a bevel half dialled in. That was not merely
+     untidy. #opBar and #pivotBar share a slot at the bottom of the screen, and
+     the op bar paints over this one - so Done became unreachable, and with the
+     ring unable to bloom while placing there was no way out of the mode at
+     all. */
+  if (App.knife) cancelKnife(true);
+  if (App.pendingOp && App.pendingOp.live) confirmPendingOp();
+  else if (App.pendingOp) cancelPendingOp();
+  if (App.geoSetup) finishGeoSetup(true);
+  if (App.pivotMode !== 'custom' || !App.pivotPoint) {
+    const start = selectionCenterWorld() || (App.pivot ? App.pivot.position.clone() : new THREE.Vector3());
+    App.pivotMode = 'custom';
+    App.pivotPoint = start.clone();
+  }
+  App.pivotPlacing = true;
+  recenterPivot();
+  refreshPivotMarker();
+  refreshPivotBar();
+  toast('Drag to place the pivot');
+}
+
+function endPivotPlacing() {
+  if (!App.pivotPlacing) return false;
+  App.pivotPlacing = false;
+  refreshPivotBar();
+  refreshUI();
+  return true;
+}
+
+function refreshPivotBar() {
+  const el = document.getElementById('pivotBar');
+  if (el) el.classList.toggle('show', !!App.pivotPlacing);
+}
+
 function refreshGizmoAttachment() {
   detachAllGizmos();
 
@@ -10476,16 +10708,22 @@ function refreshGizmoAttachment() {
       // transform then arrives as a delta we compute ourselves, which is what
       // lets rotation and scale sensitivity be tuned below.
       const pivot = getOrCreatePivot();
-      const center = new THREE.Vector3();
       /* Only ids that still name something. Every caller of removeObjects
          reassigns the selection immediately afterwards, so this never fired -
          but it is one dead id away from throwing inside a UI refresh, and a
          throw there takes the rest of the refresh with it. */
       const live = ids.map(findObject).filter(Boolean);
       if (!live.length) { detachAllGizmos(); return; }
-      live.forEach(o => center.add(o.mesh.position));
-      center.divideScalar(live.length);
-      pivot.position.copy(center);
+      // The same rule as recenterPivot - and it has to be repeated here
+      // because this function positions the pivot itself rather than calling
+      // that one. A pinned pivot is pinned in both.
+      if (App.pivotMode === 'custom' && App.pivotPoint) {
+        pivot.position.copy(App.pivotPoint);
+      } else {
+        const center = new THREE.Vector3();
+        live.forEach(o => center.add(o.mesh.position));
+        pivot.position.copy(center.divideScalar(live.length));
+      }
       pivot.quaternion.identity();
       pivot.scale.set(1, 1, 1);
       pivot.updateMatrix();
@@ -10524,9 +10762,16 @@ function refreshGizmoAttachment() {
       });
       center.divideScalar(logicalIds.size || 1);
       const pivot = getOrCreatePivot();
-      pivot.position.copy(center);
+      // Pinned is pinned in component mode as well. Left out, this branch put
+      // the pivot back on the element centre on every selection change and
+      // every UI refresh while the marker went on saying otherwise - a
+      // divergence nothing read yet, and that is exactly how it stays a bug
+      // until something does.
+      if (App.pivotMode === 'custom' && App.pivotPoint) pivot.position.copy(App.pivotPoint);
+      else pivot.position.copy(center);
       pivot.quaternion.identity();
       pivot.scale.set(1, 1, 1);
+      pivot.updateMatrix();
       attachAllGizmos(pivot);
     }
   }
@@ -11788,6 +12033,118 @@ function axisScreenDir(pivotPos, dir) {
   return v.lengthSq() < 1e-6 ? null : v.normalize();
 }
 
+/* Dragging the pivot itself. Its own small drag rather than a detour through
+   beginDirectDrag, because that one is built to move GEOMETRY - it captures a
+   drag context, snapshots edge marks and mirror maps, and settles a live
+   extrude on the way in. None of that applies to moving a mark.
+
+   What it does share is the vocabulary: the camera-facing plane, Free versus
+   Axis, and the grid. Free and Axis mean here exactly what they mean
+   everywhere else, which is what the user asked for - "move by hand using the
+   current moving mode". */
+let pivotDrag = null;
+
+function beginPivotDrag(ev) {
+  if (!App.pivotPlacing || !App.pivotPoint) return false;
+  const plane = new THREE.Plane();
+  const camDir = new THREE.Vector3();
+  camera.getWorldDirection(camDir);
+  plane.setFromNormalAndCoplanarPoint(camDir, App.pivotPoint.clone());
+  raycaster.setFromCamera(ndcFromEvent(ev), camera);
+  const hit = new THREE.Vector3();
+  if (!raycaster.ray.intersectPlane(plane, hit)) return false;
+  const rect = viewportEl.getBoundingClientRect();
+  pivotDrag = {
+    plane, startHit: hit, origin: App.pivotPoint.clone(),
+    startX: ev.clientX - rect.left, startY: ev.clientY - rect.top,
+    axis: null, decided: App.transformMode !== 'axis',
+    // A tap is a drag that never went anywhere, and it is the documented way
+    // out of placing. handleTap cannot decide that - every press here becomes
+    // a pivot drag and pointerup returns before handleTap is ever reached - so
+    // the distinction has to be made where the gesture actually ends.
+    moved: false
+  };
+  orbit.enabled = false;
+  return true;
+}
+
+function updatePivotDrag(ev) {
+  const d = pivotDrag;
+  if (!d) return;
+  const rect = viewportEl.getBoundingClientRect();
+
+  // The axis is chosen once, from the first real travel, and never revisited -
+  // the same rule the geometry drag follows, and for the same reason.
+  if (!d.decided) {
+    const dx = (ev.clientX - rect.left) - d.startX, dy = (ev.clientY - rect.top) - d.startY;
+    if (Math.hypot(dx, dy) >= DIRECT_DECIDE_PX) {
+      const drag = new THREE.Vector2(dx, dy).normalize();
+      let best = null, bestDot = 0;
+      GIZMO_AXES.forEach(ax => {
+        const sd = axisScreenDir(d.origin, ax.dir);
+        if (!sd) return;
+        const dot = Math.abs(sd.dot(drag));
+        if (dot > bestDot) { bestDot = dot; best = ax; }
+      });
+      d.axis = best;
+      d.decided = true;
+      updateAxisGuideFor(d.origin, d.axis);
+    }
+  }
+
+  raycaster.setFromCamera(ndcFromEvent(ev), camera);
+  const hit = new THREE.Vector3();
+  if (!raycaster.ray.intersectPlane(d.plane, hit)) return;
+  let offset = hit.sub(d.startHit);
+  // Axis mode keeps only the part of that movement that runs along the axis.
+  if (d.axis) offset = d.axis.dir.clone().multiplyScalar(offset.dot(d.axis.dir));
+  if (App.snap) {
+    offset.x = Math.round(offset.x / App.snapMove) * App.snapMove;
+    offset.y = Math.round(offset.y / App.snapMove) * App.snapMove;
+    offset.z = Math.round(offset.z / App.snapMove) * App.snapMove;
+  }
+  if (Math.hypot((ev.clientX - rect.left) - d.startX, (ev.clientY - rect.top) - d.startY) > tapSlopPx(ev)) {
+    d.moved = true;
+  }
+  App.pivotPoint = d.origin.clone().add(offset);
+  recenterPivot();
+  refreshPivotMarker();
+}
+
+function endPivotDrag() {
+  if (!pivotDrag) return;
+  const wasTap = !pivotDrag.moved;
+  pivotDrag = null;
+  axisGuide.visible = false;
+  orbit.enabled = true;
+  refreshGizmoAttachment();
+  // Tapping away is how every other transient mode here is left, and it is
+  // what the help says. Done on the bar stays, for anyone who reads it.
+  if (wasTap) endPivotPlacing();
+}
+
+// A lost or cancelled pointer abandons the drag where it stands rather than
+// leaving it live with the camera switched off.
+function cancelPivotDrag() {
+  if (!pivotDrag) return;
+  pivotDrag = null;
+  axisGuide.visible = false;
+  orbit.enabled = true;
+  refreshGizmoAttachment();
+}
+
+// The axis guide, aimed at a point that is not the drag pivot. updateAxisGuide
+// reads `directDrag`; this draws the same line for anything else that needs it.
+function updateAxisGuideFor(at, axis) {
+  if (!axis) { axisGuide.visible = false; return; }
+  const len = camera.position.distanceTo(at) * 1.4;
+  axisGuide.visible = true;
+  axisGuide.position.copy(at);
+  axisGuide.quaternion.copy(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis.dir));
+  axisGuide.scale.set(1, len, 1);
+  axisGuide.material.color.setHex(axis.color);
+}
+
 function beginDirectDrag(ev) {
   /* Reached during extrude mode only with Rotate or Scale active - Move is
      the pull, and pointerdown routes it elsewhere. Both act on real
@@ -11799,10 +12156,27 @@ function beginDirectDrag(ev) {
   if (!dragCtx) return false;
 
   const rect = viewportEl.getBoundingClientRect();
+
+  /* TWO POINTS, NOT ONE, since a2.39 let the pivot be pinned somewhere else.
+
+     `origin` is the pivot: what rotation turns around and what scale grows
+     from. `center` is where the SELECTION actually is, and that is what the
+     drag has to be measured against - the camera-facing plane a free move
+     reads its offset from belongs at the selection's depth, or the geometry
+     travels at the wrong rate. Pin the pivot three times further away than the
+     model and every drag moved it three times as far as the finger.
+
+     Worse, the plane intersection below is the gate for ALL THREE tools: with
+     the pinned point behind the camera it returned null, so grabbing your own
+     selection silently orbited instead. That is the "sometimes it won't
+     translate" failure this file already fixed once, arriving by a new route.
+
+     In auto mode the two are the same point and nothing about this changes. */
+  const center = selectionCenterWorld() || pivot.position.clone();
   const plane = new THREE.Plane();
   const camDir = new THREE.Vector3();
   camera.getWorldDirection(camDir);
-  plane.setFromNormalAndCoplanarPoint(camDir, pivot.position.clone());
+  plane.setFromNormalAndCoplanarPoint(camDir, center.clone());
 
   raycaster.setFromCamera(ndcFromEvent(ev), camera);
   const startHit = new THREE.Vector3();
@@ -11810,6 +12184,7 @@ function beginDirectDrag(ev) {
 
   directDrag = {
     origin: pivot.position.clone(),
+    center,
     plane,
     startHit,
     startX: ev.clientX - rect.left,
@@ -11859,7 +12234,7 @@ function resolveDirectAxis(ev) {
   d.axis = best;
   // Anchor at the moment of committing, so the first frame after doesn't
   // jump by however far the drag had already travelled.
-  d.startParam = axisParamFromPointer(ev, d.origin, best.dir) ?? 0;
+  d.startParam = axisParamFromPointer(ev, d.center || d.origin, best.dir) ?? 0;
   d.startX = (ev.clientX - rect.left);
   d.startY = (ev.clientY - rect.top);
   // Screen-angle tracking starts fresh from here, or the first frame after
@@ -11888,7 +12263,7 @@ function updateDirectDrag(ev) {
   if (App.transformTool === 'move') {
     let offset = new THREE.Vector3();
     if (d.axis) {
-      const t = axisParamFromPointer(ev, d.origin, d.axis.dir);
+      const t = axisParamFromPointer(ev, d.center || d.origin, d.axis.dir);
       if (t === null) return;
       let amount = t - d.startParam;
       if (App.snap) amount = Math.round(amount / App.snapMove) * App.snapMove;
@@ -12900,7 +13275,7 @@ document.addEventListener('touchmove', (ev) => {
 
      #hubBtn replaces #thumbZone, which no longer exists. */
   if (ev.target && ev.target.closest &&
-      ev.target.closest('#topBar, #drawer, #inspector, #opBar, #geoBar, #hubBtn, #symPill, #helpCard, #matFly')) return;
+      ev.target.closest('#topBar, #drawer, #inspector, #opBar, #geoBar, #pivotBar, #hubBtn, #symPill, #helpCard, #matFly')) return;
   if (ev.cancelable) ev.preventDefault();
 }, { passive: false });
 
@@ -12945,6 +13320,9 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   // that was mid-flight rather than fighting the pinch.
   if (activePointers.size > 1) {
     if (directDrag) { directDrag = null; dragCtx = null; axisGuide.visible = false; }
+    // A second finger is the camera, and it must not leave a pivot drag alive
+    // underneath - the line below hands orbit back.
+    cancelPivotDrag();
     // A second finger is the camera, not a taller extrusion. The section
     // keeps whatever height it had reached.
     extrudeDrag = null;
@@ -12976,6 +13354,15 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
      aim, slide to place, lift to commit. Two fingers still reach the camera,
      because the bail-out above runs first. */
   if (App.knife) { orbit.enabled = false; knifePointerDown(ev); return; }
+
+  /* Placing the pivot owns every single-finger press while its bar is open -
+     anywhere on screen, not only on the marker. Aiming at a 17px dot with a
+     thumb is exactly the kind of target this app does not ask people to hit;
+     the bar says what the drag is for, so the whole viewport can be the
+     handle. Two fingers still reach the camera, from the bail-out above. */
+  if (App.pivotPlacing) {
+    if (beginPivotDrag(ev)) { pointerDown = null; directCandidate = null; return; }
+  }
 
   pointerDown = { x: ev.clientX, y: ev.clientY, t: performance.now(), overGizmo: false };
 
@@ -13067,6 +13454,7 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
     clearToolRingTimer();
   }
   if (activePointers.size > 1) return;   // camera gesture - hands off
+  if (pivotDrag) { updatePivotDrag(ev); return; }
   if (App.knife) { knifePointerMove(ev); return; }
   if (toolRingActive) { updateToolRingHover(ev); return; }
   if (extrudeDrag) { updateExtrudeDrag(ev); return; }
@@ -13161,6 +13549,14 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
     // after this one; its tap/pinch verdict just isn't relevant here.
     trackPointerUp(ev);
     closeToolRing(true);
+    pointerDown = null;
+    directCandidate = null;
+    return;
+  }
+
+  if (pivotDrag) {
+    trackPointerUp(ev);
+    endPivotDrag();
     pointerDown = null;
     directCandidate = null;
     return;
@@ -13667,6 +14063,10 @@ function onEmptySpaceTap(ev) {
 }
 
 function handleTap(ev) {
+  /* A tap while placing ends the placing - a drag is how you move the mark, so
+     a tap can only mean "done". Consistent with every other transient mode
+     here, where tapping away is the way out. */
+  if (App.pivotPlacing) { endPivotPlacing(); return; }
   /* "Cancelling is by tapping outside." A tap on the new shape itself is
      not outside - you are looking at it, and dragging it into place has to
      stay possible - so only a tap that misses it closes the setup. */
@@ -14622,6 +15022,27 @@ const HUB_TOOLS_GEO = [
   { key: 'geoplane', icon: 'plane', label: 'Plane', run: () => startGeoSetup('plane') }
 ];
 
+/* Four ways to set it, on a ring of their own - the same one-ring-replacing-
+   another pattern Add geo uses, and the same sticky press, because it opens
+   after your finger has already lifted. */
+const HUB_TOOLS_PIVOT = [
+  { key: 'pivsel', icon: 'pivot', label: 'To selection', run: pivotToSelection },
+  { key: 'pivobj', icon: 'object', label: 'To object', run: pivotToObjectCentre },
+  { key: 'pivhand', icon: 'move', label: 'By hand', run: beginPivotPlacing },
+  { key: 'pivauto', icon: 'undo', label: 'Auto', run: () => setPivotAuto() }
+];
+
+function openPivotRing() {
+  const rect = viewportEl.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+  // Deferred for the same reason as the geo ring: this runs from inside
+  // closeToolRing, which tears the ring element down after the tool has run.
+  setTimeout(() => {
+    bloomToolRing(cx, cy, HUB_TOOLS_PIVOT, undefined, null);
+    if (toolRingActive) armStickyRing();
+  }, 0);
+}
+
 function openGeoRing() {
   /* Deferred by a tick: this runs from INSIDE closeToolRing, which tears the
      ring element down after the tool has run - a new ring bloomed here would
@@ -14837,6 +15258,10 @@ function geoStep(field, delta) {
 });
 
 document.getElementById('geoDone').addEventListener('click', () => finishGeoSetup(true));
+document.getElementById('pivotDone').addEventListener('click', (ev) => {
+  ev.stopPropagation();
+  endPivotPlacing();
+});
 document.getElementById('isoChipOut').addEventListener('click', (ev) => {
   ev.stopPropagation();
   exitIsolation();
@@ -15118,7 +15543,16 @@ function restoreDoc(doc, opts = {}) {
      and a new mesh is visible, so without it an undo quietly un-hides the
      scene while the chip goes on claiming otherwise. */
   if (!opts.keepSelection) App.hidden = new Set();
+  /* Same split, same reason. A pinned pivot is a place in THIS scene, so it
+     survives an undo; a load is a different scene and the point would be left
+     hanging in the middle of nothing, pinning rotation to a spot with no
+     relationship to the model that just arrived. */
+  if (!opts.keepSelection && App.pivotMode === 'custom') {
+    App.pivotMode = 'auto'; App.pivotPoint = null; App.pivotPlacing = false;
+    refreshPivotBar();
+  }
   reconcileIsolation();
+  refreshPivotMarker();
 
   refreshUI();
   refreshGizmoAttachment();
@@ -15532,6 +15966,7 @@ const ICON = {
      hump - that one says "shading", this one says "topology". Strokes sit
      ~7 units apart, well clear of the ~1.8u where detail fuses at ring
      size, and nothing here is dashed or diagonal. */
+  pivot:   '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.6"/><path d="M12 1.5v4M12 18.5v4M1.5 12h4M18.5 12h4"/>',
   cylinder:'<ellipse cx="12" cy="6.6" rx="6.4" ry="2.8"/><path d="M5.6 6.6v10.8M18.4 6.6v10.8"/><path d="M5.6 17.4c0 1.55 2.87 2.8 6.4 2.8s6.4-1.25 6.4-2.8"/>',
   sphere:  '<circle cx="12" cy="12" r="8"/><ellipse cx="12" cy="12" rx="3.6" ry="8"/>',
   torus:   '<ellipse cx="12" cy="12" rx="9" ry="6"/><ellipse cx="12" cy="12" rx="3.4" ry="2.1"/>',
@@ -15707,12 +16142,18 @@ const HUB_TOOLS_EMPTY = [
    for "the eye is on the right" still finds it grouped with what it used to
    sit beside.
 
-   Add Cube takes the right-hand pole on its own - it belongs to neither
-   group, it is the one item here that MAKES something rather than toggling
-   something, and the matching left pole is deliberately left empty so the
-   two arcs read as two arcs. */
+   Add geo takes the right-hand pole on its own - it belongs to neither group,
+   it is the one item here that MAKES something rather than toggling something.
+
+   The left pole was deliberately left empty for a while so the two arcs read
+   as two arcs. Pivot claims it at a2.39, and the layout is better for it: a
+   pole, an arc, a pole, an arc separates the groups more firmly than an empty
+   side did. Pivot belongs here rather than in the component rings for a
+   practical reason too - it is wanted in EVERY mode, and the Edge ring has no
+   free seat left at all. */
 const HUB_TOOLS_WORLD = [
   { key: 'addgeo', icon: 'object', label: 'Add geo', half: 'pole', run: openGeoRing },
+  { key: 'pivot', icon: 'pivot', label: 'Pivot', half: 'pole2', run: openPivotRing },
 
   { key: 'xray', icon: 'eye', label: 'See-through', half: 'top',
     on: () => App.xraySelection, run: toggleXray },
@@ -15825,7 +16266,8 @@ function toolRingAngles(tools) {
   return tools.map(t => {
     if (t.half === 'top') return topA[top.indexOf(t)];
     if (t.half === 'bottom') return botA[bottom.indexOf(t)];
-    return 0;                       // pole: due right
+    if (t.half === 'pole2') return 180;   // due left
+    return 0;                             // pole: due right
   });
 }
 
@@ -16792,6 +17234,7 @@ const HELP_SECTIONS = [
       [null, 'Three-finger tap', 'Free / Axis.'],
       [null, 'Three-finger slide', 'In Soft, sizes the falloff. The dots light up to show its reach.'],
       [null, 'Three-finger pinch', 'In Object mode: squeeze in to isolate what is selected, spread out to bring everything back.'],
+      ['pivot', 'Pivot', 'Rotate and scale turn around it. World ring, left side: put it on the selection, on an object\u2019s centre, or drag it by hand. Auto puts it back.'],
       [null, 'Axis', 'Decided in the first few pixels and held until you lift.'],
       [null, 'Free rotate', 'Axis from the direction you swipe.'],
       [null, 'Free scale', 'Screen axes, so depth is reachable. Matching none scales evenly.'],
@@ -17156,6 +17599,7 @@ function refreshUI() {
      none of which the first version's two hooks reached. It is O(objects) over
      a scene of a few dozen and does nothing at all when nothing is hidden. */
   reconcileIsolation();
+  refreshPivotMarker();
   refreshObjComponentBtn();
   document.getElementById('btnUndo').disabled = App.historyIndex <= 0;
   document.getElementById('btnRedo').disabled = App.historyIndex >= App.history.length - 1;
@@ -17369,6 +17813,11 @@ window.addEventListener('resize', onResize);
        rewrote the radius by most of a screen width. */
     endSoftSlide();
     isoPinch = null;   // a cancelled touch is not half a pinch
+    /* And neither is it half a pivot placement. Without this the drag stayed
+       live with orbit switched off: on a desktop, dragging up over the top bar
+       and releasing there never reaches the canvas listener, so afterwards the
+       bare cursor went on dragging the pivot with the camera dead. */
+    cancelPivotDrag();
     maybeResumeOrbit();
     if (activePointers.size === 0) { tapArmed = false; tapPeakCount = 0; clearLightHoldTimer(); }
     // A lost pointer mid-hold must not leave a bloom stuck open with no
@@ -17609,6 +18058,13 @@ if (PICK_DEBUG) {
     setSoft, cycleEditMode, engageSoftSlide, softSlideMove, endSoftSlide, refreshSoftHud,
     enterIsolation, exitIsolation, reconcileIsolation, applyIsolation, objectPickable,
     unhideObject, isolationOn,
+    setPivotPoint, setPivotAuto, pivotToSelection, pivotToObjectCentre,
+    beginPivotPlacing, endPivotPlacing, selectionCenterWorld, recenterPivot,
+    beginPivotDrag, updatePivotDrag, endPivotDrag, refreshPivotMarker,
+    openPivotRing, HUB_TOOLS_PIVOT, refreshGizmoAttachment, refreshPivotBar,
+    get pivot() { return App.pivot; },
+    get pivotMarker() { return pivotMarker; },
+    get pivotDrag() { return pivotDrag; },
     performRegionSelect, onEmptySpaceTap, focusOnAll, focusOnObject,
     armIsoPinch, isoPinchMove, pointerSpread, refreshIsoChip,
     get isoPinch() { return isoPinch; },

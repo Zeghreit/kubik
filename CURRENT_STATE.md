@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~16,800 lines)
-- Version at time of writing: **a2.38**
+- Version at time of writing: **a2.39**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1317,7 +1317,9 @@ had two faces.
 ## Controls
 
 **Transforms have no gizmo.** You grab whatever is selected and drag it. The
-same drag moves, rotates or scales depending on the active tool.
+same drag moves, rotates or scales depending on the active tool. Rotate and
+scale turn around the PIVOT, which since a2.39 can be pinned anywhere (world
+ring, left pole).
 
 - Two-finger tap on empty space cycles Move / Rotate / Scale.
 - **Three fingers carry three gestures, told apart by what the hand DOES.**
@@ -1786,6 +1788,103 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## The pivot (a2.39)
+
+**Rotate and scale turn around a point you can put where you like.** World
+ring, left pole → Pivot, then: To selection, To object, By hand, or Auto.
+
+The pivot has always existed — `App.pivot` is what every rotate and scale in
+this app already turns around — but it was invisible and recomputed to the
+centre of the selection on every drag, so *"turn this around THAT corner"* was
+not expressible. Now `App.pivotMode` is `auto` (exactly the old behaviour) or
+`custom` (pinned to a world point in `App.pivotPoint`).
+
+**A pinned pivot is a place in the scene, not a property of the selection.**
+Move the object and the mark stays where you put it — Blender's 3D cursor, and
+for the same reason: a mark that follows things around is not a mark. It is
+view state like the camera and like isolate: never serialized, never a history
+step, kept across an undo and dropped on a load (a load is a different scene,
+and the point would be left pinning rotation to a spot with no relationship to
+what just arrived).
+
+`To object` uses the **bounding-box centre**, not the origin. The origin is
+wherever the geometry happened to be built around and is regularly nowhere near
+the shape; the box centre is what a person means by "the middle of it".
+
+**Two places position the pivot** and both have to honour a pin —
+`recenterPivot` (called at the start *and* end of every drag) and
+`refreshGizmoAttachment` (which positions it itself rather than calling that
+one, in two separate branches for object and component mode). Miss any of them
+and the pin survives exactly until the next thing you touch.
+
+### The drag needs two points, not one
+
+This is the defect worth remembering. `beginDirectDrag` built its
+camera-facing drag plane, its `startHit` and its `origin` all from
+`pivot.position` — fine while the pivot was always the selection centre, wrong
+the moment it could be pinned elsewhere:
+
+- **The plane belongs at the SELECTION's depth.** Screen-to-world scale on a
+  camera-facing plane is proportional to camera distance, so pinning the pivot
+  three times further away made every drag travel three times as far as the
+  finger.
+- **The plane intersection is the gate for all three tools.** With the pinned
+  point behind the camera, `Ray.intersectPlane` returns null, `beginDirectDrag`
+  returns false, and grabbing your own selection silently orbits instead —
+  the "sometimes it won't translate" failure this file already fixed once,
+  arriving by a new route.
+
+So `directDrag` now carries **`origin`** (the pivot — what rotation turns
+around and scale grows from) and **`center`** (where the selection actually is
+— what the plane, the start hit and the move axis are measured against). In
+auto mode they are the same point and nothing changes.
+
+### Placing it by hand
+
+The bar opens and **a drag anywhere** moves the marker — not just on the 17px
+dot, because aiming at a 17px dot with a thumb is exactly what this app does
+not ask of people. Free and Axis mean here what they mean everywhere else, the
+axis guide draws itself the same way, and the grid applies.
+
+`beginPivotPlacing` settles the knife, any pending op and any geo setup first —
+the same opening `startGeoSetup` has, and for a sharper reason than tidiness:
+`#opBar` and `#pivotBar` share a slot at the bottom of the screen and the op
+bar painted over this one, so Done became unreachable. With the world ring
+unable to bloom while placing, and no Escape key anywhere in this app, that was
+**an unrecoverable lock** — the only way out was loading a file.
+
+**A tap ends the placing**, and that had to be decided in `endPivotDrag`
+(`moved`), not in `handleTap`: every press while placing becomes a pivot drag,
+and `pointerup` returns at that branch long before `handleTap` is reached, so
+the guard there could never fire. A tap is a drag that went nowhere.
+
+`cancelPivotDrag` runs from `pointercancel` / `pointerleave` and from the
+two-finger camera bail-out. Without it a desktop drag released over the top bar
+left the drag live with orbit off, and the bare cursor went on dragging the
+pivot with the camera dead.
+
+### The marker
+
+Two dots, one inside the other, reading as a ring — it has to be unmistakable,
+because at 2px the mesh dots and at 7px the selected ones are already dots, and
+a pivot that could be mistaken for a vertex is worse than no marker: you would
+aim at it. Constant screen size, no depth test, and a colour that is neither
+the accent nor the selection colour — the pivot is a place, not a thing you are
+editing. Shown only while pinned; in auto it would be one more dot over the
+thing you are looking at, saying something you already know.
+
+### The world ring's left pole
+
+Claimed by Pivot at a2.39, after being deliberately empty so the two arcs read
+as two arcs. The layout is better for it — pole, arc, pole, arc separates the
+groups more firmly than an empty side did — and there was a practical reason
+too: the pivot is wanted in **every** mode, and the Edge ring has no free seat
+left at all.
+
+Probe: `_piv_probe.py` — including the one that matters, a cube at x=2 with the
+pivot pinned at the origin swinging to z=−2 on a quarter turn rather than
+spinning where it stands.
 
 ## Isolate (a2.38)
 
