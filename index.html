@@ -554,6 +554,7 @@
     box-shadow: 0 8px 24px rgb(var(--shadow) / .18); white-space: nowrap;
   }
   #isoChip.show { display: flex; }
+  #toolChip .mode.piv { color: #ffc857; }
   #isoChip .ic-k { font-size: 11px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: .06em; }
   #isoChip .ic-n { font-size: 11px; color: var(--text-dim); }
   #isoChip button { min-height: 28px; padding: 2px 10px; font-size: 12px; }
@@ -866,7 +867,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.39</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.39a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -10593,14 +10594,48 @@ function ensurePivotMarker() {
   return pivotMarker;
 }
 
-/* Shown only while the pivot is pinned, or while you are placing it. In auto
-   it sits on the selection and drawing it there would be one more dot over the
-   thing you are trying to look at, saying something you already know. */
+/* WHEN THE MARKER IS WORTH DRAWING.
+
+   Left on permanently it is clutter: a bright dot parked over the model for
+   the whole session, saying something that only matters at two moments. So it
+   is drawn at exactly those moments and hidden the rest of the time:
+
+   - While you are PLACING it, obviously.
+   - For a moment after it is set, so you see where it landed. Setting it and
+     getting no acknowledgement at all is the other failure.
+   - Throughout a ROTATE or SCALE drag, because that is when it is doing
+     something - you are watching the model swing and the dot is the thing it
+     is swinging around. Not during a Move: the pivot plays no part in one.
+
+   Hiding it the rest of the time would make a pinned pivot invisible state,
+   which this project keeps having to kill - so the tool chip carries a small
+   permanent "Pivot" while it is custom. Two words in a corner cost nothing and
+   mean rotation can never behave surprisingly with no explanation on screen. */
+const PIVOT_FLASH_MS = 1600;
+let pivotFlashUntil = 0;
+let pivotFlashTimer = null;
+
+function pivotMarkerWanted() {
+  if (App.pivotMode !== 'custom' || !App.pivotPoint) return false;
+  if (App.pivotPlacing || pivotDrag) return true;
+  // The pivot is only load-bearing for these two, so only these two show it.
+  if (directDrag && (App.transformTool === 'rotate' || App.transformTool === 'scale')) return true;
+  return performance.now() < pivotFlashUntil;
+}
+
 function refreshPivotMarker() {
   const m = ensurePivotMarker();
-  const on = App.pivotMode === 'custom' && !!App.pivotPoint;
-  m.visible = on;
-  if (on) m.position.copy(App.pivotPoint);
+  m.visible = pivotMarkerWanted();
+  if (App.pivotPoint) m.position.copy(App.pivotPoint);
+}
+
+// Show it briefly, then take it away again without anything else having to
+// remember to ask.
+function flashPivotMarker() {
+  pivotFlashUntil = performance.now() + PIVOT_FLASH_MS;
+  refreshPivotMarker();
+  if (pivotFlashTimer) clearTimeout(pivotFlashTimer);
+  pivotFlashTimer = setTimeout(() => { pivotFlashTimer = null; refreshPivotMarker(); }, PIVOT_FLASH_MS + 30);
 }
 
 function setPivotPoint(p) {
@@ -10608,7 +10643,8 @@ function setPivotPoint(p) {
   App.pivotMode = 'custom';
   App.pivotPoint = p.clone();
   recenterPivot();
-  refreshPivotMarker();
+  flashPivotMarker();
+  refreshToolIndicator();
   refreshGizmoAttachment();
   refreshUI();
   return true;
@@ -10621,6 +10657,7 @@ function setPivotAuto(quiet) {
   refreshPivotBar();
   recenterPivot();
   refreshPivotMarker();
+  refreshToolIndicator();
   refreshGizmoAttachment();
   refreshUI();
   if (!quiet) toast('Pivot back to the selection');
@@ -11645,7 +11682,13 @@ function refreshToolIndicator() {
   const mode = App.transformMode === 'axis' ? 'Axis' : 'Free';
   // Text, not an icon - the icon lived inside a pill that's gone now, and
   // "Move" in plain type reads faster than a shape you have to decode.
-  el.innerHTML = label + '<span class="mode">' + mode + '</span>';
+  /* A pinned pivot has to say so somewhere permanent, since the marker itself
+     now comes and goes. Here, because this chip is already the one line that
+     answers "what will a drag do" - and a pivot that is not where you would
+     assume belongs in that answer. */
+  const piv = App.pivotMode === 'custom' && App.pivotPoint
+    ? '<span class="mode piv">Pivot</span>' : '';
+  el.innerHTML = label + '<span class="mode">' + mode + '</span>' + piv;
 }
 
 function setTransformTool(tool) {
@@ -12199,6 +12242,7 @@ function beginDirectDrag(ev) {
     decided: false
   };
   orbit.enabled = false;
+  refreshPivotMarker();   // rotate and scale turn around it - show what that is
   return true;
 }
 
@@ -12432,6 +12476,7 @@ function endDirectDrag() {
   directDrag = null;
   directCandidate = null;
   axisGuide.visible = false;
+  refreshPivotMarker();   // ...and take it away again when the drag is over
   orbit.enabled = true;
   recenterPivot();
   /* Extrude mode is still open underneath: the transform just changed the
@@ -15550,6 +15595,7 @@ function restoreDoc(doc, opts = {}) {
   if (!opts.keepSelection && App.pivotMode === 'custom') {
     App.pivotMode = 'auto'; App.pivotPoint = null; App.pivotPlacing = false;
     refreshPivotBar();
+    refreshToolIndicator();
   }
   reconcileIsolation();
   refreshPivotMarker();
@@ -18059,6 +18105,7 @@ if (PICK_DEBUG) {
     enterIsolation, exitIsolation, reconcileIsolation, applyIsolation, objectPickable,
     unhideObject, isolationOn,
     setPivotPoint, setPivotAuto, pivotToSelection, pivotToObjectCentre,
+    pivotMarkerWanted, flashPivotMarker, refreshToolIndicator,
     beginPivotPlacing, endPivotPlacing, selectionCenterWorld, recenterPivot,
     beginPivotDrag, updatePivotDrag, endPivotDrag, refreshPivotMarker,
     openPivotRing, HUB_TOOLS_PIVOT, refreshGizmoAttachment, refreshPivotBar,

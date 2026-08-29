@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~16,800 lines)
-- Version at time of writing: **a2.39**
+- Version at time of writing: **a2.39a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1864,15 +1864,31 @@ two-finger camera bail-out. Without it a desktop drag released over the top bar
 left the drag live with orbit off, and the bare cursor went on dragging the
 pivot with the camera dead.
 
-### The marker
+### The marker, and when it is worth drawing
 
 Two dots, one inside the other, reading as a ring — it has to be unmistakable,
 because at 2px the mesh dots and at 7px the selected ones are already dots, and
 a pivot that could be mistaken for a vertex is worse than no marker: you would
 aim at it. Constant screen size, no depth test, and a colour that is neither
 the accent nor the selection colour — the pivot is a place, not a thing you are
-editing. Shown only while pinned; in auto it would be one more dot over the
-thing you are looking at, saying something you already know.
+editing.
+
+**a2.39a: it is not left on.** Drawn permanently it was clutter — a bright dot
+parked over the model for the whole session, saying something that only matters
+at two moments. `pivotMarkerWanted` draws it at exactly those:
+
+- while you are **placing** it;
+- for `PIVOT_FLASH_MS` after it is **set**, so you see where it landed (setting
+  it and getting no acknowledgement at all is the other failure);
+- throughout a **rotate or scale** drag, because that is when it is doing
+  something — you are watching the model swing and the dot is what it swings
+  around. Not during a Move: the pivot plays no part in one.
+
+Hiding it the rest of the time would make a pinned pivot invisible state, which
+this project keeps having to kill — so the **tool chip carries a permanent
+"Pivot"** while the mode is custom. Two words in a corner cost nothing and mean
+rotation can never behave surprisingly with no explanation on screen. In auto
+the chip says nothing extra and the marker never appears at all.
 
 ### The world ring's left pole
 
