@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~16,800 lines)
-- Version at time of writing: **a2.37**
+- Version at time of writing: **a2.38**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1320,6 +1320,13 @@ had two faces.
 same drag moves, rotates or scales depending on the active tool.
 
 - Two-finger tap on empty space cycles Move / Rotate / Scale.
+- **Three fingers carry three gestures, told apart by what the hand DOES.**
+  A tap (still) switches Free / Axis. A slide (the centroid moves, the spread
+  holds) sizes the soft-selection radius, in Soft mode only. A pinch (the
+  spread changes, every finger agreeing in sign) isolates the selection, in
+  Object mode only. Soft and Object are mutually exclusive, so no two of the
+  three can ever be asked at once. See Isolate for why a pinch cannot be read
+  from the mean spread.
 - Three-finger tap switches Free / Axis. **Axis is the default** as of
   v1.99d: a drag along one named axis is what is wanted almost every time
   something is moved deliberately, and Free is one tap away. Not persisted
@@ -1779,6 +1786,123 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## Isolate (a2.38)
+
+**In Object mode, pinch three fingers IN and everything except the selection
+goes away. Pinch OUT and it all comes back.** A chip at the top says how many
+are hidden and brings them back on tap.
+
+### It stores what is HIDDEN, and that is the whole design
+
+`App.hidden` is a Set of object ids. Empty means everything is on screen.
+
+The first version held the opposite — the ids that SURVIVE — and it was wrong
+in a way worth remembering, because it looked equally reasonable. Holding "who
+survives" makes **every object the app creates a special case**: join, mirror,
+separate and duplicate all build a new object, and each one has to be told to
+add itself to the set or it is born invisible. Review found four separate
+defects from that one choice — Join made the joined object vanish, Duplicate
+produced a copy that was drawn but unpickable, and Separate hid every part it
+had just created.
+
+Held as "who is hidden", **a new object is visible because nothing ever named
+it**, whatever made it and whenever. There is no creation hook to forget. The
+only upkeep left is dropping ids that no longer exist.
+
+### One funnel: `refreshUI`
+
+`reconcileIsolation()` runs from `refreshUI`, and nowhere else that matters.
+Every op in the app ends by refreshing the UI, so that single hook covers join,
+mirror, separate, duplicate, object delete and the six collapse paths (weld,
+target weld, merge, collapse, detach, last-face delete) — none of which the
+first version's two hand-placed hooks reached. It does nothing at all when
+nothing is hidden.
+
+It has three jobs, each a bug otherwise:
+
+- **Drop dead ids**, or the count on the chip drifts away from the truth.
+- **Re-apply visibility**, because `restoreDoc` builds BRAND NEW meshes and a
+  new mesh is visible — without it an undo quietly un-hides half the scene
+  while the chip goes on claiming otherwise.
+- **Never leave nothing on screen.** If everything ends up hidden, hiding is
+  over. An empty viewport with no explanation is the failure this whole feature
+  exists to avoid.
+
+It also clears `App.activeObjectId` when that object is hidden. Component mode
+reads the active id **directly** — it does not go through the pickers — so a
+hidden active object meant extrude, bevel and delete all running on a mesh
+nobody could see. `enterIsolation` calls reconcile rather than plain apply for
+exactly this: the active object is usually one of the ones about to disappear,
+because it is whatever you touched last.
+
+### A hidden object must not be pickable
+
+**three.js r184's raycaster tests LAYERS and nothing else** — it does not skip
+an object whose `visible` is false. So `pickObjectAt` and `performRegionSelect`
+filter through `objectPickable` explicitly. Without that, isolate would have
+hidden things you could still tap and drag by accident, which is worse than not
+hiding them at all. `focusOnAll` and `focusOnObject` filter too: framing a box
+drawn around hidden geometry flies the camera off to nothing.
+
+**The camera does not move on isolate.** Framing the survivors is the obvious
+extra touch and it is the wrong one — this app took Smart camera out because
+"being moved when you did not ask to be moved reads as the app losing your
+place". Isolate hides, and only hides. The chip is what tells you where
+everything went.
+
+### Never saved
+
+Nothing about isolation reaches `serializeDoc`. It is a way of looking, like
+the camera. `restoreDoc` **drops** it on a load and **keeps** it on an undo,
+told apart by `opts.keepSelection` — undo and redo pass it, the three load paths
+(a saved model, the autosave, a project file) do not. Without that split the ids
+carry over, and since ids are small integers counted from 1 they collide across
+documents almost always: isolating object 3 and then opening a different file
+opened it with one object showing and the rest hidden.
+
+### The outliner keeps them
+
+Hidden objects stay in the list, dimmed with a struck-through name — it is the
+one place a hidden object is still visible AS a thing that exists. **Tapping a
+dimmed row brings that one back** rather than selecting something invisible,
+which was the trap: the row selected a hidden object and Delete or Ctrl+D then
+acted on a thing nobody could see.
+
+### The gesture, and why raw spread cannot work
+
+`ISO_PINCH_RATIO` / `ISO_PINCH_PX` / `armIsoPinch` / `isoPinchMove`.
+
+It fits between the two gestures three fingers already have and disturbs
+neither. A three-finger TAP cycles Free/Axis — a tap is still, and this needs
+travel. A three-finger SLIDE sizes the soft falloff — and soft cannot be on in
+Object mode, so the two can never be asked at once.
+
+**The obvious test — "has the mean distance from the centroid changed" — cannot
+be made to work, and the probe caught it firing on an ordinary three-finger
+slide.** Pointer moves arrive ONE FINGER AT A TIME: after the first of three
+has been updated and the other two have not, the hand genuinely looks squeezed,
+and on a 220px slide that phantom squeeze is a third of the spread. Real fingers
+stagger exactly the same way.
+
+So each finger is measured on its **own travel along its own outward
+direction**, and the gesture only counts when every one of them agrees:
+
+- A real pinch moves all three toward the centre (or all away), so every radial
+  reading has the same sign and the smallest is still large.
+- A slide moves all three the same way, and since they sit at different bearings
+  the readings disagree in sign — the leading finger reads outward while the
+  trailing one reads inward.
+- A half-updated hand leaves two fingers reading nearly zero, so the smallest is
+  nowhere near the threshold.
+
+Judging on the **smallest** rather than the average is what makes all three
+cases fall out of one rule. It fires once per gesture (`fired`), or a hand that
+keeps closing would isolate the survivors, then one of those, and so on down.
+
+Probes: `_iso_probe.py` (the gesture and what stays pickable) and
+`_iso2_probe.py` (the seven review defects, each checking the whole picture
+agrees with itself rather than one value).
 
 ## Soft selection (a2.37)
 

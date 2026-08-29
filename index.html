@@ -523,6 +523,28 @@
      also, literally, the thing the mode does. */
   #hubBtn.soft { box-shadow: 0 0 0 3px var(--bg), 0 0 0 6px var(--accent), 0 6px 18px rgb(var(--shadow) / .16); }
 
+  /* THE ONE THING THAT MAKES ISOLATE SAFE. Hiding most of a scene with a
+     gesture is only reversible if you can tell it happened - otherwise a
+     forgotten isolation reads as "my work is gone". So the chip is persistent,
+     says how many are hidden, and is itself the way out. Accent-bordered
+     because it is a state the app is IN, not a thing you can ignore. */
+  #isoChip {
+    position: absolute; left: 50%; transform: translateX(-50%);
+    top: calc(var(--edge) + 8px); z-index: 19; display: none;
+    align-items: center; gap: 10px;
+    background: var(--panel2); border: 1px solid var(--accent);
+    border-radius: var(--r-md); padding: 6px 8px 6px 12px;
+    box-shadow: 0 8px 24px rgb(var(--shadow) / .18); white-space: nowrap;
+  }
+  #isoChip.show { display: flex; }
+  #isoChip .ic-k { font-size: 11px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: .06em; }
+  #isoChip .ic-n { font-size: 11px; color: var(--text-dim); }
+  #isoChip button { min-height: 28px; padding: 2px 10px; font-size: 12px; }
+
+  /* The two transient HUDs share that spot, so they step down while the chip
+     is up rather than landing on top of it. */
+  body.isolating #lightHud, body.isolating #softHud { top: calc(var(--edge) + 52px); }
+
   #lightHud, #softHud {
     position: absolute; left: 50%; transform: translateX(-50%);
     top: calc(var(--edge) + 8px); z-index: 18; display: none;
@@ -536,6 +558,12 @@
   #lightHud .lh-v, #softHud .lh-v { font-size: 15px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
   #lightHud .lh-k, #softHud .lh-k { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .06em; }
   #lightHud .lh-hint, #softHud .lh-hint { font-size: 10px; color: var(--text-dim); }
+
+  /* Still listed, plainly not here. The list is the only place a hidden
+     object is still visible AS a thing that exists, so it stays - dimmed, with
+     a struck-through name, and a tap brings it back. */
+  .objChip.is-hidden { opacity: .45; }
+  .objChip.is-hidden span { text-decoration: line-through; }
 
   .objChip {
     display: inline-flex; align-items: center; gap: 8px; background: var(--panel2);
@@ -821,7 +849,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.37</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.38</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -877,6 +905,12 @@
     <!-- Same place and same weight as the light HUD, and for the same reason:
          the radius is judged by what happens to the MODEL, so the readout
          goes as far from the sliding hand as the screen allows. -->
+    <div id="isoChip">
+      <span class="ic-k">Isolated</span>
+      <span class="ic-n" id="isoChipN"></span>
+      <button id="isoChipOut">Show all</button>
+    </div>
+
     <div id="softHud">
       <div><div class="lh-k">Soft radius</div><div class="lh-v" id="softHudV">0.00</div></div>
       <div class="lh-hint" id="softHudN">&nbsp;</div>
@@ -1756,6 +1790,24 @@ const App = {
      the way transformTool does. */
   soft: false,
   softRadius: 0,        // 0 = not seeded yet; seedSoftRadius fills it in
+  /* ISOLATE (a2.38). The ids that are HIDDEN - empty means everything is on
+     screen.
+
+     Storing it this way round is the whole design, and the first attempt got
+     it backwards. Holding "the ids that survive" made every object the app
+     creates a special case: join, mirror, separate and duplicate all build a
+     new object, and each one had to be told to add itself or it was born
+     invisible - which is exactly what happened. Reviewed, and four separate
+     defects fell out of that single choice.
+
+     Held as "the ids that are hidden", a new object is visible because nothing
+     ever named it, whatever made it and whenever. There is no creation hook to
+     forget. The only upkeep left is dropping ids that no longer exist.
+
+     A WAY OF LOOKING, not part of the model: never written to the document, so
+     a file cannot open showing one object out of twenty and read as though the
+     rest were lost. Same reasoning that keeps the camera out of the file. */
+  hidden: new Set(),
   softRadiusFor: null,  // which object that measurement was taken against
   selectDrag: 'off',   // 'off' | 'box' | 'lasso'
   snap: false,
@@ -10226,8 +10278,12 @@ function setMode(mode) {
   hideAllHelpers();
   hideRadialMenu();
   if (mode !== 'object') {
+    // A hidden object cannot be the one you are editing - the component
+    // pickers read activeObjectId directly and would happily work on it.
+    if (App.hidden.has(App.activeObjectId)) App.activeObjectId = null;
     if (!App.activeObjectId && App.selectedObjectIds.size >= 1) {
-      App.activeObjectId = Array.from(App.selectedObjectIds)[0];
+      const pick = Array.from(App.selectedObjectIds).filter(id => !App.hidden.has(id));
+      if (pick.length) App.activeObjectId = pick[0];
     }
     if (App.activeObjectId) {
       const obj = findObject(App.activeObjectId);
@@ -10240,6 +10296,103 @@ function setMode(mode) {
   refreshGizmoAttachment();
 }
 
+
+/* ---------------- Isolate (a2.38) ----------------
+
+   Pinch three fingers IN and everything except the selection goes away; pinch
+   OUT and it comes back. The gesture is the metaphor - squeeze the scene down
+   to what you are working on, spread it back out - which is also why it needs
+   no separate "show all" command anywhere.
+
+   THE CAMERA DOES NOT MOVE. Framing the survivors would be the obvious extra
+   touch and it is the wrong one: this app took Smart camera out for exactly
+   that reason - "being moved when you did not ask to be moved reads as the app
+   losing your place". So isolate hides, and only hides. The chip is what tells
+   you where everything went. */
+
+function isolationOn() { return App.hidden.size > 0; }
+
+function applyIsolation() {
+  App.objects.forEach(o => { o.mesh.visible = !App.hidden.has(o.id); });
+  refreshIsoChip();
+}
+
+// True when this object is currently on screen - the one question every
+// picker has to ask before it can claim a hit.
+function objectPickable(o) {
+  return !!o && !App.hidden.has(o.id);
+}
+
+function enterIsolation() {
+  // Only what is REAL. A selection can outlive the object it named.
+  const keep = new Set();
+  App.selectedObjectIds.forEach(id => { if (findObject(id)) keep.add(id); });
+  if (!keep.size) { toast('Select something to isolate'); return false; }
+  const hide = App.objects.filter(o => !keep.has(o.id)).map(o => o.id);
+  if (!hide.length) { toast('That is everything already'); return false; }
+  App.hidden = new Set(hide);
+  /* reconcile, not merely apply: the object being EDITED is usually one of the
+     ones about to disappear - it is whatever was touched last - and nothing
+     refreshes the UI between the pinch and the next thing the user does. */
+  reconcileIsolation();
+  toast('Isolated ' + keep.size + ' of ' + App.objects.length + ' · pinch out to bring the rest back');
+  return true;
+}
+
+function exitIsolation(quiet) {
+  if (!isolationOn()) return false;
+  const n = App.hidden.size;
+  App.hidden = new Set();
+  applyIsolation();
+  if (!quiet) toast(n + ' object(s) back');
+  return true;
+}
+
+// One object out of hiding, without disturbing the rest - what tapping a
+// dimmed row in the outliner means.
+function unhideObject(id) {
+  if (!App.hidden.has(id)) return false;
+  App.hidden.delete(id);
+  applyIsolation();
+  return true;
+}
+
+/* Run from refreshUI, so it happens after ANY change to the object list
+   without a single op having to know isolation exists. That is the point: the
+   first version hooked the two mutation sites it could see, and the review
+   found eleven more - join, mirror, separate, duplicate, object delete, and
+   six collapse paths, each of which either hid the object it had just made or
+   left the chip lying about the count.
+
+   Three jobs:
+   - Drop ids that no longer name anything, or the count drifts.
+   - Re-apply visibility, because restoreDoc builds BRAND NEW meshes and a new
+     mesh is visible - without this an undo quietly un-hides half the scene.
+   - Never leave nothing on screen: if everything is hidden, hiding is over.
+     An empty viewport with no explanation is the failure this whole feature
+     has to avoid. */
+function reconcileIsolation() {
+  if (!App.hidden.size) return;
+  let changed = false;
+  App.hidden.forEach(id => { if (!findObject(id)) { App.hidden.delete(id); changed = true; } });
+  if (App.hidden.size >= App.objects.length) { App.hidden = new Set(); changed = true; }
+  /* An object you cannot see must not stay the one being edited. Component
+     mode reads App.activeObjectId directly - it does not go through the
+     pickers - so a hidden active object meant extrude, bevel and delete all
+     running on a mesh nobody could see. */
+  if (App.hidden.has(App.activeObjectId)) { App.activeObjectId = null; changed = true; }
+  applyIsolation();
+  if (changed) refreshIsoChip();
+}
+
+function refreshIsoChip() {
+  const el = document.getElementById('isoChip');
+  if (!el) return;
+  const on = isolationOn();
+  el.classList.toggle('show', on);
+  document.body.classList.toggle('isolating', on);
+  el.querySelector('#isoChipN').textContent = on ? App.hidden.size + ' hidden' : '';
+}
 
 function clearObjectSelection() { App.selectedObjectIds.clear(); }
 
@@ -10324,8 +10477,14 @@ function refreshGizmoAttachment() {
       // lets rotation and scale sensitivity be tuned below.
       const pivot = getOrCreatePivot();
       const center = new THREE.Vector3();
-      ids.forEach(id => center.add(findObject(id).mesh.position));
-      center.divideScalar(ids.length);
+      /* Only ids that still name something. Every caller of removeObjects
+         reassigns the selection immediately afterwards, so this never fired -
+         but it is one dead id away from throwing inside a UI refresh, and a
+         throw there takes the rest of the refresh with it. */
+      const live = ids.map(findObject).filter(Boolean);
+      if (!live.length) { detachAllGizmos(); return; }
+      live.forEach(o => center.add(o.mesh.position));
+      center.divideScalar(live.length);
       pivot.position.copy(center);
       pivot.quaternion.identity();
       pivot.scale.set(1, 1, 1);
@@ -10982,6 +11141,117 @@ function softArmSnapshot() {
   activePointers.forEach((p, id) => {
     softArm.set(id, { x: p.lastX !== undefined ? p.lastX : p.x, y: p.lastY !== undefined ? p.lastY : p.y });
   });
+}
+
+/* THE THREE-FINGER PINCH. Squeeze in to isolate the selection, spread out to
+   bring everything back. Object mode only.
+
+   It fits between the two gestures three fingers already have, and does not
+   disturb either. A three-finger TAP cycles Free/Axis: a tap is still, and
+   this needs a quarter of the spread. A three-finger SLIDE sizes the soft
+   falloff: a slide moves the CENTROID while the spread holds, a pinch changes
+   the SPREAD while the centroid holds - and soft mode cannot be on in Object
+   mode anyway, so the two can never be asked at once.
+
+   Both a ratio and an absolute distance have to be crossed. The ratio alone
+   fires on a small hand or a tight grip, where a couple of centimetres is a
+   quarter of the spread; the absolute alone fires differently on a phone than
+   on a desktop. Together they mean "you clearly did this on purpose". */
+const ISO_PINCH_RATIO = 0.22;   // this much of the spread it started at
+const ISO_PINCH_PX = 22;        // ...and this far, whatever the spread was
+let isoPinch = null;            // { at: Map, dir: Map, spread0, fired }
+
+// Mean distance from the centroid: one number for "how far apart is the hand".
+function pointerSpread() {
+  let cx = 0, cy = 0, n = 0;
+  activePointers.forEach(p => {
+    cx += (p.lastX !== undefined ? p.lastX : p.x);
+    cy += (p.lastY !== undefined ? p.lastY : p.y);
+    n++;
+  });
+  if (n < 2) return 0;
+  cx /= n; cy /= n;
+  let d = 0;
+  activePointers.forEach(p => {
+    d += Math.hypot((p.lastX !== undefined ? p.lastX : p.x) - cx,
+                    (p.lastY !== undefined ? p.lastY : p.y) - cy);
+  });
+  return d / n;
+}
+
+const pointerAt = (p) => ({ x: p.lastX !== undefined ? p.lastX : p.x,
+                            y: p.lastY !== undefined ? p.lastY : p.y });
+
+/* Armed by the third finger, and re-armed by a fourth: where each finger
+   started, and the OUTWARD direction it sat in relative to the hand's centre.
+   Both are needed because the test below is per-finger, not per-hand. */
+function armIsoPinch() {
+  const at = new Map(), dir = new Map();
+  let cx = 0, cy = 0, n = 0;
+  activePointers.forEach((p, id) => { const q = pointerAt(p); at.set(id, q); cx += q.x; cy += q.y; n++; });
+  if (!n) { isoPinch = null; return; }
+  cx /= n; cy /= n;
+  at.forEach((q, id) => {
+    const dx = q.x - cx, dy = q.y - cy;
+    const len = Math.hypot(dx, dy) || 1;
+    dir.set(id, { x: dx / len, y: dy / len });
+  });
+  isoPinch = { at, dir, spread0: pointerSpread(), fired: false };
+}
+
+/* PER FINGER, AND THEY ALL HAVE TO AGREE.
+
+   The obvious test - "has the mean distance from the centroid changed" -
+   cannot be made to work, and the probe caught it firing on an ordinary
+   three-finger slide. Pointer moves arrive ONE FINGER AT A TIME: after the
+   first of the three has been updated and the other two have not, the hand
+   genuinely looks squeezed, and on a 220px slide that phantom squeeze is a
+   third of the spread. Real fingers produce exactly the same stagger.
+
+   So each finger is measured on its OWN travel along its OWN outward
+   direction, and the gesture only counts when every one of them agrees:
+
+   - A real pinch moves all three toward the centre (or all three away), so
+     every radial reading has the same sign and the smallest is still large.
+   - A slide moves all three the same way, and since they sit at different
+     bearings the radial readings disagree in sign - the finger on the leading
+     side reads outward while the trailing one reads inward.
+   - A half-updated hand leaves two fingers with a radial reading of nearly
+     zero, so the smallest is nowhere near the threshold.
+
+   Judging on the SMALLEST rather than the average is what makes all three
+   cases fall out of one rule. */
+function isoPinchMove() {
+  if (!isoPinch || isoPinch.fired) return false;
+  if (App.mode !== 'object' || activePointers.size < 3) return false;
+
+  let sign = 0, worst = Infinity, seen = 0;
+  for (const [id, p] of activePointers) {
+    const a = isoPinch.at.get(id), u = isoPinch.dir.get(id);
+    if (!a || !u) return false;          // a finger that was not there when armed
+    const q = pointerAt(p);
+    const radial = (q.x - a.x) * u.x + (q.y - a.y) * u.y;
+    const s = radial < 0 ? -1 : 1;
+    if (sign === 0) sign = s;
+    else if (s !== sign) return false;   // they disagree: this is a slide
+    worst = Math.min(worst, Math.abs(radial));
+    seen++;
+  }
+  if (seen < 3) return false;
+  const d = sign * worst;
+  if (Math.abs(d) < ISO_PINCH_PX) return false;
+  if (Math.abs(d) < isoPinch.spread0 * ISO_PINCH_RATIO) return false;
+  /* Fires ONCE per gesture. Without the latch a hand that keeps closing would
+     isolate the survivors, then isolate one of those, and so on down - each
+     step hiding more of the scene for movement the user thought was a single
+     squeeze. */
+  isoPinch.fired = true;
+  tapArmed = false;              // it was never a three-finger tap
+  clearToolRingTimer();
+  clearLightHoldTimer();
+  if (d < 0) enterIsolation(); else exitIsolation();
+  if (navigator.vibrate) { try { navigator.vibrate(14); } catch (e) {} }
+  return true;
 }
 
 function softSlideOrigin() {
@@ -11826,7 +12096,12 @@ function ndcFromEvent(ev) {
 function pickObjectAt(ev) {
   const ndc = ndcFromEvent(ev);
   raycaster.setFromCamera(ndc, camera);
-  const meshes = App.objects.map(o => o.mesh);
+  /* Filtered, not left to the renderer: three's raycaster tests LAYERS and
+     nothing else - it does not skip an object whose `visible` is false. So a
+     hidden object stays perfectly pickable unless it is kept out of the list,
+     and isolate would have hidden things you could still select and drag by
+     accident, which is worse than not hiding them at all. */
+    const meshes = App.objects.filter(objectPickable).map(o => o.mesh);
   const hits = raycaster.intersectObjects(meshes, false);
   if (hits.length) return findObject(hits[0].object.userData.objId);
   return null;
@@ -12466,7 +12741,9 @@ function performRegionSelect(region) {
 
   if (App.mode === 'object') {
     const hitIds = [];
-    App.objects.forEach(o => {
+    // Same reasoning as pickObjectAt: a box or lasso must not sweep up
+    // something that is not on screen.
+    App.objects.filter(objectPickable).forEach(o => {
       const box = new THREE.Box3().setFromObject(o.mesh);
       const pts = [box.getCenter(new THREE.Vector3())];
       // Corners too, so a large object still registers when only part of it
@@ -12655,9 +12932,13 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
      maybeResumeOrbit exists to avoid - and would move the mean the radius is
      measured from without re-baselining it, jumping the radius in one frame. */
   if (softSlide) { softSyncSlide(); return; }
-  // The third finger arms the radius slide: from here, travel is measured.
+  // The third finger arms both of the three-finger gestures: from here, travel
+  // and spread are measured. Re-armed on a fourth so neither reads the change
+  // in the hand's shape as intent.
   if (App.soft && activePointers.size >= 3) softArmSnapshot();
   else if (activePointers.size < 3) softArm = null;
+  if (App.mode === 'object' && activePointers.size >= 3) armIsoPinch();
+  else if (activePointers.size < 3) isoPinch = null;
   lightHoldCandidate();
 
   // A second finger means the camera is taking over - abandon any transform
@@ -12770,6 +13051,9 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
      below, which would otherwise swallow them, and engaged on TRAVEL so a
      three-finger tap still reaches cycleTransformMode on release. */
   if (softSlide) { softSlideMove(); return; }
+  // Object mode's own three-finger gesture. Checked before the camera bail-out
+  // below, which would otherwise swallow it.
+  if (!lightHold && isoPinch && isoPinchMove()) return;
   if (App.soft && !lightHold && softArm && activePointers.size >= 3 &&
       softSlideTravel() > SOFT_SLIDE_ENGAGE_PX) {
     engageSoftSlide(); softSlideMove(); return;
@@ -12850,6 +13134,7 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
     return;
   }
   softArm = null;   // fewer than three fingers: nothing left to arm
+  isoPinch = null;
   // Cleared unconditionally, first - a release before the hold threshold
   // fires must cancel it outright, or a bloom would appear over a finger
   // that's already lifted.
@@ -14552,6 +14837,10 @@ function geoStep(field, delta) {
 });
 
 document.getElementById('geoDone').addEventListener('click', () => finishGeoSetup(true));
+document.getElementById('isoChipOut').addEventListener('click', (ev) => {
+  ev.stopPropagation();
+  exitIsolation();
+});
 
 // addCubeAction is gone at a2.36. Both rings that carried it - the world
 // ring and the empty-scene ring - now call openGeoRing, and Cube is one of
@@ -14814,6 +15103,22 @@ function restoreDoc(doc, opts = {}) {
 
   if (!opts.keepAppearance) harvestLegacyMaterials();
   stampFinishesOnMaterials();
+
+  /* A LOAD drops isolation outright; an undo keeps it.
+
+     `keepSelection` is what tells them apart - undo and redo pass it, and the
+     three load paths (a saved model, the autosave, a project file) do not.
+     Without this the ids carry over, and since ids are small integers counted
+     from 1 they collide across documents almost always: isolating object 3 and
+     then opening a different file opened it with one object showing and the
+     rest hidden. That is the precise thing this feature is designed to make
+     impossible.
+
+     For an undo, reconcile is still required - every mesh above is BRAND NEW
+     and a new mesh is visible, so without it an undo quietly un-hides the
+     scene while the chip goes on claiming otherwise. */
+  if (!opts.keepSelection) App.hidden = new Set();
+  reconcileIsolation();
 
   refreshUI();
   refreshGizmoAttachment();
@@ -16486,10 +16791,12 @@ const HELP_SECTIONS = [
       [null, 'Two-finger tap', 'Move / Rotate / Scale. The top readout says which.'],
       [null, 'Three-finger tap', 'Free / Axis.'],
       [null, 'Three-finger slide', 'In Soft, sizes the falloff. The dots light up to show its reach.'],
+      [null, 'Three-finger pinch', 'In Object mode: squeeze in to isolate what is selected, spread out to bring everything back.'],
       [null, 'Axis', 'Decided in the first few pixels and held until you lift.'],
       [null, 'Free rotate', 'Axis from the direction you swipe.'],
       [null, 'Free scale', 'Screen axes, so depth is reachable. Matching none scales evenly.'],
       ['snap', 'Snap', 'Moves in steps. Step size is in the drawer.'],
+      [null, 'Isolate', 'Everything except the selection goes away so you can work inside a crowded scene. The camera does not move. A chip at the top says how many are hidden and brings them back.'],
       [null, 'Soft', 'Third tap on the mode button. What you drag carries its neighbours with it, fading out over the radius. The button wears a ring while it is on.'],
       [null, 'Soft reach', 'Measured ALONG the surface, so the far side of a fold stays put and a separate object is never touched.']
     ]
@@ -16843,6 +17150,12 @@ document.getElementById('btnInspector').addEventListener('click', (ev) => {
 });
 
 function refreshUI() {
+  /* Isolation is reconciled HERE and nowhere else that matters. Every op in
+     the app ends by refreshing the UI, so hooking this one place covers join,
+     mirror, separate, duplicate, delete and the six collapse paths at once -
+     none of which the first version's two hooks reached. It is O(objects) over
+     a scene of a few dozen and does nothing at all when nothing is hidden. */
+  reconcileIsolation();
   refreshObjComponentBtn();
   document.getElementById('btnUndo').disabled = App.historyIndex <= 0;
   document.getElementById('btnRedo').disabled = App.historyIndex >= App.history.length - 1;
@@ -16876,7 +17189,18 @@ function refreshUI() {
     const label = document.createElement('span');
     label.textContent = o.name;
     chip.appendChild(sw); chip.appendChild(label);
+    if (App.hidden.has(o.id)) chip.classList.add('is-hidden');
     chip.addEventListener('click', () => {
+      /* A hidden row is the one place you can still see that an object exists,
+         so tapping it brings that one back rather than selecting something
+         invisible - which was the trap: the row selected a hidden object and
+         Delete or Ctrl+D then acted on a thing nobody could see. */
+      if (App.hidden.has(o.id)) {
+        unhideObject(o.id);
+        toast('Showing ' + o.name);
+        refreshUI();
+        return;
+      }
       if (App.mode === 'object') {
         selectObjectClick(o.id, App.multiSelect);
       } else {
@@ -16993,6 +17317,8 @@ function frameBox(box) {
 }
 
 function focusOnObject(obj) {
+  // Flying the camera to something invisible leaves you looking at nothing.
+  if (!objectPickable(obj)) return;
   const box = new THREE.Box3().setFromObject(obj.mesh);
   frameBox(box);
 }
@@ -17006,9 +17332,12 @@ function focusOnObject(obj) {
    Pinch-zoom is one gesture and it is yours. Do not rebuild it. */
 
 function focusOnAll() {
-  if (!App.objects.length) { animateCameraTo(new THREE.Vector3(4.5, 3.5, 6), new THREE.Vector3(0, 0, 0)); return; }
+  // "All" means all you can SEE. Framing a box drawn around hidden geometry
+  // would fly the camera off to nothing.
+  const shown = App.objects.filter(objectPickable);
+  if (!shown.length) { animateCameraTo(new THREE.Vector3(4.5, 3.5, 6), new THREE.Vector3(0, 0, 0)); return; }
   const box = new THREE.Box3();
-  App.objects.forEach(o => box.expandByObject(o.mesh));
+  shown.forEach(o => box.expandByObject(o.mesh));
   frameBox(box);
 }
 
@@ -17039,6 +17368,7 @@ window.addEventListener('resize', onResize);
        next SINGLE finger anywhere on the canvas fell into the slide branch and
        rewrote the radius by most of a screen width. */
     endSoftSlide();
+    isoPinch = null;   // a cancelled touch is not half a pinch
     maybeResumeOrbit();
     if (activePointers.size === 0) { tapArmed = false; tapPeakCount = 0; clearLightHoldTimer(); }
     // A lost pointer mid-hold must not leave a bloom stuck open with no
@@ -17277,6 +17607,11 @@ if (PICK_DEBUG) {
     // drag would have got without pretending to be a finger.
     softWeights, softFalloff, softSeeds, seedSoftRadius, refreshSoftField, clearSoftField,
     setSoft, cycleEditMode, engageSoftSlide, softSlideMove, endSoftSlide, refreshSoftHud,
+    enterIsolation, exitIsolation, reconcileIsolation, applyIsolation, objectPickable,
+    unhideObject, isolationOn,
+    performRegionSelect, onEmptySpaceTap, focusOnAll, focusOnObject,
+    armIsoPinch, isoPinchMove, pointerSpread, refreshIsoChip,
+    get isoPinch() { return isoPinch; },
     get softSlide() { return softSlide; },
     refreshUI, refreshElementColors, refreshObjComponentBtn,
     get softField() { return softField; },
