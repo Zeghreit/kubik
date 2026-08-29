@@ -784,7 +784,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.34</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.35</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1714,6 +1714,16 @@ const App = {
   selectedElements: new Set(), // logical vertex ids / edge indices / face-group indices, for activeObjectId
   edgeAnchor: null,      // edge selected by the previous single tap, for path selection
   edgeAnchorTime: 0,     // when that tap happened - a stale anchor is ignored
+  /* The same idea one component down, for Target weld: what was selected
+     immediately BEFORE the vertex you just tapped. Recorded on every vertex
+     tap, and null the moment you tap something already selected, so a weld
+     can never fire off a stale pair. */
+  vertAnchor: null,
+  vertAnchorTime: 0,
+  lastVertPick: null,    // and the near-miss memory, because a vertex is a
+  lastVertPickTime: 0,   // 6px dot and the second tap of a double-tap
+  lastVertPickX: 0,      // lands beside it as often as on it
+  lastVertPickY: 0,
   lastEdgePick: null,    // edge the last single tap landed on, for the near-miss
   lastEdgePickTime: 0,   // second tap of a double-tap (edges are thin) -
   lastEdgePickX: 0,      // with WHERE it was, so a double-tap that misses
@@ -4622,11 +4632,19 @@ function dissolveVerticesOp(obj, logicalIds) {
 
 // Merges 2+ selected vertices into one, at their average position. Any
 // triangle left with two corners on the same spot is degenerate and dropped.
-function weldVerticesOp(obj, logicalIds) {
+/* `at` is where the vertices land. Left out, they melt into their own
+   middle, which is what the Weld tool in the ring has always done. Given a
+   point - Target weld - they move ONTO it and it does not budge, which is
+   the difference between tidying a pair up and putting one thing exactly
+   where another already is. */
+function weldVerticesOp(obj, logicalIds, at) {
   const topo = obj.mesh.userData.topo;
   const center = new THREE.Vector3();
-  logicalIds.forEach(l => center.add(logicalPos(obj, l)));
-  center.divideScalar(logicalIds.size);
+  if (at) center.copy(at);
+  else {
+    logicalIds.forEach(l => center.add(logicalPos(obj, l)));
+    center.divideScalar(logicalIds.size);
+  }
 
   const ed = toEditable(obj.mesh);
   const mats = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
@@ -9896,6 +9914,8 @@ function setMode(mode) {
   App.selectedElements.clear();
   App.edgeAnchor = null;
   App.lastEdgePick = null;
+  App.vertAnchor = null;
+  App.lastVertPick = null;
   hideAllHelpers();
   hideRadialMenu();
   if (mode !== 'object') {
@@ -11608,6 +11628,8 @@ function switchToComponentType(newType) {
   App.selectedElements.clear();
   App.edgeAnchor = null;
   App.lastEdgePick = null;
+  App.vertAnchor = null;
+  App.lastVertPick = null;
   hideAllHelpers();
   const obj = findObject(App.activeObjectId);
   if (obj) setActiveObjectHelpersVisible(obj, newType);
@@ -12431,6 +12453,46 @@ function handleDoubleTap(ev) {
     }
   }
 
+  /* In Vertex mode a double-tap on a DIFFERENT vertex from the one you had
+     is TARGET WELD: what you had moves onto what you double-tapped, and the
+     one you double-tapped does not move. Tap, then double-tap - no tool to
+     pick up, no drag to aim at a 6px dot.
+
+     WELD BEATS FOCUS, and that is a DECISION, not an oversight. The two
+     cannot both have this gesture: the first tap of the double-tap is what
+     records the pair, so "a vertex was selected and I double-tapped another"
+     is the same input whether you meant to weld or to frame. Zeghreit chose
+     the weld. Framing is still one gesture away in Vertex mode - double-tap
+     the object's surface clear of any vertex, or empty space, or the vertex
+     that is already selected, which the anchor rule below exempts - and a
+     weld you did not mean costs one Undo and says what it did.
+
+     It only fires when there is a fresh anchor and the two are different,
+     so a double-tap that picks no vertex still means Focus. */
+  if (App.mode === 'vertex' && App.activeObjectId) {
+    const obj = findObject(App.activeObjectId);
+    let vi = obj ? pickVertexOnActive(ev, 1.6) : -1;
+    /* The same near-miss forgiveness the edge branch gets, and for the same
+       reason: the second tap of a double-tap lands beside a 6px dot as
+       often as on it, and falling through to Focus there reads as the
+       gesture being broken rather than missed. */
+    if (obj && vi < 0 && App.lastVertPick !== null &&
+        (performance.now() - App.lastVertPickTime) < 900 &&
+        Math.hypot(ev.clientX - App.lastVertPickX, ev.clientY - App.lastVertPickY) < 40) {
+      // BOUNDED, for the reason the edge branch below states: every mesh
+      // edit renumbers, so a remembered index can point past the end of the
+      // topology it is being used against.
+      ensureHelpers(obj);
+      if (App.lastVertPick < obj.mesh.userData.topo.logicalCount) vi = App.lastVertPick;
+    }
+    const anchor = App.vertAnchor;
+    const fresh = anchor && anchor.length &&
+      (performance.now() - App.vertAnchorTime) < 1500;
+    if (obj && vi >= 0 && fresh && anchor.indexOf(vi) < 0) {
+      if (targetWeld(obj, anchor.slice(), vi)) return;
+    }
+  }
+
   // In Edge mode a double-tap selects a run of edges rather than focusing.
   if (App.mode === 'edge' && App.activeObjectId) {
     const obj = findObject(App.activeObjectId);
@@ -12571,6 +12633,22 @@ function handleTap(ev) {
     } else {
       App.edgeAnchor = null;
     }
+
+    /* What was selected before this tap, for Target weld. Cleared when the
+       tap lands on something already selected - which is what stops a
+       second double-tap on the same vertex from welding a stale pair,
+       because by then the previous selection IS that vertex. */
+    if (pick.type === 'vertex') {
+      const prevV = Array.from(App.selectedElements);
+      App.vertAnchor = (prevV.length && prevV.indexOf(pick.index) < 0) ? prevV : null;
+      App.vertAnchorTime = performance.now();
+      App.lastVertPick = pick.index;
+      App.lastVertPickTime = App.vertAnchorTime;
+      App.lastVertPickX = ev.clientX;
+      App.lastVertPickY = ev.clientY;
+    } else {
+      App.vertAnchor = null;
+    }
     toggleElement(pick.index, additive);
     return;
   }
@@ -12581,6 +12659,16 @@ function handleTap(ev) {
     App.activeObjectId = hitObj.id;
     App.selectedObjectIds = new Set([hitObj.id]);
     App.selectedElements.clear();
+    /* The third way the active object changes, and the one that used to keep
+       its anchors. setMode and switchToComponentType both clear them; this
+       branch did not, so a Target weld could fire on the mesh you had just
+       switched TO, using vertex ids belonging to the one you switched FROM -
+       welding two vertices the user never picked, or throwing outright if
+       the new object had fewer of them. */
+    App.vertAnchor = null;
+    App.lastVertPick = null;
+    App.edgeAnchor = null;
+    App.lastEdgePick = null;
     hideAllHelpers();
     setActiveObjectHelpersVisible(hitObj, App.mode);
     refreshUI();
@@ -12778,6 +12866,112 @@ function weldSelectionOnce() {
   refreshUI();
   refreshGizmoAttachment();
   pushHistory();
+}
+
+/* TARGET WELD, by gesture: tap a vertex, then double-tap the one you want
+   it to land on. Maya has it as a tool you drag with; here the second tap
+   IS the drag's destination, which suits a thumb better than aiming a drag
+   at a 6px dot.
+
+   It is deliberately not the ring's Weld. That one melts everything
+   selected into the middle - right when you are closing a gap, wrong when
+   you are putting a corner exactly where another corner already is, which
+   is most of what welding is for while cleaning up topology. */
+function targetWeldOnce(obj, sources, target) {
+  const at = logicalPos(obj, target);
+  const set = new Set(sources.filter(l => l !== target));
+  if (!set.size) return { ok: true, moved: 0 };
+  const ok = weldVerticesOp(obj, set, at);
+  return { ok, moved: set.size, at };
+}
+
+function targetWeld(obj, sources, target) {
+  ensureHelpers(obj);
+  const count = obj.mesh.userData.topo.logicalCount;
+  // The target gets the same bounds test the sources get. It did not, and a
+  // stale id reached logicalPos and threw on an undefined group.
+  if (!(target >= 0 && target < count)) return false;
+  const src = sources.filter(l => l !== target && l >= 0 && l < count);
+  if (!src.length) return false;
+
+  /* The mirrored pair, remembered as POSITIONS: the first weld rebuilds the
+     mesh and renumbers everything, so ids would be stale by the time the
+     second pass wanted them. Same trick every relational op here uses.
+     Weld is relational - the union of a set and its mirror welded in one go
+     would drag both halves onto one point - so this runs once per side. */
+  let mirror = null;
+  if (App.symmetry) {
+    const ms = mirrorOfSelection(obj, src);
+    const mt = mirrorOfSelection(obj, [target]);
+    const mtl = mt && mt.size ? Array.from(mt)[0] : -1;
+    if (ms && mtl >= 0) {
+      const msl = Array.from(ms).filter(l => l !== mtl);
+      const sameAsMine = mtl === target && msl.length === src.length &&
+        msl.every(l => src.indexOf(l) >= 0);
+      // A pair that is its own mirror is one job, not two.
+      if (msl.length && !sameAsMine) {
+        mirror = { src: msl.map(l => logicalPos(obj, l)), at: logicalPos(obj, mtl) };
+      }
+    }
+  }
+
+  const objId = obj.id;
+  const first = targetWeldOnce(obj, src, target);
+  if (!first.ok) {
+    disposeObject(obj);
+    App.objects = App.objects.filter(o => o.id !== objId);
+    App.activeObjectId = null;
+    App.selectedElements.clear();
+    detachAllGizmos();
+    refreshUI();
+    refreshGizmoAttachment();
+    pushHistory();
+    toast('Welding collapsed the whole mesh - removed the object');
+    return true;
+  }
+
+  let o2 = findObject(objId);
+  let total = first.moved;
+  if (o2 && mirror) {
+    ensureHelpers(o2);
+    const tl = findLogicalByPosition(o2, mirror.at);
+    const sl = mirror.src.map(p => findLogicalByPosition(o2, p)).filter(l => l >= 0);
+    if (tl >= 0 && sl.length) {
+      const second = targetWeldOnce(o2, sl, tl);
+      if (!second.ok) {
+        disposeObject(o2);
+        App.objects = App.objects.filter(o => o.id !== objId);
+        App.activeObjectId = null;
+        App.selectedElements.clear();
+        detachAllGizmos();
+        refreshUI();
+        refreshGizmoAttachment();
+        pushHistory();
+        toast('Welding collapsed the whole mesh - removed the object');
+        return true;
+      }
+      total += second.moved;
+      o2 = findObject(objId);
+    } else {
+      toast('Symmetry: could not find the mirrored side after the first pass');
+    }
+  }
+
+  if (o2) {
+    ensureHelpers(o2);
+    // The survivor is wherever the target was: it never moved.
+    const landed = findLogicalByPosition(o2, first.at);
+    App.selectedElements = landed >= 0 ? new Set([landed]) : new Set();
+    setActiveObjectHelpersVisible(o2, App.mode);
+    refreshElementColors(o2);
+  }
+  App.vertAnchor = null;
+  hideRadialMenu();
+  refreshUI();
+  refreshGizmoAttachment();
+  pushHistory();
+  toast(total > 1 ? 'Welded ' + total + ' vertices onto that one' : 'Welded onto that vertex');
+  return true;
 }
 
 function mergeSelection() {
@@ -15234,7 +15428,7 @@ HELP_SECTIONS.push(
       ['bridge', 'Bridge', 'Joins two selections with new faces. Sections subdivides it, Curved keeps each end going its own way.'],
       ['cap', 'Cap hole', 'Closes an opening. In Edge mode just that one, otherwise all of them.'],
       ['connect', 'Connect', 'A new edge between selected vertices.'],
-      ['weld', 'Weld', 'The selected vertices become one.'],
+      ['weld', 'Weld', 'The selected vertices become one, in the middle. To send one vertex ONTO another instead, tap the first and double-tap the second.'],
       ['merge', 'Merge', 'Points sitting on almost the same spot become one.'],
       ['grow', 'Grow', 'Widens the selection to everything touching it.'],
       ['shrink', 'Shrink', 'Pulls it back in from its border.'],
@@ -15956,6 +16150,7 @@ if (PICK_DEBUG) {
        already a single tap away in the rings. */
     logicalPos, findLogicalByPosition, edgeKey, groupLogicalLoop,
     setFlowSelection, setFlowApply, flowSelectionItems, loopCutFlowItems, weightedTangent,
+    targetWeld, targetWeldOnce, weldVerticesOp, handleDoubleTap, handleTap,
     loopCutBeforeState, neighbourMap, continuationOf, hermiteAt,
     subdivideSelection, fillHolesSelection, flipNormalsSelection,
     autoSmoothSelection, markSharpSelection, shadeSelection,

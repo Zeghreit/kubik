@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~13,800 lines)
-- Version at time of writing: **a2.34**
+- Version at time of writing: **a2.35**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1778,6 +1778,69 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## Target weld, by gesture (a2.35)
+
+**Tap a vertex, then double-tap another: the first moves ONTO the second,
+and the second does not budge.**
+
+That last part is the whole point, and it is what separates it from the
+ring's Weld. Weld melts its selection into the selection's own middle —
+right when you are closing a gap, wrong when you are putting a corner
+exactly where another corner already is, which is most of what welding is
+for while cleaning topology up. Maya has this as a tool you pick up and
+drag with; here the second tap IS the destination, which suits a thumb
+better than aiming a drag at a 6px dot.
+
+`weldVerticesOp(obj, ids, at)` gained the optional landing point. Without
+it, nothing about Weld changed.
+
+### How the pair is remembered
+
+`App.vertAnchor` is the selection that existed BEFORE the vertex you just
+tapped, recorded on every vertex tap — the same shape as the edge anchor
+that joins two edges into a run. It is set to null the moment a tap lands on
+something already selected, which is what stops a second double-tap on the
+same vertex from welding a stale pair.
+
+The sequence matters and is worth spelling out: the first tap of a
+double-tap runs `handleTap` and selects the target, so by the time
+`handleDoubleTap` fires, the anchor holds exactly the vertex you tapped
+before it. The 1500ms freshness window therefore only ever guards a
+double-tap whose first tap missed.
+
+**The vertex near-miss fallback is BOUNDED** (`lastVertPick <
+logicalCount`), for the reason the edge branch has always stated: every mesh
+edit renumbers, so a remembered index can point past the end of the topology
+it is being used against. It was not, and the review found it throwing on a
+smaller object.
+
+**The anchors die with the active object.** `setMode` and
+`switchToComponentType` always cleared them; the third way the active object
+changes — tapping a different mesh's surface — did not, and a Target weld
+could then fire on the mesh you had just switched TO using ids from the one
+you switched FROM. That branch clears both anchors now.
+
+### Symmetry
+
+Target weld handles it itself rather than through `runMirrored`, because it
+has two inputs rather than one selection. It mirrors the sources and the
+target, remembers the mirrored pair as POSITIONS (the first weld rebuilds
+and renumbers), welds one side, re-resolves by position, welds the other —
+one history step for both. A pair that is its own mirror runs once. Measured
+on a cube with symmetry on: 8 vertices to 6, one Undo step, both sides done.
+
+### WELD BEATS FOCUS — a decision, not an oversight
+
+Double-tap used to mean "frame this". The two cannot both own the gesture:
+the first tap of the double-tap is what records the pair, so *a vertex was
+selected and I double-tapped another* is the same input whether you meant to
+weld or to frame. **Zeghreit chose the weld.**
+
+Framing is still one gesture away in Vertex mode — double-tap the object's
+surface clear of any vertex, or empty space, or the vertex that is already
+selected, which the anchor rule exempts — and a weld you did not mean costs
+one Undo and says what it did.
 
 ## Set flow (a2.34)
 
