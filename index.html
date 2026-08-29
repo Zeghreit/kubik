@@ -555,6 +555,7 @@
   }
   #isoChip.show { display: flex; }
   #toolChip .mode.piv { color: #ffc857; }
+  #toolChip .mode.snp { color: #5ad1a5; }
   #isoChip .ic-k { font-size: 11px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: .06em; }
   #isoChip .ic-n { font-size: 11px; color: var(--text-dim); }
   #isoChip button { min-height: 28px; padding: 2px 10px; font-size: 12px; }
@@ -867,7 +868,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.40</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.41</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1853,7 +1854,17 @@ const App = {
   pivotPlacing: false,  // the bar is open and a drag moves the pivot
   softRadiusFor: null,  // which object that measurement was taken against
   selectDrag: 'off',   // 'off' | 'box' | 'lasso'
-  snap: false,
+  /* SNAPPING, three-state since a2.41 (a2.0-a2.40 had a plain on/off).
+
+     'grid' is what Snap has always meant: round the amount to snapMove /
+     snapRotate / snapScale. 'geo' is new and different in kind - it lands the
+     PIVOT exactly on a vertex, an edge or a face you are pointing at.
+
+     They are alternatives rather than a fallback chain. Geometry that quietly
+     fell back to the grid when nothing was under the finger would mean a drag
+     could not be free at all while snapping was on, and "why did it jump" is a
+     worse question than "why did it not". */
+  snapMode: 'off',     // off | grid | geo
   /* Lighting is a SCENE property, so it lives here and travels in the
      project file - not on a material, even though materials are what it
      most visibly affects. rotation is in DEGREES on purpose: the same
@@ -9491,7 +9502,7 @@ function updateExtrudeDrag(ev) {
      direction - Each mode on two faces 90 degrees apart reads 0.707. */
   const scale = (op.axis && op.axis.scale) || 1;
   let amount = extrudeDrag.amount0 + (extrudeParam(ev, extrudeDrag) - extrudeDrag.start) / scale;
-  if (App.snap) amount = Math.round(amount / App.snapMove) * App.snapMove;
+  if (gridSnapping()) amount = Math.round(amount / App.snapMove) * App.snapMove;
   setPendingAmount(amount);
 }
 
@@ -10157,6 +10168,9 @@ function refreshElementColors(obj) {
    "something that is selected" - it is a place, not a thing you are editing. */
 const PIVOT_COLOR = 0xffc857;
 const PIVOT_CORE_COLOR = 0x1a1d24;
+// Distinct from both the pivot and the selection: it is neither, it is where
+// the pivot is about to land.
+const SNAP_COLOR = 0x5ad1a5;
 
 const SEL_DOT_PX = 7;        // vs 2px for unselected
 const SEL_EDGE_PX = 3.5;     // vs a 1px hairline
@@ -12003,7 +12017,11 @@ function refreshToolIndicator() {
      assume belongs in that answer. */
   const piv = App.pivotMode === 'custom' && App.pivotPoint
     ? '<span class="mode piv">Pivot</span>' : '';
-  el.innerHTML = label + '<span class="mode">' + mode + '</span>' + piv;
+  // Three states on one seat need somewhere to read the current one - the ring
+  // can only show that it is on, not which of the two it is on.
+  const snp = App.snapMode === 'off' ? ''
+    : '<span class="mode snp">' + (App.snapMode === 'grid' ? 'Grid' : 'Snap') + '</span>';
+  el.innerHTML = label + '<span class="mode">' + mode + '</span>' + piv + snp;
 }
 
 function setTransformTool(tool) {
@@ -12456,7 +12474,7 @@ function updatePivotDrag(ev) {
   let offset = hit.sub(d.startHit);
   // Axis mode keeps only the part of that movement that runs along the axis.
   if (d.axis) offset = d.axis.dir.clone().multiplyScalar(offset.dot(d.axis.dir));
-  if (App.snap) {
+  if (gridSnapping()) {
     offset.x = Math.round(offset.x / App.snapMove) * App.snapMove;
     offset.y = Math.round(offset.y / App.snapMove) * App.snapMove;
     offset.z = Math.round(offset.z / App.snapMove) * App.snapMove;
@@ -12501,6 +12519,238 @@ function updateAxisGuideFor(at, axis) {
   axisGuide.quaternion.copy(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis.dir));
   axisGuide.scale.set(1, len, 1);
   axisGuide.material.color.setHex(axis.color);
+}
+
+/* ---------------- Snap to geometry (a2.41) ----------------
+
+   The PIVOT lands on what you are pointing at. Not the object's centre by
+   arithmetic and not "whatever was nearest" - the pivot, which since a2.39 is
+   a thing you can put on the exact corner you mean. That is the whole reason
+   it had to be built first.
+
+   Targets are found the way the knife finds them, and for the same stated
+   reason: this is a SNAP, so it means "exactly this corner", not "near
+   enough". Vertex beats edge beats face, all judged in SCREEN space, because
+   that is how every picker in this app judges and it is the only measure that
+   behaves the same at every zoom.
+
+   The search is bounded to the face under the ray and its own corners and
+   edges. Walking a whole mesh per frame would be the cost of the falloff
+   overlay's first version all over again, and it would not even be better:
+   the corner you mean is a corner of the face you are pointing at. */
+/* TWO radii, not one, and the difference matters more than the numbers.
+
+   A corner is a point you AIM at, so it can afford a generous catch - nothing
+   else is nearby to steal it. An edge is a long target you are incidentally
+   near almost anywhere on a face: at one shared 26px radius, pointing at the
+   dead centre of a face 60px across still landed on an edge, because the
+   centre is only 30px from one. Faces became unreachable in practice and the
+   pull felt like the app second-guessing the aim.
+
+   So the edge has to be genuinely aimed at too. Below its radius you meant the
+   edge; above it, you meant the surface. */
+const SNAP_VERT_PX = 20;
+const SNAP_EDGE_PX = 11;
+let snapMarker = null;
+let snapLive = null;            // { point, kind } while a drag has a target
+
+function ensureSnapMarker() {
+  if (snapMarker) return snapMarker;
+  const dpr = renderer.getPixelRatio ? renderer.getPixelRatio() : 1;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0], 3));
+  const mk = (px, hex, order) => {
+    const m = new THREE.Points(geo, new THREE.PointsMaterial({
+      size: px * dpr, sizeAttenuation: false, map: vertexDotTexture(),
+      alphaTest: 0.4, transparent: true, depthWrite: false, depthTest: false, fog: false
+    }));
+    m.material.color.setHex(hex);
+    m.renderOrder = order;
+    return m;
+  };
+  snapMarker = new THREE.Group();
+  // A ring, like the pivot's, but in its own colour - it is a place the pivot
+  // is about to go, not the pivot and not a selection.
+  snapMarker.add(mk(19, SNAP_COLOR, 1000));
+  snapMarker.add(mk(8, PIVOT_CORE_COLOR, 1001));
+  snapMarker.visible = false;
+  scene.add(snapMarker);
+  return snapMarker;
+}
+
+/* Drawn where the pivot WILL END UP, which in a free move is the target and
+   in an axis-locked one is the target projected onto the axis.
+
+   The two are the same only when the target happens to sit on the axis line,
+   and the first version drew the target either way - so with X locked and a
+   corner off to one side, the ring planted itself on that corner and the
+   object stopped well short of it, with nothing saying why. A marker that
+   promises somewhere the drag cannot reach is worse than none. */
+function refreshSnapMarker() {
+  const m = ensureSnapMarker();
+  m.visible = !!snapLive;
+  if (snapLive) m.position.copy(snapLive.landing || snapLive.point);
+}
+
+function clearSnapTarget() {
+  if (!snapLive) return;
+  snapLive = null;
+  refreshSnapMarker();
+}
+
+// Distance from a point to a segment in 2D, and where along it that lands.
+function segClosest2D(p, a, b) {
+  const vx = b.x - a.x, vy = b.y - a.y;
+  const len2 = vx * vx + vy * vy;
+  let t = len2 > 1e-9 ? (((p.x - a.x) * vx + (p.y - a.y) * vy) / len2) : 0;
+  t = Math.max(0, Math.min(1, t));
+  return { t, d: Math.hypot(p.x - (a.x + vx * t), p.y - (a.y + vy * t)) };
+}
+
+/* What the pointer is over that the drag could land on, or null.
+
+   `skip` is the geometry that is MOVING - it cannot be its own target. In
+   object mode that is whole objects; in component mode it is the logical
+   vertices being dragged, on an object that is otherwise a perfectly good
+   thing to snap to (landing one corner of a shape on another corner of the
+   same shape is a normal thing to want). */
+function snapTargetAt(ev, skip) {
+  const skipObjs = (skip && skip.objects) || null;
+  const skipVerts = (skip && skip.verts) || null;
+  const meshes = App.objects
+    .filter(o => objectPickable(o) && !(skipObjs && skipObjs.has(o.id)))
+    .map(o => o.mesh);
+  if (!meshes.length) return null;
+
+  raycaster.setFromCamera(ndcFromEvent(ev), camera);
+  const hits = raycaster.intersectObjects(meshes, false);
+  if (!hits.length) return null;
+
+  /* WALK the hits rather than taking the first, because the nearest surface is
+     very often the one being dragged - beginDirectDrag is only reachable by
+     grabbing your own selection, so the pointer STARTS on top of it.
+
+     A target on moving geometry is not merely wrong, it feeds back: the target
+     is recomputed each frame from geometry the previous frame moved. Selecting
+     a face and dragging it locked the face into its own plane, because the
+     pivot sits on that plane and the target did too; in axis mode the wanted
+     offset came out perpendicular to the axis and the face did not move at
+     all; and with the pivot off the face's plane by some distance the
+     selection accelerated along the normal by that distance EVERY FRAME.
+
+     Skipping by vertex id alone is not enough either. A face whose corners are
+     all moving was caught, but the face FALLBACK returned the hit point on it
+     regardless, and an edge with one moving end was measured from its moved
+     position. So the whole hit is rejected when the face it landed on touches
+     anything that moves. */
+  let hit = null, obj = null, topo = null, gi = -1;
+  const nm = new THREE.Matrix3();
+  const wn = new THREE.Vector3();
+  for (const h of hits) {
+    const o = findObject(h.object.userData.objId);
+    if (!o) continue;
+
+    /* FACING YOU, or it is not a target. The app culls back faces, so a
+       surface pointing away is one you cannot see - and once the face being
+       dragged is rejected (above), the very next hit along the ray is the
+       INSIDE of the same object. Pointing at the top of a cube and having the
+       pivot land on its underside is not what anyone means.
+
+       It is also the rule every picker here already follows in spirit:
+       vertexVisible exists for exactly this reason. */
+    if (h.face) {
+      nm.getNormalMatrix(h.object.matrixWorld);
+      wn.copy(h.face.normal).applyMatrix3(nm).normalize();
+      if (wn.dot(raycaster.ray.direction) >= 0) continue;
+    }
+    const t = o.mesh.userData.topo;
+    // No topology means no corners or edges to refine to, but the surface
+    // itself is still a perfectly good thing to land on.
+    if (!t) { if (!skipVerts || o.id !== App.activeObjectId) return { point: h.point.clone(), kind: 'face', objId: o.id }; continue; }
+    let g = -1;
+    for (const fg of t.faceGroups) {
+      if (h.faceIndex >= fg.triStart && h.faceIndex < fg.triStart + fg.triCount) { g = fg.groupIndex; break; }
+    }
+    if (g >= 0 && skipVerts && o.id === App.activeObjectId) {
+      const fg = t.faceGroups[g];
+      const verts = (fg && fg.logicalVerts) || [];
+      if (verts.some(l => skipVerts.has(l))) continue;   // this face is moving
+    }
+    hit = h; obj = o; topo = t; gi = g;
+    break;
+  }
+  if (!hit || !obj || !topo) return null;
+  if (gi < 0) return { point: hit.point.clone(), kind: 'face', objId: obj.id };
+
+  const loop = groupLogicalLoop(obj, gi);
+  const moving = (l) => skipVerts && obj.id === App.activeObjectId && skipVerts.has(l);
+  const rect = viewportEl.getBoundingClientRect();
+  const tap = pointerPx(ev);
+  // The rect hoisted out: worldToScreenPx reads it per call, and this loop
+  // calls it once per corner twice over - a dozen layout reads a frame.
+  const screen = (w) => {
+    const p = w.clone().project(camera);
+    return p.z > 1 ? null : new THREE.Vector2((p.x * 0.5 + 0.5) * rect.width, (-p.y * 0.5 + 0.5) * rect.height);
+  };
+  const world = (l) => obj.mesh.localToWorld(logicalPos(obj, l).clone());
+
+  // A corner first, if one is near enough to have been meant.
+  let best = null, bestD = SNAP_VERT_PX;
+  loop.forEach(l => {
+    if (moving(l)) return;
+    const w = world(l);
+    const sp = screen(w);
+    if (!sp) return;
+    const d = sp.distanceTo(tap);
+    if (d < bestD) { bestD = d; best = { point: w, kind: 'vertex', objId: obj.id, logical: l }; }
+  });
+  if (best) return best;
+
+  // Then the nearest point ALONG an edge of that face.
+  bestD = SNAP_EDGE_PX;
+  for (let i = 0; i < loop.length; i++) {
+    const la = loop[i], lb = loop[(i + 1) % loop.length];
+    if (moving(la) && moving(lb)) continue;
+    const wa = world(la), wb = world(lb);
+    const sa = screen(wa), sb = screen(wb);
+    if (!sa || !sb) continue;
+    const c = segClosest2D(tap, sa, sb);
+    if (c.d < bestD) { bestD = c.d; best = { point: wa.clone().lerp(wb, c.t), kind: 'edge', objId: obj.id }; }
+  }
+  if (best) return best;
+
+  // Otherwise the surface itself, wherever the ray met it.
+  return { point: hit.point.clone(), kind: 'face', objId: obj.id };
+}
+
+/* Looked up once per frame of a drag and remembered, so the marker and the
+   offset can never disagree - they are the same answer. Rotate and scale ask
+   for none of this: landing a pivot on a point is a translation, and there is
+   no sensible reading of "snap this rotation to that corner". */
+function updateSnapTarget(ev, d) {
+  if (!geoSnapping() || App.transformTool !== 'move') { clearSnapTarget(); return null; }
+  const t = snapTargetAt(ev, snapSkipSet());
+  snapLive = t;
+  refreshSnapMarker();
+  return t;
+}
+
+// What must not be treated as a target, for the drag currently in flight.
+function snapSkipSet() {
+  if (App.mode === 'object') return { objects: new Set(App.selectedObjectIds) };
+  const verts = new Set();
+  if (dragCtx && dragCtx.entries) dragCtx.entries.forEach(e => { if (e.logical !== undefined) verts.add(e.logical); });
+  /* Mirror partners move as well, and captureDragContext deliberately drops
+     them from `entries` - so without this they are moving geometry that the
+     finder thinks is standing still. Dragging a vertex and pointing at its own
+     mirror was the worst case: the highest-priority branch accepted it, and
+     the pivot chased a target running away from it. */
+  if (dragCtx && dragCtx.mirrorMap) {
+    const partners = [];
+    verts.forEach(l => { const p = dragCtx.mirrorMap.get(l); if (p !== undefined) partners.push(p); });
+    partners.forEach(p => verts.add(p));
+  }
+  return { verts };
 }
 
 function beginDirectDrag(ev) {
@@ -12625,18 +12875,36 @@ function updateDirectDrag(ev) {
       const t = axisParamFromPointer(ev, d.center || d.origin, d.axis.dir);
       if (t === null) return;
       let amount = t - d.startParam;
-      if (App.snap) amount = Math.round(amount / App.snapMove) * App.snapMove;
+      if (gridSnapping()) amount = Math.round(amount / App.snapMove) * App.snapMove;
       offset = d.axis.dir.clone().multiplyScalar(amount);
+      /* Snapping does not break the axis lock: it takes the offset that WOULD
+         land the pivot on the target and keeps only the part running along the
+         axis. You get as close to the target as the axis allows, which is what
+         an axis-locked snap means everywhere else it exists. */
+      const ta = geoSnapping() ? updateSnapTarget(ev, d) : null;
+      if (ta) {
+        const want = ta.point.clone().sub(d.origin);
+        offset = d.axis.dir.clone().multiplyScalar(want.dot(d.axis.dir));
+        // What the axis actually allows, which is what the marker shows.
+        ta.landing = d.origin.clone().add(offset);
+        refreshSnapMarker();
+      }
     } else {
       const hit = new THREE.Vector3();
       raycaster.setFromCamera(ndcFromEvent(ev), camera);
       if (!raycaster.ray.intersectPlane(d.plane, hit)) return;
       offset.subVectors(hit, d.startHit);
-      if (App.snap) {
+      if (gridSnapping()) {
         offset.x = Math.round(offset.x / App.snapMove) * App.snapMove;
         offset.y = Math.round(offset.y / App.snapMove) * App.snapMove;
         offset.z = Math.round(offset.z / App.snapMove) * App.snapMove;
       }
+      /* THE PIVOT lands on the target - not the object's centre by arithmetic
+         and not whatever happened to be nearest. Which is exactly why the
+         pivot had to become a thing you can place first: put it on the corner
+         you mean, and that corner is what meets the target. */
+      const tf = geoSnapping() ? updateSnapTarget(ev, d) : null;
+      if (tf) offset.subVectors(tf.point, d.origin);
     }
     d.accum = offset.clone();
     applyDeltaToSelection(new THREE.Matrix4().makeTranslation(offset.x, offset.y, offset.z));
@@ -12674,7 +12942,7 @@ function updateDirectDrag(ev) {
       const sign = d.axis.dir.dot(camDir) >= 0 ? 1 : -1;
 
       let ang = d.totalAngle * sign * THREE.MathUtils.clamp(s * 1.4, 0.3, 2);
-      if (App.snap) ang = Math.round(ang / THREE.MathUtils.degToRad(App.snapRotate)) * THREE.MathUtils.degToRad(App.snapRotate);
+      if (gridSnapping()) ang = Math.round(ang / THREE.MathUtils.degToRad(App.snapRotate)) * THREE.MathUtils.degToRad(App.snapRotate);
       local = new THREE.Matrix4().makeRotationAxis(d.axis.dir.clone().normalize(), ang);
 
     } else {
@@ -12703,7 +12971,7 @@ function updateDirectDrag(ev) {
          instead of adding more of it. */
       const along = px * d.freeRotDirX + py * d.freeRotDirY;
       let ang = (along / 150) * THREE.MathUtils.clamp(ROTATE_BASE * s * 4, 0.02, 2);
-      if (App.snap) ang = Math.round(ang / THREE.MathUtils.degToRad(App.snapRotate)) * THREE.MathUtils.degToRad(App.snapRotate);
+      if (gridSnapping()) ang = Math.round(ang / THREE.MathUtils.degToRad(App.snapRotate)) * THREE.MathUtils.degToRad(App.snapRotate);
       local = new THREE.Matrix4().makeRotationAxis(d.freeRotAxis, ang);
     }
     applyDeltaToSelection(new THREE.Matrix4().multiplyMatrices(T, new THREE.Matrix4().multiplyMatrices(local, Tinv)));
@@ -12762,7 +13030,7 @@ function updateDirectDrag(ev) {
       const curR = Math.max(1, Math.hypot((ev.clientX - rect.left) - pc.x, (ev.clientY - rect.top) - pc.y));
       f = Math.pow(curR / startR, THREE.MathUtils.clamp(s * 1.4, 0.3, 2));
     }
-    if (App.snap) f = Math.round(f / App.snapScale) * App.snapScale;
+    if (gridSnapping()) f = Math.round(f / App.snapScale) * App.snapScale;
     f = Math.max(MIN_SCALE_FACTOR, f);   // floor without abs, so it can't rebound
     const v = scaleAxis
       ? new THREE.Vector3(scaleAxis.dir.x ? f : 1, scaleAxis.dir.y ? f : 1, scaleAxis.dir.z ? f : 1)
@@ -12791,6 +13059,7 @@ function endDirectDrag() {
   directDrag = null;
   directCandidate = null;
   axisGuide.visible = false;
+  clearSnapTarget();
   refreshPivotMarker();   // ...and take it away again when the drag is over
   orbit.enabled = true;
   recenterPivot();
@@ -13679,7 +13948,7 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   // A second finger means the camera is taking over - abandon any transform
   // that was mid-flight rather than fighting the pinch.
   if (activePointers.size > 1) {
-    if (directDrag) { directDrag = null; dragCtx = null; axisGuide.visible = false; }
+    if (directDrag) { directDrag = null; dragCtx = null; axisGuide.visible = false; clearSnapTarget(); }
     // A second finger is the camera, and it must not leave a pivot drag alive
     // underneath - the line below hands orbit back.
     cancelPivotDrag();
@@ -16521,7 +16790,7 @@ const HUB_TOOLS_WORLD = [
   { key: 'grid', icon: 'grid', label: 'Floor grid', half: 'top',
     on: () => grid.visible, run: toggleFloorGrid },
   { key: 'snap', icon: 'snap', label: 'Snap', half: 'top',
-    on: () => App.snap, run: toggleSnapping },
+    on: () => App.snapMode !== 'off', run: toggleSnapping },
 
   { key: 'selfree', icon: 'free', label: 'Tap select', half: 'bottom',
     on: () => App.selectDrag === 'off', run: () => setSelectGesture('off') },
@@ -17599,7 +17868,7 @@ const HELP_SECTIONS = [
       [null, 'Axis', 'Decided in the first few pixels and held until you lift.'],
       [null, 'Free rotate', 'Axis from the direction you swipe.'],
       [null, 'Free scale', 'Screen axes, so depth is reachable. Matching none scales evenly.'],
-      ['snap', 'Snap', 'Moves in steps. Step size is in the drawer.'],
+      ['snap', 'Snap', 'World ring, and it cycles: off, then the grid (step sizes in the drawer), then geometry \u2014 where the PIVOT lands exactly on a vertex, an edge or a face you point at. The top-right chip says which.'],
       [null, 'Isolate', 'Everything except the selection goes away so you can work inside a crowded scene. The camera does not move. A chip at the top says how many are hidden and brings them back.'],
       [null, 'Soft', 'Third tap on the mode button. What you drag carries its neighbours with it, fading out over the radius. The button wears a ring while it is on.'],
       [null, 'Soft reach', 'Measured ALONG the surface, so the far side of a fold stays put and a separate object is never touched.']
@@ -17880,10 +18149,23 @@ function toggleFloorGrid() {
   toast(grid.visible ? 'Floor grid on' : 'Floor grid off');
 }
 
+const gridSnapping = () => App.snapMode === 'grid';
+const geoSnapping = () => App.snapMode === 'geo';
+
+/* One seat, three states, in the order you reach for them: nothing, the grid,
+   then the model itself. Cycles rather than toggles as of a2.41 - the grid
+   stays reachable unchanged rather than being replaced by the new thing. */
+const SNAP_MODES = ['off', 'grid', 'geo'];
+
 function toggleSnapping() {
-  App.snap = !App.snap;
+  const i = SNAP_MODES.indexOf(App.snapMode);
+  App.snapMode = SNAP_MODES[(i + 1) % SNAP_MODES.length];
   applySnapSettings();
-  toast(App.snap ? 'Snapping to 0.25 units / 15°' : 'Snapping off');
+  refreshToolIndicator();
+  clearSnapTarget();
+  toast(App.snapMode === 'off' ? 'Snapping off'
+    : App.snapMode === 'grid' ? 'Snapping to ' + App.snapMove + ' units / ' + App.snapRotate + '\u00b0'
+    : 'Snapping to geometry \u00b7 vertices, edges and faces');
 }
 
 function toggleXray() {
@@ -18173,6 +18455,7 @@ window.addEventListener('resize', onResize);
        next SINGLE finger anywhere on the canvas fell into the slide branch and
        rewrote the radius by most of a screen width. */
     endSoftSlide();
+    clearSnapTarget();
     isoPinch = null;   // a cancelled touch is not half a pinch
     /* And neither is it half a pivot placement. Without this the drag stayed
        live with orbit switched off: on a desktop, dragging up over the top bar
@@ -18417,10 +18700,15 @@ if (PICK_DEBUG) {
     // drag would have got without pretending to be a finger.
     softWeights, softFalloff, softSeeds, seedSoftRadius, refreshSoftField, clearSoftField,
     syncSoftOverlay, disposeSoftOverlay, gizmoStrokes, refreshSoftOverlayPositions,
+    SNAP_VERT_PX, SNAP_EDGE_PX,
     ensureVertEdges, syncHelperGeometry,
     setSoft, cycleEditMode, engageSoftSlide, softSlideMove, endSoftSlide, refreshSoftHud,
     enterIsolation, exitIsolation, reconcileIsolation, applyIsolation, objectPickable,
     unhideObject, isolationOn,
+    snapTargetAt, snapSkipSet, updateSnapTarget, clearSnapTarget, refreshSnapMarker,
+    gridSnapping, geoSnapping, toggleSnapping, segClosest2D,
+    get snapLive() { return snapLive; },
+    get snapMarker() { return snapMarker; },
     setPivotPoint, setPivotAuto, pivotToSelection, pivotToObjectCentre,
     pivotMarkerWanted, flashPivotMarker, refreshToolIndicator,
     beginPivotPlacing, endPivotPlacing, selectionCenterWorld, recenterPivot,

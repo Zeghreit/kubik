@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~16,800 lines)
-- Version at time of writing: **a2.40**
+- Version at time of writing: **a2.41**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1788,6 +1788,110 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## Snap to geometry (a2.41)
+
+**Snap cycles through three states now: off, the grid, the model.** One seat on
+the world ring, and the top-right chip says which — a seat can only show that
+it is on, not which of two it is on.
+
+- **Grid** is what Snap has always meant: round the amount to `snapMove` /
+  `snapRotate` / `snapScale`.
+- **Geometry** lands the **pivot** exactly on a vertex, an edge or a face you
+  point at. Move only — a snap is a translation, and there is no sensible
+  reading of "snap this rotation to that corner".
+
+They are **alternatives, not a fallback chain**. Geometry that quietly fell
+back to the grid when nothing was under the finger would mean a drag could not
+be free at all while snapping was on, and "why did it jump" is a worse question
+than "why did it not".
+
+### The pivot is what lands
+
+Not the object's centre by arithmetic, and not "whatever was nearest" — the
+pivot, which since a2.39 is a thing you can place on the exact corner you mean.
+That is why it had to be built first. Put the pivot on one corner of a part,
+point at a corner of another, and those two corners meet.
+
+`App.snap` (boolean) became `App.snapMode` ('off' | 'grid' | 'geo'), with
+`gridSnapping()` reading it at all seven sites that used to test the flag.
+
+### Finding a target
+
+Vertex beats edge beats face, judged in **screen space** — how every picker in
+this app judges, and the only measure that behaves the same at every zoom. Same
+priority the knife resolves with, and for the reason the knife's comment gives:
+this is a snap, so it means *exactly this corner*, not *near enough*.
+
+**Two radii, and the difference matters more than the numbers.** A corner is a
+point you aim at and can afford a generous catch (`SNAP_VERT_PX` 20). An edge
+is a long target you are incidentally near almost anywhere on a face: at one
+shared 26px radius, pointing at the dead centre of a face 60px across still
+landed on an edge, because the centre is only 30px from one. Faces became
+unreachable in practice and the pull felt like the app second-guessing the aim.
+`SNAP_EDGE_PX` is 11 — below it you meant the edge, above it you meant the
+surface.
+
+The search is **bounded to the face under the ray** and its own corners and
+edges. Walking a whole mesh per frame would be the falloff overlay's first
+version all over again, and it would not even be better: the corner you mean is
+a corner of the face you are pointing at.
+
+### A drag can never snap to the thing it is moving
+
+This is the part that took two goes, and it is worth understanding because it
+is not obvious. `beginDirectDrag` is only reachable by grabbing your own
+selection, so **the pointer starts on top of the moving surface** — and the
+target is recomputed each frame from geometry the previous frame moved. That is
+a feedback loop, and it does not fail gently:
+
+- Select a face and drag it: the pivot sits on that face's plane and so did the
+  target, so the face **locked into its own plane** and could never be pulled
+  out of it.
+- The same in axis mode: the wanted offset came out perpendicular to the axis,
+  so the face **did not move at all**.
+- With the pivot off that plane by some distance δ, the selection **accelerated
+  along the normal by δ every frame** — unbounded.
+
+Skipping by vertex id alone was not enough: a face whose corners all move was
+caught, but the *face fallback* returned the hit point on it regardless, and an
+edge with one moving end was measured from its moved position. So the finder
+**walks the hits** and rejects a whole hit when the face it landed on touches
+anything that moves.
+
+Two more rules fell out of it:
+
+- **Mirror partners are moving geometry too.** `captureDragContext` deliberately
+  drops them from `entries`, so `snapSkipSet` has to add them back — dragging a
+  vertex and pointing at its own mirror hit the highest-priority branch, and the
+  pivot chased a target running away from it.
+- **A target must face you.** Once the dragged face is rejected, the very next
+  hit along the ray is the *inside* of the same object: pointing at the top of a
+  cube and having the pivot land on its underside. The app culls back faces, so
+  a surface pointing away is one you cannot see — the same rule `vertexVisible`
+  exists for.
+
+### The marker shows where it will land, not where you pointed
+
+In an axis-locked move the pivot reaches only the target's projection onto the
+axis. The first version drew the target either way, so with X locked and a
+corner off to one side the ring planted itself on that corner and the object
+stopped short of it with nothing saying why. `snapLive.landing` is what the
+marker draws — **a marker that promises somewhere the drag cannot reach is
+worse than none.**
+
+### Known characteristic
+
+There is **no proximity gate**. If the ray hits anything at all, the pivot goes
+there — so with a second object five units behind, an 8px nudge moves the
+selection all five units. That is what "land the pivot on the surface I am
+pointing at" means, and it is why the mode is one of three rather than always
+on: small free adjustments are what Off is for.
+
+Probe: `_snap_probe.py` — the cycle, each target kind and the priority between
+them, the pivot (auto and pinned) landing exactly, Off and Grid not snapping to
+geometry, rotate and scale taking no target, and the feedback loop measured as
+zero drift across six still frames.
 
 ## The soft falloff, drawn (a2.40)
 
