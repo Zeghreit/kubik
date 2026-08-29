@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~16,800 lines)
-- Version at time of writing: **a2.36**
+- Version at time of writing: **a2.36a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1909,10 +1909,16 @@ Reaching for another ring, or switching mode, ACCEPTS the shape — you have
 clearly moved on, and the alternative is a hold that silently does nothing,
 which is the exact failure mode a2.33 spent a day removing.
 
-**Where a new object lands** is unchanged and still naive: the slot comes
-from `App.objects.length`, stepped across and back, so after deletions a new
-shape can land inside an existing one. A plane sits at `y = 0` rather than
-`0.5`, since it has no height to lift.
+**Every primitive arrives at the world origin** (a2.36a), whatever is
+already standing there. Add Cube used to step new objects across and back
+from a slot picked out of `App.objects.length`, and that does not survive
+contact: the count moves when you delete something so the slots collide
+anyway, the camera is usually looking at the middle of the scene so a new
+shape could arrive off-screen, and the offset was invisible arithmetic
+nobody could predict or aim at. The origin is a place you can point at.
+Overlapping is the user's business — drag it off, the selection is already
+on it. `addCubeAction` went with the old slot, since both rings that carried
+it now call `openGeoRing`.
 
 Probes: `_geo_probe.py` (the flow end to end: ring, bar, clamps, Done, the
 outside tap) and `_geo_probe2.py` (the eight defects two review passes found,

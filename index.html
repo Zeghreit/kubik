@@ -815,7 +815,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.36</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.36a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -13880,11 +13880,17 @@ function startGeoSetup(kind) {
   setMode('object');
   const spec = PRIM_SPECS[kind] || PRIM_SPECS.cube;
   const params = primParams(kind, spec.def);
-  const n = App.objects.length;
-  /* Where Add Cube always put things - stepped across and back so a second
-     one does not land inside the first. A plane has no height to lift, so it
-     sits ON the floor instead of hovering half a unit above it. */
-  const pos = new THREE.Vector3((n % 5) * 1.6 - 3.2, spec.noY ? 0 : 0.5, Math.floor(n / 5) * 1.6);
+  /* THE ORIGIN, always, whatever is already standing there.
+
+     Add Cube used to step new objects across and back from a slot picked out
+     of App.objects.length, on the theory that a second one should not land
+     inside the first. It does not survive contact: the count moves when you
+     delete something, so the slots collide anyway; the camera is usually
+     looking at the middle of the scene, so a new shape could arrive
+     off-screen; and the offset was invisible arithmetic nobody could predict
+     or aim. The origin is a place you can point at. Overlapping is the
+     user's business - drag it off, the selection is already on it. */
+  const pos = new THREE.Vector3(0, 0, 0);
   const obj = createPrimitiveObject(kind, params, spec.label + ' ' + App.nextId, pos);
   App.geoSetup = { objId: obj.id, kind, params };
   App.selectedObjectIds = new Set([obj.id]);
@@ -14025,19 +14031,14 @@ function geoStep(field, delta) {
 
 document.getElementById('geoDone').addEventListener('click', () => finishGeoSetup(true));
 
-function addCubeAction() {
-  const n = App.objects.length;
-  const pos = new THREE.Vector3((n % 5) * 1.6 - 3.2, 0.5, Math.floor(n / 5) * 1.6);
-  const obj = createCubeObject('Cube ' + (App.nextId), pos);
-  App.selectedObjectIds = new Set([obj.id]);
-  App.mode = 'object';
-  refreshUI();
-  refreshGizmoAttachment();
-  pushHistory();
-}
+// addCubeAction is gone at a2.36. Both rings that carried it - the world
+// ring and the empty-scene ring - now call openGeoRing, and Cube is one of
+// the five shapes on the chooser, so nothing reached it any more. It also
+// carried the stepped spawn slot and the bare `App.mode = 'object'` that
+// startGeoSetup deliberately does not repeat.
 // btnAddCube/btnDuplicate/btnDelete no longer exist as drawer buttons - the
-// fan menu calls addCubeAction/duplicateSelection/deleteSelection directly,
-// and the Ctrl+D and Delete/Backspace keyboard shortcuts already did too.
+// rings call duplicateSelection/deleteSelection directly, and the Ctrl+D and
+// Delete/Backspace keyboard shortcuts already did too.
 // Mirror X/Y/Z drawer buttons removed - the fan's Mirror item calls
 // mirrorSelectedObjects(App.symmetryAxis) directly, using whichever axis is
 // set. mirrorSelectedObjects itself is untouched and still takes an axis.
