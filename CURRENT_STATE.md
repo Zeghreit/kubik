@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~13,800 lines)
-- Version at time of writing: **a2.35**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~16,800 lines)
+- Version at time of writing: **a2.36**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1778,6 +1778,145 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## Primitives, and Add geo (a2.36)
+
+**The world ring's Add Cube is now Add geo, and it opens a ring of five
+shapes: Cube, Cylinder, Sphere, Torus, Plane.** Pick one and the object is
+made immediately, at the size and divisions you can then change live on a bar
+at the bottom of the screen. Done keeps it. A tap anywhere off it throws it
+away.
+
+### The shapes are built as CAGES, not as three.js geometry
+
+`PRIM_SPECS` / `buildPrimitiveEditable(kind, params)` / `primCube`,
+`primPlane`, `primCylinder`, `primSphere`, `primTorus`, all in the
+`PRIMITIVES (a2.36)` block.
+
+None of them uses `THREE.CylinderGeometry` and friends, and that is
+deliberate. Those arrive as triangle soup split along UV seams: a
+CylinderGeometry has no face loop to cut, no ring to walk, its wall in
+triangles and its cap in a fan of them. **A cylinder you cannot loop-cut is
+not a cylinder this app can use.** So every shape is built here in the app's
+own editable form — quads for every side wall, one n-gon per cylinder cap,
+triangles only where a sphere meets its poles — with each face carrying its
+own vertices, welded by position on rebuild the way every other op here
+works.
+
+Sizes are per-axis (`x`, `y`, `z`); divisions are two counts whose meaning
+depends on the shape, which is why each spec names its own labels:
+
+| shape | `hLabel` / min | `vLabel` / min | notes |
+|---|---|---|---|
+| Cube | Across, 1 | Up, 1 | `h` is both horizontal axes |
+| Cylinder | Sides, 3 | Up, 1 | caps are n-gons |
+| Sphere | Around, 3 | Rings, 2 | tris at the poles only |
+| Torus | Around, 3 | Tube, 3 | all quads; `y` is the tube diameter |
+| Plane | Across, 1 | Along, 1 | `noY` — no Y size, it is flat |
+
+`primParams` clamps: counts to `[min .. 64]` horizontally and `[min .. 32]`
+vertically, sizes to `>= 0.01` (a zero size is a mesh whose normals cannot be
+computed). Nothing needs disabling in the UI because of it — press the
+stepper past the end and the number simply stops.
+
+`_prim_probe.py` audits all five: face and vertex counts against the
+parameters, how many faces are quads, winding, the Euler characteristic (2
+for anything closed, **0 for the torus**, which is the cheapest proof its
+ring closed both ways), and vertices tested against the exact surface rather
+than against a bounding box. **A faceted prism's box is not its diameter** —
+a hexagonal prism of radius 1 measures 1.73 across the flats — which read as
+a bug twice before the probe started testing the surface instead.
+
+### The chooser is a ring REPLACING a ring, not a second ring
+
+`HUB_TOOLS_GEO` / `openGeoRing` / `armStickyRing`.
+
+This is not the two-ring bloom on the do-not-rebuild list. That one showed
+two rings at once, and an outer ring picked by angle is unreachable by
+construction. Here the world ring closes and this one opens in its place, at
+the centre of the viewport, picked the way every ring here is picked: aim
+from the centre, release.
+
+Two things follow from the fact that your finger has already LIFTED by the
+time it appears:
+
+- **It waits for a fresh press.** `toolRingActive.sticky` means no pointer
+  capture, and the aim is measured from the ring's own centre because the
+  gesture that will pick it has not started yet and has no origin of its own.
+  `pointerdown` has a branch that claims that press for the ring.
+- **It needs a way out that a slide-and-release ring does not.** That one is
+  dismissed by lifting near where you started; this one has no "where you
+  started". So aiming well past the items (`> radius * 2.2`) means "none of
+  these", and the middle still does too.
+- `openGeoRing` blooms inside a `setTimeout(…, 0)` because it runs from
+  INSIDE `closeToolRing`, which tears the ring element down after the tool
+  has run.
+- `armStickyRing` installs a **document-level capture-phase `pointerdown`**
+  that closes the ring when the press lands anywhere but the canvas.
+  Without it, a tap on Undo or the menu never reached the canvas listener,
+  so on a phone (no `pointerleave`) the ring stayed up with the camera
+  disabled and ate the next canvas tap. `closeToolRing` removes it first
+  thing.
+
+### The setup bar
+
+`App.geoSetup = { objId, kind, params }`, `#geoBar`, and
+`startGeoSetup` / `applyGeoParams` / `syncGeoBar` / `finishGeoSetup`.
+
+The object is made the moment you pick a shape and edited in place from
+there — the bar is not a dialogue describing something you cannot see, it is
+a set of handles on the thing itself, sitting in the scene at the size it
+will keep. `setPrimitiveGeometry` rebuilds it on every stepper press and
+every keystroke, cloning the current material so a theme or a picked
+material survives a change of divisions.
+
+**Nothing reaches the history until Done.** Every division you tried would
+otherwise be its own undo step, and there would be no single press that takes
+the whole primitive back. That one rule is what almost every bug in this
+feature came from, and each of these is a fix, not a nicety:
+
+- `endDirectDrag` skips its `pushHistory` while a setup is open. Dragging the
+  new shape into place is part of the setup — the tap guard allows it on
+  purpose — and a step pushed there left a half-built primitive in the
+  history AND in the autosave, which rides on `pushHistory`.
+- `finishGeoSetup(false)` calls `scheduleAutosave()`. The history is untouched
+  by a discard, but **the autosave is not the history**: it serialises
+  `App.objects` when its timer fires, and the primitive is in there from the
+  moment it is made. Anything that armed that timer mid-setup — painting a
+  material, or the op this setup resolved on its way in — wrote the discarded
+  shape to disk, and it came back on the next reload in a document whose
+  history has no step that removes it.
+- `restoreDoc` drops an open setup. Ids come from the DOCUMENT, so a bar left
+  open would silently retarget whatever object in the LOADED model wears that
+  id — a stepper press would turn it into a cylinder, a tap on empty space
+  would delete it. Undo and Redo close the setup themselves; this covers Load.
+- The keydown handler commits the setup before running any shortcut, except
+  Ctrl+Z / Ctrl+Y. Unguarded, Ctrl+D duplicated a primitive that was not in
+  the history yet and buried the original inside ITS step.
+- `startGeoSetup` resolves the knife and any pending op, then calls
+  **`setMode('object')` rather than assigning `App.mode`**. The assignment is
+  what Add Cube has always done, and it skips everything `setMode` does around
+  it: the previous object's dots and red overlay went on hanging over it, and
+  its face indices stayed in `App.selectedElements` for an object that was no
+  longer active.
+- `syncGeoBar(typing)` never writes a clamped number back into a field you
+  are typing in. It made them unusable: emptying a field refilled it
+  instantly, and the `0` of `0.5` clamped to the 0.01 floor and was written
+  back with the caret at the end, so the `.5` landed on `0.01`. Squared up on
+  blur instead.
+
+Reaching for another ring, or switching mode, ACCEPTS the shape — you have
+clearly moved on, and the alternative is a hold that silently does nothing,
+which is the exact failure mode a2.33 spent a day removing.
+
+**Where a new object lands** is unchanged and still naive: the slot comes
+from `App.objects.length`, stepped across and back, so after deletions a new
+shape can land inside an existing one. A plane sits at `y = 0` rather than
+`0.5`, since it has no height to lift.
+
+Probes: `_geo_probe.py` (the flow end to end: ring, bar, clamps, Done, the
+outside tap) and `_geo_probe2.py` (the eight defects two review passes found,
+each with a control case where one was needed).
 
 ## Target weld, by gesture (a2.35)
 

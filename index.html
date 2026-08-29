@@ -714,6 +714,37 @@
   #opValue::-webkit-outer-spin-button, #opValue::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
   #opBar button { min-height: 36px; flex-shrink: 0; }
   #opBar button.ok { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
+
+  /* Wears the op bar's clothes deliberately. Its own rules are only what the
+     op bar has no equivalent of: fields with captions above them, and a wrap
+     that still reads when five of them share a phone's width. */
+  #geoBar {
+    position: absolute; left: calc(10px + env(safe-area-inset-left)); right: calc(10px + env(safe-area-inset-right));
+    bottom: calc(166px + env(safe-area-inset-bottom));
+    z-index: 17; display: none; align-items: flex-end; justify-content: center;
+    flex-wrap: wrap; gap: 8px;
+    background: var(--panel2); border: 1px solid var(--accent);
+    border-radius: var(--r-md); padding: 8px 12px; box-shadow: 0 8px 24px rgb(var(--shadow) / .16);
+  }
+  #geoBar.show { display: flex; }
+  #geoLabel { font-size: 12px; color: var(--text); font-weight: 600; flex-shrink: 0; align-self: center; }
+  .geo-field { display: flex; flex-direction: column; align-items: center; gap: 3px; flex-shrink: 0; }
+  .geo-cap { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; }
+  .geo-field input {
+    /* 16px or iOS Safari zooms the page when the field takes focus, which
+       drags the whole interface off screen - the same reason #opValue is. */
+    width: 62px; background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+    border-radius: var(--r-sm); padding: 6px 4px; font-size: 16px; text-align: center;
+    -moz-appearance: textfield;
+  }
+  .geo-field input::-webkit-outer-spin-button,
+  .geo-field input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  .geo-field input:focus { outline: none; border-color: var(--accent); }
+  #geoBar button { min-height: 36px; flex-shrink: 0; }
+  #geoDone {
+    background: var(--accent); color: var(--on-accent); border-color: var(--accent);
+    font-weight: 600; align-self: center;
+  }
   .insp-head {
     display: flex; align-items: center; justify-content: space-between;
     font-size: 12px; color: var(--text-dim); margin-bottom: 8px; gap: 10px;
@@ -784,7 +815,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.35</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.36</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -861,6 +892,33 @@
       <input type="number" id="opValue" step="0.01" />
       <button id="opOk" class="ok">✓ OK</button>
       <button id="opCancel">✕</button>
+    </div>
+
+    <!-- The primitive setup bar. Same place and same weight as the op bar,
+         because it is the same kind of thing: a transient row that owns the
+         screen until you accept it or leave it. -->
+    <div id="geoBar">
+      <span id="geoLabel">Cube</span>
+      <div class="geo-field">
+        <span class="geo-cap" id="geoHCap">Across</span>
+        <div class="stepper">
+          <button id="geoHMinus" title="Fewer">−</button>
+          <span id="geoHVal">1</span>
+          <button id="geoHPlus" title="More">+</button>
+        </div>
+      </div>
+      <div class="geo-field" id="geoVField">
+        <span class="geo-cap" id="geoVCap">Up</span>
+        <div class="stepper">
+          <button id="geoVMinus" title="Fewer">−</button>
+          <span id="geoVVal">1</span>
+          <button id="geoVPlus" title="More">+</button>
+        </div>
+      </div>
+      <div class="geo-field"><span class="geo-cap">X</span><input type="number" id="geoX" step="0.1" min="0.01"></div>
+      <div class="geo-field" id="geoYField"><span class="geo-cap">Y</span><input type="number" id="geoY" step="0.1" min="0.01"></div>
+      <div class="geo-field"><span class="geo-cap">Z</span><input type="number" id="geoZ" step="0.1" min="0.01"></div>
+      <button id="geoDone" class="ok">✓ Done</button>
     </div>
 
     <!-- Lower-right is the one corner nothing else has claimed. -->
@@ -3126,7 +3184,199 @@ function createCubeObject(name, position) {
   return obj;
 }
 
+/* ---------------- PRIMITIVES (a2.36) ----------------
+
+   Every shape here is built as QUADS with n-gon caps, in this app's own
+   editable form, and deliberately NOT from three.js's own geometries. Those
+   are triangle soup split along UV seams: a CylinderGeometry arrives with no
+   face loop to cut, no ring to walk, its side wall in triangles and its cap
+   in a fan of them. A cylinder you cannot loop-cut is not a cylinder this
+   app can use.
+
+   Every face gets its OWN vertices and the shared corners weld by position
+   when the mesh is rebuilt - which is how every other op here works, and how
+   the topology layer decides what a logical vertex is in the first place.
+
+   WINDING IS LOAD-BEARING (the app culls back faces), so every face below is
+   ordered so that its normal points out, and `_prim_probe.py` audits all
+   five rather than trusting the arithmetic. */
+
+const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
+
+// One face, wound in the order given, triangulated as a fan from its first
+// corner - the same shape every n-gon in this app has.
+function primFace(ed, pts) {
+  const base = ed.positions.length / 3;
+  pts.forEach(p => ed.positions.push(p.x, p.y, p.z));
+  const tris = [];
+  for (let i = 1; i + 1 < pts.length; i++) tris.push([base, base + i, base + i + 1]);
+  ed.groups.push({ triangles: tris });
+}
+
+// A rectangular patch of quads: o + u*s + v*t, wound so the normal is u x v.
+function primGrid(ed, o, u, v, nu, nv) {
+  const at = (s, t) => V3(o.x + u.x * s + v.x * t, o.y + u.y * s + v.y * t, o.z + u.z * s + v.z * t);
+  for (let i = 0; i < nu; i++) {
+    for (let j = 0; j < nv; j++) {
+      const s0 = i / nu, s1 = (i + 1) / nu, t0 = j / nv, t1 = (j + 1) / nv;
+      primFace(ed, [at(s0, t0), at(s1, t0), at(s1, t1), at(s0, t1)]);
+    }
+  }
+}
+
+/* What each shape does with the two division counts and the three sizes.
+   `h` is the horizontal one - around a cylinder, around a sphere, across a
+   plane - and `v` the vertical. Anything a shape does not use is hidden on
+   the bar rather than left there doing nothing. */
+const PRIM_SPECS = {
+  cube:     { label: 'Cube',     hLabel: 'Across', vLabel: 'Up',    hMin: 1, vMin: 1, def: { h: 1, v: 1, x: 1, y: 1, z: 1 } },
+  cylinder: { label: 'Cylinder', hLabel: 'Sides',  vLabel: 'Up',    hMin: 3, vMin: 1, def: { h: 12, v: 1, x: 1, y: 1, z: 1 } },
+  sphere:   { label: 'Sphere',   hLabel: 'Around', vLabel: 'Rings', hMin: 3, vMin: 2, def: { h: 16, v: 8, x: 1, y: 1, z: 1 } },
+  torus:    { label: 'Torus',    hLabel: 'Around', vLabel: 'Tube',  hMin: 3, vMin: 3, def: { h: 16, v: 8, x: 1, y: 0.36, z: 1 } },
+  plane:    { label: 'Plane',    hLabel: 'Across', vLabel: 'Along', hMin: 1, vMin: 1, noY: true, def: { h: 1, v: 1, x: 1, y: 1, z: 1 } }
+};
+const PRIM_MAX_H = 64, PRIM_MAX_V = 32;
+
+/* CUBE. Six grid faces. The two division counts read as "across" and "up",
+   so the top and bottom - which have no "up" - take the across count both
+   ways rather than coming out in strips. */
+function primCube(ed, p) {
+  const X = p.x / 2, Y = p.y / 2, Z = p.z / 2, h = p.h, v = p.v;
+  primGrid(ed, V3(X, -Y, Z), V3(0, 0, -p.z), V3(0, p.y, 0), h, v);      // +X
+  primGrid(ed, V3(-X, -Y, -Z), V3(0, 0, p.z), V3(0, p.y, 0), h, v);     // -X
+  primGrid(ed, V3(-X, -Y, Z), V3(p.x, 0, 0), V3(0, p.y, 0), h, v);      // +Z
+  primGrid(ed, V3(X, -Y, -Z), V3(-p.x, 0, 0), V3(0, p.y, 0), h, v);     // -Z
+  primGrid(ed, V3(-X, Y, Z), V3(p.x, 0, 0), V3(0, 0, -p.z), h, h);      // +Y
+  primGrid(ed, V3(-X, -Y, -Z), V3(p.x, 0, 0), V3(0, 0, p.z), h, h);     // -Y
+}
+
+/* PLANE. One grid, facing up. It is the one shape with a boundary, and the
+   one where Y means nothing - the bar hides that field rather than offering
+   a number that does nothing. */
+function primPlane(ed, p) {
+  primGrid(ed, V3(-p.x / 2, 0, p.z / 2), V3(p.x, 0, 0), V3(0, 0, -p.z), p.h, p.v);
+}
+
+/* CYLINDER. A ring of quads, and ONE n-gon at each end - which is what a
+   low-poly cage wants and what Blender's own cylinder does by default. A
+   fan of triangles there would give the cap no single face to select. */
+function primCylinder(ed, p) {
+  const n = p.h, m = p.v, rx = p.x / 2, rz = p.z / 2, Y = p.y / 2;
+  const ring = (i, y) => {
+    const a = (i % n) / n * Math.PI * 2;
+    return V3(rx * Math.cos(a), y, rz * Math.sin(a));
+  };
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < m; j++) {
+      const y0 = -Y + p.y * (j / m), y1 = -Y + p.y * ((j + 1) / m);
+      // Up-then-around, which is the order that puts the normal outward.
+      primFace(ed, [ring(i, y0), ring(i, y1), ring(i + 1, y1), ring(i + 1, y0)]);
+    }
+  }
+  const top = [], bottom = [];
+  for (let i = 0; i < n; i++) {
+    // The top runs the other way round: seen from above, increasing angle
+    // is clockwise, and a cap wound that way faces into the cylinder.
+    top.push(ring(n - i, Y));
+    bottom.push(ring(i, -Y));
+  }
+  primFace(ed, top);
+  primFace(ed, bottom);
+}
+
+/* SPHERE. Quads everywhere except the two pole rings, which can only be
+   triangles - the three-sided face at a pole is the one place a quad cage
+   cannot stay quad, in every package there is. */
+function primSphere(ed, p) {
+  const n = p.h, m = p.v, rx = p.x / 2, ry = p.y / 2, rz = p.z / 2;
+  const at = (i, j) => {
+    const phi = Math.PI * (j / m), th = (i % n) / n * Math.PI * 2;
+    const s = Math.sin(phi);
+    return V3(rx * s * Math.cos(th), ry * Math.cos(phi), rz * s * Math.sin(th));
+  };
+  for (let j = 0; j < m; j++) {
+    for (let i = 0; i < n; i++) {
+      const a = at(i, j), b = at(i + 1, j), c = at(i + 1, j + 1), d = at(i, j + 1);
+      if (j === 0) primFace(ed, [a, c, d]);              // north pole triangle
+      else if (j === m - 1) primFace(ed, [a, b, c]);     // south pole triangle
+      else primFace(ed, [a, b, c, d]);
+    }
+  }
+}
+
+/* TORUS. All quads, and the one shape here with a hole in it - Euler
+   characteristic 0 rather than 2, which the probe checks precisely because
+   it is the cheapest proof the ring closed both ways. Y is the TUBE, X and
+   Z the overall width, so the three fields still read as a bounding box. */
+function primTorus(ed, p) {
+  const n = p.h, m = p.v, r = p.y / 2;
+  // The tube cannot be fatter than the shape it rings, or the hole inverts.
+  const Rx = Math.max(r * 0.05, p.x / 2 - r), Rz = Math.max(r * 0.05, p.z / 2 - r);
+  const at = (i, j) => {
+    const th = (i % n) / n * Math.PI * 2, ph = (j % m) / m * Math.PI * 2;
+    const c = Math.cos(ph);
+    return V3((Rx + r * c) * Math.cos(th), r * Math.sin(ph), (Rz + r * c) * Math.sin(th));
+  };
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < m; j++) {
+      primFace(ed, [at(i, j), at(i, j + 1), at(i + 1, j + 1), at(i + 1, j)]);
+    }
+  }
+}
+
+function buildPrimitiveEditable(kind, params) {
+  const p = primParams(kind, params);
+  const ed = { positions: [], groups: [] };
+  if (kind === 'cylinder') primCylinder(ed, p);
+  else if (kind === 'sphere') primSphere(ed, p);
+  else if (kind === 'torus') primTorus(ed, p);
+  else if (kind === 'plane') primPlane(ed, p);
+  else primCube(ed, p);
+  return ed;
+}
+
+/* Puts a shape onto an object that already exists, live. The material set is
+   rebuilt to match the new face count - changing the divisions changes how
+   many faces there are - and cloned from what the object already wears so a
+   theme or a picked material is not lost between one division and the next. */
+function setPrimitiveGeometry(obj, kind, params) {
+  const ed = buildPrimitiveEditable(kind, params);
+  const cur = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
+  const src = cur[0];
+  obj.mesh.material = ed.groups.map(() => src.clone());
+  cur.forEach(m => { if (m !== src) m.dispose(); });
+  rebuildFromEditable(obj, ed);
+  ensureHelpers(obj);
+  return ed.groups.length;
+}
+
+function createPrimitiveObject(kind, params, name, position) {
+  const obj = createCubeObject(name, position);
+  setPrimitiveGeometry(obj, kind, params);
+  applyShading(obj);
+  return obj;
+}
+
+
+function primParams(kind, p) {
+  const spec = PRIM_SPECS[kind] || PRIM_SPECS.cube;
+  const d = spec.def;
+  const num = (a, b) => (Number.isFinite(a) ? a : b);
+  const clampInt = (a, lo, hi) => Math.max(lo, Math.min(hi, Math.round(num(a, lo))));
+  // A size of zero is a mesh with no volume and normals that cannot be
+  // computed; the floor is small enough to look flat and large enough to
+  // stay well clear of the 1e-4 weld.
+  const size = (a, b) => Math.max(0.01, Math.abs(num(a, b)));
+  p = p || {};
+  return {
+    h: clampInt(p.h, spec.hMin, PRIM_MAX_H),
+    v: clampInt(p.v, spec.vMin, PRIM_MAX_V),
+    x: size(p.x, d.x), y: size(p.y, d.y), z: size(p.z, d.z)
+  };
+}
+
 function disposeObject(obj) {
+
   scene.remove(obj.mesh);
   disposeHelpersOnly(obj);
   disposeEdgeField(obj.mesh.geometry);
@@ -9909,6 +10159,9 @@ function setMode(mode) {
      a mode it no longer belongs to. */
   if (App.pendingOp && App.pendingOp.live) confirmPendingOp();
   else if (App.pendingOp) cancelPendingOp();
+  // A setup is real work in the scene, so switching mode keeps it - the same
+  // call a live op gets one line above.
+  if (App.geoSetup) finishGeoSetup(true);
   App.mode = mode;
   if (mode !== 'object') App.lastComponentMode = mode;
   App.selectedElements.clear();
@@ -11088,7 +11341,14 @@ function endDirectDrag() {
       App.pendingOp.baseState = App.pendingOp.state;
     }
   }
-  pushHistory();
+  /* Not while a primitive is still being set up. Dragging it into place is
+     PART of that setup - the tap guard lets you do exactly that - and the
+     whole setup is one step, pushed by Done. A step pushed here left a
+     half-built primitive in the history and, because autosave rides on this
+     call, in the autosave too: Undo then stopped at "the sphere before I
+     changed its divisions", and a shape thrown away by tapping outside came
+     back with Redo, or on the next reload. */
+  if (!App.geoSetup) pushHistory();
 }
 
 // Which handle, if any, is under this pointer.
@@ -11870,7 +12130,7 @@ document.addEventListener('touchmove', (ev) => {
 
      #hubBtn replaces #thumbZone, which no longer exists. */
   if (ev.target && ev.target.closest &&
-      ev.target.closest('#topBar, #drawer, #inspector, #opBar, #hubBtn, #symPill, #helpCard, #matFly')) return;
+      ev.target.closest('#topBar, #drawer, #inspector, #opBar, #geoBar, #hubBtn, #symPill, #helpCard, #matFly')) return;
   if (ev.cancelable) ev.preventDefault();
 }, { passive: false });
 
@@ -11912,6 +12172,20 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     if (App.knife) { App.knife.live = null; App.knife.pid = null; refreshKnifePreview(); }
     directCandidate = null;
     orbit.enabled = true;
+    return;
+  }
+
+  /* A sticky ring is waiting for exactly this press. It has no pointer
+     capture - it was bloomed by a release, not by a hold - so the press has
+     to be claimed here or it would orbit the camera underneath the ring and
+     start a selection when it lifted. */
+  if (toolRingActive && toolRingActive.sticky) {
+    clearToolRingTimer();
+    clearLightHoldTimer();
+    orbit.enabled = false;
+    pointerDown = null;
+    directCandidate = null;
+    updateToolRingHover(ev);
     return;
   }
 
@@ -12405,6 +12679,14 @@ function mergeRunIntoSelection(sel, tappedIndex, msg, noun) {
 }
 
 function handleDoubleTap(ev) {
+  /* "Cancelling is by tapping outside." A tap on the new shape itself is
+     not outside - you are looking at it, and dragging it into place has to
+     stay possible - so only a tap that misses it closes the setup. */
+  if (App.geoSetup) {
+    const geoHit = pickObjectAt(ev);
+    if (!geoHit || geoHit.id !== App.geoSetup.objId) finishGeoSetup(false);
+    return;
+  }
   /* Extrude mode has no double-tap meaning of its own - both taps mean what
      one tap means. Two things went wrong while it did: a second tap off the
      model landed on the cancel gesture below and threw away every stacked
@@ -12578,6 +12860,14 @@ function onEmptySpaceTap(ev) {
 }
 
 function handleTap(ev) {
+  /* "Cancelling is by tapping outside." A tap on the new shape itself is
+     not outside - you are looking at it, and dragging it into place has to
+     stay possible - so only a tap that misses it closes the setup. */
+  if (App.geoSetup) {
+    const geoHit = pickObjectAt(ev);
+    if (!geoHit || geoHit.id !== App.geoSetup.objId) finishGeoSetup(false);
+    return;
+  }
   /* Extrude mode reads a tap as an instruction rather than a selection
      change: on the section you just pulled it stacks another one; anywhere
      else it means you are done. */
@@ -13501,6 +13791,240 @@ function joinSelection() {
 
 // Named so the Empty-state fan item can call it directly rather than
 // clicking a drawer button that's about to stop existing as visible UI.
+/* ---------------- Add geo (a2.36) ----------------
+
+   THE SHAPE CHOOSER. Five primitives on a ring of their own, opened by Add
+   geo on the world ring.
+
+   This is NOT the two-ring bloom in the do-not-rebuild list. That one showed
+   two rings AT ONCE, and an outer ring picked by angle is unreachable by
+   construction. This is one ring REPLACING another: the world ring closes,
+   this opens in its place, and it is picked exactly the way every ring here
+   is picked - aim from the centre, release.
+
+   The one difference is that your finger has already lifted by the time it
+   appears, so it waits for a FRESH press rather than the release that opened
+   it. That is what `sticky` means below: no pointer capture, and the aim is
+   measured from the ring's own centre because the gesture that will pick it
+   has not started yet and has no origin of its own. */
+const HUB_TOOLS_GEO = [
+  { key: 'geocube', icon: 'object', label: 'Cube', run: () => startGeoSetup('cube') },
+  { key: 'geocyl', icon: 'cylinder', label: 'Cylinder', run: () => startGeoSetup('cylinder') },
+  { key: 'geosphere', icon: 'sphere', label: 'Sphere', run: () => startGeoSetup('sphere') },
+  { key: 'geotorus', icon: 'torus', label: 'Torus', run: () => startGeoSetup('torus') },
+  { key: 'geoplane', icon: 'plane', label: 'Plane', run: () => startGeoSetup('plane') }
+];
+
+function openGeoRing() {
+  /* Deferred by a tick: this runs from INSIDE closeToolRing, which tears the
+     ring element down after the tool has run - a new ring bloomed here would
+     be wiped by the two lines after the call that opened it. */
+  const rect = viewportEl.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+  setTimeout(() => {
+    bloomToolRing(cx, cy, HUB_TOOLS_GEO, undefined, null);
+    if (toolRingActive) armStickyRing();
+  }, 0);
+}
+
+/* A sticky ring holds no pointer capture - it was opened by a release, so
+   there was no pointer to capture - which means a press that lands on any of
+   the controls floating above the canvas (Undo, the menu, the view cube, the
+   materials tab) never reaches the canvas listener that would close it. A
+   mouse hides this behind pointerleave; a finger has no pointerleave, so the
+   ring stayed up over the model with the camera still disabled, and the next
+   canvas tap was eaten by it and made a primitive nobody asked for.
+
+   Watched at the document in the CAPTURE phase, so the ring closes before
+   the button under the finger runs - and without stopping the press, which
+   still does whatever it was aimed at. */
+function armStickyRing() {
+  toolRingActive.sticky = true;
+  const guard = (ev) => {
+    // The canvas has its own branch for this press, one that picks from the
+    // ring. Anything else is a press aimed somewhere the ring is not.
+    if (ev.target === renderer.domElement) return;
+    closeToolRing(false);
+  };
+  toolRingActive.stickyGuard = guard;
+  document.addEventListener('pointerdown', guard, true);
+}
+
+/* THE SETUP BAR. The object is made the moment you pick a shape and edited
+   in place from there - the bar is not a dialogue describing something you
+   cannot see, it is a set of handles on the thing itself, sitting in the
+   scene at the size it will keep.
+
+   Which is why nothing reaches the history until Done: every division you
+   try would otherwise be its own undo step, and there would be no single
+   press that takes the whole primitive back. */
+const geoBarEl = document.getElementById('geoBar');
+App.geoSetup = null;   // { objId, kind, params } while the bar is open
+
+function startGeoSetup(kind) {
+  if (App.geoSetup) finishGeoSetup(true);
+  /* Everything aimed at the OLD selection is resolved first. The world ring
+     blooms in any mode, so this can arrive with a bevel half dialled in over
+     a component selection - and the new object takes over both the active
+     object and the mode, which left that bar sitting there pointing at a
+     selection nothing on screen still referred to. Its OK button would then
+     have applied the bevel to it. */
+  if (App.knife) cancelKnife(true);
+  if (App.pendingOp && App.pendingOp.live) confirmPendingOp();
+  else if (App.pendingOp) cancelPendingOp();
+  /* setMode, not `App.mode = 'object'`. The assignment is what Add Cube has
+     always done, and it skips everything setMode does around it: the old
+     object's dots and red overlay went on hanging over it, and its face
+     indices stayed in App.selectedElements for an object that was no longer
+     active - which Done then serialised into the history step. */
+  setMode('object');
+  const spec = PRIM_SPECS[kind] || PRIM_SPECS.cube;
+  const params = primParams(kind, spec.def);
+  const n = App.objects.length;
+  /* Where Add Cube always put things - stepped across and back so a second
+     one does not land inside the first. A plane has no height to lift, so it
+     sits ON the floor instead of hovering half a unit above it. */
+  const pos = new THREE.Vector3((n % 5) * 1.6 - 3.2, spec.noY ? 0 : 0.5, Math.floor(n / 5) * 1.6);
+  const obj = createPrimitiveObject(kind, params, spec.label + ' ' + App.nextId, pos);
+  App.geoSetup = { objId: obj.id, kind, params };
+  App.selectedObjectIds = new Set([obj.id]);
+  App.activeObjectId = obj.id;
+  refreshUI();
+  refreshGizmoAttachment();
+  showGeoBar();
+}
+
+// Rebuilds the shape in place. Called on every stepper press and every
+// keystroke in a size field, which is cheap - even the biggest primitive
+// this allows is a few thousand triangles.
+function applyGeoParams(next, typing) {
+  const s = App.geoSetup;
+  if (!s) return;
+  const obj = findObject(s.objId);
+  // The object can be gone if something else removed it while the bar was
+  // open. Close rather than throw on every keystroke afterwards.
+  if (!obj) { App.geoSetup = null; hideGeoBar(); scheduleAutosave(); return; }
+  s.params = primParams(s.kind, next);
+  setPrimitiveGeometry(obj, s.kind, s.params);
+  applyShading(obj);
+  refreshUI();
+  refreshGizmoAttachment();
+  syncGeoBar(typing);
+}
+
+function showGeoBar() {
+  const s = App.geoSetup;
+  if (!s) return;
+  const spec = PRIM_SPECS[s.kind];
+  document.getElementById('geoLabel').textContent = spec.label;
+  // The two division counts mean different things on different shapes -
+  // "Sides" and "Up" on a cylinder, "Around" and "Rings" on a sphere - so
+  // each spec names its own rather than everything reading "H" and "V".
+  document.getElementById('geoHCap').textContent = spec.hLabel;
+  document.getElementById('geoVCap').textContent = spec.vLabel;
+  // A plane is flat by definition: a Y size would be a control that does
+  // nothing, which is the thing this session spent a2.33 removing.
+  document.getElementById('geoYField').style.display = spec.noY ? 'none' : '';
+  geoBarEl.classList.add('show');
+  syncGeoBar();
+}
+
+function hideGeoBar() { geoBarEl.classList.remove('show'); }
+
+/* Writes the CLAMPED values back into the controls, so what the bar says is
+   what the mesh is. Only when they actually differ - assigning to an input
+   the user is typing in moves the caret to the end, which made a size field
+   impossible to edit from the middle. */
+function syncGeoBar(typing) {
+  const s = App.geoSetup;
+  if (!s) return;
+  document.getElementById('geoHVal').textContent = s.params.h;
+  document.getElementById('geoVVal').textContent = s.params.v;
+  /* Never while the value came FROM one of these fields. Writing the clamped
+     number back mid-keystroke made them unusable: emptying a field refilled
+     it instantly, so it could not be retyped, and the `0` of `0.5` clamped
+     to the 0.01 floor and was written back with the caret at the end, so the
+     `.5` landed on `0.01`. They are squared up on blur instead. */
+  if (typing) return;
+  [['geoX', s.params.x], ['geoY', s.params.y], ['geoZ', s.params.z]].forEach(([id, v]) => {
+    const el = document.getElementById(id);
+    if (parseFloat(el.value) !== v) el.value = +v.toFixed(3);
+  });
+}
+
+/* Done, or gone. `keep` pushes ONE history step for the whole setup, so Undo
+   takes back a primitive rather than one division of it; the other way
+   removes the object outright, because nothing was ever committed and there
+   would otherwise be no press that undoes it. */
+function finishGeoSetup(keep) {
+  const s = App.geoSetup;
+  if (!s) return;
+  App.geoSetup = null;
+  hideGeoBar();
+  const obj = findObject(s.objId);
+  if (keep) {
+    if (obj) pushHistory();
+    return;
+  }
+  if (obj) {
+    removeObjects([obj]);
+    App.selectedObjectIds.delete(obj.id);
+    toast('Cancelled');
+    /* The history is untouched by a discard - nothing was ever pushed - but
+       the AUTOSAVE is not the history. It serialises App.objects at the
+       moment its timer fires, and the primitive is in there from the moment
+       it is made, so anything that armed that timer mid-setup (painting a
+       material, or the op this setup resolved on its way in) wrote the
+       half-built shape to disk. Without this line it came back on the next
+       reload, in a document whose history has no step that removes it. */
+    scheduleAutosave();
+  }
+  refreshUI();
+  refreshGizmoAttachment();
+}
+
+// A stepper press changes one count and rebuilds; the clamp in primParams
+// is what stops it walking past the limits, so no button needs disabling.
+function geoStep(field, delta) {
+  const s = App.geoSetup;
+  if (!s) return;
+  const next = Object.assign({}, s.params);
+  next[field] = s.params[field] + delta;
+  applyGeoParams(next);
+}
+
+[['geoHMinus', 'h', -1], ['geoHPlus', 'h', 1],
+ ['geoVMinus', 'v', -1], ['geoVPlus', 'v', 1]].forEach(([id, field, d]) => {
+  document.getElementById(id).addEventListener('click', () => geoStep(field, d));
+});
+
+['geoX', 'geoY', 'geoZ'].forEach(id => {
+  const el = document.getElementById(id);
+  el.addEventListener('input', () => {
+    const s = App.geoSetup;
+    if (!s) return;
+    const read = (eid, cur) => {
+      const v = parseFloat(document.getElementById(eid).value);
+      // A half-typed or emptied field keeps the size it has rather than
+      // snapping to the default and back as you type.
+      return Number.isFinite(v) ? v : cur;
+    };
+    applyGeoParams({
+      h: s.params.h, v: s.params.v,
+      x: read('geoX', s.params.x),
+      y: read('geoY', s.params.y),
+      z: read('geoZ', s.params.z)
+    }, true);
+  });
+  // Which is where a half-typed or clamped field is squared up with what the
+  // mesh actually is.
+  el.addEventListener('blur', () => syncGeoBar());
+  // Otherwise every letter typed here also reaches the app's own shortcuts.
+  el.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') el.blur(); ev.stopPropagation(); });
+});
+
+document.getElementById('geoDone').addEventListener('click', () => finishGeoSetup(true));
+
 function addCubeAction() {
   const n = App.objects.length;
   const pos = new THREE.Vector3((n % 5) * 1.6 - 3.2, 0.5, Math.floor(n / 5) * 1.6);
@@ -13594,6 +14118,13 @@ function restoreDoc(doc, opts = {}) {
      and the yellow line went on hanging in space over the reverted model.
      Abandon it rather than let OK cut somewhere nobody chose. */
   if (App.knife) cancelKnife(true);
+  /* Every object is about to be disposed and rebuilt from the file, and ids
+     come from the DOCUMENT - so a setup bar left open would go on pointing
+     at "object 2" and quietly retarget whatever object in the LOADED model
+     wears that id: a stepper press would replace its geometry with a
+     cylinder, and a tap on empty space would delete it. Undo and Redo close
+     the setup themselves; this covers Load, which does not. */
+  if (App.geoSetup) { App.geoSetup = null; hideGeoBar(); }
   // Undo is about shape. Colour, finish and the current selection are carried
   // across untouched, so stepping back through geometry never quietly repaints
   // your model or drops what you had picked.
@@ -13794,6 +14325,10 @@ function pushHistory() {
 }
 
 function undo() {
+  /* Same reasoning as a live op below: the setup has pushed NOTHING onto
+     the history, so there is no step for this press to step back to. Undo
+     means "take back what is on screen", and here that is the primitive. */
+  if (App.geoSetup) { finishGeoSetup(false); return; }
   /* A live op has pushed NOTHING onto the history yet - what is in front of
      you is a preview sitting on top of the last committed step. Stepping the
      index back here would take away that step as well as the preview, and
@@ -13813,6 +14348,10 @@ function undo() {
   scheduleAutosave();   // or a reload resurrects the edit that was just undone
 }
 function redo() {
+  /* Same reasoning as a live op below: the setup has pushed NOTHING onto
+     the history, so there is no step for this press to step back to. Undo
+     means "take back what is on screen", and here that is the primitive. */
+  if (App.geoSetup) { finishGeoSetup(false); return; }
   // Same reasoning as undo: close the preview first, on its own terms.
   if (App.pendingOp && App.pendingOp.live) {
     const settled = App.pendingOp.settled;
@@ -14157,6 +14696,10 @@ const ICON = {
      hump - that one says "shading", this one says "topology". Strokes sit
      ~7 units apart, well clear of the ~1.8u where detail fuses at ring
      size, and nothing here is dashed or diagonal. */
+  cylinder:'<ellipse cx="12" cy="6.6" rx="6.4" ry="2.8"/><path d="M5.6 6.6v10.8M18.4 6.6v10.8"/><path d="M5.6 17.4c0 1.55 2.87 2.8 6.4 2.8s6.4-1.25 6.4-2.8"/>',
+  sphere:  '<circle cx="12" cy="12" r="8"/><ellipse cx="12" cy="12" rx="3.6" ry="8"/>',
+  torus:   '<ellipse cx="12" cy="12" rx="9" ry="6"/><ellipse cx="12" cy="12" rx="3.4" ry="2.1"/>',
+  plane:   '<path d="M2.5 16.5L10 7.5h11.5L14 16.5z"/>',
   flow:    '<path d="M4.5 4C2.8 8.5 2.8 15.5 4.5 20"/><path d="M19.5 4c1.7 4.5 1.7 11.5 0 16"/><path d="M12 4c-.9 4.5-.9 11.5 0 16"/>',
   sharp:   '<path d="M3 18L12 6l9 12"/><circle cx="12" cy="6" r="1.8" fill="currentColor" stroke="none"/>',
   /* The draughtsman's angle mark, arc and all. Tried a peak with one hard
@@ -14306,7 +14849,7 @@ const HUB_TOOLS_OBJECT_BASE = [
 const HUB_TOOL_JOIN = { key: 'join', icon: 'join', label: 'Join', seat: 12, ring: 1, run: joinSelection };
 
 const HUB_TOOLS_EMPTY = [
-  { key: 'addcube', icon: 'object', label: 'Add Cube', ring: 0, run: addCubeAction },
+  { key: 'addgeo', icon: 'object', label: 'Add geo', ring: 0, run: openGeoRing },
   { key: 'save', icon: 'save', label: 'Save', ring: 0, run: saveProjectFile },
   // Load has to stay a real click on the file input - it's the only way to
   // trigger the OS file picker, there's no equivalent function to call.
@@ -14333,7 +14876,7 @@ const HUB_TOOLS_EMPTY = [
    something, and the matching left pole is deliberately left empty so the
    two arcs read as two arcs. */
 const HUB_TOOLS_WORLD = [
-  { key: 'addcube', icon: 'object', label: 'Add Cube', half: 'pole', run: addCubeAction },
+  { key: 'addgeo', icon: 'object', label: 'Add geo', half: 'pole', run: openGeoRing },
 
   { key: 'xray', icon: 'eye', label: 'See-through', half: 'top',
     on: () => App.xraySelection, run: toggleXray },
@@ -14474,6 +15017,13 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
   tools = tools || currentHubTools();
   if (!tools.length) return;
 
+  /* A shape still being dialled in is ACCEPTED by reaching for another tool
+     - you have clearly moved on, and the alternative is a hold that silently
+     does nothing, which is the exact failure mode a2.33 spent a day
+     removing. The selection does not change, so the ring that blooms is the
+     one this call already resolved. */
+  if (App.geoSetup) finishGeoSetup(true);
+
   // Never two rings at once. Whoever blooms last owns the element, so an
   // older ring left standing would be closed by the next release with its
   // items already gone from the DOM.
@@ -14577,7 +15127,12 @@ function updateToolRingHover(ev) {
   const dist = Math.hypot(dx, dy);
 
   let hovered = -1;
-  if (dist > TOOL_RING_DEAD_ZONE_PX) {
+  /* A ring waiting for a fresh press needs a way OUT that a slide-and-release
+     ring does not: that one is dismissed by lifting near where you started,
+     but this one has no "where you started". So aiming well past the items
+     means "none of these" - and the middle still does too. */
+  const outside = toolRingActive.sticky && dist > toolRingActive.radius * 2.2;
+  if (dist > TOOL_RING_DEAD_ZONE_PX && !outside) {
     // Screen Y grows downward; the items were placed using -sin for that
     // same reason, so the pointer angle needs the same flip to match.
     const ang = Math.atan2(-dy, dx);
@@ -14643,6 +15198,11 @@ function placeRingLabel(idx) {
 function closeToolRing(run) {
   if (!toolRingActive) return;
   const pid = toolRingActive.pointerId;
+  // Removed first, so the guard cannot see the press that is closing it.
+  if (toolRingActive.stickyGuard) {
+    document.removeEventListener('pointerdown', toolRingActive.stickyGuard, true);
+    toolRingActive.stickyGuard = null;
+  }
   if (run && toolRingActive.hoveredIndex >= 0) {
     toolRingActive.itemEls[toolRingActive.hoveredIndex].tool.run();
   }
@@ -15354,7 +15914,7 @@ const helpOverlayEl = document.getElementById('helpOverlay');
    Terms carry the same icon() glyph the real button draws, so what you read
    here matches what is on screen. */
 const HELP_QUICKSTART = [
-  'Hold on empty space until the ring blooms, slide to Add Cube, lift.',
+  'Hold on empty space until the ring blooms, slide to Add geo, lift, then pick a shape.',
   'Round button, bottom-left, switches Object and Component.',
   'Tap a face. Hold it - its own tools bloom. Slide to Extrude, lift.',
   'Drag the new face into place. Undo is bottom-centre.',
@@ -15405,9 +15965,11 @@ const HELP_SECTIONS = [
     lead: 'Hold, and tools bloom under your finger. What you get depends on what was under it.',
     rows: [
       [null, 'On a selection', 'A third of a second. That selection\'s own tools.'],
-      [null, 'On empty space', 'Half a second - a careful orbit starts the same way. Add Cube and the view toggles.'],
+      [null, 'On empty space', 'Half a second - a careful orbit starts the same way. Add geo and the view toggles.'],
       [null, 'Choosing', 'Slide toward an icon and lift. It picks by direction, not by landing on it.'],
-      [null, 'Backing out', 'Slide back to the middle, or move before it opens.']
+      [null, 'Backing out', 'Slide back to the middle, or move before it opens.'],
+      ['object', 'Add geo', 'Five shapes on a ring of their own. That one waits for a fresh press - aim and lift as usual, or aim well past it to back out.'],
+      [null, 'Setting it up', 'Divisions and size, live on the shape itself. Done keeps it; a tap anywhere off it throws it away.']
     ]
   }
 ];
@@ -15809,6 +16371,20 @@ function refreshUI() {
 
 window.addEventListener('keydown', (ev) => {
   if (ev.target && (ev.target.tagName === 'INPUT')) return;
+  /* A keyboard command is "moving on" in exactly the way reaching for another
+     ring is, so it ACCEPTS the shape being dialled in. Left unguarded, Ctrl+D
+     duplicated a primitive that was not in the history yet and buried the
+     original inside ITS step - so discarding the original afterwards left the
+     scene one object short of the step Undo would restore, and the shape you
+     threw away came straight back. Delete was worse: it disposed the object
+     the bar was still pointing at.
+
+     Undo and Redo are exempt. They have their own meaning over an open setup
+     - take back what is on screen - and they enforce it themselves. */
+  if (App.geoSetup) {
+    const undoish = (ev.ctrlKey || ev.metaKey) && 'zy'.includes(ev.key.toLowerCase());
+    if (!undoish) finishGeoSetup(true);
+  }
   if (App.pendingOp) {
     // While adjusting an operation, keys are dedicated to confirming,
     // cancelling, or nudging the amount.
@@ -16106,6 +16682,7 @@ if (PICK_DEBUG) {
     // The drag itself, driveable with a plain {clientX, clientY}.
     axisTooFlat, beginExtrudeDrag, updateExtrudeDrag, endExtrudeDrag,
     restoreDoc, serializeDoc, refuseOp, pushHistory, toast,
+    scheduleAutosave, AUTOSAVE_KEY,
     get opRefusal() { return opRefusal; },
     settleExtrudeSection, openExtrudeSection, beginDirectDrag, updateDirectDrag,
     endDirectDrag, setTransformTool,
@@ -16136,6 +16713,7 @@ if (PICK_DEBUG) {
        a stale canvas rect, so a tap aimed at a projected point lands
        nowhere and every pick reads as a miss - which looks exactly like a
        catastrophic bug and is purely an artefact of the harness. */
+    pickObjectAt,
     pickVertexOnActive, pickEdgeOnActive, pickFaceOnActive, pickComponentOnActive,
     groupFacesCamera, edgeVisible, ensureAdjacency, pointerPx,
     /* The op entry points, so a harness can run the REAL tool the ring
@@ -16149,6 +16727,12 @@ if (PICK_DEBUG) {
        than the handful that happened to be exported. Every one of these is
        already a single tap away in the rings. */
     logicalPos, findLogicalByPosition, edgeKey, groupLogicalLoop,
+    buildPrimitiveEditable, setPrimitiveGeometry, createPrimitiveObject,
+    primParams, PRIM_SPECS,
+    openGeoRing, startGeoSetup, applyGeoParams, finishGeoSetup, geoStep,
+    syncGeoBar, armStickyRing,
+    HUB_TOOLS_GEO,
+    get geoSetup() { return App.geoSetup; },
     setFlowSelection, setFlowApply, flowSelectionItems, loopCutFlowItems, weightedTangent,
     targetWeld, targetWeldOnce, weldVerticesOp, handleDoubleTap, handleTap,
     loopCutBeforeState, neighbourMap, continuationOf, hermiteAt,
