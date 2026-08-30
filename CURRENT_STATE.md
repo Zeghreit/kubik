@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~16,800 lines)
-- Version at time of writing: **a2.42**
+- Version at time of writing: **a2.43a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1788,6 +1788,64 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## Interrupted gestures and stranded state (a2.43 / a2.43a)
+
+A whole-file audit turned up eleven latent bugs; this is the seven that were
+about a gesture being interrupted or a piece of state outliving what it named.
+**Nothing here is a feature — every entry is a sequence a real user hits.**
+
+- **A cancelled touch now ends a geometry drag.** The `pointercancel` handler
+  ended the pivot drag, the soft slide and the tool ring, and left the
+  GEOMETRY drag alive. A notification mid-drag on a phone, or a desktop
+  release over the top bar, left the mesh following the bare cursor with orbit
+  switched off, and the only way out was another press — which committed the
+  edit wherever the cursor happened to be. Ending it COMMITS where the drag
+  reached, which is what a lift would have done. `pointerleave` deliberately
+  does not: straying over the top bar and back is not a cancellation.
+- **A second finger no longer swallows a history step.** The two-finger
+  camera takeover tore the drag down by hand and never pushed history, so the
+  move stayed in the geometry and outside the undo stack — and the next Undo
+  reverted that drag AND the edit before it in one press. It calls
+  `endDirectDrag` now, like every other way a drag ends.
+- **The Mirror chooser has an exit.** It borrows the op bar without a
+  `pendingOp` behind it, so ✕ hit `cancelPendingOp`'s "no op, return" line and
+  did nothing at all — the bar could not be dismissed, ever. It also mirrored
+  whatever was selected when Joined/Apart was finally pressed rather than what
+  it was opened on. It now captures its selection at open time and checks the
+  mode before touching the live one.
+- **A selection can outlive its object.** The six "that collapsed the whole
+  mesh — removed the object" paths dropped the object without touching
+  `App.selectedObjectIds`, and the next Duplicate or drag dereferenced a ghost
+  and threw. Pruned in `refreshUI`, for the same reason isolation is
+  reconciled there: every one of those paths ends by refreshing the UI.
+- **The object row cancels an open knife**, like every other modal funnel.
+  Without it the knife's points still belonged to the OLD object while the
+  helpers showed the new one, so OK cut a mesh you were no longer looking at.
+- **Redo declines while a primitive setup is open.** Both obvious answers are
+  wrong: discarding throws away the shape you are dialling in, and committing
+  pushes history — which TRUNCATES the redo tail, destroying the very steps
+  Redo was asked to walk into. So it says "Finish the shape first".
+- **Bevel and Split guard their edge ids**, which their three siblings already
+  did.
+
+### What a2.43a is, and why it matters
+
+**Four of the five defects the reviewer found in a2.43 were introduced by
+a2.43's own fixes.** The worst: `mirrorChooser` was cleared only by
+`hideOpBar`, but `showOpBar` re-uses the same bar without going through it, so
+the flag outlived the chooser — and then swallowed ✕ for whatever op opened
+next, leaving a bevel preview baked into the mesh with no bar to reject it.
+Also fixed there: a cancelled box drag left the camera dead, and the window
+`pointerup` backstop could commit a drag when a second finger tapped Undo.
+
+**A bug-fix pass needs reviewing as carefully as a feature.** This one had a
+higher defect-injection rate than any feature in the project.
+
+One thing worth knowing about the backstop: OrbitControls captures the pointer
+on the canvas, and capture retargets the release, so the canvas listener
+normally fires even over the top bar. The backstop only earns its place when
+orbit was already disabled at press time and no capture was taken.
 
 ## Circularize (a2.42)
 

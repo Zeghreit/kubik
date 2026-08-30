@@ -868,7 +868,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.42</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.43a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -8825,6 +8825,8 @@ const opSliderEl = document.getElementById('opSlider');
 const opValueEl = document.getElementById('opValue');
 
 function showOpBar() {
+  // Whatever this bar was showing before, it is an op now - see cancelPendingOp.
+  mirrorChooser = null;
   const op = App.pendingOp;
   if (!op) return;
   const spec = OP_SPECS[op.kind];
@@ -8959,7 +8961,13 @@ function refreshOpAmountVisibility() {
   });
 }
 
+/* The Mirror chooser borrows the op bar without a pendingOp behind it, so it
+   needs its own handle: something for the ✕ to close, and somewhere to keep
+   the selection it was opened for. */
+let mirrorChooser = null;
+
 function hideOpBar() {
+  mirrorChooser = null;
   opBarEl.classList.remove('show');
   // The chooser bars (Mirror, Extrude grouping) drive this bar by hand and
   // know nothing about the toggle, so it goes away with the bar itself.
@@ -9124,6 +9132,17 @@ function confirmPendingOp() {
 
 function cancelPendingOp() {
   if (App.knife) { cancelKnife(); return; }
+  /* The Mirror chooser leaves ✕ on screen but has no pendingOp, so this
+     function used to return one line below having done nothing: the button
+     was inert and the bar could not be dismissed at all.
+
+     `&& !App.pendingOp` because the flag outlived the chooser: showOpBar
+     re-uses the same bar without going through hideOpBar, so a Mirror chooser
+     left open across a mode switch was still "on" when a Bevel opened over
+     it - and then ✕ hid the bar and returned, leaving the bevel preview baked
+     into the mesh with no bar left to accept or reject it. A real op always
+     wins this guard now, and showOpBar clears the flag as well. */
+  if (mirrorChooser && !App.pendingOp) { hideOpBar(); return; }
   const op = App.pendingOp;
   if (!op) return;
   const obj = findObject(op.objId);
@@ -10484,10 +10503,13 @@ function bevelSelection() {
   symExpand(obj);
   // Keep positions rather than ids: each re-run rebuilds the mesh and
   // renumbers everything, but coordinates stay meaningful.
+  /* The three siblings that guard (Bridge, Loop, Cap holes) do so because
+     Cap holes once threw here on a stale edge id. These two never got it. */
   const endpoints = Array.from(App.selectedElements).map(ei => {
-    const [a, b] = obj.mesh.userData.topo.edges[ei];
-    return [logicalPos(obj, a), logicalPos(obj, b)];
-  });
+    const e = obj.mesh.userData.topo.edges[ei];
+    return e ? [logicalPos(obj, e[0]), logicalPos(obj, e[1])] : null;
+  }).filter(Boolean);
+  if (!endpoints.length) { toast('Select an edge to bevel'); return; }
   beginPendingOp('bevel', obj, { endpoints });
 }
 
@@ -10574,7 +10596,10 @@ function splitSelection() {
 
   ensureHelpers(obj);
   symExpand(obj);   // a midpoint per edge - per-element, so the union is right
-  const pairs = Array.from(App.selectedElements).map(ei => obj.mesh.userData.topo.edges[ei].slice());
+  const pairs = Array.from(App.selectedElements)
+    .map(ei => obj.mesh.userData.topo.edges[ei])
+    .filter(Boolean).map(e => e.slice());
+  if (!pairs.length) { toast('Select an edge to split'); return; }
   pairs.forEach(([la, lb]) => {
     ensureHelpers(obj);
     const topoNow = obj.mesh.userData.topo;
@@ -11926,10 +11951,12 @@ function captureDragContext(pivot) {
   const ctx = { pivotStart: pivot.matrix.clone(), pivotPos: pivot.position.clone(), entries: [] };
   if (App.mode === 'object') {
     ctx.type = 'objects';
-    ctx.entries = Array.from(App.selectedObjectIds).map(id => {
-      const m = findObject(id).mesh;
-      m.updateMatrix();
-      return { id, matrix: m.matrix.clone() };
+    /* filter(Boolean) for the window between an object being removed and the
+       UI being refreshed - refreshGizmoAttachment guards this exact case and
+       this, its sibling, did not. */
+    ctx.entries = Array.from(App.selectedObjectIds).map(findObject).filter(Boolean).map(o => {
+      o.mesh.updateMatrix();
+      return { id: o.id, matrix: o.mesh.matrix.clone() };
     });
   } else {
     const obj = findObject(App.activeObjectId);
@@ -12673,6 +12700,7 @@ gizmoStrokes.push(knifeLine);   // so a resize keeps the line's width honest
    slider, no segments, a Back button where the grouping choices sit, and the
    count in the label so you can see the cut growing. */
 function showKnifeBar() {
+  mirrorChooser = null;   // same reasoning as showOpBar
   const el = document.getElementById('opGrouping');
   el.innerHTML = '';
   el.style.display = 'inline-flex';
@@ -14495,7 +14523,13 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   // A second finger means the camera is taking over - abandon any transform
   // that was mid-flight rather than fighting the pinch.
   if (activePointers.size > 1) {
-    if (directDrag) { directDrag = null; dragCtx = null; axisGuide.visible = false; clearSnapTarget(); }
+    /* endDirectDrag, not a hand-rolled teardown: the hand-rolled one dropped
+       the drag WITHOUT pushing history, so the move stayed in the geometry
+       and outside the undo stack. The next Undo press then reverted this drag
+       and the edit before it in one go, which reads as Undo skipping a step.
+       Resting a second finger on the glass to reframe mid-drag is routine on
+       a phone, so this was a step lost most sessions. */
+    if (directDrag) endDirectDrag();
     // A second finger is the camera, and it must not leave a pivot drag alive
     // underneath - the line below hands orbit back.
     cancelPivotDrag();
@@ -15742,7 +15776,8 @@ function duplicateSelection() {
   if (App.mode !== 'object') { toast('Duplicate works in Object mode'); return; }
   const ids = Array.from(App.selectedObjectIds);
   if (!ids.length) { toast('Select an object to duplicate'); return; }
-  const newIds = ids.map(id => duplicateObject(findObject(id)).id);
+  const newIds = ids.map(findObject).filter(Boolean).map(o => duplicateObject(o).id);
+  if (!newIds.length) { toast('Nothing left to duplicate'); return; }
   App.selectedObjectIds = new Set(newIds);
   hideRadialMenu();
   refreshUI();
@@ -16066,6 +16101,11 @@ function flipSelectedObjects(axis) {
    split them. The choice genuinely has to be made here. */
 function showMirrorChooser(axis) {
   const el = document.getElementById('opGrouping');
+  /* Captured NOW. The bar had no exit, so it could sit through any amount of
+     later work, and Joined/Apart then mirrored whatever happened to be
+     selected by the time they were pressed rather than what the chooser was
+     opened for. */
+  mirrorChooser = { axis, ids: Array.from(App.selectedObjectIds) };
   const opts = [
     ['joined', 'Joined', 'One object, welded along the seam'],
     ['apart', 'Apart', 'Two objects, the copy kept separate']
@@ -16077,7 +16117,15 @@ function showMirrorChooser(axis) {
     b.textContent = label;
     b.title = tip;
     b.addEventListener('click', () => {
-      hideOpBar();
+      /* Checked here, not left to mirrorSelectedObjects: its own mode guard
+         fires AFTER this handler has already replaced the live selection with
+         the captured one, so a chooser left open across a mode switch wiped
+         what you had picked and then refused to do anything with it. */
+      if (App.mode !== 'object') { hideOpBar(); toast('Mirror works in Object mode'); return; }
+      const ids = (mirrorChooser && mirrorChooser.ids) || null;
+      hideOpBar();                                   // clears mirrorChooser
+      if (ids) App.selectedObjectIds = new Set(ids.filter(findObject));
+      if (!App.selectedObjectIds.size) { toast('Nothing left to mirror'); return; }
       mirrorSelectedObjects(axis, key === 'apart');
     });
     el.appendChild(b);
@@ -16795,10 +16843,16 @@ function undo() {
   scheduleAutosave();   // or a reload resurrects the edit that was just undone
 }
 function redo() {
-  /* Same reasoning as a live op below: the setup has pushed NOTHING onto
-     the history, so there is no step for this press to step back to. Undo
-     means "take back what is on screen", and here that is the primitive. */
-  if (App.geoSetup) { finishGeoSetup(false); return; }
+  /* NEITHER answer works here, which is why this is not undo's line copied
+     across. `false` threw away the shape you were still dialling in. `true`
+     keeps it - but committing pushes history, and pushHistory TRUNCATES
+     everything ahead of the cursor, so pressing Redo would destroy the very
+     steps it was asked to walk forward into. Undo has no such conflict: it is
+     already at the end of the stack.
+
+     So Redo declines while a setup is open, and says why. Nothing is lost
+     either way, and Done is one tap. */
+  if (App.geoSetup) { toast('Finish the shape first'); return; }
   // Same reasoning as undo: close the preview first, on its own terms.
   if (App.pendingOp && App.pendingOp.live) {
     const settled = App.pendingOp.settled;
@@ -18798,6 +18852,14 @@ document.getElementById('btnInspector').addEventListener('click', (ev) => {
 });
 
 function refreshUI() {
+  /* A SELECTION CAN OUTLIVE ITS OBJECT. The six "that collapsed the whole
+     mesh - removed the object" paths drop the object without touching the id
+     set, and the next Duplicate or drag then dereferenced a ghost and threw a
+     TypeError that killed the gesture. Pruned here for the same reason
+     isolation is reconciled here: every one of those paths ends by refreshing
+     the UI, so one hook covers all of them. Deleting from a Set while
+     iterating it is well defined. */
+  App.selectedObjectIds.forEach(id => { if (!findObject(id)) App.selectedObjectIds.delete(id); });
   /* Isolation is reconciled HERE and nowhere else that matters. Every op in
      the app ends by refreshing the UI, so hooking this one place covers join,
      mirror, separate, duplicate, delete and the six collapse paths at once -
@@ -18853,8 +18915,12 @@ function refreshUI() {
       if (App.mode === 'object') {
         selectObjectClick(o.id, App.multiSelect);
       } else {
-        // Same reasoning as setMode: this empties the selection the op is
-        // aimed at. A live one is committed, any other cancelled.
+        /* Same reasoning as setMode: this empties the selection the op is
+           aimed at. A live one is committed, any other cancelled - and the
+           knife counts, which this row alone forgot. Left open, its points
+           still belonged to the OLD object while the helpers showed the new
+           one, so pressing OK cut a mesh you were no longer looking at. */
+        if (App.knife) cancelKnife();
         if (App.pendingOp && App.pendingOp.live) confirmPendingOp();
         else if (App.pendingOp) cancelPendingOp();
         App.activeObjectId = o.id;
@@ -19024,6 +19090,31 @@ window.addEventListener('resize', onResize);
        and releasing there never reaches the canvas listener, so afterwards the
        bare cursor went on dragging the pivot with the camera dead. */
     cancelPivotDrag();
+    /* And the same for the GEOMETRY drag, which this handler never ended.
+       Left live, the next unrelated pointermove went on moving that vertex
+       with orbit still switched off - exactly the failure described one line
+       above, one tool over. Ending it commits where the drag had reached,
+       which is what a lift would have done; discarding it silently would
+       throw away work the user watched happen.
+
+       Only on a real cancellation: pointerleave fires whenever the cursor
+       crosses the canvas edge, and committing there would end a drag that
+       merely strayed over the top bar and came back. */
+    if (ev.type === 'pointercancel') {
+      if (directDrag) endDirectDrag();
+      if (extrudeDrag) endExtrudeDrag();
+      if (boxDrag) {
+        boxDrag = null;
+        selectBoxEl.style.display = 'none';
+        lassoSvgEl.style.display = 'none';
+        /* The drag switched orbit OFF when it started and only the COMPLETED
+           release path turns it back on, so without this a cancelled box
+           select left the camera dead - the exact failure this handler exists
+           to prevent. endDirectDrag and endExtrudeDrag each do this for
+           themselves; the box drag has no such function to do it. */
+        orbit.enabled = !toolRingActive;
+      }
+    }
     maybeResumeOrbit();
     if (activePointers.size === 0) { tapArmed = false; tapPeakCount = 0; clearLightHoldTimer(); }
     // A lost pointer mid-hold must not leave a bloom stuck open with no
@@ -19032,6 +19123,36 @@ window.addEventListener('resize', onResize);
     closeToolRing(false);
     directCandidate = null;
   });
+});
+
+/* THE RELEASE THAT NEVER ARRIVES. Press on a vertex, drag up over the top
+   bar, let go there: the listener above is on the CANVAS, so it never fires.
+   The drag stayed live, and afterwards the bare cursor went on moving the
+   geometry with the camera dead - the only way out being another press, which
+   then committed wherever the cursor happened to be.
+
+   A backstop on the window ends it wherever the finger actually lifted. It
+   does nothing at all unless a drag is live, so an ordinary click on a button
+   still costs one comparison. */
+window.addEventListener('pointerup', (ev) => {
+  if (ev.target === renderer.domElement) return;   // the canvas listener has it
+  if (!directDrag && !extrudeDrag) return;
+  /* ONLY for a pointer this app is tracking. A second finger tapping Undo
+     while the first is still dragging lifts on the button, bubbles to here,
+     and would have committed the drag mid-gesture. A pointer that pressed on
+     a control never went through trackPointerDown, so it is not in the set.
+
+     Worth knowing this backstop is usually asleep: OrbitControls captures the
+     pointer on the canvas, and capture retargets the release, so the canvas
+     listener normally does fire even over the top bar. It earns its place in
+     the case where orbit was already disabled at press time and no capture
+     was taken. */
+  if (!activePointers.has(ev.pointerId)) return;
+  activePointers.delete(ev.pointerId);
+  if (directDrag) endDirectDrag();
+  if (extrudeDrag) endExtrudeDrag();
+  directCandidate = null;
+  maybeResumeOrbit();
 });
 
 function animate() {
@@ -19213,6 +19334,13 @@ if (PICK_DEBUG) {
     // The drag itself, driveable with a plain {clientX, clientY}.
     axisTooFlat, beginExtrudeDrag, updateExtrudeDrag, endExtrudeDrag,
     restoreDoc, serializeDoc, refuseOp, pushHistory, toast,
+    showMirrorChooser, hideOpBar,
+    get mirrorChooser() { return mirrorChooser; },
+    get activePointers() { return activePointers; },
+    get directDrag() { return directDrag; },
+    finishGeoSetup,
+    get boxDrag() { return boxDrag; },
+    get extrudeDrag() { return extrudeDrag; },
     scheduleAutosave, AUTOSAVE_KEY,
     get opRefusal() { return opRefusal; },
     settleExtrudeSection, openExtrudeSection, beginDirectDrag, updateDirectDrag,
