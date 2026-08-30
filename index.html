@@ -868,7 +868,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.45a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.46a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -1461,6 +1461,7 @@ function bakeEnvEquirect(spec, W, H, norm) {
    startup rather than built per change. */
 let _envEq = null, _envRT = null, _pmrem = null;
 function applyEnvironment() {
+  invalidate();   // see On-demand rendering
   const spec = envPreset(App.env.preset);
   const eq = bakeEnvEquirect(spec, ENV_W, ENV_H);
   if (!_pmrem) {
@@ -2399,6 +2400,12 @@ function updateMaterialEverywhere(id) {
     const fin = o.mesh.userData.finishes || {};
     mats.forEach((m, gi) => { if ((fin[gi] || 'standard') === id) applyFinish(m, id); });
   });
+  /* This is reached from an image mask's `onload`, which is the one path that
+     repaints the model with NO event behind it - the file input's `change`
+     fired before the decode began, and a phone photo takes long enough to
+     close the editor in. Hooked here rather than at the two callbacks so the
+     next one to be written cannot forget. */
+  invalidate();
 }
 
 /* ---------------- Procedural masks (triplanar) ----------------
@@ -8770,6 +8777,7 @@ function beginPendingOp(kind, obj, payload, init) {
 const PERF = { applyOp: 0, topo: 0, shade: 0, matClone: 0, render: 0, bake: 0 };
 
 function applyPendingOp() {
+  invalidate();   // see On-demand rendering
   const op = App.pendingOp;
   if (!op) return;
   PERF.applyOp++;
@@ -9027,6 +9035,14 @@ function applyPendingOp() {
   setActiveObjectHelpersVisible(obj, App.mode);
   refreshElementColors(obj);
   updateFrameVisibility();
+  /* AGAIN, at the end. The one at the top starts the linger window when the
+     work STARTS, and this is the heaviest synchronous path in the app - on a
+     subdivided mesh it can outlast the whole 260ms window, so the frame that
+     would have drawn the result found it already spent. The slider is covered
+     by the finger being down, but the segment stepper and the grouping
+     buttons are not: pressing + for a ten-segment bevel showed the previous
+     count until the heartbeat caught up. */
+  invalidate();
 }
 
 /* The operation bar: a drag handle for the amount, plus confirm/cancel. */
@@ -10866,6 +10882,7 @@ function setCol(arr, i, hex) {
 }
 
 function syncHelperGeometry(obj) {
+  invalidate();   // see On-demand rendering
   const topo = obj.mesh.userData.topo;
   if (!topo) return;
   const pa = obj.mesh.geometry.attributes.position;
@@ -11777,6 +11794,11 @@ function refreshPivotMarker() {
   const m = ensurePivotMarker();
   m.visible = pivotMarkerWanted();
   if (App.pivotPoint) m.position.copy(App.pivotPoint);
+  /* pivotMarkerWanted is a function of the CLOCK, and flashPivotMarker's
+     timer is the only thing that takes the marker away - no event, no orbit
+     change, nothing else to notice. Place a pivot and keep still, and it
+     lingered a second past its 1.6s. */
+  invalidate();
 }
 
 // Show it briefly, then take it away again without anything else having to
@@ -19209,6 +19231,7 @@ document.getElementById('btnInspector').addEventListener('click', (ev) => {
 });
 
 function refreshUI() {
+  invalidate();   // see On-demand rendering
   /* A SELECTION CAN OUTLIVE ITS OBJECT. The six "that collapsed the whole
      mesh - removed the object" paths drop the object without touching the id
      set, and the next Duplicate or drag then dereferenced a ghost and threw a
@@ -19512,6 +19535,70 @@ window.addEventListener('pointerup', (ev) => {
   maybeResumeOrbit();
 });
 
+/* ---------------- On-demand rendering ----------------
+
+   The loop was an unconditional rAF: a phone sitting on a desk with the app
+   open rendered the whole scene - plus a SECOND WebGL context for the view
+   cube, which on a tile-based mobile GPU costs a context switch and a
+   framebuffer flush of its own - sixty times a second, for ever.
+
+   THREE LAYERS, because "the screen did not update" is a far worse outcome
+   than the battery this saves:
+
+   1. `invalidate()` marks the next frames dirty. It is wired to orbit's own
+      change event (which also covers damping, since damping fires change on
+      every settling frame) and to a delegated capture-phase listener over
+      every pointer, wheel, click, input and key event - so any change a
+      PERSON causes is covered without hunting down individual mutation sites
+      and missing one.
+   2. A LINGER window rather than a single frame, so work that lands a moment
+      after the event that caused it - a rebuild, an image decode, a toast
+      fading - is still drawn.
+   3. A once-a-second HEARTBEAT. If some path is missed entirely the screen is
+      stale for up to a second rather than for ever. One frame a second is not
+      a battery cost; sixty is.
+
+   The decision is its own function so it can be tested directly: rAF does not
+   fire under the harness's virtual clock. */
+const RENDER_LINGER_MS = 260;
+const RENDER_HEARTBEAT_MS = 1000;
+const POINTER_LIVE_MS = 4000;
+let renderUntil = 0;
+let lastRenderAt = -1e9;
+let lastPointerAt = -1e9;
+function invalidate() { renderUntil = performance.now() + RENDER_LINGER_MS; }
+
+function renderWanted(now) {
+  /* A finger down, or anything animating, is drawn every frame as before.
+
+     Bounded by POINTER_LIVE_MS because this makes `activePointers` carry a
+     second job. A leaked entry used to be a gesture bug; without the bound it
+     would ALSO pin the render loop at 60fps for the rest of the session with
+     no symptom at all - the optimisation silently switching itself off. Any
+     real gesture streams pointer events continuously, so four seconds of
+     silence means the entry is stale, not that a finger is resting. */
+  if (activePointers.size > 0 && now - lastPointerAt < POINTER_LIVE_MS) return true;
+  if (camAnim || viewHelper.animating) return true;
+  if (now <= renderUntil) return true;
+  return now - lastRenderAt >= RENDER_HEARTBEAT_MS;
+}
+
+orbit.addEventListener('change', invalidate);
+/* Capture phase, so it runs whatever a handler downstream does about the
+   event - including stopPropagation, which several of this app's controls
+   use. Passive: it only sets a number. */
+['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'wheel',
+ 'click', 'input', 'change', 'keydown'].forEach(t =>
+  document.addEventListener(t, invalidate, { capture: true, passive: true }));
+['pointerdown', 'pointermove', 'pointerup', 'pointercancel'].forEach(t =>
+  document.addEventListener(t, () => { lastPointerAt = performance.now(); },
+    { capture: true, passive: true }));
+window.addEventListener('resize', invalidate);
+window.addEventListener('visibilitychange', invalidate);
+
+// The view cube only moves when the camera's ORIENTATION does.
+const camQuatSeen = new THREE.Quaternion(0, 0, 0, 0);
+
 function animate() {
   requestAnimationFrame(animate);
   const now = performance.now();
@@ -19527,10 +19614,29 @@ function animate() {
   }
   if (viewHelper.animating) { viewHelper.update(delta); camAnim = null; }
   else if (cubeAligning) { cubeAligning = false; engageOrtho(); }
+  // ALWAYS - it is what advances the damping, and it fires 'change' while it
+  // is still settling, which is what keeps the frames coming during a flick.
   orbit.update();
+
+  if (!renderWanted(now)) return;
+  const heartbeat = now - lastRenderAt >= RENDER_HEARTBEAT_MS;
+  lastRenderAt = now;
+  PERF.render++;
   renderer.render(scene, camera);
-  // Separate renderer - cannot affect the main viewport above.
-  viewHelper.render(cubeRenderer);
+  /* Separate renderer - cannot affect the main viewport above. Its picture is
+     a pure function of the camera's QUATERNION (verified against r184's
+     ViewHelper: no hover state, and `center` is read only by update and
+     handleClick), so panning and dollying correctly cost it nothing.
+
+     ...but it gets the heartbeat too. renderer.render repaints everything
+     from current state once a second whatever happens; the cube had no such
+     backstop, so anything that blanked its canvas without turning the camera
+     - a lost-and-restored WebGL context, which backgrounding a tab on mobile
+     does routinely - stayed blank until the user happened to orbit. */
+  if (viewHelper.animating || heartbeat || !camQuatSeen.equals(camera.quaternion)) {
+    camQuatSeen.copy(camera.quaternion);
+    viewHelper.render(cubeRenderer);
+  }
 }
 let lastFrameTime = performance.now();
 
@@ -19699,6 +19805,11 @@ if (PICK_DEBUG) {
     materialDefSig, remapFinishes, refreshPendingAppearance,
     get boxDrag() { return boxDrag; },
     PERF, flushPendingApply, schedulePendingApply, flushMatBin,
+    invalidate, renderWanted,
+    get renderUntil() { return renderUntil; },
+    set lastRenderAt(v) { lastRenderAt = v; },
+    RENDER_LINGER_MS, RENDER_HEARTBEAT_MS, POINTER_LIVE_MS,
+    set lastPointerAt(v) { lastPointerAt = v; },
     ensureEdgeField,
     get opMatBinSize() { return opMatBin.length; },
     setCol, subdivideSelection,

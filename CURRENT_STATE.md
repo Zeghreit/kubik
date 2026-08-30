@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~16,800 lines)
-- Version at time of writing: **a2.45a**
+- Version at time of writing: **a2.46a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1788,6 +1788,82 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## On-demand rendering (a2.46 / a2.46a)
+
+The loop was an unconditional rAF: a phone on a desk with the app open
+rendered the whole scene — **plus a second WebGL context** for the view cube,
+which on a tile-based mobile GPU costs a context switch and a framebuffer
+flush of its own — sixty times a second, for ever. Nothing about WHAT is drawn
+changed; only how often.
+
+**Three layers, because "the screen did not update" is a far worse outcome
+than the battery this saves.**
+
+1. **`invalidate()`** marks the coming frames dirty. It is wired to orbit's
+   own `change` event — which covers damping, since damping fires `change` on
+   every settling frame — and to a **capture-phase document listener** over
+   every pointer, wheel, click, input and key event. That is the important
+   design choice: any change a *person* causes is covered without hunting down
+   individual mutation sites and missing one.
+2. **A linger window** (260ms) rather than a single frame, so work that lands
+   a moment after the event that caused it is still drawn.
+3. **A once-a-second heartbeat.** If a path is missed entirely the screen is
+   stale for up to a second rather than for ever. One frame a second is not a
+   battery cost; sixty is.
+
+`renderWanted(now)` is a separate pure function so it can be tested directly —
+rAF does not fire under the harness's virtual clock, so a probe that counted
+frames would prove nothing.
+
+The **view cube** now redraws only when the camera's *orientation* changes.
+Its picture is a pure function of the quaternion (verified against r184's
+ViewHelper: no hover state, and `center` is read only by `update` and
+`handleClick`), so panning and dollying cost it nothing.
+
+### What the review caught: four changes with no event behind them
+
+The heartbeat means nothing can be *permanently* stale, so these were all
+"invisible for up to a second, then it pops" — which on a phone, where nothing
+moves unless you touch it, is exactly when it is most noticeable.
+
+- **An image mask finishing its decode.** The file input's `change` fires
+  *before* the decode, and the code's own comment notes a phone photo "takes
+  long enough to close the editor in". Hooked in `updateMaterialEverywhere`
+  rather than at the two `onload` callbacks, so the next one written cannot
+  forget.
+- **`invalidate()` at the TOP of `applyPendingOp`** starts the window when the
+  work *starts*, and this is the heaviest synchronous path in the app — on a
+  subdivided mesh it can outlast the whole 260ms. The slider is covered by the
+  finger being down; the segment stepper and the grouping buttons were not.
+  There is a second call at the end now.
+- **The view cube had no heartbeat.** The gate was right but the fallback was
+  missing: `renderer.render` repaints everything from current state once a
+  second whatever happens, and the cube had nothing equivalent — so anything
+  that blanked its canvas without turning the camera (a lost-and-restored
+  WebGL context, which backgrounding a tab on mobile does routinely) left it
+  blank until the user happened to orbit.
+- **The pivot marker hides itself on a timer.** `pivotMarkerWanted` is a
+  function of the clock, with no event behind it.
+
+### The coupling worth knowing about
+
+`renderWanted`'s first clause is "a finger is down", which makes
+`activePointers` carry a second job. A leaked entry used to be a gesture bug;
+without a bound it would **also** pin the loop at 60fps for the rest of the
+session with no symptom at all — the optimisation silently switching itself
+off. So the clause is bounded by `POINTER_LIVE_MS` (4s) since the last real
+pointer event: any genuine gesture streams events continuously, so four
+seconds of silence means the entry is stale, not that a finger is resting.
+
+### Accepted regression
+
+The edge-distance field is baked from inside the render, so a throttled miss
+now waits for the next *rendered* frame rather than the next of sixty. Worst
+case the wear/bevel shading trails the geometry by up to the heartbeat instead
+of by 120ms, and corrects with a visible pop. It cannot go stale permanently —
+both throttle guards short-circuit on `f &&`, so a throttled call always
+returns a stale field and never none.
 
 ## Performance, part 1 (a2.45 / a2.45a)
 
