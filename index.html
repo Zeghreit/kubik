@@ -868,7 +868,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.43a</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.44c</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -2204,6 +2204,52 @@ const MATERIAL_DEFAULTS = {
 const MATERIALS = new Map();
 let nextMaterialNum = 1;
 const MATLIB_KEY = 'kubik.materials.v1';
+
+// JSON.stringify emits INSERTION order, which is not a property of the value.
+function stableStringify(v) {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v);
+  if (Array.isArray(v)) return '[' + v.map(stableStringify).join(',') + ']';
+  return '{' + Object.keys(v).sort()
+    .map(k => JSON.stringify(k) + ':' + stableStringify(v[k])).join(',') + '}';
+}
+
+/* WHAT A DEFINITION IS, so "have we already got this one" can be asked of a
+   value rather than of an id.
+
+   An EXPLICIT field list, not "whatever keys happen to be on the object".
+   Two things forced that. Key order: the same preset reaches this function
+   with `masks` then `bevel` in one session and the reverse after a reload,
+   because saveMaterialLibrary writes `bevel: d.bevel || 0` unconditionally
+   while the mask button only appends `masks`. And absent-versus-zero: a def
+   that never had a bevel and one whose bevel is 0 are the same material.
+   Together those made a masked preset fail to match ITSELF across a reload,
+   minting "Metal (imported)" beside Metal on every single load.
+
+   The NAME is in the signature on purpose. Two materials configured
+   identically but named differently are two materials to the person who named
+   them, and leaving the name out merged them - repointing every face painted
+   with one onto whichever came later in iteration order. */
+function materialDefSig(d) {
+  if (!d) return '';
+  const n = normaliseDefMasks(Object.assign({}, d));
+  return stableStringify({
+    name: n.name || '',
+    color: n.color || null,
+    roughness: +n.roughness || 0,
+    metalness: +n.metalness || 0,
+    envMapIntensity: n.envMapIntensity === undefined ? 1 : (+n.envMapIntensity || 0),
+    bevel: +n.bevel || 0,
+    masks: maskList(n)
+  });
+}
+
+// An id nothing in the library is using.
+function freshMaterialId(base) {
+  const stem = 'mat_' + String(base || 'imp').replace(/^mat_/, '').slice(0, 12) + '_i';
+  let n = 1, id = stem;
+  while (MATERIALS.has(id)) id = stem + (++n);
+  return id;
+}
 
 function getMaterialDef(id) {
   return normaliseDefMasks(MATERIALS.get(id) || MATERIALS.get('standard'));
@@ -5234,6 +5280,16 @@ function captureSymmetryPlane(obj, axis) {
 
 // The captured plane, capturing on first use for an object that never had one
 // - loaded from a save, or made after symmetry was already on.
+/* Repoints a finishes map at whatever ids the incoming definitions ended up
+   under. Returns the map unchanged when nothing was remapped, which is the
+   overwhelmingly common case. */
+function remapFinishes(fin, remap) {
+  if (!remap || !remap.size) return fin;
+  const out = {};
+  Object.keys(fin).forEach(k => { out[k] = remap.get(fin[k]) || fin[k]; });
+  return out;
+}
+
 function symmetryPlane(obj, axis) {
   const p = obj.mesh.userData.symPlane;
   if (p && p.axis === axis) return p;
@@ -8301,6 +8357,61 @@ function captureObjectState(obj) {  const ed = toEditable(obj.mesh);
     edgeShade: { ...(obj.mesh.userData.edgeShade || {}) },
     autoSmoothAngle: obj.mesh.userData.autoSmoothAngle
   };
+}
+
+/* AN OP RE-RUNS FROM ITS SNAPSHOT EVERY FRAME, and the snapshot carries the
+   materials - so painting a face while a Bevel bar was open was silently
+   reverted by the next nudge of the slider, and by Cancel. applyFinishToSelection
+   deliberately pushes no history, so there was nothing to recover it with
+   either.
+
+   Repainting the SNAPSHOT is the fix rather than suppressing the restore: the
+   geometry still comes back from the snapshot every frame, as it must, and
+   only the appearance follows the paint. */
+/* Can the open op carry a repaint through its next re-run? Only while it has
+   not changed the face grouping - the snapshot's materials are indexed by the
+   groups the mesh had BEFORE the op, and once Inset or Bevel has added some
+   there is no honest place to put the paint. Set flow, Circularize, Smooth and
+   every transform leave the grouping alone, and those are fine. */
+/* EVERY snapshot the open op would restore over this object. A `multi` op -
+   Subdivide, Smooth by angle - does not re-run from `op.state` at all: it
+   snapshots each selected object into op.multi[] and restores those, so
+   looking only at op.objId meant the paint was eaten on every object in a
+   multi-object op with no toast, which is the exact failure this pair of
+   functions exists to prevent. */
+function pendingStatesFor(obj) {
+  const op = App.pendingOp;
+  if (!op || !obj) return [];
+  const out = [];
+  if (op.objId === obj.id) {
+    if (op.state) out.push(op.state);
+    if (op.baseState && op.baseState !== op.state) out.push(op.baseState);
+  }
+  (op.multi || []).forEach(m => { if (m.objId === obj.id && m.state) out.push(m.state); });
+  return out;
+}
+
+function pendingOpCanRepaint(obj) {
+  const states = pendingStatesFor(obj);
+  if (!states.length) return true;                       // nothing in the way
+  const mats = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
+  return states.every(st => st.mats && st.mats.length === mats.length);
+}
+
+function refreshPendingAppearance(obj) {
+  const states = pendingStatesFor(obj);
+  if (!states.length) return;
+  const mats = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
+  const fin = { ...(obj.mesh.userData.finishes || {}) };
+  states.forEach(st => {
+    // Only when the group counts still agree; a snapshot from a different
+    // topology is not this mesh's appearance. The caller has already refused
+    // in that case - this is the belt to its braces.
+    if (!st.mats || st.mats.length !== mats.length) return;
+    st.mats.forEach(m => m.dispose());     // never rendered, so this is free
+    st.mats = mats.map(m => m.clone());
+    st.finishes = { ...fin };
+  });
 }
 
 function restoreObjectState(obj, st) {
@@ -15400,6 +15511,19 @@ function applyFinishToSelection(name) {
      very definition earlier in the session; a fresh generation keeps their
      per-material program cache from resurrecting a stale patch. */
   getMaterialDef(name);
+
+  /* Checked BEFORE anything is painted. An op re-runs from its snapshot on
+     every slider frame, and one that has added face groups cannot carry a
+     repaint - so the paint used to appear, then vanish at the next nudge with
+     nothing said and no history step to recover it from. */
+  const painting = App.mode === 'face'
+    ? [findObject(App.activeObjectId)]
+    : (App.mode === 'object' ? Array.from(App.selectedObjectIds)
+                             : [App.activeObjectId]).map(findObject);
+  if (painting.filter(Boolean).some(o => !pendingOpCanRepaint(o))) {
+    toast('Finish the ' + ((OP_SPECS[App.pendingOp.kind] || {}).label || 'operation') + ' first');
+    return;
+  }
   const setOn = (obj, groupIndices) => {
     if (!obj.mesh.userData.finishes) obj.mesh.userData.finishes = {};
     const mats = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
@@ -15407,6 +15531,8 @@ function applyFinishToSelection(name) {
       obj.mesh.userData.finishes[gi] = name;
       if (mats[gi]) applyFinish(mats[gi], name);
     });
+    // ...and into the open op's snapshot, or the next slider frame undoes it.
+    refreshPendingAppearance(obj);
   };
 
   if (App.mode === 'face') {
@@ -16516,6 +16642,10 @@ function serializeDoc() {
     /* Fifteen numbers, not twelve megabytes - the reason the environment is
        procedural at all. A shared file arrives lit the way it was made. */
     environment: { preset: App.env.preset, rotation: App.env.rotation, intensity: App.env.intensity },
+    // Symmetry is a modelling state, not an appearance one: it belongs with
+    // the geometry it mirrors, and an undo that quietly switched it off was
+    // the kind of thing you only notice three edits later.
+    symmetry: { on: !!App.symmetry, axis: App.symmetryAxis },
     objects: App.objects.map(o => {
       const g = o.mesh.geometry;
       const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
@@ -16558,7 +16688,15 @@ function serializeDoc() {
            would be read as 33 RADIANS, and the model would shade like
            nonsense while the bar read 1891. The name carries the unit. */
         autoSmoothAngleDeg: typeof o.mesh.userData.autoSmoothAngle === 'number'
-          ? +(o.mesh.userData.autoSmoothAngle * 180 / Math.PI).toFixed(2) : undefined
+          ? +(o.mesh.userData.autoSmoothAngle * 180 / Math.PI).toFixed(2) : undefined,
+        /* The symmetry plane is CAPTURED, deliberately, so it cannot drift as
+           the model grows - and then it was thrown away by every save and
+           every undo, which silently recaptured it from the current bounding
+           box. Two numbers to carry the one thing the design says must not be
+           recomputed. */
+        symPlane: o.mesh.userData.symPlane
+          ? { axis: o.mesh.userData.symPlane.axis, offset: o.mesh.userData.symPlane.offset }
+          : undefined
       };
     }),
     // Selection travels with the snapshot so undo/redo doesn't drop you back
@@ -16597,9 +16735,57 @@ function restoreDoc(doc, opts = {}) {
   // Undo is about shape. Colour, finish and the current selection are carried
   // across untouched, so stepping back through geometry never quietly repaints
   // your model or drops what you had picked.
+  /* THE FILE'S OWN MATERIALS HAVE TO SURVIVE THE TRIP.
+
+     The old rule was "keep ours if we already know that id", and every preset
+     id is seeded at startup - so a preset the sender had masked, recoloured
+     or bevelled was ALWAYS the loser. Add scratches to Metal, save, open the
+     file anywhere else, and the model arrived wearing plain Metal with no
+     scratches and no warning. Custom ids were safe only until two of them
+     collided, which their generator does not prevent.
+
+     So: same id and the same look, keep ours and say nothing - that is the
+     common case and it must not breed copies on every re-open. Same id, a
+     DIFFERENT look, and the incoming one comes in under a fresh id, with
+     every face that referenced the old one repointed at it. */
+  const matIdRemap = new Map();
   if (doc.materialLib && !opts.keepAppearance) {
+    /* Indexed by what a definition IS, not by what it is called. This is what
+       makes a re-open idempotent: after the first load the library holds the
+       incoming look under `mat_metal_i`, and without this index the second
+       load compares the file's metal against OUR metal all over again, finds
+       them different all over again, and mints mat_metal_i2 - one more on
+       every open, for ever. */
+    /* Indexed by `srcSig` where there is one. An imported definition is
+       RENAMED - "Metal (imported)" - so its own signature no longer matches
+       the file's, and without remembering what it came from, the next open of
+       the same file mints another copy, and the next, and the next. */
+    const bySig = new Map();
+    MATERIALS.forEach((v, id) => bySig.set(v.srcSig || materialDefSig(v), id));
     doc.materialLib.forEach(d => {
-      if (d && d.id && !MATERIALS.has(d.id)) MATERIALS.set(d.id, Object.assign({}, d, { preset: !!MATERIAL_DEFAULTS[d.id] }));
+      if (!d || !d.id) return;
+      if (!MATERIALS.has(d.id)) {
+        MATERIALS.set(d.id, Object.assign({}, d, { preset: !!MATERIAL_DEFAULTS[d.id] }));
+        bySig.set(materialDefSig(d), d.id);
+        return;
+      }
+      /* We already hold this id. Is this look anywhere in the library - under
+         that id or another? Then point at it and mint nothing. That covers
+         "identical, keep ours" and "we imported this last time" in one test. */
+      const sig = materialDefSig(d);
+      const known = bySig.get(sig);
+      if (known) {
+        if (known !== d.id) matIdRemap.set(d.id, known);
+        return;
+      }
+      const nid = freshMaterialId(d.id);
+      matIdRemap.set(d.id, nid);
+      MATERIALS.set(nid, Object.assign({}, d, {
+        id: nid, preset: false,
+        name: (d.name || d.id) + ' (imported)',
+        srcSig: sig                       // so the next open recognises it
+      }));
+      bySig.set(sig, nid);
     });
     saveMaterialLibrary();
     _matPreviews = null;
@@ -16685,7 +16871,14 @@ function restoreDoc(doc, opts = {}) {
     const liveLook0 = keepLook ? liveLook.get(od.id) : null;
     const look = (liveLook0 && liveLook0.surfaces.length === od.materials.length)
       ? liveLook0 : null;
-    const finishes = look ? look.finishes : (od.finishes || {});
+    /* The LIVE look is already using this library's ids and must not be
+       remapped; only the ids that came out of the file are rewritten. */
+    /* Written BACK into the doc, not just used. This same object literal
+       becomes history step 0 after a load, and a later restore that takes the
+       `keepAppearance` path (where the remap is deliberately empty) would
+       otherwise put the file's original ids back and lose the import. */
+    let finishes = look ? look.finishes : remapFinishes(od.finishes || {}, matIdRemap);
+    if (!look && matIdRemap.size) od.finishes = finishes;
     const mats = od.materials.map((md, i) => {
       const src = (look && look.surfaces[i]) ? look.surfaces[i] : md;
       const mat = new THREE.MeshStandardMaterial({ color: src.color, side: THREE.DoubleSide });
@@ -16714,6 +16907,9 @@ function restoreDoc(doc, opts = {}) {
        signal to convert its per-face flags and shading creases into edge
        marks. One written after has it, even when empty, and is left alone -
        an empty map means "everything decided by angle", not "not migrated". */
+    if (od.symPlane && typeof od.symPlane.offset === 'number') {
+      mesh.userData.symPlane = { axis: od.symPlane.axis, offset: od.symPlane.offset };
+    }
     if (od.edgeShade) mesh.userData.edgeShade = { ...od.edgeShade };
     else migrateEdgeShade(obj);
     if (typeof od.autoSmoothAngleDeg === 'number') {
@@ -16733,6 +16929,23 @@ function restoreDoc(doc, opts = {}) {
   const sel = keepSel ? liveSel : doc.selection;
   App.mode = (sel && sel.mode) || App.mode || 'object';
   App.activeObjectId = (sel && findObject(sel.activeObjectId)) ? sel.activeObjectId : null;
+  /* NOT on undo. Toggling symmetry pushes no history and is deliberately
+     excluded from pushHistory's dedupe signature, so what a step carries is
+     not "the symmetry state at this step" but "the state at the last GEOMETRY
+     edit" - arbitrarily stale. Restoring that on undo meant turning symmetry
+     off and pressing Undo switched it back ON, and the next drag mirrored
+     across a plane the user had just switched off.
+
+     `keepAppearance` is undo's flag, and this follows the same rule as the
+     material library and the environment: undo is about shape.
+
+     Guarded on the field EXISTING, not on its value: a doc written before
+     a2.44 has no symmetry block, and reading `on` off it would read undefined
+     and switch symmetry off on every load of an older file. */
+  if (doc.symmetry && !opts.keepAppearance) {
+    App.symmetry = !!doc.symmetry.on;
+    if (doc.symmetry.axis) App.symmetryAxis = doc.symmetry.axis;
+  }
   App.selectedObjectIds = new Set(((sel && sel.objects) || []).filter(id => findObject(id)));
 
   hideAllHelpers();
@@ -19339,6 +19552,7 @@ if (PICK_DEBUG) {
     get activePointers() { return activePointers; },
     get directDrag() { return directDrag; },
     finishGeoSetup,
+    materialDefSig, remapFinishes, refreshPendingAppearance,
     get boxDrag() { return boxDrag; },
     get extrudeDrag() { return extrudeDrag; },
     scheduleAutosave, AUTOSAVE_KEY,

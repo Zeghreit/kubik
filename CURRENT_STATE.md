@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~16,800 lines)
-- Version at time of writing: **a2.43a**
+- Version at time of writing: **a2.44c**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1788,6 +1788,89 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## What survives a round trip (a2.44 / a / b / c)
+
+The other half of the audit: three things that should have come back the way
+they went in, and did not.
+
+### A file's own materials now arrive (the oldest outstanding item)
+
+`restoreDoc`'s rule was "keep ours if we already know that id" — and
+`loadMaterialLibrary` seeds **every preset id at startup**, so an incoming
+preset was ALWAYS the loser. Add scratches to Metal, save, open the file on
+another device: plain Metal, no scratches, no warning. Custom `mat_…` ids were
+safe only until two collided, which their generator does not prevent.
+
+Now: same id and the same look, keep ours. Same id, a **different** look, and
+it comes in under a fresh id with every face that referenced it repointed
+(`matIdRemap` → `remapFinishes`).
+
+**The whole difficulty is deciding what "the same look" means.**
+
+- The signature is an **explicit field list**, not "whatever keys the object
+  has". `JSON.stringify` emits insertion order, and the same preset arrives as
+  `{…masks}` in the session that saved it and `{…masks,bevel:0}` after a
+  reload, because `saveMaterialLibrary` writes `bevel: d.bevel || 0`
+  unconditionally while the mask button only appends `masks`. That alone made
+  a masked preset **fail to match itself**, minting "Metal (imported)" beside
+  Metal on every open. Absent-versus-zero did the same.
+- The **name is in the signature**. Two materials configured identically but
+  named differently are two materials to whoever named them; leaving the name
+  out merged them and repointed faces onto whichever came later in iteration
+  order.
+- An import records **`srcSig`**, the signature it was an import OF, because it
+  gets renamed and so no longer matches the file it came from. Without it the
+  second open of a file mints another copy, and the third another.
+- The remap is written **back into the doc**, which becomes history step 0
+  after a load — otherwise an undo down the `keepAppearance` path put the
+  file's original ids back and lost the import.
+
+### Painting while an op bar is open
+
+An op re-runs from its snapshot every slider frame, and the snapshot carries
+the materials — so painting a face during a Bevel was reverted by the next
+nudge, silently, with no history step to recover it from
+(`applyFinishToSelection` deliberately pushes none).
+
+The answer is split, because only half of it is possible:
+
+- **Where the op has not changed the face grouping** — Set flow, Circularize,
+  Smooth, every transform — the paint is carried by repainting the SNAPSHOT
+  (`refreshPendingAppearance`). The geometry still comes back from the
+  snapshot every frame, as it must; only the appearance follows.
+- **Where it has** — Inset and Bevel add face groups — the paint has nowhere
+  to live in the snapshot's numbering, so it is **refused before anything is
+  painted**: "Finish the Inset first". Mapping post-op groups back would mean
+  threading face provenance through every op, which is far more than this is
+  worth. A refusal is a bad outcome; a silent revert one nudge later is worse.
+- Both helpers walk **`op.multi[]` as well as `op.state`**. Subdivide and
+  Smooth by angle do not re-run from `op.state` at all — they snapshot each
+  selected object separately — so a check that looked only at `op.objId` let
+  the paint through and then ate it on every object in the selection.
+
+### The symmetry plane is saved
+
+The plane is **captured**, deliberately, so it cannot drift as the model grows
+— and then every save and every undo threw it away and silently recaptured it
+from the current bounding box. Two numbers (`{axis, offset}`) now travel with
+the object.
+
+`App.symmetry` itself travels too, but **only on a real load, never on undo**.
+Toggling symmetry pushes no history and is excluded from `pushHistory`'s
+dedupe signature, so what a step carries is not "the symmetry state at this
+step" but "the state at the last GEOMETRY edit" — arbitrarily stale. Restoring
+that on undo meant switching symmetry off and pressing Undo turned it back on,
+and the next drag mirrored across a plane the user had just switched off.
+`keepAppearance` is undo's flag, and this follows the same rule as the material
+library and the environment: **undo is about shape**.
+
+### The pattern across a2.43 and a2.44
+
+**Nine of the ten defects found reviewing these two fix passes were in the
+fixes, not in the code they fixed.** Bug-fixing has a higher defect-injection
+rate than feature work in this project, and it is the one kind of change that
+tends to skip review because each piece looks small.
 
 ## Interrupted gestures and stranded state (a2.43 / a2.43a)
 
