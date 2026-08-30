@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~16,800 lines)
-- Version at time of writing: **a2.48b**
+- Version at time of writing: **a2.49**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1789,7 +1789,22 @@ otherwise the inspector reports the position the object was reflected FROM.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
 
-## The chrome pass (a2.47 / a2.48)
+## The chrome pass (a2.47 / a2.48 / a2.49)
+
+### a2.49 — the drawer stops apologising
+
+Five of its rows were notes explaining that the control you are looking for is
+somewhere else, and **"Appearance" was one button followed by three paragraphs
+of that**. The placements they describe are all deliberate and all documented
+in the Help card, so from the drawer they only have to POINT — one line each,
+not a paragraph. Eleven lines of note text became four. "Snap step" became
+"Snap amounts", because the old name read as a verb when it is a set of values
+you set once.
+
+The lighting note kept its gesture ("hold two fingers on the model and slide to
+aim it") because that is the part you cannot discover by looking.
+
+
 
 Measured at phone size before anything was touched, because "measure, don't
 reason" is the rule that has never failed here — and because with no
