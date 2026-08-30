@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~20,200 lines)
-- Version at time of writing: **a2.56**
+- Version at time of writing: **a2.57**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1811,6 +1811,73 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## The frame marks what a tap can reach (a2.57)
+
+**Two complaints, one idea.** Zeghreit: *"when i select any object —
+unselected is getting dull highlighted wireframe too — it is confusing, and
+when i switch to component mode i can by accident select something from
+other object."* Both come from the same lie: the app was drawing and
+accepting more than it meant.
+
+**The frame.** `updateFrameVisibility` used to light EVERY object's
+wireframe — the active one at `FRAME_ACTIVE 2.0`, everything else dimmed at
+`FRAME_DIM 0.8` — whenever anything at all was selected, as an "editing is
+active" cue. Read back, a dim frame says *this is in play*, which in a
+component mode is the opposite of true: the pickers only ever look at the
+active object. `FRAME_DIM` is gone. What is framed now is the selected
+objects in Object mode, and **in a component mode the active one alone.**
+
+**The lock.** In a component mode, a tap that hits no element used to fall
+through to `pickObjectAt` and re-target the whole session — mode, selection
+and anchors — onto whatever was under the finger. Every fumbled vertex tap
+near a neighbour silently moved you to a different model. It now refuses,
+with a toast naming the object you are on. The exception is having no
+object to be locked TO (after a delete, or on a fresh scene): then a tap
+adopts one, which is how you get in at all.
+
+**A lock needs a door, and the toast has to be telling the truth.** The
+refusal says *switch objects in Object mode*, and Object mode does not write
+`App.activeObjectId` — `selectObjectClick` only touches `selectedObjectIds`,
+and `setMode` used to re-target only when the lock was EMPTY. So the
+advertised way out did nothing. `setMode` now drops the lock when the held
+object is not among the selected ones, and hands it to the selection:
+**what you have selected in Object mode is what you edit.** An empty
+selection changes nothing — that is the "carry on where you were" case. The
+same rule fixed Duplicate, which leaves the selection on the copies and the
+lock on the original, and it is why the Scene-list chip now writes
+`selectedObjectIds` as well as `activeObjectId` — a chip that moved only the
+lock would be silently undone by the next trip out to Object mode and back.
+
+**And the thing the removed work was secretly doing.** Framing every object
+also gave every object `ensureHelpers`, and `snapTargetAt` quietly depended
+on it: no `userData.topo` means no corners and no edges, so the snap falls
+back to *wherever the ray met the surface*. A snap target is by definition
+not the thing you are dragging, so it is exactly the object that is no
+longer framed — geometry snapping would have degraded to face-only, with no
+message at all. `snapTargetAt` now calls `ensureHelpers` on the object it
+is refining against. **Fourth time in this series** that an optimisation
+removing work removed something undocumented the work was doing (bounding
+spheres, shader-program cache entries, vertex welding, and now topology for
+snap targets). Assume it every time.
+
+Costs and limits, recorded:
+
+- Framing no longer builds topology for the whole scene on the first tap,
+  which is the real win here: one model's topology instead of N.
+- `ensureHelpers` inside the snap loop means the first pointermove over a
+  heavy neighbour builds its topology synchronously — a one-frame hitch,
+  once per object per session. Accepted.
+- Detach leaves the lock on the SOURCE, so the new piece is not tappable
+  until you go out to Object mode and pick it. Correct as a default — you
+  detached a part off the thing you are working on — and the door works.
+- Grow-then-Shrink in Object mode leaves the selection on an arbitrary
+  member, so entering a component mode re-targets there. Pre-existing
+  arbitrariness in `shrinkSelection`, now visible. Not fixed.
+
+Covered by `_lock_probe` (22 assertions), which fails loudly on a2.56:
+`1.framed` lists both objects, `4.active_held=JUMPED TO`, `8.door=LOCK
+STUCK ON`, `9.snap_kind=face`.
 
 ## The help card, rewritten (a2.56)
 

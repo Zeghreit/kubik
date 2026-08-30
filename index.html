@@ -1172,7 +1172,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.56</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.57</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -11657,37 +11657,39 @@ function setActiveObjectHelpersVisible(obj, mode) {
   if (ov) ov.visible = false;
 }
 
-/* Plain multipliers on the theme's own edge colour. The active object's
+/* A plain multiplier on the theme's own edge colour. The framed object's
    wireframe runs HOT - above 1 - which the ACES tone mapping rolls off
-   rather than clipping, so it reads brighter without going chalky. The
-   inactive gain keeps the same 40% relationship it had at 1.0. */
+   rather than clipping, so it reads brighter without going chalky. */
 const FRAME_ACTIVE = 2.0;
-const FRAME_DIM = 0.8;
 
-// Shows every object's wireframe whenever anything at all is selected, in any
-// mode, and hides it all again once the scene has no selection - so the frame
-// acts as an "editing is active" cue rather than something tied to Edge mode.
+/* THE FRAME MARKS WHAT A TAP CAN REACH, and nothing else (a2.57).
+
+   It used to light EVERY object's wireframe, dimmed, whenever anything at
+   all was selected - as an "editing is active" cue. Read back, it says "all
+   of these are in play", which in a component mode is the opposite of true:
+   the pickers only ever look at the active object. A dim frame on a model
+   you cannot touch is an invitation to try.
+
+   So: the selected objects in Object mode, and in a component mode THE
+   ACTIVE ONE ALONE. Everything else goes dark, which is also the honest
+   picture of the lock in handleTap.
+
+   ensureHelpers now runs only for what will actually be framed. Before, one
+   tap anywhere built the full topology of every model in the scene. */
 function updateFrameVisibility() {
-  const anySelected = App.mode === 'object'
-    ? App.selectedObjectIds.size > 0
-    : App.selectedElements.size > 0 || !!App.activeObjectId;
+  const framed = (o) => App.mode === 'object'
+    ? App.selectedObjectIds.has(o.id)
+    : o.id === App.activeObjectId;
 
   App.objects.forEach(o => {
-    if (anySelected) ensureHelpers(o);
+    const on = framed(o);
+    if (on) ensureHelpers(o);
     const lines = o.mesh.userData.edgeLines;
     if (!lines) return;
-    lines.visible = anySelected;
-    /* The object you're EDITING gets its wireframe at full strength; every
-       other object's is dimmed. Before this they were identical, so with
-       more than one cube on screen nothing said which one your taps were
-       going to land on. LineBasicMaterial.color multiplies the per-vertex
-       colours, so this dims without touching the theme's own values. */
-    const active = App.mode === 'object'
-      ? App.selectedObjectIds.has(o.id)
-      : o.id === App.activeObjectId;
-    lines.material.color.setScalar(active ? FRAME_ACTIVE : FRAME_DIM);
+    lines.visible = on;
+    lines.material.color.setScalar(FRAME_ACTIVE);
     // Dots only ever show on the active object, and at 2px they need to
-    // keep up with a wireframe that just got twice as bright.
+    // keep up with a wireframe that runs twice as bright.
     const pts = o.mesh.userData.vertexPoints;
     if (pts) pts.material.color.setScalar(FRAME_ACTIVE);
   });
@@ -11741,6 +11743,21 @@ function setMode(mode) {
     // A hidden object cannot be the one you are editing - the component
     // pickers read activeObjectId directly and would happily work on it.
     if (App.hidden.has(App.activeObjectId)) App.activeObjectId = null;
+    /* THE LOCK NEEDS A DOOR (a2.57). Component taps are now refused on
+       anything but the active object, and the toast tells you to switch in
+       Object mode - which was a lie, because Object mode never writes this
+       field. Selecting a different object there and coming back left the
+       lock on the model you had walked away from, with no way to move it
+       but the Scene list.
+
+       So: what you have selected in Object mode is what you edit. If the
+       held object is not among the selected ones, it loses the lock here
+       and the line below hands it to the selection. Also fixes duplicate,
+       which leaves the selection on the copies and the lock on the
+       original. An EMPTY selection changes nothing - that is the "carry on
+       where you were" case, not a re-target. */
+    if (App.activeObjectId && App.selectedObjectIds.size &&
+        !App.selectedObjectIds.has(App.activeObjectId)) App.activeObjectId = null;
     if (!App.activeObjectId && App.selectedObjectIds.size >= 1) {
       const pick = Array.from(App.selectedObjectIds).filter(id => !App.hidden.has(id));
       if (pick.length) App.activeObjectId = pick[0];
@@ -13971,9 +13988,21 @@ function snapTargetAt(ev, skip) {
       wn.copy(h.face.normal).applyMatrix3(nm).normalize();
       if (wn.dot(raycaster.ray.direction) >= 0) continue;
     }
+    /* TOPOLOGY ON DEMAND (a2.57). This loop used to lean on a side effect:
+       updateFrameVisibility gave EVERY object helpers the moment anything
+       was selected, so a snap target always had a topo waiting. Framing is
+       per-object now, and a snap target is by definition not the thing you
+       are dragging - so it would arrive here bare and the snap would
+       silently fall back to "wherever the ray met the surface", losing
+       corner and edge snapping with no message at all.
+
+       Build it here instead. ensureHelpers returns immediately once the
+       topology exists and leaves its points and lines invisible;
+       updateFrameVisibility remains the only thing that lights them. */
+    ensureHelpers(o);
     const t = o.mesh.userData.topo;
-    // No topology means no corners or edges to refine to, but the surface
-    // itself is still a perfectly good thing to land on.
+    // Belt and braces: no topology means no corners or edges to refine to,
+    // but the surface itself is still a perfectly good thing to land on.
     if (!t) { if (!skipVerts || o.id !== App.activeObjectId) return { point: h.point.clone(), kind: 'face', objId: o.id }; continue; }
     let g = -1;
     for (const fg of t.faceGroups) {
@@ -16202,8 +16231,24 @@ function handleTap(ev) {
     return;
   }
 
-  // no element hit: see if user tapped a different object's surface to switch active object
+  /* No element hit. This is where a near-miss used to become a whole new
+     session on a different model (a2.57).
+
+     In a component mode you are working on ONE object: the pickers only
+     look at the active one, so a tap that finds nothing there has found
+     nothing, full stop. Re-targeting on it meant every fumbled vertex tap
+     near a neighbour silently moved the mode, the selection and the anchors
+     onto that neighbour. Say so instead. Changing object is Object mode or
+     the Scene list - both deliberate, neither reachable by a slipped thumb.
+
+     The exception is having no object to be locked TO, which is how you get
+     in: after a delete, or when nothing has been picked yet. */
   const hitObj = pickObjectAt(ev);
+  const locked = findObject(App.activeObjectId);
+  if (hitObj && locked && hitObj.id !== locked.id) {
+    toast('Editing ' + locked.name + ' - switch objects in Object mode');
+    return;
+  }
   if (hitObj && hitObj.id !== App.activeObjectId) {
     App.activeObjectId = hitObj.id;
     App.selectedObjectIds = new Set([hitObj.id]);
@@ -19879,6 +19924,13 @@ function refreshUI() {
         if (App.pendingOp && App.pendingOp.live) confirmPendingOp();
         else if (App.pendingOp) cancelPendingOp();
         App.activeObjectId = o.id;
+        /* AND the object selection with it (a2.57). Entering a component
+           mode now hands the lock to whatever Object mode has selected, so
+           a chip that moved the lock and left the selection behind would be
+           silently undone by the next trip out to Object mode and back -
+           putting you on the model you deliberately walked away from.
+           handleTap's own re-target has always written both. */
+        App.selectedObjectIds = new Set([o.id]);
         App.selectedElements.clear();
         hideAllHelpers();
         setActiveObjectHelpersVisible(o, App.mode);
