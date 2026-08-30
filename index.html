@@ -1172,7 +1172,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.53</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.54</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -2143,8 +2143,8 @@ function applyTheme(name) {
     (Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material])
       .forEach(m => { if (m.userData.themedDefault) m.color.setHex(t.material); });
 
-    const ov = o.mesh.userData.faceOverlays;
-    if (ov) ov.forEach(m => m.material.color.setHex(SELECT_COLOR));
+    const ov = o.mesh.userData.faceOverlay;
+    if (ov) ov.material.color.setHex(SELECT_COLOR);
 
     // Repaint every helper, not just the one for the current mode - otherwise
     // the vertex dots keep last theme's colour until you switch to Vertex mode.
@@ -3632,11 +3632,19 @@ function disposeObject(obj) {
 // Removes and disposes just the vertex/edge/face helper visuals for an object,
 // without touching its main geometry/material. Used before rebuilding topology
 // after a cut/split/extrude, and as part of full object disposal.
+/* BOTH CALLERS THROW THE MAIN GEOMETRY AWAY IN THE SAME BREATH, and that is
+   load-bearing. The face overlay's geometry does not own its position
+   attribute - it BORROWS the mesh's - and three's onGeometryDispose removes
+   every attribute of the geometry handed to it, with no reference counting.
+   So disposing the overlay deletes the GL buffer the model itself is drawn
+   from. Harmless while the model's geometry is being replaced anyway; a
+   future "drop the helpers, keep the mesh" would freeze the model on screen. */
 function disposeHelpersOnly(obj) {
   const ud = obj.mesh.userData;
   if (ud.vertexPoints) { obj.mesh.remove(ud.vertexPoints); ud.vertexPoints.geometry.dispose(); ud.vertexPoints.material.dispose(); ud.vertexPoints = null; }
   if (ud.edgeLines) { obj.mesh.remove(ud.edgeLines); ud.edgeLines.geometry.dispose(); ud.edgeLines.material.dispose(); ud.edgeLines = null; }
-  if (ud.faceOverlays) { ud.faceOverlays.forEach(o => { obj.mesh.remove(o); o.geometry.dispose(); o.material.dispose(); }); ud.faceOverlays = null; }
+  if (ud.faceOverlay) { obj.mesh.remove(ud.faceOverlay); ud.faceOverlay.geometry.dispose(); ud.faceOverlay.material.dispose(); ud.faceOverlay = null; }
+  ud.faceOverlayIds = null;
   disposeSelectionOverlay(obj);
   disposeSoftOverlay(obj);
   ud.topo = null;
@@ -4709,20 +4717,87 @@ function ensureHelpers(obj) {
   obj.mesh.add(lines);
   obj.mesh.userData.edgeLines = lines;
 
-  // face overlays (one per material group), sharing the live position attribute
-  const overlays = topo.faceGroups.map(fg => {
+  /* The face overlay is NOT built here (a2.54). One per face group, added to
+     the mesh and left there invisible for the session, meant a model with a
+     thousand faces carried a thousand children for updateMatrixWorld to walk
+     on every frame - to draw the two or three that were selected. It is one
+     mesh now, built on demand by syncFaceOverlay. */
+  obj.mesh.userData.faceOverlay = null;
+  obj.mesh.userData.faceOverlayIds = null;
+}
+
+/* ONE overlay for the whole face selection (a2.54).
+
+   Its index is the selected groups' triangles, concatenated, and it is
+   rebuilt only when that set of groups changes. The POSITIONS are never
+   copied at all: the geometry borrows the mesh's own position attribute, so
+   the overlay follows a drag without anything running per frame. */
+function syncFaceOverlay(obj) {
+  const ud = obj.mesh.userData;
+  const topo = ud.topo;
+  if (!topo) return;
+  const geo = obj.mesh.geometry;
+  const index = geo.index;
+  /* THE SELECTION BELONGS TO ONE OBJECT. App.selectedElements is global, and
+     every object gets a topo as soon as anything is selected, so an overlay
+     drawn for any object but the active one paints ITS face number 2 red
+     because face 2 of something else is selected. applyTheme is the path that
+     reaches every object at once; before this guard, changing theme in Face
+     mode tinted a face on every model in the scene. */
+  const want = [];
+  if (App.mode === 'face' && index && obj.id === App.activeObjectId) {
+    App.selectedElements.forEach(gi => { if (topo.faceGroups[gi]) want.push(gi); });
+    // Sorted, so "the same groups" is a list comparison rather than a set one.
+    want.sort((a, b) => a - b);
+  }
+  if (!want.length) {
+    if (ud.faceOverlay) ud.faceOverlay.visible = false;
+    ud.faceOverlayIds = null;
+    return;
+  }
+
+  if (!ud.faceOverlay) {
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', obj.mesh.geometry.attributes.position);
-    const idx = obj.mesh.geometry.index.array.slice(fg.triStart * 3, (fg.triStart + fg.triCount) * 3);
-    g.setIndex(new THREE.BufferAttribute(idx, 1));
-    const m = new THREE.MeshBasicMaterial({ color: SELECT_COLOR, transparent: true, opacity: 0.55, depthTest: false, side: THREE.DoubleSide, fog: false });
+    const m = new THREE.MeshBasicMaterial({
+      color: SELECT_COLOR, transparent: true, opacity: 0.55,
+      depthTest: false, side: THREE.DoubleSide, fog: false
+    });
     const mesh = new THREE.Mesh(g, m);
-    mesh.visible = false;
+    /* NOT CULLED. The geometry borrows a position attribute that a drag
+       rewrites, and three computes a bounding sphere only when there is none
+       - so the faces would move while their bounds stayed behind, and the
+       tint would blink out as the OLD position left the frame. The per-group
+       overlays were culled against exactly the same never-recomputed sphere,
+       so this is a latent bug of theirs being closed, not one being avoided. */
+    mesh.frustumCulled = false;
     mesh.renderOrder = 8;
     obj.mesh.add(mesh);
-    return mesh;
+    ud.faceOverlay = mesh;
+  }
+  const mesh = ud.faceOverlay;
+  mesh.visible = true;
+  mesh.material.color.setHex(SELECT_COLOR);
+  // A rebuild installs a new attribute; the borrow has to follow it.
+  if (mesh.geometry.attributes.position !== geo.attributes.position) {
+    mesh.geometry.setAttribute('position', geo.attributes.position);
+    ud.faceOverlayIds = null;
+  }
+
+  const prev = ud.faceOverlayIds;
+  if (prev && prev.length === want.length && prev.every((g, i) => g === want[i])) return;
+
+  let n = 0;
+  want.forEach(gi => { n += topo.faceGroups[gi].triCount * 3; });
+  const src = index.array;
+  const idx = new src.constructor(n);
+  let w = 0;
+  want.forEach(gi => {
+    const fg = topo.faceGroups[gi];
+    const end = (fg.triStart + fg.triCount) * 3;
+    for (let i = fg.triStart * 3; i < end; i++) idx[w++] = src[i];
   });
-  obj.mesh.userData.faceOverlays = overlays;
+  mesh.geometry.setIndex(new THREE.BufferAttribute(idx, 1));
+  ud.faceOverlayIds = want;
 }
 
 // ensureHelpers only builds these materials once per object, guarded by its
@@ -11003,7 +11078,6 @@ function setColMix(arr, i, hexA, hexB, t) {
 function refreshElementColors(obj) {
   const points = obj.mesh.userData.vertexPoints;
   const lines = obj.mesh.userData.edgeLines;
-  const overlays = obj.mesh.userData.faceOverlays;
   const topo = obj.mesh.userData.topo;
   /* Both vertex and edge colours are refreshed every time, not just the
      active mode's - they're now both on screen in any component mode, so
@@ -11050,14 +11124,7 @@ function refreshElementColors(obj) {
     });
     lines.geometry.attributes.color.needsUpdate = true;
   }
-  if (App.mode === 'face' && overlays) {
-    overlays.forEach((o, i) => {
-      o.visible = App.selectedElements.has(i);
-      o.material.color.setHex(SELECT_COLOR);
-    });
-  } else if (overlays) {
-    overlays.forEach(o => { o.visible = false; });
-  }
+  syncFaceOverlay(obj);
   syncSelectionOverlay(obj);
   syncSoftOverlay(obj);
 }
@@ -11566,7 +11633,7 @@ function refreshSoftOverlayPositions(obj) {
 function setActiveObjectHelpersVisible(obj, mode) {
   if (!obj) return;
   ensureHelpers(obj);
-  const p = obj.mesh.userData.vertexPoints, l = obj.mesh.userData.edgeLines, ov = obj.mesh.userData.faceOverlays;
+  const p = obj.mesh.userData.vertexPoints, l = obj.mesh.userData.edgeLines, ov = obj.mesh.userData.faceOverlay;
   /* Show vertices AND edges in any component mode, not only the one that's
      active. They used to appear only in their own mode, which made the very
      first tap impossible: to enter vertex mode you have to tap a vertex, but
@@ -11585,7 +11652,9 @@ function setActiveObjectHelpersVisible(obj, mode) {
   const inComponentMode = mode === 'vertex' || mode === 'edge' || mode === 'face';
   if (p) p.visible = inComponentMode;
   if (l) l.visible = inComponentMode;
-  if (ov) ov.forEach(o => o.visible = false);
+  /* Hidden, not torn down: refreshElementColors runs right after every path
+     that reaches here and turns it back on if the selection wants it. */
+  if (ov) ov.visible = false;
 }
 
 /* Plain multipliers on the theme's own edge colour. The active object's
@@ -11633,7 +11702,7 @@ function hideAllHelpers() {
     disposeSoftOverlay(o);
     if (o.mesh.userData.vertexPoints) o.mesh.userData.vertexPoints.visible = false;
     if (o.mesh.userData.edgeLines) o.mesh.userData.edgeLines.visible = false;
-    if (o.mesh.userData.faceOverlays) o.mesh.userData.faceOverlays.forEach(x => x.visible = false);
+    if (o.mesh.userData.faceOverlay) o.mesh.userData.faceOverlay.visible = false;
   });
 }
 
@@ -20217,7 +20286,7 @@ if (PICK_DEBUG) {
     syncSoftOverlay, disposeSoftOverlay, gizmoStrokes, refreshSoftOverlayPositions,
     syncSelectionOverlay, refreshSelectionOverlayPositions, selOverlayFits,
     SNAP_VERT_PX, SNAP_EDGE_PX,
-    ensureVertEdges, syncHelperGeometry,
+    ensureVertEdges, syncHelperGeometry, syncFaceOverlay,
     setSoft, cycleEditMode, engageSoftSlide, softSlideMove, endSoftSlide, refreshSoftHud,
     enterIsolation, exitIsolation, reconcileIsolation, applyIsolation, objectPickable,
     unhideObject, isolationOn,

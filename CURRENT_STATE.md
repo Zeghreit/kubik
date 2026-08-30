@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~20,200 lines)
-- Version at time of writing: **a2.53**
+- Version at time of writing: **a2.54**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1809,6 +1809,46 @@ otherwise the inspector reports the position the object was reflected FROM.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
 
+## One face overlay, not one per face group (a2.54)
+
+`ensureHelpers` built a `Mesh`, a `BufferGeometry` and a
+`MeshBasicMaterial` **per face group**, added every one of them to the mesh,
+and left them there for the rest of the session with `visible = false`. Only
+the selected ones were ever drawn - but `updateMatrixWorld` recurses into
+children whether they are visible or not, so a 128-group sphere carried 130
+helper children to be walked on every frame, and a thousand-face model carried
+a thousand. It carries **two** now.
+
+`syncFaceOverlay` builds ONE mesh on demand and re-indexes it - the selected
+groups' triangles, concatenated - only when that set of groups changes. It
+borrows the mesh's live position attribute exactly as the old ones did, so it
+follows a drag with nothing running per frame.
+
+**The active-object guard is the correctness part.** `App.selectedElements` is
+global, and `updateFrameVisibility` gives every object a topo as soon as
+anything is selected - so an overlay drawn for any object but the active one
+paints ITS face number 2 because face 2 of something else is selected.
+`applyTheme` calls `refreshElementColors` on every object, so switching theme
+in Face mode tinted a face on every model in the scene, and it stayed tinted
+until a mode or object switch. The per-group version read the same global and
+had the same bug; a2.54 would additionally have ALLOCATED on the wrong object,
+so `syncFaceOverlay` now returns early unless `obj.id === App.activeObjectId`.
+
+`frustumCulled = false`, for the reason a2.53 gives: a geometry that borrows a
+position attribute a drag rewrites keeps the bounding sphere it was built
+with, and three recomputes only a null one.
+
+**And a landmine, now written down at `disposeHelpersOnly`:** the overlay
+geometry does not own its position attribute, and three's `onGeometryDispose`
+removes every attribute of the geometry handed to it with no reference
+counting - so disposing the overlay deletes the GL buffer the MODEL is drawn
+from. Both callers throw the main geometry away in the same breath, which is
+the only reason it is harmless. A future "drop the helpers, keep the mesh"
+would freeze the model on screen.
+
+Verified: `_verify.py` PASS; `_shade_probe.py` (44 assertions) green; all 18
+existing suites byte-identical to a2.51c.
+
 ## The selection overlay is nudged, not rebuilt (a2.53)
 
 `syncSelectionOverlay` threw its GPU objects away and built new ones on every
@@ -2254,11 +2294,27 @@ needed, and the fallback for "no value" is not "nothing happens".
   a2.52, below.
 - ~~`syncSelectionOverlay` disposes and rebuilds its GPU objects every
   pointermove.~~ Done at a2.53, below.
-- `ensureHelpers` builds one Mesh + geometry + material **per face group**, and
-  they stay children of the mesh for the rest of the session — so
-  `updateMatrixWorld` walks them every frame even while invisible.
-- The render loop is an unconditional rAF plus a second WebGL context for the
-  view cube, so an idle app on a desk renders 60fps for ever.
+- ~~`ensureHelpers` builds one Mesh + geometry + material **per face
+  group**.~~ Done at a2.54, below.
+- ~~The render loop is an unconditional rAF.~~ Done at a2.46 (on-demand
+  rendering); this bullet outlived its fix.
+
+**What a2.52-a2.54 did NOT close**, both found by review and both worth a
+version of their own rather than a rushed one:
+
+- **An op-bar drag still rebuilds the face overlay every frame.**
+  `applyPendingOp` -> `restoreObjectState` -> `rebuildFromEditable` ->
+  `disposeHelpersOnly` runs per pointermove, and it disposes the overlay's
+  material as well as its geometry. That material is almost certainly the only
+  user of its shader program, so `usedTimes` hits zero, the program is deleted
+  and the next frame links it again - which is EXACTLY the pessimisation a2.45
+  documented at `opMatBin` and fixed for object materials. The a2.54 design
+  makes the fix easy: keep the mesh and the material across a rebuild and let
+  the borrow guard re-point the position attribute. Measure first.
+- **Superseded index attributes are never released.** `setIndex` replaces
+  `geometry.index` without removing the old attribute, and three only removes
+  the CURRENT one at dispose. One throwaway element buffer per selection
+  change, reclaimed by GC rather than deleted. Soft, bounded, real.
 
 ## What survives a round trip (a2.44 / a / b / c)
 
