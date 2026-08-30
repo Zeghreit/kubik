@@ -1172,7 +1172,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.52</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.53</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -8843,8 +8843,9 @@ function beginPendingOp(kind, obj, payload, init) {
 /* WORK COUNTERS, not timers. Wall-clock timing is meaningless in the headless
    harness (virtual time) and noisy on a phone; counting how many times the
    expensive things RUN is stable, and it is what the optimisations here
-   actually change. Read via __kubik.perf. */
-const PERF = { applyOp: 0, topo: 0, shade: 0, shadeTopo: 0, matClone: 0, render: 0, bake: 0 };
+   actually change. Read via __kubik.PERF. */
+const PERF = { applyOp: 0, topo: 0, shade: 0, shadeTopo: 0, selRebuild: 0,
+               matClone: 0, render: 0, bake: 0 };
 
 function applyPendingOp() {
   invalidate();   // see On-demand rendering
@@ -10976,9 +10977,12 @@ function syncHelperGeometry(obj) {
     });
     lines.geometry.attributes.position.needsUpdate = true;
   }
-  // The overlay is rebuilt rather than nudged - it holds only the selected
-  // few, so this is cheaper than tracking which of its vertices moved.
-  syncSelectionOverlay(obj);
+  /* NUDGED, not rebuilt (a2.53). The old note here said rebuilding was
+     cheaper than tracking which vertices moved - but every vertex it holds
+     moves, so there is nothing to track: the list is the selection and the
+     whole of it is rewritten. What rebuilding actually bought was a fresh
+     geometry and material per pointermove. */
+  refreshSelectionOverlayPositions(obj);
   // The falloff overlay is NOT rebuilt here: its field is frozen for the
   // length of the drag, so only the positions have moved.
   refreshSoftOverlayPositions(obj);
@@ -11086,6 +11090,10 @@ const SEL_EDGE_PX = 3.5;     // vs a 1px hairline
 
 function disposeSelectionOverlay(obj) {
   const ud = obj.mesh.userData;
+  // The lists go with the objects they describe. A list outliving its layer
+  // would tell refreshSelectionOverlayPositions to nudge something that is
+  // not there.
+  ud.selPointIds = null; ud.selLineIds = null; ud.selOverlayCount = -1;
   if (ud.selPoints) { obj.mesh.remove(ud.selPoints); ud.selPoints.geometry.dispose(); ud.selPoints.material.dispose(); ud.selPoints = null; }
   if (ud.selLines) {
     obj.mesh.remove(ud.selLines); ud.selLines.geometry.dispose(); ud.selLines.material.dispose();
@@ -11102,7 +11110,18 @@ function disposeSelectionOverlay(obj) {
 
 function syncSelectionOverlay(obj) {
   if (!obj || !obj.mesh || !obj.mesh.userData.topo) return;
+  PERF.selRebuild++;
   disposeSelectionOverlay(obj);
+  /* Recorded even when nothing is drawn: it is how the nudge path knows the
+     overlay was last built for THIS mode, and so that a leftover layer from
+     another mode forces a rebuild rather than being nudged for ever. The
+     COUNT is what the selection was when it was built - not what got drawn.
+     An element the topology cannot place is skipped, so comparing the drawn
+     list against the live selection would come up short on every frame and
+     latch the rebuild on for ever: the cost of a2.52 back, silently, on
+     exactly the model that is already in trouble. */
+  obj.mesh.userData.selOverlayMode = App.mode;
+  obj.mesh.userData.selOverlayCount = App.selectedElements.size;
   const topo = obj.mesh.userData.topo;
   const pa = obj.mesh.geometry.attributes.position;
   const at = (l) => {
@@ -11111,8 +11130,11 @@ function syncSelectionOverlay(obj) {
   };
 
   if (App.mode === 'vertex' && App.selectedElements.size) {
-    const pos = [];
-    App.selectedElements.forEach(l => { const p = at(l); if (p) pos.push(p[0], p[1], p[2]); });
+    const pos = [], ptIds = [];
+    App.selectedElements.forEach(l => {
+      const p = at(l);
+      if (p) { ptIds.push(l); pos.push(p[0], p[1], p[2]); }
+    });
     if (pos.length) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -11123,19 +11145,27 @@ function syncSelectionOverlay(obj) {
       });
       mat.color.setHex(SELECT_COLOR);
       const pts = new THREE.Points(geo, mat);
+      /* NOT CULLED, since a2.53 nudges this geometry rather than replacing
+         it. A retained geometry keeps the boundingSphere it was built with,
+         and three only recomputes one that is null - so a drag would move the
+         dots while their sphere stayed at the old selection, and one selected
+         vertex (radius 0) dragged out of frame would take its own dot off
+         screen. Same reason knifeDots and knifeLine are not culled. */
+      pts.frustumCulled = false;
       pts.renderOrder = 12;   // above the quiet base dots
       obj.mesh.add(pts);
       obj.mesh.userData.selPoints = pts;
+      obj.mesh.userData.selPointIds = ptIds;
     }
   }
 
   if (App.mode === 'edge' && App.selectedElements.size) {
-    const pos = [];
+    const pos = [], edIds = [];
     App.selectedElements.forEach(i => {
       const e = topo.edges[i];
       if (!e) return;
       const a = at(e[0]), b = at(e[1]);
-      if (a && b) pos.push(a[0], a[1], a[2], b[0], b[1], b[2]);
+      if (a && b) { edIds.push(i); pos.push(a[0], a[1], a[2], b[0], b[1], b[2]); }
     });
     if (pos.length) {
       const geo = new LineSegmentsGeometry();
@@ -11149,10 +11179,81 @@ function syncSelectionOverlay(obj) {
       seg.renderOrder = 11;
       obj.mesh.add(seg);
       obj.mesh.userData.selLines = seg;
+      obj.mesh.userData.selLineIds = edIds;
       // Keeps its pixel width correct across resize and rotation, same as
       // every other Line2 in the app.
       gizmoStrokes.push(seg);
     }
+  }
+}
+
+/* DOES THE OVERLAY STILL DESCRIBE THE SELECTION? (a2.53)
+
+   The nudge is only allowed while the answer is yes, and the answer is
+   checked rather than assumed - a drag cannot change the selection, but
+   syncHelperGeometry is reachable from paths that can. The check walks the
+   drawn list, which is the size of the SELECTION, not of the mesh; that is
+   the same premise the overlay itself is built on. */
+function selOverlayFits(obj) {
+  const ud = obj.mesh.userData;
+  if (ud.selOverlayMode !== App.mode) return false;
+  // Face and Object mode draw none of this, so an overlay built for them is
+  // trivially still right.
+  if (App.mode !== 'vertex' && App.mode !== 'edge') return true;
+  const ids = App.mode === 'vertex' ? ud.selPointIds : ud.selLineIds;
+  const n = App.selectedElements.size;
+  // Nothing drawn is the correct picture of nothing selected, and of nothing
+  // else. (A selection whose elements the topology could not place lands here
+  // too, and falls back to the rebuild it always had.)
+  if (!ids) return n === 0;
+  if (ud.selOverlayCount !== n) return false;
+  for (let i = 0; i < ids.length; i++) if (!App.selectedElements.has(ids[i])) return false;
+  return true;
+}
+
+/* The overlay's POSITIONS, refreshed without rebuilding it (a2.53).
+
+   Same move the falloff overlay made at a2.40, for the same reason: a drag
+   moves the mesh every frame and changes nothing about WHICH components are
+   selected, so the dots and the fat line already name the right things. What
+   the rebuild cost per pointermove was a BufferGeometry and a PointsMaterial,
+   or a LineSegmentsGeometry, a LineMaterial and a LineSegments2, plus a
+   remove and an add on the scene graph and a splice and a push through
+   gizmoStrokes - to produce objects naming exactly what was thrown away.
+
+   The fat line still goes through setPositions rather than being poked at:
+   its ends live in an interleaved instance buffer. */
+function refreshSelectionOverlayPositions(obj) {
+  const ud = obj.mesh.userData;
+  const topo = ud.topo;
+  if (!topo) return;
+  if (!selOverlayFits(obj)) { syncSelectionOverlay(obj); return; }
+  if (!ud.selPoints && !ud.selLines) return;
+  const pa = obj.mesh.geometry.attributes.position;
+  const at = (l) => { const g = topo.logicalGroups[l]; return g ? g[0] : -1; };
+
+  if (ud.selPoints && ud.selPointIds) {
+    const p = ud.selPoints.geometry.attributes.position;
+    ud.selPointIds.forEach((l, i) => {
+      const ai = at(l);
+      if (ai >= 0) p.setXYZ(i, pa.getX(ai), pa.getY(ai), pa.getZ(ai));
+    });
+    p.needsUpdate = true;
+  }
+
+  if (ud.selLines && ud.selLineIds) {
+    const pos = [];
+    ud.selLineIds.forEach(ei => {
+      const e = topo.edges[ei];
+      if (!e) return;
+      const a = at(e[0]), b = at(e[1]);
+      if (a < 0 || b < 0) return;
+      pos.push(pa.getX(a), pa.getY(a), pa.getZ(a), pa.getX(b), pa.getY(b), pa.getZ(b));
+    });
+    // Short means an edge went missing under us, and a partial write would
+    // leave the rest of the line where it was. Rebuild instead.
+    if (pos.length === ud.selLineIds.length * 6) ud.selLines.geometry.setPositions(pos);
+    else syncSelectionOverlay(obj);
   }
 }
 
@@ -11268,6 +11369,9 @@ function syncSoftOverlay(obj) {
        circle - which is precisely the thing this overlay exists to show is not
        happening. depthWrite is already off, so blending is well behaved. */
     const pts = new THREE.Points(geo, mat);
+    // Nudged in place by refreshSoftOverlayPositions, so the same stale
+    // bounding sphere applies. See the note on the selected dots.
+    pts.frustumCulled = false;
     /* Fractional on purpose. The base helpers sit at 10 / 9 / 8 and the
        selection overlay at 12 / 11; an equal renderOrder leaves three.js to
        break the tie on object id, which happened to come out right and was
@@ -11380,6 +11484,7 @@ function syncSoftOverlay(obj) {
         depthTest: false, side: THREE.DoubleSide
       });
       const m = new THREE.Mesh(geo, mat);
+      m.frustumCulled = false;   // nudged in place; see the selected dots
       m.renderOrder = 10.4;
       obj.mesh.add(m);
       obj.mesh.userData.softFaces = m;
@@ -20110,6 +20215,7 @@ if (PICK_DEBUG) {
     // drag would have got without pretending to be a finger.
     softWeights, softFalloff, softSeeds, seedSoftRadius, refreshSoftField, clearSoftField,
     syncSoftOverlay, disposeSoftOverlay, gizmoStrokes, refreshSoftOverlayPositions,
+    syncSelectionOverlay, refreshSelectionOverlayPositions, selOverlayFits,
     SNAP_VERT_PX, SNAP_EDGE_PX,
     ensureVertEdges, syncHelperGeometry,
     setSoft, cycleEditMode, engageSoftSlide, softSlideMove, endSoftSlide, refreshSoftHud,

@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~20,200 lines)
-- Version at time of writing: **a2.52**
+- Version at time of writing: **a2.53**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1809,6 +1809,50 @@ otherwise the inspector reports the position the object was reflected FROM.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
 
+## The selection overlay is nudged, not rebuilt (a2.53)
+
+`syncSelectionOverlay` threw its GPU objects away and built new ones on every
+pointermove: a `BufferGeometry` and a `PointsMaterial` in Vertex mode, a
+`LineSegmentsGeometry`, a `LineMaterial` and a `LineSegments2` in Edge mode, a
+remove and an add on the scene graph, and a splice and a push through
+`gizmoStrokes` - to produce objects naming exactly the components it had just
+disposed. A drag cannot change WHAT is selected.
+
+`refreshSelectionOverlayPositions` writes the positions into the buffers that
+already exist, which is the move `refreshSoftOverlayPositions` made for the
+falloff at a2.40. `selOverlayFits` is the gate: same mode, same selection SIZE
+as when the overlay was built, and every id it drew still selected. Anything
+else falls back to the full rebuild, which `refreshElementColors` still calls
+outright. Measured: **0 rebuilds across a six-frame drag**, in Vertex and Edge
+mode both, and the stroke list does not grow.
+
+**And the removed work was doing something nobody had written down.** This is
+the same shape as a2.45's clone-blanking and it is worth naming again.
+Rebuilding gave every frame a brand-new geometry whose `boundingSphere` was
+null - and three only computes one that IS null, so a fresh geometry got a
+correct sphere for free, every frame, as a side effect of the churn. Retain the
+geometry and that sphere freezes at where the selection was BEFORE the drag.
+`THREE.Points` is frustum-culled by default, so **one** selected vertex has a
+radius-0 sphere at its old corner: drag it into a spike, orbit until the old
+corner leaves the frame, and the dot vanishes while the drawer still says the
+vertex is selected. `frustumCulled = false` on the layer, which is what
+`knifeDots` and `knifeLine` already do for the same reason - an overlay the
+size of the selection has nothing to gain from being culled. **The falloff
+overlay has had the identical hole since a2.40** and is fixed with it.
+
+The other thing review caught was a latch: comparing the DRAWN list against
+the live selection meant that any element the topology could not place came up
+short on every frame and turned the rebuild back on permanently - the whole win
+handed back, silently, on exactly the model already in trouble. The count
+recorded at build time is what is compared now.
+
+Verified: `_verify.py` PASS; `_shade_probe.py` (34 assertions) green; all 18
+existing suites byte-identical to a2.51c.
+
+*Known, pre-existing, not touched here:* `applyTheme` calls
+`refreshElementColors` on every object, and in a component mode that paints the
+ACTIVE object's selection ids against every inactive object's topology.
+
 ## applyShading splits in two (a2.52)
 
 **A drag moves vertices; it cannot change topology.** So `buildShadingTopo`
@@ -2208,8 +2252,8 @@ needed, and the fallback for "no value" is not "nothing happens".
 
 - ~~`applyShading` recomputes all its topology every drag frame.~~ Done at
   a2.52, below.
-- `syncSelectionOverlay` disposes and rebuilds its GPU objects every
-  pointermove; the soft overlay beside it already writes into existing buffers.
+- ~~`syncSelectionOverlay` disposes and rebuilds its GPU objects every
+  pointermove.~~ Done at a2.53, below.
 - `ensureHelpers` builds one Mesh + geometry + material **per face group**, and
   they stay children of the mesh for the rest of the session — so
   `updateMatrixWorld` walks them every frame even while invisible.
