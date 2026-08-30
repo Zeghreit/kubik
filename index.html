@@ -868,7 +868,7 @@
 
   <div id="topBar">
     <button id="btnMenu" title="Tools, files and settings">☰</button>
-    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.44c</span></div>
+    <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.45a</span></div>
     <div class="spacer"></div>
     <div id="status"></div>
   </div>
@@ -3893,12 +3893,32 @@ function ensureEdgeField(mesh) {
   const want = geo.userData.kubikEdges.gen;
   let f = geo.userData.kubikField;
   if (f && f.gen === want) return f;
-  /* Never while a finger is down. The stale field is invisible mid-drag,
-     and on a dense model this pass is the kind of work that turns a drag
-     into a slideshow. It catches up on the frame after the release. */
-  if (f && typeof activePointers !== 'undefined' && activePointers.size) return f;
+  /* THE THROTTLE LIVES ON THE MESH, not on the geometry.
+
+     Both guards below used to require `f` - and rebuildFromEditable installs a
+     NEW geometry, so `f` was absent exactly when the throttle mattered most:
+     during an op-slider drag, where every frame swaps the geometry and so
+     every frame fell through and re-baked. That is up to 2.5M distToSegment
+     calls and a 1MB texture upload, inside renderer.render, on any object
+     wearing a shape mask - which is precisely what the comment above says
+     this must never do. */
+  const th = mesh.userData.kubikFieldThrottle || (mesh.userData.kubikFieldThrottle = { at: 0 });
   const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
-  if (f && now - f.at < EDGE_FIELD_MS) return f;
+  /* BOTH GUARDS TEST `f` FIRST, and that is the whole invariant: throttling
+     may hand back a STALE field, never nothing. With no field the caller
+     substitutes a 1x1 black texture, and black means "distance zero -
+     everywhere is an edge", so a throttled ABSENT field paints the object as
+     fully worn. Dropping the `f &&` turned a slow-but-correct drag into an
+     8Hz strobe between correct and fully worn, and into a solidly wrong
+     render for any drag with a finger down.
+
+     The consequence is pre-existing and stays: rebuildFromEditable installs a
+     NEW geometry, so `f` is absent on every frame of an op-slider drag and
+     the bake is not throttled there at all. Carrying the field across the
+     rebuild is the real fix; it belongs with that rebuild rather than here,
+     and it is on the list for the structural pass. */
+  if (f && typeof activePointers !== 'undefined' && activePointers.size) return f;
+  if (f && now - th.at < EDGE_FIELD_MS) return f;
   let built = null;
   try { built = bakeEdgeField(geo); } catch (err) { console.error('edge field bake failed', err); }
   if (!built) return f || null;
@@ -3907,11 +3927,14 @@ function ensureEdgeField(mesh) {
   // Stamped AFTER the bake. Stamping before turns the throttle into "120ms
   // between the STARTS", so a 200ms bake would run 60% of the wall clock.
   built.at = (typeof performance !== 'undefined' && performance.now) ? performance.now() : now;
+  th.at = built.at;
+  PERF.bake++;
   geo.userData.kubikField = built;
   return built;
 }
 
 function applyShading(obj) {
+  PERF.shade++;
   const geo = obj.mesh.geometry;
   // Safe baseline: if anything below throws, the mesh is still shaded.
   geo.computeVertexNormals();
@@ -5836,6 +5859,22 @@ function fillHolesOp(obj, onlyEdges) {
 
 function cloneObjectInto(obj, name) {
   const newGeo = obj.mesh.geometry.clone();
+  /* BufferGeometry.copy ends with `this.userData = source.userData` - by
+     REFERENCE - so a duplicate and its original shared one userData for ever,
+     and a rebuild on either disposed the other's distance-field texture out
+     from under it.
+
+     But it cannot simply be emptied. `kubikEdges` is written only by
+     applyShading, and nothing on the duplicate path calls it - so a blanked
+     userData left the copy with no edge list, ensureEdgeField returned null,
+     and the caller substituted the 1x1 BLACK texture, which means "distance
+     zero: everywhere is an edge". Duplicating an object wearing a curvature
+     mask came out fully worn until the next real edit re-shaded it.
+
+     So: carry the edge list, share nothing else. Re-shading assigns a fresh
+     object rather than mutating this one, so the reference is safe. */
+  const srcUD = obj.mesh.geometry.userData || {};
+  newGeo.userData = srcUD.kubikEdges ? { kubikEdges: srcUD.kubikEdges } : {};
   const srcMats = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
   const newMats = srcMats.map(m => m.clone());
   const newMesh = new THREE.Mesh(newGeo, newMats.length > 1 ? newMats : newMats[0]);
@@ -6988,7 +7027,9 @@ function findSharpEdges(ed) {
 function buildFilletedMesh(obj, radius, segments, profile) {
   const src = obj.mesh;
   const srcMats = Array.isArray(src.material) ? src.material : [src.material];
-  const temp = new THREE.Mesh(src.geometry.clone(), srcMats.map(m => m.clone()));
+  const tempGeo = src.geometry.clone();
+  tempGeo.userData = {};   // by reference otherwise - see cloneObjectInto
+  const temp = new THREE.Mesh(tempGeo, srcMats.map(m => m.clone()));
   temp.userData.smoothGroups = { ...(src.userData.smoothGroups || {}) };
   temp.userData.finishes = { ...(src.userData.finishes || {}) };
   const wrapper = { id: -1, name: 'fillet', mesh: temp };
@@ -7114,6 +7155,28 @@ function subdivideOp(obj, mode) {
     edgePoint.set(k, mid);
   });
 
+  /* WHICH EDGES TOUCH EACH VERTEX, in ONE pass over the edge map.
+
+     This loop used to walk the WHOLE map for every vertex and split each key
+     back into two numbers with `k.split('_').map(Number)` - O(V*E) with three
+     allocations per step. Subdividing a cube to four levels re-runs levels
+     1..4 from the snapshot on every press of the stepper, which came to about
+     317,000 string splits per press before a single point was built. It is
+     the largest algorithmic defect the audit found. */
+  const incidentOf = new Map();
+  edgeFaces.forEach((faces, k) => {
+    const us = k.indexOf('_');
+    const a = +k.slice(0, us), b = +k.slice(us + 1);
+    if (a === b) return;
+    const creased = edgeIsCreased(a, b);
+    let la = incidentOf.get(a);
+    if (!la) { la = []; incidentOf.set(a, la); }
+    la.push({ other: b, faces, creased });
+    let lb = incidentOf.get(b);
+    if (!lb) { lb = []; incidentOf.set(b, lb); }
+    lb.push({ other: a, faces, creased });
+  });
+
   // moved original points
   const vertPoint = new Map();
   const vertexCount = L.logicalGroups.length;
@@ -7121,14 +7184,10 @@ function subdivideOp(obj, mode) {
     const P = posOf(l);
     if (mode !== 'smooth') { vertPoint.set(l, P.clone()); continue; }
 
-    const incident = [], adjFaces = new Set();
-    edgeFaces.forEach((faces, k) => {
-      const [a, b] = k.split('_').map(Number);
-      if (a !== l && b !== l) return;
-      incident.push({ other: a === l ? b : a, faces, creased: edgeIsCreased(a, b) });
-      faces.forEach(f => adjFaces.add(f));
-    });
+    const incident = incidentOf.get(l) || [];
     if (!incident.length) { vertPoint.set(l, P.clone()); continue; }
+    const adjFaces = new Set();
+    incident.forEach(e => e.faces.forEach(f => adjFaces.add(f)));
 
     const creasedEdges = incident.filter(e => e.creased);
     const boundary = incident.filter(e => e.faces.length < 2);
@@ -8414,8 +8473,41 @@ function refreshPendingAppearance(obj) {
   });
 }
 
+/* MATERIALS ABANDONED BY AN OP RE-RUN, disposed when the op ENDS.
+
+   restoreObjectState replaces the whole material array on every frame of an
+   op-slider drag and every frame of a live extrude, and a rebuilt mesh carries
+   one material per FACE - so a 1500-face model abandoned 1500 materials per
+   pointermove, each holding a WebGLProgram reference that three only releases
+   from the material's own dispose event.
+
+   Disposing them AT THAT MOMENT looked like the fix and was a pessimisation:
+   the replacement clones have not rendered yet, so on a single-object scene
+   the outgoing materials are the program's last users, `usedTimes` hits zero,
+   the GL program is destroyed - and the very next render compiles and links it
+   again. A full shader build per frame, on the exact drag this pass exists to
+   speed up. Held in a bin instead: the leak is still closed, once, at the end,
+   when a relink costs nothing anyone can see. */
+let opMatBin = [];
+function binMaterials(list) {
+  for (let i = 0; i < list.length; i++) if (list[i]) opMatBin.push(list[i]);
+  // A valve for a pathological session. The program is shared, so an early
+  // flush only frees the JS objects sooner.
+  if (opMatBin.length > 20000) flushMatBin();
+}
+function flushMatBin() {
+  for (let i = 0; i < opMatBin.length; i++) opMatBin[i].dispose();
+  opMatBin.length = 0;
+}
+
 function restoreObjectState(obj, st) {
-  obj.mesh.material = st.mats.map(m => m.clone());
+  const outgoing = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
+  obj.mesh.material = st.mats.map(m => { PERF.matClone++; return m.clone(); });
+  /* Only deferred while an op is actually running. A one-off restore - a
+     cancel, an undo - disposes immediately, which is both correct and the
+     moment the program can go without anyone noticing. */
+  if (App.pendingOp) binMaterials(outgoing);
+  else outgoing.forEach(m => m && m.dispose());
   obj.mesh.userData.smoothGroups = { ...st.smooth };
   if (st.finishes) obj.mesh.userData.finishes = { ...st.finishes };
   if (st.creases) obj.mesh.userData.creases = { ...st.creases };
@@ -8671,9 +8763,16 @@ function beginPendingOp(kind, obj, payload, init) {
 }
 
 // Re-runs the operation from the captured snapshot at the current amount.
+/* WORK COUNTERS, not timers. Wall-clock timing is meaningless in the headless
+   harness (virtual time) and noisy on a phone; counting how many times the
+   expensive things RUN is stable, and it is what the optimisations here
+   actually change. Read via __kubik.perf. */
+const PERF = { applyOp: 0, topo: 0, shade: 0, matClone: 0, render: 0, bake: 0 };
+
 function applyPendingOp() {
   const op = App.pendingOp;
   if (!op) return;
+  PERF.applyOp++;
   const obj = findObject(op.objId);
   if (!obj) { App.pendingOp = null; hideOpBar(); return; }
 
@@ -9087,7 +9186,32 @@ function hideOpBar() {
   document.getElementById('opOk').textContent = '✓ OK';
 }
 
-function setPendingAmount(v) {
+/* COALESCED TO ONE APPLY PER FRAME.
+
+   `input` fires per touchmove - 60-120Hz - and the browser can deliver two
+   between paints. Each apply runs the whole pipeline: copy the snapshot back,
+   re-run the op, rebuild the geometry, recompute topology, re-shade, refresh
+   every overlay. Running it twice for one painted frame is pure waste, and on
+   a subdivided mesh it is the difference between a drag and a slideshow.
+
+   Deferred ONLY on the pointer-driven paths. Everything discrete - a stepper,
+   a toggle, the keyboard, a probe - still applies synchronously, because the
+   caller after it expects the mesh to be correct. */
+let opApplyFrame = 0;
+function schedulePendingApply() {
+  if (opApplyFrame) return;
+  opApplyFrame = requestAnimationFrame(() => { opApplyFrame = 0; applyPendingOp(); });
+}
+/* Anything that needs the mesh right NOW - accepting, cancelling, reading the
+   geometry back - runs the outstanding apply first rather than racing it. */
+function flushPendingApply() {
+  if (!opApplyFrame) return;
+  cancelAnimationFrame(opApplyFrame);
+  opApplyFrame = 0;
+  applyPendingOp();
+}
+
+function setPendingAmount(v, defer) {
   const op = App.pendingOp;
   if (!op) return;
   const spec = OP_SPECS[op.kind];
@@ -9107,10 +9231,10 @@ function setPendingAmount(v) {
   op.amount = clamped;
   opSliderEl.value = clamped;
   if (document.activeElement !== opValueEl) opValueEl.value = Number(clamped.toFixed(3));
-  applyPendingOp();
+  if (defer) schedulePendingApply(); else applyPendingOp();
 }
 
-opSliderEl.addEventListener('input', () => setPendingAmount(parseFloat(opSliderEl.value)));
+opSliderEl.addEventListener('input', () => setPendingAmount(parseFloat(opSliderEl.value), true));
 function stepSegments(delta) {
   if (!App.pendingOp) return;
   const cap = (OP_SPECS[App.pendingOp.kind] || {}).maxSegments || 10;
@@ -9137,6 +9261,8 @@ document.getElementById('opOk').addEventListener('click', confirmPendingOp);
 document.getElementById('opCancel').addEventListener('click', cancelPendingOp);
 
 function confirmPendingOp() {
+  flushPendingApply();   // accept what the slider asked for, not the last frame
+  flushMatBin();         // everything the re-runs abandoned, released in one go
   if (App.knife) { applyKnife(); return; }
   const op = App.pendingOp;
   if (!op) return;
@@ -9243,6 +9369,8 @@ function confirmPendingOp() {
 
 function cancelPendingOp() {
   if (App.knife) { cancelKnife(); return; }
+  flushPendingApply();
+  flushMatBin();
   /* The Mirror chooser leaves ✕ on screen but has no pendingOp, so this
      function used to return one line below having done nothing: the button
      was inert and the bar could not be dismissed at all.
@@ -10722,9 +10850,19 @@ function splitSelection() {
   finishMeshEdit(obj, 'Edge split');
 }
 
+/* Reused, not allocated. setCol is called once per vertex plus twice per edge
+   from refreshElementColors - about 7,700 times on a 1,500-vertex mesh, once
+   per op frame and once per selection change.
+
+   `setHex` rather than the bit arithmetic it looks like it could be: three's
+   ColorManagement converts sRGB to the linear working space on the way in, so
+   hex>>16 over 255 is a DIFFERENT colour, not the same one faster. */
+const _setColScratch = new THREE.Color();
 function setCol(arr, i, hex) {
-  const c = new THREE.Color(hex);
-  arr[i * 3] = c.r; arr[i * 3 + 1] = c.g; arr[i * 3 + 2] = c.b;
+  _setColScratch.setHex(hex);
+  arr[i * 3] = _setColScratch.r;
+  arr[i * 3 + 1] = _setColScratch.g;
+  arr[i * 3 + 2] = _setColScratch.b;
 }
 
 function syncHelperGeometry(obj) {
@@ -12179,6 +12317,12 @@ function applyDeltaToSelection(deltaMatrix) {
     const setLocal = (logical, v) => {
       topo.logicalGroups[logical].forEach(ai => pa.setXYZ(ai, v.x, v.y, v.z));
     };
+    /* ONE inversion, not one per vertex. Object3D.worldToLocal copies the
+       world matrix and INVERTS it on every call, and with soft selection on, a
+       drag routinely carries several hundred entries - so this was hundreds of
+       4x4 inversions per pointermove. */
+    obj.mesh.updateWorldMatrix(true, false);
+    const invWorld = new THREE.Matrix4().copy(obj.mesh.matrixWorld).invert();
     dragCtx.entries.forEach(entry => {
       /* The weight scales the RESULT, not the matrix. Blending the matrix
          itself would need it decomposed and the rotation slerped, and for a
@@ -12189,7 +12333,7 @@ function applyDeltaToSelection(deltaMatrix) {
       const moved = entry.world.clone().applyMatrix4(deltaMatrix);
       const newWorld = (entry.w === undefined || entry.w >= 1)
         ? moved : entry.world.clone().lerp(moved, entry.w);
-      const local = obj.mesh.worldToLocal(newWorld);
+      const local = newWorld.applyMatrix4(invWorld);   // newWorld is already a fresh vector
       setLocal(entry.logical, local);
       if (dragCtx.mirrorMap) {
         const partner = dragCtx.mirrorMap.get(entry.logical);
@@ -19554,6 +19698,10 @@ if (PICK_DEBUG) {
     finishGeoSetup,
     materialDefSig, remapFinishes, refreshPendingAppearance,
     get boxDrag() { return boxDrag; },
+    PERF, flushPendingApply, schedulePendingApply, flushMatBin,
+    ensureEdgeField,
+    get opMatBinSize() { return opMatBin.length; },
+    setCol, subdivideSelection,
     get extrudeDrag() { return extrudeDrag; },
     scheduleAutosave, AUTOSAVE_KEY,
     get opRefusal() { return opRefusal; },

@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~16,800 lines)
-- Version at time of writing: **a2.44c**
+- Version at time of writing: **a2.45a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1788,6 +1788,83 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## Performance, part 1 (a2.45 / a2.45a)
+
+Measured by **counting work**, not by timing it: the harness runs under a
+virtual clock and a phone is noisy, but how many times the expensive things RUN
+is stable and is exactly what these change. `__kubik.PERF` holds the counters
+(`applyOp`, `topo`, `shade`, `matClone`, `bake`).
+
+- **One apply per animation frame.** `input` fires per touchmove — 60-120Hz,
+  and the browser can deliver two between paints — and each apply ran the whole
+  pipeline: snapshot back, re-run the op, rebuild the geometry, recompute
+  topology, re-shade, refresh every overlay. Ten events in a tick were ten full
+  runs; they are one now. Deferred ONLY on the slider; every discrete path (a
+  stepper, a toggle, the keyboard, a probe) still applies synchronously,
+  because the caller after it expects the mesh to be correct.
+  `confirmPendingOp` / `cancelPendingOp` flush the outstanding frame rather
+  than racing it.
+- **Subdivide is no longer quadratic.** Its per-vertex loop walked the WHOLE
+  edge map for every vertex and split each `"a_b"` key back into two numbers —
+  O(V·E) with three allocations a step. Four levels on a cube came to ~317,000
+  string splits *per press of the stepper*, since the stepper re-runs levels
+  1..N from the snapshot. One incidence pass now.
+- **One matrix inversion per drag, not one per vertex.**
+  `Object3D.worldToLocal` copies the world matrix and inverts it on every call,
+  and a soft-selection drag carries hundreds of entries.
+- **`setCol` reuses one `THREE.Color`** instead of allocating ~7,700 of them
+  per refresh. It uses `setHex`, not the bit arithmetic it looks like it could
+  use: three's ColorManagement converts sRGB into the linear working space on
+  the way in, so `hex>>16 / 255` is a *different colour*, not the same one
+  faster.
+- **`geometry.clone()` no longer shares `userData`.** `BufferGeometry.copy`
+  ends with `this.userData = source.userData`, by reference, so a duplicate and
+  its original shared one object for ever and a rebuild on either disposed the
+  other's distance-field texture.
+
+### The three that had to be walked back
+
+**All three defects the review found were in the optimisations, and two made
+things worse than the code they replaced.** Both were the same mistake: an
+optimisation that removed work also removed a *value* something downstream
+needed, and the fallback for "no value" is not "nothing happens".
+
+- **Blanking the clone's `userData` cost it its wear-edge list.**
+  `kubikEdges` is written only by `applyShading`, and nothing on the duplicate
+  path calls it — so `ensureEdgeField` returned null, and the caller
+  substitutes a 1×1 **black** texture, which means *distance zero: everywhere
+  is an edge*. Duplicating an object wearing a curvature mask came out fully
+  worn. The edge list is carried across now; nothing else is shared.
+- **Moving the edge-field throttle onto the mesh dropped its `f &&` guards.**
+  The invariant is that throttling may hand back a **stale** field and never
+  nothing, for the same black-texture reason. Without it: an 8Hz strobe between
+  correct and fully worn on an op-slider drag, and a solidly wrong render for
+  any drag with a finger down. Restored — which means the pre-existing cost
+  stays: `rebuildFromEditable` installs a new geometry, so `f` is absent on
+  every frame of an op drag and the bake is not throttled there at all.
+  Carrying the field across the rebuild is the real fix and belongs with that
+  rebuild.
+- **Disposing the abandoned materials immediately was a pessimisation.**
+  Closing the leak was right — a 1500-face model abandoned 1500 materials per
+  pointermove — but the replacement clones have not rendered yet, so the
+  outgoing ones were the shader program's last users, `usedTimes` hit zero, the
+  GL program was destroyed, and the very next render compiled and linked it
+  again: a full shader build per frame, on the exact drag this was meant to
+  speed up. They go into a bin now and are released when the op ends.
+
+### Still on the list
+
+- `applyShading` recomputes all its topology every drag frame, and a drag
+  cannot change topology. Splitting it into a cached `buildShadingTopo` plus a
+  positions-only pass is the biggest single drag win left.
+- `syncSelectionOverlay` disposes and rebuilds its GPU objects every
+  pointermove; the soft overlay beside it already writes into existing buffers.
+- `ensureHelpers` builds one Mesh + geometry + material **per face group**, and
+  they stay children of the mesh for the rest of the session — so
+  `updateMatrixWorld` walks them every frame even while invisible.
+- The render loop is an unconditional rAF plus a second WebGL context for the
+  view cube, so an idle app on a desk renders 60fps for ever.
 
 ## What survives a round trip (a2.44 / a / b / c)
 
