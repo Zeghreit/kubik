@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~20,200 lines)
-- Version at time of writing: **a2.57a**
+- Version at time of writing: **a2.58a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1812,6 +1812,91 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## Mode Hue — the accent IS the mode (a2.58)
+
+**One accent at a time, and which accent tells you what you are editing.**
+The chrome takes the colour of the current mode, so the mode is readable
+from any corner of the screen without hunting for a label.
+
+| mode | accent | dim tint |
+|---|---|---|
+| Object | `#a8afbd` neutral | `#363c48` |
+| Vertex | `#DDB863` gold | `#4d422a` |
+| Edge | `#6EA6D8` sky | `#2f4a63` |
+| Face | `#E8836C` salmon | `#573429` |
+
+**How it is done matters more than the colours.** `--accent` ITSELF is the
+mode colour — redefined in four `:root[data-mode=…]` blocks — so all forty
+`var(--accent)` sites follow with no rule changes at all. The whole
+mechanism is one line in `refreshUI`:
+
+```js
+if (document.documentElement.dataset.mode !== App.mode) {
+  document.documentElement.dataset.mode = App.mode;
+}
+```
+
+Hooked there for the same reason isolation is: every path that can change
+the mode ends by refreshing the UI. Written only when it differs, because
+touching an attribute on the root invalidates style for the whole document.
+
+**The one new piece of chrome** is `#modeBar`, a 3px rule along the top edge
+in the mode's colour. Absent in Object mode rather than grey — a permanent
+stripe would be the top bar coming back, and a2.48 deleted that for costing
+7.2% of the screen.
+
+**IT STOPS AT THE CHROME.** This was the design decision, and it was
+Zeghreit's: the canvas proposed giving the selection highlight the mode
+colour too, so hairline, mode button and highlight would all agree. The
+viewport already has two vocabularies that were decided on the record —
+**red means selected** (v1.91: an accent-coloured selection disappeared
+against the model) and **coral/amber/blue mean X/Y/Z** during a drag — and
+a coral face highlight in a scene where coral already means X is one
+meaning too many. So: colour in the CHROME says which mode; colour in the
+MODEL says selected, or which axis. No pixel carries both.
+
+That separation is why the chrome hues are TUNED members of the axis family
+rather than the axis values themselves. It is also a measured requirement,
+not a preference: the axis coral reads 4.1:1 on the panel, which is not a
+colour you can put text in.
+
+Nothing in JS reads a CSS custom property — scene colour is JS hex — so the
+"stops at the chrome" rule holds by construction, and `_theme_probe`
+asserts it by comparing helper vertex colours across all four modes.
+
+### What the review caught (a2.58a)
+
+- **A grey bar on every cold load.** `#modeBar` defaulted to `opacity: 1`
+  and was hidden by `:root[data-mode="object"]`, but the attribute is
+  written by `refreshUI` — inside the module that waits on the three.js
+  CDN. Every cold start painted the rule and then *animated* it away. Now
+  hidden by default, `data-mode="object"` sits on `<html>` in the markup,
+  and the show rule lists the three component modes **positively**: the
+  obvious `:not([data-mode="object"])` is TRUE when the attribute is
+  missing and re-created the exact flash it was meant to remove. The probe
+  caught that; the reasoning did not.
+- **The accent must not simply BE `--text-dim`.** Object's neutral started
+  at `#8d94a3`, byte-identical to the dim text colour, so every "this one
+  is chosen" cue that works by colour — the applied material's label, the
+  light preset, the symmetry half — said exactly what "not chosen" said.
+  `#a8afbd` is a step above it.
+- **A tint has to look like a tint.** Object's `--accent-dim` at `#23262d`
+  measured **1.04:1** against the panel it sits on: `#lightMenu
+  button.active` had no visible state left but its font weight, and
+  `.hub-item.on` got *dimmer* when switched on. All four dims are now
+  1.4–1.7:1. Where such a chip carries TEXT the label moved to `--text`,
+  because accent-on-dim is 3.6:1 in Edge mode — fine for a 20px icon, not
+  for 13px of type.
+- **The delete seat needed more than hue.** `--danger #ff5d5d` beside the
+  face accent `#E8836C` is one warm red next to another, on a 1px stroke,
+  in peripheral vision, during a hold. It has a dark red FILL now — a disc
+  no other seat wears in any mode.
+
+*Known and accepted:* the box-select rectangle, the lasso, the ring itself
+and the op/pivot/geo bars all float over the model wearing the mode colour.
+They are chrome, not model, and they never co-occur with the axis guides —
+those only exist mid-transform, when no ring is open.
 
 ## One theme (a2.57a)
 

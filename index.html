@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-mode="object">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
@@ -43,14 +43,36 @@
     --line: #2a2f3a;      /* hairline */
     --text: #e7e9ee;
     --text-dim: #8d94a3;
-    --accent: #5b8cff;    /* the one accent */
-    --accent-dim: #33456e;
-    --on-accent: #0c1420; /* text sitting on the accent */
+    /* THE ACCENT IS THE MODE (a2.58). One accent at a time, and WHICH
+       accent tells you what you are editing - so the mode is readable from
+       any corner of the screen without hunting for a label.
+
+       These three are Object mode's, and Object mode is deliberately
+       NEUTRAL: colour in the chrome means "you are in a component mode and
+       a tap does something specific". The [data-mode] blocks below swap
+       them; nothing else in the file changes, because every accented
+       control already reads these variables.
+
+       IT STOPS AT THE CHROME. The viewport keeps its own two vocabularies -
+       red means selected, coral/amber/blue mean X/Y/Z during a drag - and
+       they were decided on the record. Two systems, separated by WHERE they
+       appear, so no pixel ever carries both meanings. That is also why the
+       chrome hues are tuned versions of the axis family rather than the
+       axis values themselves: at 4.1:1 the axis coral is not a colour you
+       can put small text in. */
+    /* Neutral, but a STEP ABOVE --text-dim rather than equal to it. At
+       #8d94a3 the accent and the dim text were the same colour, so in
+       object mode every "this one is chosen" cue that works by colour -
+       the applied material's label, the light preset, the symmetry half -
+       said exactly what "not chosen" said. */
+    --accent: #a8afbd;    /* object: neutral */
+    --accent-dim: #363c48;
+    --on-accent: #0c1420; /* text sitting on the accent - AA on all four */
     --danger: #ff5d5d;
     --ok: #46c98a;
     --shadow: 0 0 0;
     --hint-bg: 16 18 22;
-    --accent-rgb: 91 140 255;
+    --accent-rgb: 168 175 189;
     --vignette: 0 0 0;
 
     /* One spacing and shape scale, so nothing has to be decided twice.
@@ -78,6 +100,46 @@
     --r-md: 12px;   /* buttons, panels, cards */
     --r-pill: 999px;
   }
+
+  /* Vertex gold, Edge sky, Face salmon. Measured against --panel: 9.1, 6.7
+     and 6.5 to one - yellow is allowed to sit brighter than the other two
+     because forcing it down to their luminance turns it to mud. The dim
+     tints are the same hue at ~1.3:1 against the panel, so an "on" control
+     reads as tinted rather than as another button. */
+  :root[data-mode="vertex"] { --accent: #DDB863; --accent-dim: #4d422a; --accent-rgb: 221 184 99; }
+  :root[data-mode="edge"]   { --accent: #6EA6D8; --accent-dim: #2f4a63; --accent-rgb: 110 166 216; }
+  :root[data-mode="face"]   { --accent: #E8836C; --accent-dim: #573429; --accent-rgb: 232 131 108; }
+
+  /* THE ONE NEW PIECE OF CHROME: a 3px rule along the top edge in the
+     mode's colour. The mode button already wears the hue, but it is in the
+     bottom-left corner and your eye is on the model; a full-width line is
+     read without looking for it.
+
+     Absent in Object mode rather than grey - a permanent stripe would be
+     the top bar coming back, and a2.48 deleted that bar for costing 7.2% of
+     the screen. Three pixels, only while a component mode is on, is the
+     whole of it. */
+  #modeBar {
+    position: absolute; z-index: 12;
+    left: env(safe-area-inset-left, 0px); right: env(safe-area-inset-right, 0px);
+    top: env(safe-area-inset-top, 0px);
+    height: 3px; pointer-events: none;
+    background: var(--accent); opacity: 0; transition: opacity .12s ease;
+  }
+  /* HIDDEN BY DEFAULT, shown by a mode - not the other way round. The
+     attribute is written by refreshUI, which lives in the module that waits
+     on the three.js CDN, so on a cold load the selector cannot match for as
+     long as that fetch takes. Defaulting to opacity 1 meant every cold
+     start painted a grey rule across the top and then ANIMATED it away,
+     which is the one thing guaranteed to pull the eye. `data-mode="object"`
+     is also on <html> in the markup now, so the attribute is never absent.
+
+     Listed positively rather than as :not([data-mode="object"]) - which is
+     TRUE when the attribute is missing, and so re-created the very flash it
+     was written to remove. The probe caught it; the reasoning did not. */
+  :root[data-mode="vertex"] #modeBar,
+  :root[data-mode="edge"] #modeBar,
+  :root[data-mode="face"] #modeBar { opacity: 1; }
 
   * { box-sizing: border-box; }
   html {
@@ -219,7 +281,11 @@
      tokens since the beginning with nothing using it. Warm, not loud: a
      border and a glyph, not a filled red button, because it still has to
      sit in a ring without shouting over it. */
-  .hub-item.danger { border-color: var(--danger); color: var(--danger); }
+  /* A fill as well as a border, because hue alone is not enough in Face
+     mode: --danger #ff5d5d against the face accent #E8836C is one warm
+     red beside another, on a 1px stroke, in peripheral vision, during a
+     hold. The dark red disc is a cue no other seat has in any mode. */
+  .hub-item.danger { border-color: var(--danger); color: var(--danger); background: #2e1a1d; }
   .hub-item.danger.active { background: var(--danger); color: var(--on-accent); border-color: var(--danger); }
 
   /* Help card: a quick start you can follow once, then a glossary you come
@@ -524,7 +590,10 @@
   }
   button:hover { background: #262b34; }
   button:active { background: #2c323d; }
-  button.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+  /* The tint and the accent border are the state; the LABEL stays --text.
+     Accent-on-accent-dim is 3.6:1 in Edge mode - fine for a 20px icon,
+     not for 13px of text, and this rule carries text. */
+  button.active { background: var(--accent-dim); border-color: var(--accent); color: var(--text); }
   button.danger:hover { border-color: var(--danger); color: var(--danger); }
   button:disabled { opacity: .35; cursor: not-allowed; }
   button.small { padding: 6px 9px; min-height: 34px; font-size: 12px; }
@@ -557,7 +626,9 @@
     background: transparent; border: none; border-radius: var(--r-sm);
     color: var(--text); font-size: 13px;
   }
-  #lightMenu button.active { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
+  /* Same as button.active, and this one has no border at all to fall back
+     on - the tint and the weight are the whole cue. */
+  #lightMenu button.active { background: var(--accent-dim); color: var(--text); font-weight: 600; }
   /* Only while two fingers are held. Placed high and centred so the hand
      doing the sliding is nowhere near it. */
   /* Soft mode rings the mode button rather than replacing its icon: the
@@ -948,6 +1019,8 @@
 <div id="app">
 
   <div id="viewport">
+    <!-- Reads the mode's colour off --accent; hidden in Object mode. -->
+    <div id="modeBar"></div>
     <!-- The drawer button lives IN the viewport now, floating like every
          other control, rather than in a bar of its own. -->
     <button id="btnMenu" title="Tools, files and settings">☰</button>
@@ -1174,7 +1247,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.57a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.58a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -19830,6 +19903,15 @@ document.getElementById('btnInspector').addEventListener('click', (ev) => {
 
 function refreshUI() {
   invalidate();   // see On-demand rendering
+  /* The mode, published to CSS (a2.58). Every accented control in the file
+     reads --accent, and --accent is defined per [data-mode], so this one
+     attribute is the whole of Mode Hue. Hooked here for the same reason
+     isolation is: every path that can change the mode ends by refreshing
+     the UI. Written only when it differs, because touching an attribute on
+     the root element invalidates style for the entire document. */
+  if (document.documentElement.dataset.mode !== App.mode) {
+    document.documentElement.dataset.mode = App.mode;
+  }
   /* A SELECTION CAN OUTLIVE ITS OBJECT. The six "that collapsed the whole
      mesh - removed the object" paths drop the object without touching the id
      set, and the next Duplicate or drag then dereferenced a ghost and threw a
