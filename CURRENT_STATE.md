@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~16,800 lines)
-- Version at time of writing: **a2.51c**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~20,200 lines)
+- Version at time of writing: **a2.52**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1809,6 +1809,53 @@ otherwise the inspector reports the position the object was reflected FROM.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
 
+## applyShading splits in two (a2.52)
+
+**A drag moves vertices; it cannot change topology.** So `buildShadingTopo`
+now builds everything derived from the INDEX - the logical-vertex grouping,
+triangle-to-face-group, the winding-agreement components and their relative
+signs, and the five edge maps - and `shadingTopoFor` caches that on
+`geo.userData.shadeTopo` for the length of ONE direct drag. Measured: six drag
+frames, six shading passes, **one** topology build.
+
+What still runs every frame is what genuinely depends on where the vertices
+are: `computeVertexNormals`, the triangle and face normals, the per-component
+signed-volume test (on a COPY of the cached relative signs, so a shell that a
+drag turns inside out is still caught), the sharp/wear classification, the
+per-vertex island averaging, and the wear-edge list.
+
+**The cache is keyed on the GESTURE, not on the geometry alone**: a live
+`directDrag`, the same `dragCtx` object, the same index object, index count,
+group count and position count. An op installs a new geometry and so has no
+cache at all. Outside a drag nothing is stored - which matters, because
+`computeLogicalOf` welds attribute vertices by ROUNDED POSITION, so a live
+cache holds the welding still.
+
+**Which is the whole of what review found, and it was real.** The cached pass
+was also the LAST pass: nothing re-shaded when a drag ended, so dragging one
+corner exactly onto another - what snapping is for - left the two unwelded for
+ever, with a phantom rim edge that the Edges and Cavity masks paint straight
+through the join. Before a2.52 the next frame fixed it. Every site that ends a
+direct drag now calls `settleShadingAfterDrag`, which drops the cache and
+shades once more without it, so the committed result is the full pass it
+always was. `_shade_probe.py` case 8 is that exact drag, and it fails loudly
+against the unfixed version: 4 wear edges where there should be 2.
+
+Two consequences worth knowing. **There is a visible weld at finger-up** on
+any drag that brings two vertices within tolerance - pre-a2.52 behaviour,
+moved from mid-drag to lift. And **a mask can lag by one gesture** on the
+second-finger path, where `ensureEdgeField` refuses to re-bake while fingers
+are down; it corrects on lift.
+
+Pull-to-extrude gets nothing from this: `extrudeDrag` is deliberately separate
+from `directDrag`, and each extrude frame rebuilds the geometry anyway.
+
+Verified: `_verify.py` PASS; `_shade_probe.py` (19 assertions) green, including
+byte-identical normals and wear-edge arrays between the cached and the forced
+full pass on a cube, a sphere and a marked-sharp sphere; and all 18 existing
+suites re-run against a2.51c and a2.52 in turn produce **byte-identical
+output**.
+
 ## Grow and Shrink become a gesture (a2.51)
 
 Two ring items, six seats across three rings, gone. **In a component mode with
@@ -2159,9 +2206,8 @@ needed, and the fallback for "no value" is not "nothing happens".
 
 ### Still on the list
 
-- `applyShading` recomputes all its topology every drag frame, and a drag
-  cannot change topology. Splitting it into a cached `buildShadingTopo` plus a
-  positions-only pass is the biggest single drag win left.
+- ~~`applyShading` recomputes all its topology every drag frame.~~ Done at
+  a2.52, below.
 - `syncSelectionOverlay` disposes and rebuilds its GPU objects every
   pointermove; the soft overlay beside it already writes into existing buffers.
 - `ensureHelpers` builds one Mesh + geometry + material **per face group**, and

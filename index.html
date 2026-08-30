@@ -1172,7 +1172,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.51c</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.52</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -3999,6 +3999,235 @@ function ensureEdgeField(mesh) {
   return built;
 }
 
+/* ---- THE TOPOLOGY HALF OF SHADING (a2.52) -----------------------------
+
+   A drag moves vertices. It cannot change which triangle sits in which face
+   group, which faces meet along which edge, or which attribute vertices are
+   one logical vertex - so all of that is built HERE, once per gesture, and
+   re-read on every frame after the first. What stays in applyShading is the
+   work that genuinely depends on where the vertices ARE: the triangle
+   normals, which way each shell faces, which edges are over the smoothing
+   angle, and the wear-edge list.
+
+   Everything below is derived from the INDEX, with one exception:
+   computeLogicalOf welds attribute vertices by POSITION. Two logical
+   vertices dragged onto the same spot therefore stay apart until the finger
+   lifts, where before they merged mid-drag. That is the whole behavioural
+   difference, it lasts one gesture, and the uncached pass runs again the
+   moment the drag ends. */
+function buildShadingTopo(geo) {
+  PERF.shadeTopo++;
+  const index = geo.index;
+  const posAttr = geo.attributes.position;
+  const { logicalOf, logicalGroups } = computeLogicalOf(posAttr);
+  const groupsSrc = geo.groups.length ? geo.groups : [{ start: 0, count: index.count, materialIndex: 0 }];
+  const triCount = index.count / 3;
+  const nLog = logicalGroups.length;
+
+  const triGroup = new Int32Array(triCount);
+  groupsSrc.forEach((g, gi) => {
+    const ts = g.start / 3, tc = g.count / 3;
+    for (let t = 0; t < tc; t++) triGroup[ts + t] = gi;
+  });
+
+  /* WHICH WAY EACH TRIANGLE FACES, for the convex/concave test only.
+
+     That test stands on one face's plane and asks which side the
+     neighbour's far vertex falls on, so a face wound backwards inverts
+     every edge it touches: Cavity out on the open lip, Edges down in the
+     crease. A mirrored model carries a handful of those somewhere in the
+     middle, which is what "sometimes, on some edges" looks like.
+
+     So: walk the triangles and give each a SIGN relative to its
+     neighbours - two triangles sharing an edge agree when they cross it in
+     OPPOSITE directions. That settles a shell relative to itself; which way
+     round it goes as a whole is then answered by its SIGNED VOLUME when it
+     is closed (positive is outward, so an inside-out box, or a deliberate
+     Flip Normals, still has its cavities where its cavities are), and
+     otherwise by majority, which keeps an open patch closest to what was
+     drawn.
+
+     IT MUST NOT TOUCH THE SHADING NORMALS. The app CULLS back faces, so a
+     backwards face is already a hole you can see - negating its normal as
+     well only turns the hole black, and the raw cross product of any
+     triangle that survives culling faces the camera by definition. The
+     normals written below stay exactly as authored; the sign is read once,
+     at the classification. */
+  const relSign = new Int8Array(triCount);
+  const comps = [], compClosed = [];
+  {
+    const dmap = new Map();
+    for (let t = 0; t < triCount; t++) {
+      for (let e = 0; e < 3; e++) {
+        const a = logicalOf[index.getX(t * 3 + e)], b = logicalOf[index.getX(t * 3 + (e + 1) % 3)];
+        if (a === b) continue;
+        const lo = a < b ? a : b, hi = a < b ? b : a;
+        const kk = lo * nLog + hi;
+        let l = dmap.get(kk);
+        if (!l) { l = []; dmap.set(kk, l); }
+        l.push(t, a === lo ? 1 : 0);
+      }
+    }
+    const stack = [];
+    for (let seed = 0; seed < triCount; seed++) {
+      if (relSign[seed]) continue;
+      relSign[seed] = 1;
+      const comp = [];
+      stack.length = 0;
+      stack.push(seed); comp.push(seed);
+      let closed = true;
+      while (stack.length) {
+        const t = stack.pop();
+        for (let e = 0; e < 3; e++) {
+          const a = logicalOf[index.getX(t * 3 + e)], b = logicalOf[index.getX(t * 3 + (e + 1) % 3)];
+          if (a === b) continue;
+          const lo = a < b ? a : b, hi = a < b ? b : a;
+          const l = dmap.get(lo * nLog + hi);
+          /* Three faces on one edge has no consistent answer, and
+             guessing one stamps it on the whole sub-shell beyond - a wall
+             bridged onto two coplanar plates came back inverted about half
+             the time. Stop: the wall becomes its own component, seeded
+             upright, exactly as it was before this pass existed. */
+          if (!l || l.length !== 4) { closed = false; continue; }
+          const mine = a === lo ? 1 : 0;
+          for (let z = 0; z < l.length; z += 2) {
+            const u = l[z];
+            if (u === t || relSign[u]) continue;
+            relSign[u] = l[z + 1] !== mine ? relSign[t] : -relSign[t];
+            stack.push(u); comp.push(u);
+          }
+        }
+      }
+      /* The component and its RELATIVE signs are all
+         topology. Which way it faces as a whole is a
+         question about positions and is asked per frame. */
+      comps.push(comp); compClosed.push(closed);
+    }
+  }
+
+  const groupOfAttr = new Int32Array(posAttr.count).fill(-1);
+  const trisAt = new Map();
+  for (let t = 0; t < triCount; t++) {
+    for (let e = 0; e < 3; e++) {
+      const ai = index.getX(t * 3 + e);
+      groupOfAttr[ai] = triGroup[t];
+      const l = logicalOf[ai];
+      let lst = trisAt.get(l);
+      if (!lst) { lst = []; trisAt.set(l, lst); }
+      lst.push(t);
+    }
+  }
+
+  /* Logical edges on NUMERIC keys (a * nLog + b). The old islands pass
+     spent most of its time building strings like 'l_g', and it only ran
+     when creases existed; this one runs on every rebuild, so the keys have
+     to be cheap. */
+  /* How many triangle-edges land on this logical edge, as opposed to how
+     many FACES touch it. An edge a face uses TWICE is that face's internal
+     triangulation - the diagonal of a quad - and is not part of its
+     outline. Shading does not care, because both triangles are in the same
+     island either way; a2.26's rim pass does, because it reads the sharp
+     edges as the shell's boundary and a diagonal would put a phantom
+     boundary through the middle of every quad. That is exactly what it
+     did: all six faces of a cube scored a fit error of 1.00 and fell back
+     to unrestricted. */
+  const edgeUse = new Map();     // key -> uses PER FACE, parallel to edgeFaces
+  const edgeOpp = new Map();     // key -> a vertex of each face that is NOT on it
+  const edgeTri = new Map();     // key -> the triangle of each face that carries it
+  const edgeFaces = new Map();   // key -> face groups along it
+  const edgeEnds = new Map();    // key -> [a, b]
+  const incident = new Map();    // logical vertex -> its edge keys
+  for (let t = 0; t < triCount; t++) {
+    const ls = [logicalOf[index.getX(t * 3)], logicalOf[index.getX(t * 3 + 1)], logicalOf[index.getX(t * 3 + 2)]];
+    for (let e = 0; e < 3; e++) {
+      const a = ls[e], b = ls[(e + 1) % 3];
+      if (a === b) continue;
+      const lo = a < b ? a : b, hi = a < b ? b : a;
+      const k = lo * nLog + hi;
+      let fs = edgeFaces.get(k), cs, ops, ots;
+      if (!fs) {
+        fs = []; cs = []; ops = []; ots = [];
+        edgeFaces.set(k, fs); edgeUse.set(k, cs); edgeOpp.set(k, ops);
+        edgeTri.set(k, ots); edgeEnds.set(k, [lo, hi]);
+        let ia = incident.get(lo); if (!ia) { ia = []; incident.set(lo, ia); } ia.push(k);
+        let ib = incident.get(hi); if (!ib) { ib = []; incident.set(hi, ib); } ib.push(k);
+      } else { cs = edgeUse.get(k); ops = edgeOpp.get(k); ots = edgeTri.get(k); }
+      const g = triGroup[t];
+      let gi = fs.indexOf(g);
+      if (gi < 0) {
+        gi = fs.length; fs.push(g); cs.push(0);
+        ops.push(index.getX(t * 3 + (e + 2) % 3));
+        ots.push(t);
+      }
+      cs[gi]++;
+    }
+  }
+
+  return {
+    logicalGroups, groupsSrc, triCount, triGroup,
+    relSign, comps, compClosed, groupOfAttr, trisAt,
+    edgeUse, edgeOpp, edgeTri, edgeFaces, edgeEnds, incident
+  };
+}
+
+/* ONE cache, alive only while a DIRECT DRAG is. `directDrag` going false is
+   what drops it, so the pass that commits a drag is the full one and what is
+   on screen when the finger lifts is exactly what it always was. An op
+   installs a NEW geometry, and a new geometry has no cache at all. */
+/* THE LAST PASS OF A DRAG MUST NOT BE A CACHED ONE.
+
+   The cache freezes the logical-vertex welding for the length of the
+   gesture, which is right while the gesture lasts and wrong the moment it
+   outlives one: drag a corner onto its neighbour, let go, and the two would
+   stay separate until some unrelated edit happened to re-shade that object -
+   two normals where there is one vertex, and a rim edge the Edges mask paints
+   straight through the join. So every site that ends a direct drag comes
+   through here, drops the cache and shades once more without it. That also
+   frees what the cache holds - the logical grouping, five Maps and several
+   mesh-sized typed arrays - which would otherwise sit on the geometry until
+   some later edit happened to re-shade that object. It does NOT free dragCtx:
+   endDirectDrag leaves that standing on purpose, which is why `directDrag` is
+   the app's real answer to "is a drag running".
+
+   The explicit null is insurance, not the mechanism: with directDrag already
+   cleared, shadingTopoFor takes the uncached branch and clears the store
+   itself. It is here so the function stays correct if the call ever moves
+   above that assignment. */
+function settleShadingAfterDrag(ctx) {
+  const obj = ctx && ctx.objId !== undefined ? findObject(ctx.objId) : null;
+  if (!obj || !obj.mesh || !obj.mesh.geometry) return;
+  obj.mesh.geometry.userData.shadeTopo = null;
+  applyShading(obj);
+}
+
+function shadingTopoFor(geo) {
+  let live = null;
+  /* try/catch rather than a truthiness test: both names are `let`s declared
+     some 8,000 lines further down, and a primitive built during startup runs
+     applyShading while they are still in their temporal dead zone. No drag
+     can be running then, which is exactly what the catch answers. */
+  try { live = (directDrag && dragCtx) ? dragCtx : null; } catch (e) { live = null; }
+  const c = geo.userData.shadeTopo;
+  /* The group list is cached BY REFERENCE and the face-group numbering is
+     derived from it, so its length is part of what makes the cache true.
+     Nothing in the app rewrites geo.groups in place today - every op builds a
+     new geometry - but that is an invariant living somewhere else, and this
+     costs one comparison. */
+  if (c && live && c.drag === live && c.index === geo.index &&
+      c.icount === geo.index.count && c.gcount === geo.groups.length &&
+      c.pcount === geo.attributes.position.count) return c;
+  const topo = buildShadingTopo(geo);
+  topo.drag = live;
+  topo.index = geo.index;
+  topo.icount = geo.index.count;
+  topo.gcount = geo.groups.length;
+  topo.pcount = geo.attributes.position.count;
+  // Nothing to keep between gestures: outside a drag the next call must
+  // rebuild, or a vertex welded by an edit would keep the old grouping.
+  geo.userData.shadeTopo = live ? topo : null;
+  return topo;
+}
+
 function applyShading(obj) {
   PERF.shade++;
   const geo = obj.mesh.geometry;
@@ -4009,84 +4238,22 @@ function applyShading(obj) {
 
   try {
     const posAttr = geo.attributes.position;
-    const { logicalOf, logicalGroups } = computeLogicalOf(posAttr);
-    const groupsSrc = geo.groups.length ? geo.groups : [{ start: 0, count: index.count, materialIndex: 0 }];
-    const triCount = index.count / 3;
-    const nLog = logicalGroups.length;
+    const topo = shadingTopoFor(geo);
+    const { logicalGroups, groupsSrc, triCount, triGroup, relSign, comps,
+            compClosed, groupOfAttr, trisAt, edgeUse, edgeOpp, edgeTri,
+            edgeFaces, edgeEnds, incident } = topo;
 
-    const triGroup = new Int32Array(triCount);
-    groupsSrc.forEach((g, gi) => {
-      const ts = g.start / 3, tc = g.count / 3;
-      for (let t = 0; t < tc; t++) triGroup[ts + t] = gi;
-    });
-
-    /* WHICH WAY EACH TRIANGLE FACES, for the convex/concave test only.
-
-       That test stands on one face's plane and asks which side the
-       neighbour's far vertex falls on, so a face wound backwards inverts
-       every edge it touches: Cavity out on the open lip, Edges down in the
-       crease. A mirrored model carries a handful of those somewhere in the
-       middle, which is what "sometimes, on some edges" looks like.
-
-       So: walk the triangles and give each a SIGN relative to its
-       neighbours - two triangles sharing an edge agree when they cross it in
-       OPPOSITE directions. That settles a shell relative to itself; which way
-       round it goes as a whole is then answered by its SIGNED VOLUME when it
-       is closed (positive is outward, so an inside-out box, or a deliberate
-       Flip Normals, still has its cavities where its cavities are), and
-       otherwise by majority, which keeps an open patch closest to what was
-       drawn.
-
-       IT MUST NOT TOUCH THE SHADING NORMALS. The app CULLS back faces, so a
-       backwards face is already a hole you can see - negating its normal as
-       well only turns the hole black, and the raw cross product of any
-       triangle that survives culling faces the camera by definition. The
-       normals written below stay exactly as authored; the sign is read once,
-       at the classification. */
-    const triSign = new Int8Array(triCount);
+    /* WHICH WAY EACH SHELL FACES. Which triangles agree with which is
+       topology and lives in the cache above; what has to be asked again on
+       every frame is the one POSITION question - whether a closed shell's
+       signed volume says it is inside out - because a drag can turn a shell
+       through itself. The full account of why the sign exists at all is in
+       buildShadingTopo. */
+    const triSign = new Int8Array(relSign);
     {
-      const dmap = new Map();
-      for (let t = 0; t < triCount; t++) {
-        for (let e = 0; e < 3; e++) {
-          const a = logicalOf[index.getX(t * 3 + e)], b = logicalOf[index.getX(t * 3 + (e + 1) % 3)];
-          if (a === b) continue;
-          const lo = a < b ? a : b, hi = a < b ? b : a;
-          const kk = lo * nLog + hi;
-          let l = dmap.get(kk);
-          if (!l) { l = []; dmap.set(kk, l); }
-          l.push(t, a === lo ? 1 : 0);
-        }
-      }
-      const stack = [], comp = [];
       const q0 = new THREE.Vector3(), q1 = new THREE.Vector3(), q2 = new THREE.Vector3(), qc = new THREE.Vector3();
-      for (let seed = 0; seed < triCount; seed++) {
-        if (triSign[seed]) continue;
-        triSign[seed] = 1;
-        stack.length = 0; comp.length = 0;
-        stack.push(seed); comp.push(seed);
-        let closed = true;
-        while (stack.length) {
-          const t = stack.pop();
-          for (let e = 0; e < 3; e++) {
-            const a = logicalOf[index.getX(t * 3 + e)], b = logicalOf[index.getX(t * 3 + (e + 1) % 3)];
-            if (a === b) continue;
-            const lo = a < b ? a : b, hi = a < b ? b : a;
-            const l = dmap.get(lo * nLog + hi);
-            /* Three faces on one edge has no consistent answer, and
-               guessing one stamps it on the whole sub-shell beyond - a wall
-               bridged onto two coplanar plates came back inverted about half
-               the time. Stop: the wall becomes its own component, seeded
-               upright, exactly as it was before this pass existed. */
-            if (!l || l.length !== 4) { closed = false; continue; }
-            const mine = a === lo ? 1 : 0;
-            for (let z = 0; z < l.length; z += 2) {
-              const u = l[z];
-              if (u === t || triSign[u]) continue;
-              triSign[u] = l[z + 1] !== mine ? triSign[t] : -triSign[t];
-              stack.push(u); comp.push(u);
-            }
-          }
-        }
+      for (let ci = 0; ci < comps.length; ci++) {
+        const comp = comps[ci];
         let vol = 0, votes = 0, span = 0;
         for (let i = 0; i < comp.length; i++) {
           const t = comp[i];
@@ -4103,7 +4270,7 @@ function applyShading(obj) {
            it arrived with", and Kubik has no unit - a model can be built at
            any scale. Below the bar means flat or degenerate, where volume
            says nothing and the vote is the better answer. */
-        const flip = (closed && Math.abs(vol) > 1e-6 * span * span * span) ? vol < 0 : votes < 0;
+        const flip = (compClosed[ci] && Math.abs(vol) > 1e-6 * span * span * span) ? vol < 0 : votes < 0;
         if (flip) for (let i = 0; i < comp.length; i++) triSign[comp[i]] = -triSign[comp[i]];
       }
     }
@@ -4122,64 +4289,6 @@ function applyShading(obj) {
       triNormal[t] = nrm.lengthSq() > 1e-12 ? nrm.normalize() : nrm;
     }
     groupNormal.forEach(n => { if (n.lengthSq() > 1e-12) n.normalize(); });
-
-    const groupOfAttr = new Int32Array(posAttr.count).fill(-1);
-    const trisAt = new Map();
-    for (let t = 0; t < triCount; t++) {
-      for (let e = 0; e < 3; e++) {
-        const ai = index.getX(t * 3 + e);
-        groupOfAttr[ai] = triGroup[t];
-        const l = logicalOf[ai];
-        let lst = trisAt.get(l);
-        if (!lst) { lst = []; trisAt.set(l, lst); }
-        lst.push(t);
-      }
-    }
-
-    /* Logical edges on NUMERIC keys (a * nLog + b). The old islands pass
-       spent most of its time building strings like 'l_g', and it only ran
-       when creases existed; this one runs on every rebuild, so the keys have
-       to be cheap. */
-    /* How many triangle-edges land on this logical edge, as opposed to how
-       many FACES touch it. An edge a face uses TWICE is that face's internal
-       triangulation - the diagonal of a quad - and is not part of its
-       outline. Shading does not care, because both triangles are in the same
-       island either way; a2.26's rim pass does, because it reads the sharp
-       edges as the shell's boundary and a diagonal would put a phantom
-       boundary through the middle of every quad. That is exactly what it
-       did: all six faces of a cube scored a fit error of 1.00 and fell back
-       to unrestricted. */
-    const edgeUse = new Map();     // key -> uses PER FACE, parallel to edgeFaces
-    const edgeOpp = new Map();     // key -> a vertex of each face that is NOT on it
-    const edgeTri = new Map();     // key -> the triangle of each face that carries it
-    const edgeFaces = new Map();   // key -> face groups along it
-    const edgeEnds = new Map();    // key -> [a, b]
-    const incident = new Map();    // logical vertex -> its edge keys
-    for (let t = 0; t < triCount; t++) {
-      const ls = [logicalOf[index.getX(t * 3)], logicalOf[index.getX(t * 3 + 1)], logicalOf[index.getX(t * 3 + 2)]];
-      for (let e = 0; e < 3; e++) {
-        const a = ls[e], b = ls[(e + 1) % 3];
-        if (a === b) continue;
-        const lo = a < b ? a : b, hi = a < b ? b : a;
-        const k = lo * nLog + hi;
-        let fs = edgeFaces.get(k), cs, ops, ots;
-        if (!fs) {
-          fs = []; cs = []; ops = []; ots = [];
-          edgeFaces.set(k, fs); edgeUse.set(k, cs); edgeOpp.set(k, ops);
-          edgeTri.set(k, ots); edgeEnds.set(k, [lo, hi]);
-          let ia = incident.get(lo); if (!ia) { ia = []; incident.set(lo, ia); } ia.push(k);
-          let ib = incident.get(hi); if (!ib) { ib = []; incident.set(hi, ib); } ib.push(k);
-        } else { cs = edgeUse.get(k); ops = edgeOpp.get(k); ots = edgeTri.get(k); }
-        const g = triGroup[t];
-        let gi = fs.indexOf(g);
-        if (gi < 0) {
-          gi = fs.length; fs.push(g); cs.push(0);
-          ops.push(index.getX(t * 3 + (e + 2) % 3));
-          ots.push(t);
-        }
-        cs[gi]++;
-      }
-    }
 
     const marks = obj.mesh.userData.edgeShade;
     const hasMarks = !!marks && Object.keys(marks).length > 0;
@@ -8735,7 +8844,7 @@ function beginPendingOp(kind, obj, payload, init) {
    harness (virtual time) and noisy on a phone; counting how many times the
    expensive things RUN is stable, and it is what the optimisations here
    actually change. Read via __kubik.perf. */
-const PERF = { applyOp: 0, topo: 0, shade: 0, matClone: 0, render: 0, bake: 0 };
+const PERF = { applyOp: 0, topo: 0, shade: 0, shadeTopo: 0, matClone: 0, render: 0, bake: 0 };
 
 function applyPendingOp() {
   invalidate();   // see On-demand rendering
@@ -10380,9 +10489,10 @@ function settleExtrudeSection() {
   /* The section is real geometry from here, so it enters the history NOW
      rather than at Done. The transform that triggered this settle can be
      abandoned mid-gesture - a second finger is the camera taking over, and
-     that path clears directDrag by hand without ever reaching
-     endDirectDrag's pushHistory. Leaving the geometry standing in no
-     history entry at all is how a reload loses it outright. */
+     that path ends the drag from inside pointerdown, where App.geoSetup or an
+     early return can still cost it endDirectDrag's pushHistory. Leaving the
+     geometry standing in no history entry at all is how a reload loses it
+     outright. */
   if (kept) { pushHistory(); op.inHistory = true; }
   else op.inHistory = true;   // nothing changed, so everything is committed
   showOpBar();
@@ -12788,7 +12898,12 @@ function engageSoftSlide() {
   tapArmed = false;
   clearToolRingTimer();
   clearLightHoldTimer();
-  if (directDrag) { directDrag = null; dragCtx = null; axisGuide.visible = false; }
+  /* BELT AND BRACES: unreachable today, and kept anyway. A third finger
+     cannot arrive with a drag still live - the second one already bailed out
+     through endDirectDrag - so this branch (and the dragCtx clear beside it,
+     which predates it) never runs. It settles the shading regardless, because
+     what makes it unreachable is an ordering three handlers away. */
+  if (directDrag) { directDrag = null; settleShadingAfterDrag(dragCtx); dragCtx = null; axisGuide.visible = false; }
   directCandidate = null;
   document.getElementById('softHud').classList.add('show');
   refreshSoftHud();
@@ -14061,6 +14176,7 @@ function endDirectDrag() {
   if (!directDrag) return;
   directDrag = null;
   directCandidate = null;
+  settleShadingAfterDrag(dragCtx);
   axisGuide.visible = false;
   clearSnapTarget();
   refreshPivotMarker();   // ...and take it away again when the drag is over
