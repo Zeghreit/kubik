@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~20,200 lines)
-- Version at time of writing: **a2.57**
+- Version at time of writing: **a2.57a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -726,10 +726,11 @@ takes sky/ground/ambient. Weight per panel is
 theme's key intensity keeps meaning what it used to.
 
 **The theme still owns the baseline.** applyTheme sets hemi/key/fill/rim as
-before and then calls applyEnvRig, which re-aims and re-tints on top. So
-Daylight stays gentler than Workshop while the preset supplies direction,
-colour and the relative weighting. WITHOUT that call the rig snapped back to
-the theme's fixed directions on every theme switch.
+before and then calls applyEnvRig, which re-aims and re-tints on top, so the
+theme sets the overall level and the preset supplies direction, colour and
+the relative weighting. WITHOUT that call the rig snapped back to the
+theme's fixed directions. (It mattered most when there were two themes to
+switch between; it still holds the split between baseline and preset.)
 
 **Turn now rotates the lights with the reflections.** Verified by
 equivalence: turning by 70 degrees is pixel-identical (max 1/255) to baking
@@ -1812,6 +1813,60 @@ otherwise the inspector reports the position the object was reflected FROM.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
 
+## One theme (a2.57a)
+
+**Daylight is gone.** There were two complete looks — Daylight (warm, light,
+the CSS `:root` default) and Workshop (dark, applied through
+`html[data-theme="dark"]`). The visual review measured Daylight's secondary
+text at **2.9:1** against Workshop's 6.2, and the problem was not one token:
+warm text on warm panels on a warm viewport has nowhere to go. Zeghreit's
+call was to **retire it rather than patch it** — one theme done properly
+beats two half-tuned, and every colour decision after this (the mode hues,
+the destructive floor) only has to be right once.
+
+What that means in the file:
+
+- `:root` now holds the Workshop values directly. The `html[data-theme]`
+  block, the attribute on `<html>`, `App.theme` and the drawer's Theme
+  button are all gone. There is no `prefers-color-scheme` branch and never
+  was.
+- `THEMES = { light, dark }` is now a single `THEME`, and `applyTheme()`
+  takes no argument. **It is still a function and still worth having**: it
+  is the one place that states what the theme means for the SCENE as well as
+  the chrome — background, fog, exposure, the three lights, the grid, the
+  selection colours, every helper's vertex colours — and `applyEnvRig`
+  layers the lighting preset on top of the baseline it sets.
+- A save file from an older build that carries `theme: "light"` still loads;
+  `restoreDoc` never read the field.
+- The three scene lights are constructed with the theme's own numbers rather
+  than Daylight's, so a first frame drawn before `init()` looks like the app
+  instead of like a bug. `applyTheme` overwrites all three anyway.
+
+**Two riders, both from the same review.**
+
+- **The help glyph was 3.6:1.** `#btnHelp` wore `--text-dim`, which is a
+  control you cannot read, not a control that is politely out of the way. It
+  is `--text` now — measured **13:1** — and stays quiet by WEIGHT instead:
+  panel-coloured, hairline border, no accent fill.
+- **The floor of the ring is destructive, and now looks it.** Delete owns
+  seat 7, straight down, nearest the thumb, and wore exactly the border
+  every constructive tool wears — eleven identical circles, one of which
+  throws work away. `--danger` had been in the tokens since the beginning
+  with nothing using it. `.hub-item.danger` gives it a coral border and
+  glyph (5.2:1), and `.hub-item.danger.active` fills red when it is under
+  your finger, beating `.hub-item.active` on specificity. Marked by key, so
+  the four rings carrying Delete cannot disagree.
+
+Covered by `_theme_probe` (13 assertions), which MEASURES rather than
+asserts intent: computed colours off the live DOM, contrast ratios computed
+from them, and the ring bloomed to check exactly one seat is marked.
+
+*Still open from that review:* the op bar's amount is an
+`<input type="number">` and shows the browser's decimal separator, while
+every other readout is a span formatted with `toFixed` and shows a point.
+Left alone — the fix is either fifteen call sites or a locale guess, and it
+needs deciding, not typing.
+
 ## The frame marks what a tap can reach (a2.57)
 
 **Two complaints, one idea.** Zeghreit: *"when i select any object —
@@ -1891,9 +1946,10 @@ one section that is open when the card opens.
 The others: the snap chip is top CENTRE, not top right (and it also carries a
 Pivot marker nobody had documented); Shade left the Edge ring at a2.7f and
 **Mark Sharp**, which replaced it, had no row at all; free scale in object mode
-reads the object's own axes since a2.55; the drawer's Appearance section is a
-Theme button and nothing else; and the Mirror ACTION row drew the Symmetry
-pill's icon rather than `mirroraction`.
+reads the object's own axes since a2.55; the drawer's Appearance section was
+a Theme button and nothing else, and since a2.57a is two notes and no button
+at all; and the Mirror ACTION row drew the Symmetry pill's icon rather than
+`mirroraction`.
 
 **The biggest gap was a whole gesture.** Two fingers held still anchor the
 light and the other hand aims it — one finger turns, two change strength. The
@@ -4195,7 +4251,8 @@ above. What it fixed, for the record:
 - **Two buttons both say "Save"** — Models→Save writes to browser storage,
   File→Save downloads a `.json`. Rename the second to Download.
 - Colour is filed under "Precision", where it has no business being.
-- "View" is a section header wrapping a single Theme button.
+- ~~"View" is a section header wrapping a single Theme button.~~ Moot:
+  the Theme button is gone (a2.57a).
 
 New settings to add, all of which are hard-coded constants today:
 
@@ -4295,7 +4352,9 @@ screenshot.
 
 ## The drawer (a2.1)
 
-Six sections: **Scene** (object list) · **Appearance** (Theme, Colour) ·
+Six sections: **Scene** (object list) · **Appearance** (two notes; the
+Theme button went with Daylight at a2.57a, and Colour is in the material
+tray) ·
 **Editing** (Values, Clear creases, Drag speed, Symmetry axis) · **Snap
 amounts** · **Models** · **Files**. (Fillet was the seventh until a2.50.)
 

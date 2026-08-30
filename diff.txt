@@ -1,0 +1,361 @@
+diff --git a/index.html b/index.html
+index 1ccac07..6d77a3b 100644
+--- a/index.html
++++ b/index.html
+@@ -1,6 +1,6 @@
+ <!DOCTYPE html>
+-<html lang="en" data-theme="dark">
++<html lang="en">
+ <head>
+ <meta charset="utf-8" />
+ <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+ <title>Kubik</title>
+@@ -23,28 +23,36 @@
+   }
+ }
+ </script>
+ <style>
+-  /* Flat-pack daylight.
+-     Drawn from IKEA's actual materials - birch ply, white laminate, the
+-     muted blue of the showroom textiles - rather than generic warm cosiness.
+-     Warm surfaces, one cool accent, nothing saturated. */
++  /* Workshop, and ONLY Workshop (a2.57a).
++
++     There were two themes. The light one, Daylight, measured 2.9:1 on
++     secondary text against this one's 6.2 - it was not a matter of tuning
++     one token, the whole warm-on-warm idea was the problem - and it was
++     retired rather than patched. One theme done properly beats two
++     half-tuned, and every colour decision from here (the mode hues, the
++     destructive floor) only has to be right once.
++
++     Dark on purpose, not by default: the model is the only thing on screen
++     that should be bright, and a light viewport washes a low-poly shading
++     ramp out. */
+   :root{
+-    --bg: #E7E2D8;        /* viewport: a shade deeper than the chrome so the model reads */
+-    --panel: #F3F0EA;     /* bars and drawer */
+-    --panel2: #FBFAF7;    /* raised controls */
+-    --line: #DCD5C9;      /* warm hairline */
+-    --text: #2C2A26;      /* warm near-black */
+-    --text-dim: #8A8378;
+-    --accent: #3C6E93;    /* dusty Swedish blue - the only accent */
+-    --accent-dim: #DCE6EC;
+-    --on-accent: #FBFAF7; /* text sitting on the accent */
+-    --danger: #B4544A;
+-    --ok: #5C8A63;
+-    --shadow: 20 18 14;   /* warm-tinted shadow, used as rgb() */
+-    --hint-bg: 251 250 247;
+-    --accent-rgb: 60 110 147;
+-    --vignette: 16 14 10;
++    --bg: #101216;        /* viewport: darker than the chrome so the model reads */
++    --panel: #181b21;     /* bars and drawer */
++    --panel2: #1f232b;    /* raised controls */
++    --line: #2a2f3a;      /* hairline */
++    --text: #e7e9ee;
++    --text-dim: #8d94a3;
++    --accent: #5b8cff;    /* the one accent */
++    --accent-dim: #33456e;
++    --on-accent: #0c1420; /* text sitting on the accent */
++    --danger: #ff5d5d;
++    --ok: #46c98a;
++    --shadow: 0 0 0;
++    --hint-bg: 16 18 22;
++    --accent-rgb: 91 140 255;
++    --vignette: 0 0 0;
+ 
+     /* One spacing and shape scale, so nothing has to be decided twice.
+        Irregularity reads as carelessness even when every individual value
+        is defensible - ten different corner radii were doing the work of
+@@ -70,26 +78,8 @@
+     --r-md: 12px;   /* buttons, panels, cards */
+     --r-pill: 999px;
+   }
+ 
+-  /* Workshop dark: the original palette, for working at night or when a
+-     light viewport washes the model out. */
+-  html[data-theme="dark"] {
+-    --bg: #101216;
+-    --panel: #181b21;
+-    --panel2: #1f232b;
+-    --line: #2a2f3a;
+-    --text: #e7e9ee;
+-    --text-dim: #8d94a3;
+-    --accent: #5b8cff;
+-    --accent-dim: #33456e;
+-    --on-accent: #0c1420;
+-    --danger: #ff5d5d;
+-    --ok: #46c98a;
+-    --shadow: 0 0 0;
+-    --hint-bg: 16 18 22;
+-    --accent-rgb: 91 140 255;
+-  }
+   * { box-sizing: border-box; }
+   html {
+     height: 100%; overflow: hidden;
+   }
+@@ -221,8 +211,17 @@
+     justify-content: center; gap: 1px; cursor: pointer; user-select: none;
+     box-shadow: 0 4px 14px rgb(var(--shadow) / .14);
+   }
+   .hub-item .ic { font-size: 17px; line-height: 1; }
++  /* THE FLOOR OF THE RING IS DESTRUCTIVE, and it should look it (a2.57a).
++     Delete owns straight-down - the seat nearest the thumb - and wore
++     exactly the border every constructive tool wears, so eleven identical
++     circles included one that throws work away. --danger has been in the
++     tokens since the beginning with nothing using it. Warm, not loud: a
++     border and a glyph, not a filled red button, because it still has to
++     sit in a ring without shouting over it. */
++  .hub-item.danger { border-color: var(--danger); color: var(--danger); }
++  .hub-item.danger.active { background: var(--danger); color: var(--on-accent); border-color: var(--danger); }
+ 
+   /* Help card: a quick start you can follow once, then a glossary you come
+      back to. Terms carry the same icon() glyph the real button draws, so
+      what you read here matches what is on screen. */
+@@ -888,11 +887,14 @@
+      compete with the hub for "primary button" status. */
+   #btnHelp {
+     position: absolute; right: var(--edge-r); bottom: var(--edge-b); z-index: 13;
+     width: 44px; height: 44px; min-height: 44px; padding: 0; border-radius: 50%;
+-    /* Greyed rather than accented: it is the least urgent thing on screen,
+-       and wearing the accent made it read as a primary action. */
+-    background: var(--panel2); border: 1px solid var(--line); color: var(--text-dim);
++    /* Quiet by WEIGHT, not by contrast (a2.57a): panel-coloured with a
++       hairline border, so it never reads as a primary action - but the
++       glyph itself is --text. At --text-dim it measured 3.6:1 on the
++       panel, which is a control you cannot read, not a control that is
++       politely out of the way. */
++    background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+     font-size: 18px; font-weight: 700; justify-content: center;
+   }
+ 
+   /* One organised card rather than a scatter of labels pinned next to each
+@@ -1171,9 +1173,9 @@
+       <!-- The version is READ from `.brand span` by checkForUpdate, which is
+            the only way an iOS Home Screen app ever learns a new build exists.
+            It moved here with the bar; it must not lose the element or the
+            class. -->
+-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.57</span></div>
++      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.57a</span></div>
+       <button id="drawerClose" class="small">✕</button>
+     </div>
+     <!-- Was pinned to the top-right of the screen. It says how many objects
+          there are and which one is being edited - both of which the list
+@@ -1191,11 +1193,8 @@
+       </div>
+ 
+       <div class="drawer-sec">
+         <div class="drawer-title">Appearance</div>
+-        <div class="drawer-row">
+-          <button id="btnTheme" title="Switch theme">Theme</button>
+-        </div>
+         <!-- Three paragraphs became two lines. Everything they described is
+              in the Help card in full; from here they only need to say where
+              to go, and the lighting one keeps its gesture because that is the
+              part you cannot discover by looking. -->
+@@ -1607,9 +1606,9 @@ function envDirFromAzEl(az, el, dist, out) {
+ 
+ const _envDirV = new THREE.Vector3();
+ function applyEnvRig() {
+   const spec = envPreset(App.env.preset);
+-  const t = THEMES[App.theme] || THEMES.dark;
++  const t = THEME;
+   const turn = App.env.rotation || 0;
+   const gain = App.env.intensity;
+ 
+   hemi.color.setHex(new THREE.Color(spec.sky).getHex());
+@@ -1939,9 +1938,8 @@ const App = {
+      most visibly affects. rotation is in DEGREES on purpose: the same
+      lesson as autoSmoothAngleDeg, a bare number with no unit is a trap. */
+   env: { preset: 'studio', rotation: 0, intensity: 1 },
+   shadeSmooth: false,  // simple on/off toggle, not a readout of mixed per-face state - matches applyFinishToSelection's cycling approach
+-  theme: 'dark',
+   /* Snapping could be switched on but never adjusted: the amounts were
+      module constants. Rotation is held in DEGREES because that is what the
+      control shows and what anyone thinks in; it is converted where used. */
+   snapMove: 0.25,
+@@ -1985,62 +1983,45 @@ const App = {
+   dragStart: null,        // bookkeeping captured on drag start
+ };
+ 
+ 
+-/* ---------------- Themes ----------------
+-   Two complete looks, each covering the interface and the 3D scene together -
+-   lighting included, since a palette that ignores how the model is lit only
+-   does half the job. */
+-const THEMES = {
+-  light: {
+-    label: 'Daylight',
+-    bg: 0xE7E2D8,
+-    hemi: { sky: 0xFFFDF8, ground: 0xC9BFAC, intensity: 1.5 },
+-    key: { color: 0xFFF8EC, intensity: 0.85 },
+-    fill: { color: 0xE4EAF0, intensity: 0.35 },
+-    grid: [0xC4BAA6, 0xD6CDBC],
+-    rim: { color: 0xFFFFFF, intensity: 0.35 },
+-    fog: { near: 18, far: 52 },
+-    shadow: 0.16,
+-    exposure: 1.0,
+-    vignette: '16 14 10',
+-    /* Selection is RED, deliberately the one colour the interface never
+-       uses. Matching it to the accent (v1.91) made "chosen" agree with the
+-       buttons but disappear against the model - a blue-grey wireframe on a
+-       blue-grey cube. A colour nothing else wears is what makes it read at
+-       a glance, which matters more here than palette tidiness. */
+-    select: 0xD1443A, vert: 0x6E6558, edge: 0x8A806F, crease: 0xC46A3A,
+-    material: 0x514A3B, swatch: '#514a3b'
+-  },
+-  dark: {
+-    label: 'Workshop',
+-    bg: 0x101216,
+-    hemi: { sky: 0xaeb8ff, ground: 0x14161a, intensity: 0.9 },
+-    key: { color: 0xffffff, intensity: 1.4 },
+-    fill: { color: 0x8899bb, intensity: 0.15 },
+-    grid: [0x333947, 0x22262f],
+-    rim: { color: 0x9FB4FF, intensity: 0.75 },
+-    fog: { near: 15, far: 42 },
+-    shadow: 0.42,
+-    exposure: 1.1,
+-    vignette: '0 0 0',
+-    select: 0xff4d47, vert: 0x8b93a3, edge: 0x656d80, crease: 0xff7a45,
+-    material: 0x303338, swatch: '#303338'
+-  }
++/* ---------------- The theme ----------------
++   ONE look, covering the interface and the 3D scene together - lighting
++   included, since a palette that ignores how the model is lit only does
++   half the job. It was a pair until a2.57a; see the palette block at the
++   top of the file for why Daylight went. */
++const THEME = {
++  bg: 0x101216,
++  hemi: { sky: 0xaeb8ff, ground: 0x14161a, intensity: 0.9 },
++  key: { color: 0xffffff, intensity: 1.4 },
++  fill: { color: 0x8899bb, intensity: 0.15 },
++  grid: [0x333947, 0x22262f],
++  rim: { color: 0x9FB4FF, intensity: 0.75 },
++  fog: { near: 15, far: 42 },
++  shadow: 0.42,
++  exposure: 1.1,
++  vignette: '0 0 0',
++  /* Selection is RED, deliberately the one colour the interface never
++     uses. Matching it to the accent (v1.91) made "chosen" agree with the
++     buttons but disappear against the model - a blue-grey wireframe on a
++     blue-grey cube. A colour nothing else wears is what makes it read at
++     a glance, which matters more here than palette tidiness. */
++  select: 0xff4d47, vert: 0x8b93a3, edge: 0x656d80, crease: 0xff7a45,
++  material: 0x303338, swatch: '#303338'
+ };
+ 
+-let SELECT_COLOR = THEMES.dark.select;
+-let UNSELECT_VERT_COLOR = THEMES.dark.vert;
+-let UNSELECT_EDGE_COLOR = THEMES.dark.edge;
+-let CREASE_COLOR = THEMES.dark.crease;
++let SELECT_COLOR = THEME.select;
++let UNSELECT_VERT_COLOR = THEME.vert;
++let UNSELECT_EDGE_COLOR = THEME.edge;
++let CREASE_COLOR = THEME.crease;
+ /* Sharp edges have to be visible or the whole model is guesswork - you
+    cannot see a normal, only its effect. Warm against the crease colour so
+    the two marks never read as the same thing on one mesh. */
+ const SHARP_COLOR = 0xff8a3d;
+ 
+ // Objects already in the scene keep whatever colour they were given - only the
+ // default for new ones follows the theme.
+-let DEFAULT_MATERIAL_COLOR = THEMES.dark.material;
++let DEFAULT_MATERIAL_COLOR = THEME.material;
+ 
+ /* The menu is built rather than written out, so ENV_PRESETS stays the
+    single place a preset is defined. */
+ function buildEnvPresets() {
+@@ -2099,12 +2080,14 @@ function wireEnvControls() {
+   }, true);
+   refreshEnvControls();
+ }
+ 
+-function applyTheme(name) {
+-  const t = THEMES[name] || THEMES.light;
+-  App.theme = name;
+-  document.documentElement.dataset.theme = name;
++/* Still a function, and still called on more than startup: the lighting
++   presets and the material defaults are layered on top of it, and it is
++   what puts the theme's colours back on every helper. It just has nothing
++   to choose between any more. */
++function applyTheme() {
++  const t = THEME;
+ 
+   scene.background = new THREE.Color(t.bg);
+   // Fog in the background's own colour: distant grid dissolves instead of
+   // ending in a hard line, which reads as space rather than a flat backdrop.
+@@ -2133,11 +2116,8 @@ function applyTheme(name) {
+   UNSELECT_EDGE_COLOR = t.edge;
+   CREASE_COLOR = t.crease;
+   DEFAULT_MATERIAL_COLOR = t.material;
+ 
+-  const themeMeta = document.querySelector('meta[name="theme-color"]');
+-  if (themeMeta) themeMeta.setAttribute('content', name === 'dark' ? '#181b21' : '#F3F0EA');
+-
+   // Face overlays bake the selection colour into their material, so retint
+   // them rather than waiting for the next rebuild.
+   App.objects.forEach(o => {
+     (Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material])
+@@ -2162,13 +2142,8 @@ function applyTheme(name) {
+     }
+     refreshElementColors(o); // puts the selection colour back on top
+   });
+ 
+-  const btn = document.getElementById('btnTheme');
+-  if (btn) {
+-    btn.textContent = 'Theme: ' + t.label;
+-    btn.title = 'Switch theme';
+-  }
+ }
+ 
+ // Every Line2 stroke in the scene. LineMaterial needs the viewport size to
+ // compute a pixel width, so they're collected here and refreshed on resize.
+@@ -18574,8 +18549,12 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
+     el.className = 'hub-item';
+     // A toggle has to show which way it is currently set, or you can't tell
+     // whether you're about to turn the grid on or off.
+     if (tool.on && tool.on()) el.classList.add('on');
++    // The one seat in the ring that takes something away rather than
++    // adding to it. Marked by key so the four rings that carry Delete
++    // cannot disagree about it.
++    if (tool.key === 'delete') el.classList.add('danger');
+     el.dataset.key = tool.key;
+     el.style.left = Math.cos(angle) * R + 'px';
+     el.style.bottom = Math.sin(angle) * R + 'px';
+     // Icon only - a label at this size is what made items read wider than
+@@ -19581,9 +19560,9 @@ HELP_SECTIONS.push(
+     title: 'The drawer',
+     lead: 'Hamburger, top-left. Settings and lists only — the tools all live in the rings.',
+     rows: [
+       [null, 'Scene', 'Every object. Tap one to make it active.'],
+-      [null, 'Appearance', 'Theme. The light’s TYPE is the pill under Symmetry; you aim it with two fingers held still anywhere.'],
++      [null, 'Appearance', 'The light’s TYPE is the pill under Symmetry; you aim it with two fingers held still anywhere.'],
+       [null, 'Editing', 'Exact transform values, Clear creases, Drag speed, symmetry axis.'],
+       ['snap', 'Snap amounts', 'How far one snapped step moves, turns and scales.'],
+       [null, 'Models', 'Saves the scene inside the browser under a name.'],
+       [null, 'Files', 'Writes it to disk, and exports.'],
+@@ -19743,14 +19722,8 @@ sensSliderEl.addEventListener('input', () => {
+   App.sensitivity = parseFloat(sensSliderEl.value) || 0.7;
+   sensValueEl.textContent = App.sensitivity.toFixed(2);
+ });
+ 
+-document.getElementById('btnTheme').addEventListener('click', () => {
+-  const next = App.theme === 'dark' ? 'light' : 'dark';
+-  applyTheme(next);
+-  toast(THEMES[next].label);
+-});
+-
+ /* The four view toggles and Symmetry, as plain functions. They used to be
+    click handlers bolted to five buttons around the viewport edge; those
+    buttons are gone as of v1.89 and the world ring calls these directly.
+    The bodies are unchanged apart from dropping the classList line, which
+@@ -20376,9 +20349,9 @@ function init() {
+   onResize();
+   updateStrokeResolution();
+   paintStaticIcons();
+   refreshToolIndicator();
+-  applyTheme(App.theme);
++  applyTheme();
+   setSelectGesture(App.selectDrag);
+   applySnapSettings();
+   /* Before restoreAutosave, so a scene always has light even if the restore
+      throws; the restore applies its own afterwards if it carries one. */
