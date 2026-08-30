@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~20,200 lines)
-- Version at time of writing: **a2.54**
+- Version at time of writing: **a2.55**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1337,6 +1337,9 @@ ring, left pole).
 - Free rotation takes its axis from the swipe direction, locked at the start.
 - Free scale reads the projected axes, so depth is reachable without a
   dedicated gesture; a drag matching no axis scales uniformly.
+- **An object-mode SCALE names the OBJECT'S OWN axes** (a2.55), not the
+  world's — see below. Move and rotate keep world axes, and so does every
+  component drag.
 
 **Two rings bloom under your finger.** Press and hold; what you get depends
 on what is under it.
@@ -1808,6 +1811,65 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## An axis scale runs along the object's own axis (a2.55)
+
+**The bug was arithmetic, not taste.** `GIZMO_AXES` are WORLD axes. A
+world-axis scale multiplied onto a rotated object's matrix produces
+non-orthogonal columns — a shear — and `Object3D` holds position, quaternion
+and scale, so `Matrix4.decompose` has nowhere to put it and invents a rotation
+instead. Measured, on a cube turned 45° about Y and scaled along world X by 2:
+decompose returns scale **(1.5811, 1, 1.5811)** — it grew on BOTH X and Z —
+plus a twist. On a real drag that reads as 5.12° of unasked-for rotation.
+
+`scaleAlongDir(d, f)` is `I + (f-1)·d⊗d`: a scale of f along one direction,
+symmetric, so there is no rotation hidden in it. When `d` is a column of the
+object's own rotation it multiplies exactly one component of that object's
+scale and touches nothing else — the same matrix gives (2, 1, 1) and no twist.
+
+`transformAxes()` decides what a gesture is measured against: world axes,
+except an object-mode scale, which takes the three normalised columns of the
+FIRST selected object's captured matrix. That set is used by the axis
+resolver, by the free-scale screen matcher and by the guide, so **what you aim
+at is what you get** — on a 45° cube the guide now lies along the object's own
+edge rather than along the world axis.
+
+Every selected object then scales along **its own** axis of that name: the
+factor under the thumb is the selection's, the direction is each object's, so
+two models at different angles both stretch along their own length. That needs
+one delta per object, so `applyDeltaToSelection` accepts a FUNCTION of the
+entry as well as a single matrix (objects only — it says so loudly on an
+element drag, where an entry is a vertex and has no axes).
+
+**Elements are deliberately untouched.** A vertex drag moves points, and a
+point takes any linear map without complaint, so a world-axis component scale
+there is exact. It is also what you want: scaling a face loop along world X is
+a real operation, not a bug.
+
+### What review found, and it was the seams again
+
+- **The axis is frozen for the drag; the TOOL is not.** Pressing `s` during a
+  live Move drag handed the scale branch a world axis with no `local` tag —
+  straight back into the shear, measured at 7.64° of twist. The scale branch
+  now names the object's own column itself, from the axis KEY, whoever handed
+  it over.
+- **A degenerate reference column poisoned the whole gesture.** An object
+  scaled flat on the named axis has no direction to offer, and returning the
+  untagged world axis for it sent EVERY object in the selection down the world
+  path — one flattened plate sheared every healthy rotated object beside it.
+  The fallback is tagged now, leaving the per-entry delta (whose own fallback
+  is right) in charge.
+- **`App.activeObjectId` is never written by object-mode selection** — it is
+  set by element-mode taps and by ops like join and mirror — so preferring it
+  made which object named the axes depend on history nothing on screen shows.
+  The first entry, which is click order.
+
+**Stated rule, not an oversight:** an object flat on an axis takes no scale on
+that axis, so it cannot be pulled back out along it.
+
+Verified: `_verify.py` PASS; `_axis_probe.py` (21 assertions, new) green and
+loudly RED against a2.54; all 18 existing suites byte-identical to a2.51c;
+`_shade_probe.py` unchanged.
 
 ## One face overlay, not one per face group (a2.54)
 

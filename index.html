@@ -1172,7 +1172,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.54</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.55</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -12565,16 +12565,32 @@ function captureDragContext(pivot) {
 
 // Applies a world-space delta to the snapshot. Unchanged from the previous
 // gizmo - this part was never the problem.
+/* `deltaMatrix` is normally one Matrix4 for the whole selection. It may also
+   be a FUNCTION of the entry, which is how a2.55's axis scale gives each
+   object a delta built from its OWN axis; there is no single world matrix
+   that scales two differently-rotated objects along their own lengths. */
 function applyDeltaToSelection(deltaMatrix) {
   if (!dragCtx) return;
   if (dragCtx.type === 'objects') {
+    const per = typeof deltaMatrix === 'function';
     dragCtx.entries.forEach(entry => {
       const obj = findObject(entry.id);
       if (!obj) return;
-      const m = new THREE.Matrix4().multiplyMatrices(deltaMatrix, entry.matrix);
+      const dm = per ? deltaMatrix(entry) : deltaMatrix;
+      // Unreachable today - every per-entry form returns a matrix, identity
+      // included. Loud rather than a silently skipped object if that changes.
+      if (!dm) { console.error('applyDeltaToSelection: no delta for entry', entry && entry.id); return; }
+      const m = new THREE.Matrix4().multiplyMatrices(dm, entry.matrix);
       m.decompose(obj.mesh.position, obj.mesh.quaternion, obj.mesh.scale);
     });
   } else if (dragCtx.type === 'elements') {
+    /* Loud, not silent. An element entry is a vertex - it has no matrix and
+       no axes of its own - so the per-object form cannot mean anything here,
+       and a quietly skipped frame would read as a drag that lost its grip. */
+    if (typeof deltaMatrix === 'function') {
+      console.error('applyDeltaToSelection: a per-object delta on an element drag');
+      return;
+    }
     const obj = findObject(dragCtx.objId);
     if (!obj) return;
     const topo = obj.mesh.userData.topo;
@@ -14103,6 +14119,60 @@ function beginDirectDrag(ev) {
   return true;
 }
 
+/* A SCALE OF f ALONG ONE DIRECTION: I + (f-1)·d⊗d.
+
+   Symmetric, so there is no rotation hidden in it, and when d is a column of
+   the object's own rotation it multiplies exactly one component of that
+   object's scale - which is the whole reason this exists. Building the same
+   thing as makeScale on a world axis is what sheared a rotated object. */
+function scaleAlongDir(d, f) {
+  const k = f - 1;
+  return new THREE.Matrix4().set(
+    1 + k * d.x * d.x, k * d.x * d.y, k * d.x * d.z, 0,
+    k * d.y * d.x, 1 + k * d.y * d.y, k * d.y * d.z, 0,
+    k * d.z * d.x, k * d.z * d.y, 1 + k * d.z * d.z, 0,
+    0, 0, 0, 1
+  );
+}
+
+/* THE AXES A DRAG IS MEASURED AGAINST (a2.55).
+
+   World, with one exception: an object-mode SCALE uses the dragged object's
+   OWN axes. That is not a preference, it is the only thing three can hold -
+   see scaleAlongDir. Move and rotate keep world axes, because a world-axis
+   translation or rotation composes into an object's matrix without any
+   remainder; and an ELEMENT drag keeps them too, because it moves points.
+
+   The reference object is the active one when it is in the drag, otherwise
+   the first - it decides which axis a gesture NAMES and which one the guide
+   draws. Every object then scales along its own axis of that name, so two
+   models at different angles each stretch along their own length instead of
+   one of them shearing. The directions come from the matrices captured when
+   the drag began, so the axis cannot wander while you are pulling on it. */
+function transformAxes() {
+  if (App.transformTool !== 'scale') return GIZMO_AXES;
+  if (!dragCtx || dragCtx.type !== 'objects' || !dragCtx.entries.length) return GIZMO_AXES;
+  /* THE FIRST ENTRY, which is click order - not App.activeObjectId. Object
+     mode never writes that field: it is set by element-mode taps and by ops
+     like join and mirror, so preferring it made which object named the axes
+     depend on history nothing on screen shows. Click order is at least
+     something the user did. */
+  const ref = dragCtx.entries[0].matrix;
+  if (!ref) return GIZMO_AXES;
+  return GIZMO_AXES.map((ax, i) => {
+    const dir = new THREE.Vector3().setFromMatrixColumn(ref, i);
+    /* A zero column is a reference object scaled flat on that axis: it has no
+       direction to offer, so the WORLD axis is what the gesture is measured
+       against and what the guide draws. It is still tagged `local`, and that
+       matters - an untagged axis sends every object in the selection down the
+       world-axis path, so one flattened plate would have sheared every
+       healthy rotated object beside it. The per-entry delta decides what to
+       do about each object's own column, and it already handles this. */
+    if (dir.lengthSq() < 1e-12) return { key: ax.key, color: ax.color, dir: ax.dir.clone(), local: i };
+    return { key: ax.key, color: ax.color, dir: dir.normalize(), local: i };
+  });
+}
+
 /* Decides the axis exactly once, on the first real movement, and never
    revisits it. Holding the choice until the finger lifts is the whole point:
    re-deciding mid-drag is what made a curving gesture wander between axes.
@@ -14123,7 +14193,7 @@ function resolveDirectAxis(ev) {
 
   const dragDir = new THREE.Vector2(dx, dy).normalize();
   let best = null, bestDeg = 1e9;
-  GIZMO_AXES.forEach(ax => {
+  transformAxes().forEach(ax => {
     const sd = axisScreenDir(d.origin, ax.dir);
     if (!sd) return;
     // Absolute dot: dragging either way along an axis counts as that axis.
@@ -14296,7 +14366,7 @@ function updateDirectDrag(ev) {
         if (travel0 < DIRECT_DECIDE_PX) return;
         const dragDir = new THREE.Vector2(px / travel0, py / travel0);
         let best = null, bestDeg = 1e9;
-        GIZMO_AXES.forEach(ax => {
+        transformAxes().forEach(ax => {
           const sd = axisScreenDir(d.origin, ax.dir);
           if (!sd) return;
           const deg = THREE.MathUtils.radToDeg(Math.acos(THREE.MathUtils.clamp(Math.abs(dragDir.dot(sd)), -1, 1)));
@@ -14324,11 +14394,51 @@ function updateDirectDrag(ev) {
     }
     if (gridSnapping()) f = Math.round(f / App.snapScale) * App.snapScale;
     f = Math.max(MIN_SCALE_FACTOR, f);   // floor without abs, so it can't rebound
-    const v = scaleAxis
-      ? new THREE.Vector3(scaleAxis.dir.x ? f : 1, scaleAxis.dir.y ? f : 1, scaleAxis.dir.z ? f : 1)
-      : new THREE.Vector3(f, f, f);
-    const local = new THREE.Matrix4().makeScale(v.x, v.y, v.z);
-    applyDeltaToSelection(new THREE.Matrix4().multiplyMatrices(T, new THREE.Matrix4().multiplyMatrices(local, Tinv)));
+  /* WHICH COLUMN of the object the named axis is. transformAxes tags it,
+     but the tag is only as fresh as the moment the axis was committed - and
+     the axis is frozen for the drag while the TOOL is not. `s` on the
+     keyboard during a live Move drag arrives here holding a world axis, which
+     is exactly the shear this version removes. Same name, the object's own
+     column, whoever handed it over. */
+    const li = !scaleAxis ? -1
+      : scaleAxis.local !== undefined ? scaleAxis.local
+      : GIZMO_AXES.findIndex(a => a.key === scaleAxis.key);
+
+    if (li >= 0 && dragCtx.type === 'objects') {
+      /* ONE FACTOR, ONE DELTA PER OBJECT (a2.55). The number under the thumb
+         is the whole selection's; the DIRECTION is each object's own axis of
+         the name the gesture chose, taken from the matrix captured when the
+         drag began. Two models at different angles therefore each stretch
+         along their own length, and neither shears. */
+      applyDeltaToSelection((entry) => {
+        /* Cached on the entry: the matrix it comes from is a snapshot taken
+           when the drag began, so this is the same three numbers on every
+           frame of the drag. `false` records "asked and there is none",
+           which is not the same as "not asked yet". */
+        const dirs = entry.axisDirs || (entry.axisDirs = []);
+        let dir = dirs[li];
+        if (dir === undefined) {
+          const v = new THREE.Vector3().setFromMatrixColumn(entry.matrix, li);
+          dir = dirs[li] = v.lengthSq() < 1e-12 ? false : v.normalize();
+        }
+        /* FLAT ON THAT AXIS has no direction, so it takes no scale on it -
+           identity, which re-applies the snapshot unchanged and holds the
+           object still while the rest of the selection scales. It also means
+           a flattened object cannot be pulled back out along the axis it is
+           flat on; that is a stated rule, not an oversight. */
+        if (!dir) return new THREE.Matrix4();
+        return new THREE.Matrix4().multiplyMatrices(T,
+          new THREE.Matrix4().multiplyMatrices(scaleAlongDir(dir, f), Tinv));
+      });
+    } else {
+      /* World axes: an element drag (points take any linear map), or a
+         uniform scale, which is the same in every frame there is. */
+      const v = scaleAxis
+        ? new THREE.Vector3(scaleAxis.dir.x ? f : 1, scaleAxis.dir.y ? f : 1, scaleAxis.dir.z ? f : 1)
+        : new THREE.Vector3(f, f, f);
+      const local = new THREE.Matrix4().makeScale(v.x, v.y, v.z);
+      applyDeltaToSelection(new THREE.Matrix4().multiplyMatrices(T, new THREE.Matrix4().multiplyMatrices(local, Tinv)));
+    }
   }
   updateAxisGuide();
 }
@@ -20287,6 +20397,7 @@ if (PICK_DEBUG) {
     syncSelectionOverlay, refreshSelectionOverlayPositions, selOverlayFits,
     SNAP_VERT_PX, SNAP_EDGE_PX,
     ensureVertEdges, syncHelperGeometry, syncFaceOverlay,
+    transformAxes, scaleAlongDir,
     setSoft, cycleEditMode, engageSoftSlide, softSlideMove, endSoftSlide, refreshSoftHud,
     enterIsolation, exitIsolation, reconcileIsolation, applyIsolation, objectPickable,
     unhideObject, isolationOn,
