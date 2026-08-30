@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~16,800 lines)
-- Version at time of writing: **a2.46a**
+- Version at time of writing: **a2.48b**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1788,6 +1788,95 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## The chrome pass (a2.47 / a2.48)
+
+Measured at phone size before anything was touched, because "measure, don't
+reason" is the rule that has never failed here — and because with no
+screenshot available, numbers were the only evidence. `_uimeasure.js` reports
+every visible control's rect per state, what fraction of the screen is chrome,
+which targets are under 44px, and **whether any two pieces of chrome overlap**.
+That last check is what makes moving things around safe without eyes.
+
+|  | before | after |
+|---|---|---|
+| chrome, idle | 19.3% | **13.0%** |
+| chrome, op bar open | 33.0% | **27.3%** |
+| persistent elements | 14 | **12** |
+| tap targets under 44px | 9 | **0** |
+
+### a2.47 — every tap target reaches 44px
+
+The app's own principle says "touch targets large enough for fingers", and
+nine controls were not. The worst were on the op bar, the surface you hold a
+thumb on for the whole length of an operation: the slider was **28px tall**,
+OK and Cancel 36, the grouping chips 36. Also the materials tab at **30px
+wide**, on the screen edge where a thumb is least accurate.
+
+Two things worth keeping:
+
+- The slider's box grew to 44 while the **track stayed 4px and the thumb 24**.
+  What was too small was the invisible area your thumb has to land in, not the
+  drawing.
+- The symmetry pill's **two halves stay two**. Its comment says "tap the half
+  you want or swipe toward it — both work without looking, which a button that
+  cycles never did", so merging it into one switch is a thing this project
+  already tried and rejected. They just got big enough to hit — and the pill
+  went to 46 tall, not 44, because the halves live inside its 1px border and a
+  44px pill gives 42px halves.
+
+Numbers that look arbitrary are derived, and moved with their inputs: the
+materials tab's two margins are `(tray − tab) / 2`, centring it over the tray;
+the symmetry knob's width and travel are `(pill − 6) / 2`.
+
+### a2.48 — the top bar is retired
+
+It cost **7.2% of a phone screen** to hold a hamburger, the word "Kubik", and a
+status readout. In an app whose first principle is that the viewport is the
+hero, a permanent bar for the app's own name is the most expensive thing on
+screen per unit of use.
+
+The button floats over the viewport like every other control already does. The
+name and the status moved into the drawer — where the version is the thing you
+would deliberately go looking for, and where the status sits directly above the
+object list it summarises.
+
+**The interesting part is the safe-area inset.** `#topBar` absorbed
+`env(safe-area-inset-top)` in its own padding, and `#viewport` simply started
+below the bar — so every top-anchored control could use a plain `14px` and be
+clear of the notch. With the bar gone the viewport starts at the top of the
+screen. Rather than add the inset to a dozen rules (and risk applying it twice,
+a mistake this file has already recorded twice), **`--edge` carries it**:
+`calc(14px + env(safe-area-inset-top))`. Every control already used that
+variable, so none of them needed changing and none of them can double it.
+
+### What the review caught, and why none of it was visible
+
+**Four of the five defects only appear on a notched phone**, because on a
+desktop the inset is 0 and every one of them computes to exactly what it always
+was. They were found by reading the CSS for "which of these is a TOP offset
+measured from a viewport that has moved", not by looking at anything.
+
+- **`#inspector` at a bare `top: 78px`** landed on the notch and, at z-index 16,
+  covered the floating menu button completely — the only way out of the
+  inspector was its own ✕. Now `calc(var(--edge) + 64px)`, which computes to
+  the same 78 on a desktop.
+- **`#matFly` kept `top: 108px`** while the view cube took the inset, so the two
+  drifted apart by exactly the notch and the newly 44-wide tab ended up *inside*
+  the cube's square — at z-index 25 against the cube's 12, so tapping the cube's
+  side faces opened the material tray. Moved to 132 + inset, which clears the
+  cube outright rather than nicking its corner.
+- **Every toast was invisible for a whole isolation session.** The isolate chip
+  is persistent, opaque, and sits two pixels below where the toast lives.
+- **The geo bar missed a2.47's raise on specificity**: `#geoBar button` (1,0,1)
+  out-specifies `.stepper button` (0,1,1), so its ± steppers took the new
+  *width* and not the new height — 44×36, beside an identical-looking 44×44
+  stepper in the op bar.
+- The drawer head had no top inset, which predates all this but started
+  mattering when the version string moved into it.
+
+Two dead CSS rules went with the bar: `.spacer`, whose only user it was, and
+`.sep`, which the a2.43 dead-code audit had already flagged.
 
 ## On-demand rendering (a2.46 / a2.46a)
 
