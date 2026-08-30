@@ -1015,7 +1015,7 @@
     </div>
 
     <div id="softHud">
-      <div><div class="lh-k">Soft radius</div><div class="lh-v" id="softHudV">0.00</div></div>
+      <div><div class="lh-k" id="softHudK">Soft radius</div><div class="lh-v" id="softHudV">0.00</div></div>
       <div class="lh-hint" id="softHudN">&nbsp;</div>
     </div>
 
@@ -1172,7 +1172,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.50</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.51c</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -12530,8 +12530,11 @@ function maybeResumeOrbit() {
   orbit.enabled = true;
 }
 
-/* THE RADIUS, BY GESTURE. Three fingers sliding sets it, and only while Soft
-   is on. Nothing else is displaced: three fingers already handed the whole
+/* THE THREE-FINGER SLIDE. In Soft it sets the radius; in a component mode
+   with Soft off it grows and shrinks the selection (a2.51, further down).
+   What follows is the radius half.
+
+   Nothing else is displaced: three fingers already handed the whole
    gesture to the camera, and a three-finger TAP still cycles Free/Axis,
    because a tap is judged on stillness and this needs real travel to engage -
    the same line that separates the light hold from an orbit.
@@ -12546,9 +12549,22 @@ function maybeResumeOrbit() {
    multiplies by e in either direction, which reaches "one vertex" and "the
    whole object" from anywhere in between. */
 const SOFT_SLIDE_ENGAGE_PX = 16;   // past the tap threshold, so a tap is never stolen
+/* One step of Grow or Shrink per this much travel. 64px is about a thumb's
+   width: wide enough that the ratchet is deliberate, narrow enough that five
+   steps fit on a phone. */
+const SEL_SLIDE_STEP_PX = 64;
+const SEL_SLIDE_MAX = 12;          // further than any selection survives anyway
+const SEL_SLIDE_ENGAGE_PX = 24;    // and it has to be sideways - see slideIsHorizontal
+const SEL_SLIDE_HYST = 0.2;        // of a step, either side of a boundary
+const SEL_SLIDE_MAX_PER_MOVE = 3;  // levels per pointer event - see selSlideMove
 const SOFT_RADIUS_MIN = 0.005;
 const SOFT_RADIUS_MAX = 1e4;
-let softSlide = null;              // { x0, r0 } while three fingers are sizing it
+/* { kind: 'radius' | 'select', x0, ... } while three fingers are sliding.
+   ONE state object for both, deliberately: the slide has five teardown sites
+   (lift, cancel, a finger arriving mid-slide, the light hold taking over,
+   orbit resume) and a parallel copy would have had to be added to every one
+   of them. Only the payload differs. */
+let softSlide = null;
 /* Where every finger was at the moment the third one landed. The travel that
    arms this gesture has to be measured from THERE, not from each pointer's own
    lifetime maximum: two fingers mid-orbit have already travelled hundreds of
@@ -12677,10 +12693,49 @@ function isoPinchMove() {
   return true;
 }
 
+/* Soft's radius slide asks nothing beyond Soft being on. The selection
+   slide needs something to grow FROM, and must stay out of two states:
+   a live op holds a snapshot of the selection it opened on, so moving the
+   selection under it would apply the next slider frame to different elements
+   than the preview showed; and the knife owns its own pointers. */
+function selSlideAllowed(running) {
+  if (App.mode === 'object') return false;
+  if (App.soft) return true;
+  if (App.pendingOp || App.knife) return false;
+  /* `running` skips the emptiness test. A slide that has shrunk the selection
+     down to nothing still holds the snapshot it started from and sliding right
+     brings it all back; ending there would strand the user with an empty
+     selection and no way to undo it, since a selection is not history. */
+  if (!running && App.selectedElements.size === 0) return false;
+  return !!findObject(App.activeObjectId);
+}
+
 function softSlideOrigin() {
   let sx = 0, n = 0;
   activePointers.forEach(p => { sx += (p.lastX !== undefined ? p.lastX : p.x); n++; });
   return n ? sx / n : 0;
+}
+
+/* Horizontal INTENT, per axis, largest single finger. A three-finger swipe up
+   or down is the camera and must stay the camera: without this the selection
+   slide engaged on ANY three-finger travel, took orbit away mid-pan and put a
+   HUD on screen reading "Selection 0". */
+function slideIsHorizontal() {
+  if (!softArm) return false;
+  /* Judged PER FINGER and satisfied by the most committed one, the same rule
+     softSlideTravel uses. Three fingers on a wrist never agree: the hand arcs,
+     and the finger nearest the pivot moves mostly downward while the far one
+     runs sideways. Maxima taken independently per axis compared those two
+     fingers against each other and refused the gesture. */
+  let ok = false;
+  activePointers.forEach((p, id) => {
+    const a = softArm.get(id);
+    if (!a) return;
+    const dx = Math.abs((p.lastX !== undefined ? p.lastX : p.x) - a.x);
+    const dy = Math.abs((p.lastY !== undefined ? p.lastY : p.y) - a.y);
+    if (dx > SEL_SLIDE_ENGAGE_PX && dx > dy * 1.3) ok = true;
+  });
+  return ok;
 }
 
 // How far the hand has travelled SINCE it was armed, as the largest single
@@ -12707,12 +12762,24 @@ function softSyncSlide() {
   if (!softSlide) return;
   softSlide.x0 = softSlideOrigin();
   softSlide.r0 = App.softRadius;
+  /* The selection slide re-baselines onto what is selected RIGHT NOW, so the
+     level it is holding becomes the new zero. Keeping the old base would mean
+     a fourth finger landing snapped the selection back by however many steps
+     the slide had taken. */
+  if (softSlide.kind === 'select') {
+    // The predicate is the single authority: re-baselining a stale slide would
+    // quietly re-legitimise one the guard would have ended.
+    if (selSlideStale()) { endSoftSlide(); return; }
+    selSlideRebase();
+    refreshSoftHud();
+  }
 }
 
 function engageSoftSlide() {
   const obj = findObject(App.activeObjectId);
   if (obj && !(App.softRadius > 0)) seedSoftRadius(obj);
-  softSlide = { x0: softSlideOrigin(), r0: App.softRadius };
+  softSlide = { kind: App.soft ? 'radius' : 'select', x0: softSlideOrigin(), r0: App.softRadius };
+  if (softSlide.kind === 'select') selSlideRebase();
   /* Same reasoning as the light hold: OrbitControls checks `enabled` on every
      event, so clearing it mid-gesture stops it where it stands - and it is NOT
      switched back on here, because handing it back with fingers still down
@@ -12731,6 +12798,7 @@ function engageSoftSlide() {
 function softSlideMove() {
   if (!softSlide) return;
   const dx = softSlideOrigin() - softSlide.x0;
+  if (softSlide.kind === 'select') { selSlideMove(dx); return; }
   const w = Math.max(240, window.innerWidth);
   const r = softSlide.r0 * Math.exp(dx / (w * 0.33));
   App.softRadius = Math.min(SOFT_RADIUS_MAX, Math.max(SOFT_RADIUS_MIN, r));
@@ -12742,19 +12810,141 @@ function softSlideMove() {
 }
 
 function refreshSoftHud() {
+  const k = document.getElementById('softHudK');
   const v = document.getElementById('softHudV');
   const n = document.getElementById('softHudN');
+  if (softSlide && softSlide.kind === 'select') {
+    const lv = softSlide.level;
+    if (k) k.textContent = 'Selection';
+    // Signed, and 0 says out loud that you are back where you started - the
+    // count alone cannot say that, since two different levels can share one.
+    if (v) v.textContent = (lv > 0 ? '+' : '') + lv;
+    if (n) n.textContent = App.selectedElements.size + ' ' + componentNoun(App.selectedElements.size);
+    return;
+  }
+  if (k) k.textContent = 'Soft radius';
   if (v) v.textContent = App.softRadius >= 10 ? App.softRadius.toFixed(1) : App.softRadius.toFixed(3);
   if (n) n.textContent = softField ? softField.size + ' vertices' : 'nothing selected';
+}
+
+function componentNoun(n) {
+  const one = App.mode === 'vertex' ? 'vertex' : App.mode === 'edge' ? 'edge' : 'face';
+  return n === 1 ? one : (one === 'vertex' ? 'vertices' : one + 's');
 }
 
 function endSoftSlide() {
   softArm = null;
   if (!softSlide) return;
   softSlide = null;
+  /* The press that started this hand is not a tap. Left live, the first finger
+     to lift lands in handleTap and selects whatever is under it - which is
+     also what would write lastTap and turn the next real tap into a double.
+     After the `return` above, so an ordinary pointerleave with no slide
+     running still does not touch them. */
+  pointerDown = null;
+  directCandidate = null;
   document.getElementById('softHud').classList.remove('show');
   orbitResumePending = true;
   maybeResumeOrbit();
+}
+
+/* THE SELECTION, BY GESTURE (a2.51). Three fingers sliding right grows the
+   selection a ring at a time, left shrinks it. Component modes only, and only
+   while Soft is OFF - with Soft on the same slide is already sizing the
+   falloff, which is the same question asked of a continuous field.
+
+   It replaces the Grow and Shrink ring items. Two seats for two taps that
+   were always going to be repeated - "grow, grow, grow, too far, shrink" is
+   the actual usage - is exactly what a slide is for.
+
+   EVERY LEVEL IS COMPUTED FROM THE SNAPSHOT, never from the level before it
+   in the hand's history. Shrink is not the inverse of Grow (grow spills onto
+   a border, shrink eats one back from wherever the border now is), so a
+   ratchet would have made sliding back a different journey from sliding out,
+   and there would be no way to return to what you picked. Levels are cached
+   in two chains so a steady slide costs one step per step, not one per
+   frame. */
+function selSlideRebase() {
+  const base = new Set(App.selectedElements);
+  softSlide.x0 = softSlideOrigin();
+  softSlide.mode = App.mode;
+  softSlide.objId = App.activeObjectId;
+  softSlide.level = 0;
+  softSlide.up = [base];
+  softSlide.down = [base];
+  softSlide.satUp = false;
+  softSlide.satDown = false;
+}
+
+function selSetAt(obj, level) {
+  const up = level >= 0;
+  const chain = up ? softSlide.up : softSlide.down;
+  const want = Math.abs(level);
+  /* grownElements and shrunkElements read App.selectedElements, because that
+     is what the ring items and the keyboard hand them. Borrowing it here and
+     putting it back is cheaper than a second signature nothing else calls. */
+  const keep = App.selectedElements;
+  try {
+    while (chain.length <= want && !(up ? softSlide.satUp : softSlide.satDown)) {
+      const prev = chain[chain.length - 1];
+      App.selectedElements = new Set(prev);
+      const next = up ? grownElements(obj) : shrunkElements(obj);
+      // Saturated: the whole mesh, or nothing left. Latched, or every frame
+      // past the end would recompute the same dead step.
+      if (!next || next.size === prev.size) {
+        if (up) softSlide.satUp = true; else softSlide.satDown = true;
+        break;
+      }
+      chain.push(next);
+    }
+  } finally {
+    // A step that throws must not leave the borrowed intermediate in place:
+    // this runs inside a pointermove, and the throw would escape it with the
+    // slide live, orbit off and the HUD up.
+    App.selectedElements = keep;
+  }
+  return chain[Math.min(want, chain.length - 1)];
+}
+
+/* Everything the snapshot assumed has to still hold. The chains are indexed
+   in ONE component mode against ONE object, so a mode change or a switch of
+   active object mid-slide does not merely give a wrong answer - it indexes
+   past the end of faceGroups and throws. */
+function selSlideStale() {
+  return App.soft || !selSlideAllowed(true) ||
+    App.mode !== softSlide.mode || App.activeObjectId !== softSlide.objId ||
+    !findObject(App.activeObjectId);
+}
+
+function selSlideMove(dx) {
+  if (selSlideStale()) { endSoftSlide(); return; }
+  const obj = findObject(App.activeObjectId);
+  const t = dx / SEL_SLIDE_STEP_PX;
+  let lv = softSlide.level;
+  while (t > lv + 0.5 + SEL_SLIDE_HYST) lv++;
+  while (t < lv - 0.5 - SEL_SLIDE_HYST) lv--;
+  lv = Math.max(-SEL_SLIDE_MAX, Math.min(SEL_SLIDE_MAX, lv));
+  lv = Math.max(softSlide.level - SEL_SLIDE_MAX_PER_MOVE,
+                Math.min(softSlide.level + SEL_SLIDE_MAX_PER_MOVE, lv));
+  if (lv === softSlide.level) return;
+  const set = selSetAt(obj, lv);
+  /* Never HOLD a level deeper than the chain actually reaches. Past saturation
+     the selection stops changing, but a level that went on counting had to be
+     counted all the way back before anything moved again - half a screen of
+     travel doing nothing, with a haptic tick per dead step. Clamping also puts
+     the commit AFTER the step, so a step that throws cannot leave the level
+     one ahead of the selection for the rest of the gesture. */
+  if (lv > 0 && softSlide.satUp) lv = Math.min(lv, softSlide.up.length - 1);
+  if (lv < 0 && softSlide.satDown) lv = Math.max(lv, -(softSlide.down.length - 1));
+  if (lv === softSlide.level) return;
+  softSlide.level = lv;
+  App.selectedElements = new Set(set);
+  refreshElementColors(obj);
+  refreshUI();
+  refreshGizmoAttachment();
+  refreshSoftHud();
+  // One short tick per step, so the ratchet is felt and not only watched.
+  if (navigator.vibrate) { try { navigator.vibrate(8); } catch (e) {} }
 }
 
 // Which pointers are the sliding hand: everything that is not an anchor.
@@ -14615,18 +14805,13 @@ function performRegionSelect(region) {
   toast(hit.length ? hit.length + ' selected' : 'Nothing in that region');
 }
 
-/* ---------------- Grow / Shrink selection ---------------- */
+/* ---------------- Grow / Shrink selection ----------------
+   The STEP is separate from the command because the three-finger slide runs
+   it repeatedly from a snapshot; the command is what the keyboard and any
+   future button call. Both read App.selectedElements and neither touches
+   history - a selection is not an edit. */
 
-function growSelection() {
-  if (App.mode === 'object') {
-    // "Neighbors" isn't well defined for freestanding objects - grow adds
-    // every other object instead, which is at least predictable.
-    App.objects.forEach(o => App.selectedObjectIds.add(o.id));
-    refreshUI(); refreshGizmoAttachment();
-    return;
-  }
-  const obj = findObject(App.activeObjectId);
-  if (!obj || App.selectedElements.size === 0) { toast('Select something first'); return; }
+function grownElements(obj) {
   ensureHelpers(obj);
   const topo = obj.mesh.userData.topo;
   const G = buildEdgeGraph(obj);
@@ -14650,22 +14835,27 @@ function growSelection() {
       });
     });
   }
-  App.selectedElements = next;
-  refreshElementColors(obj);
-  refreshUI();
-  refreshGizmoAttachment();
-  toast('Selection grown (' + next.size + ')');
+  return next;
 }
 
-function shrinkSelection() {
+function growSelection() {
   if (App.mode === 'object') {
-    if (App.selectedObjectIds.size <= 1) { App.selectedObjectIds.clear(); }
-    else { const ids = Array.from(App.selectedObjectIds); App.selectedObjectIds = new Set([ids[0]]); }
+    // "Neighbors" isn't well defined for freestanding objects - grow adds
+    // every other object instead, which is at least predictable.
+    App.objects.forEach(o => App.selectedObjectIds.add(o.id));
     refreshUI(); refreshGizmoAttachment();
     return;
   }
   const obj = findObject(App.activeObjectId);
   if (!obj || App.selectedElements.size === 0) { toast('Select something first'); return; }
+  App.selectedElements = grownElements(obj);
+  refreshElementColors(obj);
+  refreshUI();
+  refreshGizmoAttachment();
+  toast('Selection grown (' + App.selectedElements.size + ')');
+}
+
+function shrunkElements(obj) {
   ensureHelpers(obj);
   const topo = obj.mesh.userData.topo;
   const G = buildEdgeGraph(obj);
@@ -14695,11 +14885,23 @@ function shrinkSelection() {
       if (interior) keep.add(gi);
     });
   }
-  App.selectedElements = keep;
+  return keep;
+}
+
+function shrinkSelection() {
+  if (App.mode === 'object') {
+    if (App.selectedObjectIds.size <= 1) { App.selectedObjectIds.clear(); }
+    else { const ids = Array.from(App.selectedObjectIds); App.selectedObjectIds = new Set([ids[0]]); }
+    refreshUI(); refreshGizmoAttachment();
+    return;
+  }
+  const obj = findObject(App.activeObjectId);
+  if (!obj || App.selectedElements.size === 0) { toast('Select something first'); return; }
+  App.selectedElements = shrunkElements(obj);
   refreshElementColors(obj);
   refreshUI();
   refreshGizmoAttachment();
-  toast('Selection shrunk (' + keep.size + ')');
+  toast('Selection shrunk (' + App.selectedElements.size + ')');
 }
 
 /* ---------------- Suppress native page scrolling on touch ----------------
@@ -14752,7 +14954,7 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   // The third finger arms both of the three-finger gestures: from here, travel
   // and spread are measured. Re-armed on a fourth so neither reads the change
   // in the hand's shape as intent.
-  if (App.soft && activePointers.size >= 3) softArmSnapshot();
+  if (App.mode !== 'object' && activePointers.size >= 3) softArmSnapshot();
   else if (activePointers.size < 3) softArm = null;
   if (App.mode === 'object' && activePointers.size >= 3) armIsoPinch();
   else if (activePointers.size < 3) isoPinch = null;
@@ -14882,14 +15084,16 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
 renderer.domElement.addEventListener('pointermove', (ev) => {
   trackPointerMove(ev);
   if (lightHold) { lightSlideMove(); return; }
-  /* Three fingers sizing the falloff. Checked before the camera bail-out
-     below, which would otherwise swallow them, and engaged on TRAVEL so a
-     three-finger tap still reaches cycleTransformMode on release. */
+  /* Three fingers sliding: the falloff in Soft, otherwise the reach of the
+     selection. Checked before the camera bail-out below, which would
+     otherwise swallow them, and engaged on TRAVEL so a three-finger tap
+     still reaches cycleTransformMode on release. */
   if (softSlide) { softSlideMove(); return; }
   // Object mode's own three-finger gesture. Checked before the camera bail-out
   // below, which would otherwise swallow it.
   if (!lightHold && isoPinch && isoPinchMove()) return;
-  if (App.soft && !lightHold && softArm && activePointers.size >= 3 &&
+  if (!lightHold && softArm && activePointers.size >= 3 && selSlideAllowed() &&
+      (App.soft || slideIsHorizontal()) &&
       softSlideTravel() > SOFT_SLIDE_ENGAGE_PX) {
     engageSoftSlide(); softSlideMove(); return;
   }
@@ -17473,10 +17677,6 @@ const ICON = {
   // lid: the patch that makes it watertight.
   cap: '<path d="M4 10v6.5L12 21l8-4.5v-6.5"/><path d="M4 10l8 4.5 8-4.5"/><path d="M12 14.5V21"/><path d="M12 2.3l5.4 3.1-5.4 3.1-5.4-3.1z" fill="currentColor" stroke="currentColor"/>',
   knife: '<path d="M20 3l-8 8 3 3 5-5z"/><path d="M12 11l-8 8 2 2 8-8"/>',
-  // Outward arrows: the selection reaching further.
-  grow: '<path d="M9 9h6v6H9z"/><path d="M6 6l-3-3M18 6l3-3M6 18l-3 3M18 18l3 3"/><path d="M3 7V3h4M21 7V3h-4M3 17v4h4M21 17v4h-4"/>',
-  // The same arrows turned inward.
-  shrink: '<path d="M9 9h6v6H9z"/><path d="M3 3l3 3M21 3l-3 3M3 21l3-3M21 21l-3-3"/><path d="M6 2v4H2M18 2v4h4M6 22v-4H2M18 22v-4h4"/>',
   mirror:  '<path d="M12 2v20"/><path d="M9 6L4 12l5 6z"/><path d="M15 6l5 6-5 6z"/>',
   // The one-shot Mirror ACTION: the pill's composition, but the result
   // half arrives solid - a before-and-after, not a state.
@@ -17588,9 +17788,11 @@ const symPillEl = document.getElementById('symPill');
 // Bevel/Loop/Split/Crease are Edge-only, and Connect/Weld are Vertex-only.
 // Showing only what applies is what actually fixes "overpopulated" - a
 // shared list was showing Face-only tools while editing vertices and so on.
-/* Grow and Shrink live in all three component rings. They were reachable
-   only from the keyboard keys ] and [ - which is to say, not at all on the
-   phone this app is built for. */
+/* SEATS 12 AND 13 ARE FREE in all three component rings. They were Grow and
+   Shrink until a2.51, when both became the three-finger slide - the gesture
+   the ring items were always going to be tapped repeatedly to imitate. The
+   functions stay: the keyboard keys ] and [ still call them, and the slide
+   runs the same step. */
 const HUB_TOOLS_VERTEX = [
   { key: 'connect', icon: 'connect', label: 'Connect', seat: 0, ring: 0, run: connectSelection },
   { key: 'weld', icon: 'weld', label: 'Weld', seat: 1, ring: 0, run: weldSelection },
@@ -17611,8 +17813,6 @@ const HUB_TOOLS_VERTEX = [
      something would have had to be evicted to make room. */
   { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 8.5, ring: 1, run: circularizeSelection },
   { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 0, run: deleteSelection },
-  { key: 'grow', icon: 'grow', label: 'Grow', seat: 12, ring: 1, run: growSelection },
-  { key: 'shrink', icon: 'shrink', label: 'Shrink', seat: 13, ring: 1, run: shrinkSelection },
 ];
 
 const HUB_TOOLS_EDGE = [
@@ -17646,9 +17846,7 @@ const HUB_TOOLS_EDGE = [
   { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 8, ring: 1, run: setFlowSelection },
   { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 8.5, ring: 1, run: circularizeSelection },
   { key: 'sharp', icon: 'sharp', label: 'Mark Sharp', seat: 10, ring: 1, run: markSharpSelection },
-  { key: 'crease', icon: 'crease', label: 'Crease', seat: 11, ring: 1, run: () => creaseSelection() },
-  { key: 'grow', icon: 'grow', label: 'Grow', seat: 12, ring: 1, run: growSelection },
-  { key: 'shrink', icon: 'shrink', label: 'Shrink', seat: 13, ring: 1, run: shrinkSelection }
+  { key: 'crease', icon: 'crease', label: 'Crease', seat: 11, ring: 1, run: () => creaseSelection() }
 ];
 
 const HUB_TOOLS_FACE = [
@@ -17667,9 +17865,7 @@ const HUB_TOOLS_FACE = [
   { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 8, ring: 1, run: setFlowSelection },
   { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 8.5, ring: 1, run: circularizeSelection },
   { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 11, ring: 1, run: toggleShading },
-  { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 9, ring: 1, run: flipNormalsSelection },
-  { key: 'grow', icon: 'grow', label: 'Grow', seat: 12, ring: 1, run: growSelection },
-  { key: 'shrink', icon: 'shrink', label: 'Shrink', seat: 13, ring: 1, run: shrinkSelection }
+  { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 9, ring: 1, run: flipNormalsSelection }
 ];
 
 const HUB_TOOLS_OBJECT_BASE = [
@@ -18803,6 +18999,7 @@ const HELP_SECTIONS = [
       ['lasso', 'Lasso select', 'Draw the shape freehand. Same ring.'],
       [null, 'Double tap, face', 'A strip of faces. Direction comes from the edge nearest your tap.'],
       [null, 'Double tap, edge', 'The whole loop. Tap one edge, double-tap another within 1.5s for the run between them.'],
+      [null, 'Three-finger slide', 'Widens the selection ring by ring and pulls it back in. Right grows, left shrinks, and sliding back to where you started returns exactly what you picked.'],
       ['eye', 'See-through', 'Lets the selection show through the surface.']
     ]
   },
@@ -18812,7 +19009,7 @@ const HELP_SECTIONS = [
     rows: [
       [null, 'Two-finger tap', 'Move / Rotate / Scale. The top readout says which.'],
       [null, 'Three-finger tap', 'Free / Axis.'],
-      [null, 'Three-finger slide', 'In Soft, sizes the falloff. The dots light up to show its reach.'],
+      [null, 'Three-finger slide', 'In Soft, sizes the falloff and the dots light up to show its reach. Otherwise it grows and shrinks the selection.'],
       [null, 'Three-finger pinch', 'In Object mode: squeeze in to isolate what is selected, spread out to bring everything back.'],
       ['pivot', 'Pivot', 'Rotate and scale turn around it. World ring, left side: put it on the selection, on an object\u2019s centre, or drag it by hand. Auto puts it back.'],
       [null, 'Axis', 'Decided in the first few pixels and held until you lift.'],
@@ -18857,8 +19054,6 @@ HELP_SECTIONS.push(
       ['connect', 'Connect', 'A new edge between selected vertices.'],
       ['weld', 'Weld', 'The selected vertices become one, in the middle. To send one vertex ONTO another instead, tap the first and double-tap the second.'],
       ['merge', 'Merge', 'Points sitting on almost the same spot become one.'],
-      ['grow', 'Grow', 'Widens the selection to everything touching it.'],
-      ['shrink', 'Shrink', 'Pulls it back in from its border.'],
       ['crease', 'Crease', 'Holds an edge hard through smoothing and Subdivide.'],
       ['smooth', 'Shade', 'Flat or smooth. In Edge mode it marks the edges themselves.'],
       ['flipnorm', 'Flip normals', 'Turns the selected faces inside out.'],
@@ -19444,7 +19639,7 @@ window.addEventListener('resize', onResize);
    still costs one comparison. */
 window.addEventListener('pointerup', (ev) => {
   if (ev.target === renderer.domElement) return;   // the canvas listener has it
-  if (!directDrag && !extrudeDrag) return;
+  if (!directDrag && !extrudeDrag && !softSlide) return;
   /* ONLY for a pointer this app is tracking. A second finger tapping Undo
      while the first is still dragging lifts on the button, bubbles to here,
      and would have committed the drag mid-gesture. A pointer that pressed on
@@ -19456,9 +19651,17 @@ window.addEventListener('pointerup', (ev) => {
      the case where orbit was already disabled at press time and no capture
      was taken. */
   if (!activePointers.has(ev.pointerId)) return;
-  activePointers.delete(ev.pointerId);
+  /* trackPointerUp, not a raw delete - the same reason the canvas handler
+     gives: it is what resets the tap tracker, and without it the tracker goes
+     on believing three fingers are down and swallows the next multi-finger
+     tap. */
+  trackPointerUp(ev);
   if (directDrag) endDirectDrag();
   if (extrudeDrag) endExtrudeDrag();
+  // A finger leaving ends the slide, wherever it happened to leave. Orbit is
+  // switched off while one runs, so no capture was taken and this release may
+  // be the only one this app ever hears about.
+  if (softSlide) endSoftSlide();
   directCandidate = null;
   maybeResumeOrbit();
 });
@@ -19835,7 +20038,9 @@ if (PICK_DEBUG) {
     loopCutBeforeState, neighbourMap, continuationOf, hermiteAt,
     subdivideSelection, fillHolesSelection, flipNormalsSelection,
     autoSmoothSelection, markSharpSelection, shadeSelection,
-    growSelection, shrinkSelection, collapseSelection,
+    growSelection, shrinkSelection, grownElements, shrunkElements,
+    selSlideAllowed, selSlideMove, selSetAt, selSlideRebase, slideIsHorizontal,
+    SEL_SLIDE_STEP_PX, SEL_SLIDE_MAX, collapseSelection,
     duplicateSelection, separateSelection, joinSelection,
     switchToComponentType, selectObjectClick, startKnife, cancelKnife,
     combineObjectsInto, removeObjects,

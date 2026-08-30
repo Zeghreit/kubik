@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~16,800 lines)
-- Version at time of writing: **a2.50**
+- Version at time of writing: **a2.51c**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1808,6 +1808,84 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## Grow and Shrink become a gesture (a2.51)
+
+Two ring items, six seats across three rings, gone. **In a component mode with
+Soft OFF, three fingers sliding right grows the selection a ring at a time and
+left shrinks it.** Zeghreit's read: the pair was always going to be tapped
+repeatedly - "grow, grow, grow, too far, shrink" - and that is what a slide is
+for. Soft mode's own three-finger slide already sizes the falloff, which is the
+same question asked of a continuous field, so the two never collide: Soft on
+means radius, Soft off means selection. Seats 12 and 13 are now free in all
+three component rings.
+
+`growSelection` / `shrinkSelection` stay - `]` and `[` still call them - split
+into pure steps `grownElements(obj)` / `shrunkElements(obj)` plus thin command
+wrappers, so the gesture and the keyboard run the same code.
+
+**Every level is computed from a SNAPSHOT taken when the slide engaged**, not
+from the level before it in the hand's history. Shrink is not the inverse of
+Grow - grow spills onto a border, shrink eats one back from wherever the border
+now is - so a ratchet would have made sliding back a different journey from
+sliding out, with no way to return to what you picked. Levels are cached in two
+chains (`softSlide.up`, `softSlide.down`) with saturation latches, so a steady
+slide costs one step per step rather than one per frame, and level 0 hands back
+the original Set object's contents exactly.
+
+ONE state object for both slides, deliberately: `softSlide` gained
+`kind: 'radius' | 'select'`. The slide has five teardown and re-baseline sites
+(lift, cancel, a finger arriving mid-slide, the light hold taking over, the
+window backstop) and a parallel copy would have had to be added to every one.
+
+### What the two review rounds found, and it is the usual lesson
+
+The feature itself reviewed clean on the parts that were new. **Every defect
+was in the seams**, and then **five more were in the fixes**:
+
+- **`softSlideTravel` is `hypot(dx, dy)`.** A three-finger VERTICAL pan - an
+  ordinary camera gesture - crossed the engage threshold, took orbit away
+  mid-pan and put a HUD on screen reading "Selection 0". Soft mode had always
+  been like this and its users know it; the selection slide is reachable in the
+  app's default editing state, so it now asks for sideways intent
+  (`slideIsHorizontal`). **The first fix took the per-axis maximum over
+  DIFFERENT fingers**, so an arced swipe - index finger 100px right while the
+  little finger curls 80px down - compared those two against each other and
+  refused the gesture. Judged per finger now, satisfied by the most committed
+  one, which is the rule `softSlideTravel` already used.
+- **`Math.round(dx / 64)` flips at 32px**, so the first step was half a step
+  and, worse, jitter held at a boundary flipped the level every frame - each
+  flip rebuilding the selection, the whole object list and a haptic tick.
+  Replaced with a deadband: a boundary is crossed 0.7 of a step past it, so the
+  same spot holds whichever level you came from.
+- **The state the slide was allowed under can change under it.** The mode
+  button and the keys 1/2/3 are outside the canvas and tear nothing down; a
+  vertex-indexed snapshot re-run through the face branch indexes past
+  `faceGroups` and throws. `selSlideStale()` is now the single authority, read
+  by both the per-frame guard and the re-baseline.
+- **The first version of that guard ended the slide when the selection went
+  empty**, because it re-used the engage-time predicate - which requires
+  something to grow FROM. Shrinking to nothing therefore tore the gesture down
+  at exactly the moment you would want to slide back out, and stranded the user
+  with an empty selection and no undo, since a selection is not history.
+  `selSlideAllowed(running)` skips the emptiness test for a slide already
+  holding a snapshot.
+- **Ending the slide from inside the guard left `pointerDown` live**, so the
+  first finger to lift fell through to the ordinary tap path and selected
+  whatever was under it. Every other teardown site cleared it by hand;
+  `endSoftSlide` clears it now, which also fixed the window backstop.
+- **The level was committed before the step that computes it**, and it went on
+  counting past saturation - so overshooting the bottom by nine cost nine dead
+  steps of travel, buzzing once per step to say a ring had changed when none
+  had. The level is now clamped to the depth the chain actually reaches.
+- The window backstop deleted its pointer raw instead of through
+  `trackPointerUp`, leaving `tapPeakCount` at three so the next two-finger tap
+  was swallowed.
+
+`_sel_probe.py` (42 assertions) covers all of it, including the two that only a
+harness can hold still: the deadband holding one spot at two different levels
+depending on which side it was approached from, and a slide the guard killed not
+leaving a tap behind.
 
 ## The fillet preview is gone (a2.50)
 
@@ -3922,9 +4000,10 @@ rather than assuming: `keep` holds the silhouette at exactly 1.0 at every
 level, `smooth` rounds it to 0.8785 by level 2, and the summed positions
 differ from level 1 (68 against 96).
 
-**Grow and Shrink are in all three component rings.** They existed and
-worked, reachable only from the keyboard keys `]` and `[` — which is to say
-not at all on the phone this app is built for.
+**Grow and Shrink were put in all three component rings** (they had been
+reachable only from the keyboard keys `]` and `[`, which is to say not at all
+on the phone this app is built for). **They left the rings again at a2.51** —
+see "Grow and Shrink become a gesture" below.
 
 **Still wanted, not built:** a non-destructive *smooth preview* - a
 display-only smooth you can leave switched on while modelling, changing what
