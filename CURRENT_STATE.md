@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~20,200 lines)
-- Version at time of writing: **a2.55**
+- Version at time of writing: **a2.56**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1811,6 +1811,81 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## The help card, rewritten (a2.56)
+
+**A help card is code, and it rots like code.** An audit against this file and
+the ring tables found SIX rows that were not thin but WRONG, and the worst of
+them had been sending beginners to the wrong corner of the screen since
+v1.99d: the Symmetry pill moved to the top left and the card still pointed
+under the view cube — in its own section AND in the Quick start, which is the
+one section that is open when the card opens.
+
+The others: the snap chip is top CENTRE, not top right (and it also carries a
+Pivot marker nobody had documented); Shade left the Edge ring at a2.7f and
+**Mark Sharp**, which replaced it, had no row at all; free scale in object mode
+reads the object's own axes since a2.55; the drawer's Appearance section is a
+Theme button and nothing else; and the Mirror ACTION row drew the Symmetry
+pill's icon rather than `mirroraction`.
+
+**The biggest gap was a whole gesture.** Two fingers held still anchor the
+light and the other hand aims it — one finger turns, two change strength. The
+drawer's own note calls that "the part you cannot discover by looking", and
+the card it sends you to said nothing about it.
+
+### The shape follows the app now
+
+`Shaping` had grown to 19 rows meaning three different things; `Move, rotate,
+scale` had absorbed Snap, Isolate and Soft; and the multi-finger gestures were
+scattered across three sections with the three-finger slide written up twice,
+differently. Fourteen sections now, plainly named, because the closed list IS
+the table of contents and a stranger has to guess right from it:
+
+Quick start · Camera and view · **Gestures** · Tool rings · Selecting · Move,
+rotate, scale · Edge and face tools · **Marks and cleanup** · Object tools ·
+Materials · Symmetry and Mirror · The drawer · Saving and exporting · **At a
+desk**.
+
+`Gestures` is the single index of everything done without a button. `At a desk`
+is the keyboard set — which existed in full and had never been written down —
+and it absorbs the QR, which had been a section on its own arguing that a desk
+exists while the card refused to talk to one.
+
+### And the rewrite injected six of its own
+
+Which is the lesson of a2.43 and a2.45 arriving in prose: **writing a card has
+the same defect rate as fixing one.** Review caught all six.
+
+- **The empty-scene ring cannot be reached.** `HUB_TOOLS_EMPTY` is only
+  `bloomToolRing`'s default, and the one call site that omits `tools` requires
+  `pointerOnSelection`, which is false whenever nothing is selected. A hold on
+  an empty scene always gives the world ring. The row went; the dead table is
+  on the list below.
+- **The light gesture is not "on the model".** `lightHoldCandidate` does no
+  raycast at all — two fingers still, anywhere. The Gestures row was right, the
+  drawer row was wrong, and so was the live drawer note, which is fixed here.
+- **`N` cycles off / grid / geometry**, and the card said "on or off" two
+  sections after saying it cycles three ways.
+- **The world ring has eight entries**, and the one the rewrite dropped was
+  Tap select — the only way back once box or lasso is armed.
+- **The `+` does not carry masks** into the material it forks.
+- **Soft is the mode button's third POSITION, which is the second press** from
+  Object mode. As an instruction the row sent you one tap too far.
+
+Measured on a 430x860 phone: closed, the whole table of contents is 626px
+against a 608px card — one small flick, with two more headings than before.
+No heading wraps, nothing overflows sideways, and no row runs past three lines
+(six did in the first draft, one to 125px; the card's own note says a row that
+needs a paragraph is saying too much). `_uimeasure.py` confirms every screen
+position the card now claims.
+
+### Two things the fact-check turned up that are not about the card
+
+- **`HUB_TOOLS_EMPTY` is dead code** — unreachable, and the a2.43 audit found
+  this file almost free of it. Either wire it up or remove it.
+- **Forking a material with the `+` drops its masks.** It copies colour,
+  roughness, metalness, envMapIntensity and bevel only. Documented as it
+  stands, but it reads as a bug.
 
 ## An axis scale runs along the object's own axis (a2.55)
 
