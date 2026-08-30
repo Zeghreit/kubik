@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~16,800 lines)
-- Version at time of writing: **a2.49**
+- Version at time of writing: **a2.50**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -38,7 +38,7 @@ docs (claude/materials-roadmap.md, claude/crosstest-findings.md,
 claude/kubik-orientation.md).
 
 **Icons (a2.7f).** Redesigned: cap (open iso cube + solid lid), bevel
-(flat-cut upper-right corner) + NEW `fillet` key (round corner), loop
+(flat-cut upper-right corner), loop
 (dashed seam), bridge (two edges + ghost band), separate (two cubes +
 dashed vertical), `mirroraction` (new key for the Object-ring action;
 the Symmetry pill keeps `mirror`). The trash `del` serves ALL deletes -
@@ -128,7 +128,6 @@ and dead clones before them):
    _maskedMats + WeakMap _maskUniforms; ensureMaskPatches (called from
    refreshUI) re-dresses clones after duplicate/separate/detach/join.
    Probe from tests: __kubik.isMaskPatched(mat).
-The fillet preview re-dresses its cloned materials from finishes.
 
 **New ops (a2.11).** Merge (Vertex ring): merge-by-distance,
 MERGE_EPS=0.01 grid clustering to centroids (exact coincidence <=1e-4
@@ -920,7 +919,7 @@ skipped entirely while `activePointers.size` is non-zero, and installed only
 on a material that actually wears a shape mask.
 
 **The atlas is disposed with its geometry** - `disposeEdgeField` in
-`disposeObject`, `rebuildFromEditable` and `clearFillet`. `geometry.dispose`
+`disposeObject` and `rebuildFromEditable`. `geometry.dispose`
 frees buffers, not something hanging off userData, and this is up to a
 megabyte. Undo alone disposes every object and rebuilds.
 
@@ -1715,6 +1714,21 @@ otherwise the inspector reports the position the object was reflected FROM.
   `animateCameraTo` STAY - the double-tap framing still uses them.
 - **The edge rails.** Five buttons down the viewport sides, now in the world
   ring.
+- **The rounded-edges (Fillet) preview.** REMOVED AT a2.50, and this entry is
+  the one exception in this list: it is **pending a better construction, not
+  rejected**. Zeghreit's words were "needless op for now - later we will
+  construct it better but it's not essential". What went: the drawer section,
+  the Object-ring item at seat 1, the `fillet` icon, two help rows, `App`'s
+  `fillet` / `filletRadius` / `filletProfile` / `filletSegments`,
+  `FILLET_ANGLE`, and `findSharpEdges` / `buildFilletedMesh` / `clearFillet` /
+  `refreshFillets` / `toggleFilletPreview` with their call sites in
+  `pushHistory` and the export path. Tagged `a2.50-fillet` so the
+  implementation stays findable. **Seat 1 in the Object ring is deliberately
+  free** and whatever replaces this should take it back - the pairing with
+  Bevel one ring over was the good part. Do not rebuild it as it was: a live
+  preview that clones every object's mesh and materials, rebuilds on every
+  history push, and has to be special-cased in export is the shape of the
+  problem.
 
 ## Hard-won lessons
 
@@ -1749,6 +1763,12 @@ otherwise the inspector reports the position the object was reflected FROM.
 - **Large deletions need a declaration diff** against the last commit.
   Cutting between line markers has silently swallowed the App object, the
   theme system, the raycaster and the view cube on separate occasions.
+- **Never `git add -A` in this repo.** Everything scratch here is
+  `_`-prefixed - patch scripts, probes, their generated harnesses, their
+  `_out.txt` reports - and until a2.50 that convention lived only in the
+  NAMES. One `git add -A` swept 300 of them into a commit. `.gitignore` now
+  carries `_*`; add with `-f` if one ever deserves tracking. Commit by naming
+  the files.
 - **`edit_block` is unreliable above ~20 lines.** Use a Python patch script
   with exact-match assertions so it fails loudly rather than half-applying.
 - **Check the library source before designing around it.** The view cube was
@@ -1788,6 +1808,32 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## The fillet preview is gone (a2.50)
+
+Removed whole rather than hidden behind a flag. Leaving ~170 lines that
+nothing can reach would have been exactly the dead code the a2.43 audit found
+this file to be almost free of, and it would rot before it was ever rebuilt.
+Git has it, tagged `a2.50-fillet`.
+
+The cost it was paying for a feature nobody used: a second `THREE.Mesh` per
+object with cloned materials, rebuilt on **every** `pushHistory` (that is,
+after every committed edit); a branch in `buildExportGroup` deciding whether
+to export what you see or what you have; and a `material.visible = false`
+convention that no other part of the app used and that quietly outlived the
+feature until review caught it. `findSharpEdges` came out with it - the
+preview was its only caller. The separate sharp/crease machinery that drives
+SHADING (`markSharpSelection`, `creaseSelection`, `applyShading`) is
+untouched and must stay that way.
+
+Nothing in the save format ever carried a fillet field, so a2.49 project files
+open unchanged.
+
+Verified after removal: `_verify.py` PASS, and the full probe suite re-run
+(ops 44, bug 24, circ 23, perf, geo x2, prim, piv, flow, snap, iso x2, soft
+x3, tw, sviz) with no new failures and no new console errors. `_uimeasure.py`
+still reports zero overlaps in every state, zero tap targets under 44px, and
+chrome at 13.2% of a phone screen with the drawer open.
 
 ## The chrome pass (a2.47 / a2.48 / a2.49)
 
@@ -3821,9 +3867,9 @@ screenshot.
 
 ## The drawer (a2.1)
 
-Seven sections: **Scene** (object list) · **Appearance** (Theme, Colour) ·
+Six sections: **Scene** (object list) · **Appearance** (Theme, Colour) ·
 **Editing** (Values, Clear creases, Drag speed, Symmetry axis) · **Snap
-step** · **Fillet** · **Models** · **Files**.
+amounts** · **Models** · **Files**. (Fillet was the seventh until a2.50.)
 
 Its job is unchanged: things set once or used rarely, reachable with the
 other hand without crowding the viewport. Tools stay in the rings.
@@ -3842,16 +3888,11 @@ taste:
   so exactly one control in the drawer is called Save.
 - Colour moved out of "Precision", which is now Editing.
 
-**Snap amounts and fillet shape stopped being constants.** Both were fixed
-values with a toggle and no way to change them. `App.snapMove`,
-`App.snapRotate` (held in DEGREES, converted where used) and `App.snapScale`
-replace the old module constants; `App.filletProfile` and
-`App.filletSegments` join `filletRadius`.
-
-Fillet was nearly free: `bevelEdgesOp` already took `segments` and `profile`
-with defaults, and `buildFilletedMesh` simply never passed them. Fillet and
-Bevel are the same idea applied two ways and now take the same settings.
-Measured: flat/1 segment 44 triangles, round/2 92, round/4 188.
+**Snap amounts stopped being constants.** They were fixed values with a
+toggle and no way to change them. `App.snapMove`, `App.snapRotate` (held in
+DEGREES, converted where used) and `App.snapScale` replace the old module
+constants. Fillet got matching profile/width/segment settings in the same
+pass; all of that went at a2.50 with the feature.
 
 **The drawer is now tall enough to need scrolling on a phone.** It works
 because `.drawer-body` is `overflow-y: auto` AND `#drawer` is named in the
@@ -3885,10 +3926,11 @@ differ from level 1 (68 against 96).
 worked, reachable only from the keyboard keys `]` and `[` — which is to say
 not at all on the phone this app is built for.
 
-**Still wanted, not built:** a non-destructive *smooth preview*, the way
-Fillet previews rounded edges without changing the mesh. The op-bar preview
-above is a preview of the real result; this would be a display-only smooth
-you can leave switched on while modelling.
+**Still wanted, not built:** a non-destructive *smooth preview* - a
+display-only smooth you can leave switched on while modelling, changing what
+you see and not the mesh. The op-bar preview above is a preview of the real
+result, which is a different thing. (The rounded-edges preview used to be
+the working example of this shape of feature; see a2.50 for why it went.)
 
 ## Delete, and what dissolve means (a2.5)
 

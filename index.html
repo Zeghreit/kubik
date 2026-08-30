@@ -1172,7 +1172,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.49</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.50</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -1248,24 +1248,6 @@
           <span class="label" id="snapScaleVal">0.10</span>
         </div>
         <div class="drawer-note">Switched on in the world ring; these are what it lands on.</div>
-      </div>
-
-      <div class="drawer-sec">
-        <div class="drawer-title">Fillet</div>
-        <div class="drawer-row">
-          <span class="label">Shape</span>
-          <div class="group" id="filletProfileGroup">
-            <button data-prof="flat">Flat</button>
-            <button data-prof="round">Round</button>
-          </div>
-        </div>
-        <div class="drawer-row">
-          <span class="label">Width</span>
-          <input type="range" id="filletWidth" min="0.01" max="0.3" step="0.01" value="0.04" />
-          <span class="label" id="filletWidthVal">0.04</span>
-        </div>
-        <div class="drawer-note">A preview only - it rounds what you see without changing
-          the mesh. Switch it on with Fillet in the object ring.</div>
       </div>
 
       <div class="drawer-sec">
@@ -1959,15 +1941,6 @@ const App = {
   env: { preset: 'studio', rotation: 0, intensity: 1 },
   shadeSmooth: false,  // simple on/off toggle, not a readout of mixed per-face state - matches applyFinishToSelection's cycling approach
   theme: 'dark',
-  fillet: false,
-  filletRadius: 0.04,
-  /* Fillet had a fixed radius and no shape at all - on or off - while Bevel
-     right next to it offered Flat/Round, a width and segments. They are the
-     same idea applied two ways, so they now take the same settings.
-     bevelEdgesOp already accepted segments and profile; fillet simply never
-     passed them. */
-  filletProfile: 'round',
-  filletSegments: 2,
   /* Snapping could be switched on but never adjusted: the amounts were
      module constants. Rotation is held in DEGREES because that is what the
      control shows and what anyone thinks in; it is converted where used. */
@@ -7076,104 +7049,6 @@ function bridgeEdgesOp(obj, logicalPairs, segments, curved) {
 
   rebuildFromEditable(obj, ed);
   return { ok: true, count: added.length };
-}
-
-/* ---------------- Rounded edges (preview) ----------------
-   Blender rounds edges at render time with a raytraced shader. There's no
-   equivalent in a real-time renderer, so this does it with real geometry
-   instead: every sharp edge gets beveled on a throwaway copy of the mesh, and
-   that copy is what you see. The mesh you're editing is never touched, so
-   vertices, edges and faces all still select and behave as before.
-
-   It's rebuilt after each committed edit rather than continuously - during a
-   drag you're looking at the un-rounded mesh, which keeps dragging fast and is
-   what you want anyway while positioning something. */
-
-const FILLET_ANGLE = THREE.MathUtils.degToRad(20); // below this, an edge is already soft
-
-// Every edge where the two faces meeting there turn by more than the threshold.
-function findSharpEdges(ed) {
-  const L = edLogical(ed);
-  const loops = ed.groups.map((g, gi) => getGroupBoundaryLoopAttr(ed, gi));
-  const logLoops = loops.map(lp => lp.map(a => L.logicalOf[a]));
-  const normals = loops.map(lp => loopNormal(ed, lp));
-
-  const edgeFaces = new Map();
-  logLoops.forEach((lp, gi) => {
-    for (let i = 0; i < lp.length; i++) {
-      const k = edgeKey(lp[i], lp[(i + 1) % lp.length]);
-      if (!edgeFaces.has(k)) edgeFaces.set(k, []);
-      edgeFaces.get(k).push(gi);
-    }
-  });
-
-  const sharp = [];
-  const limit = Math.cos(FILLET_ANGLE);
-  edgeFaces.forEach((faces, k) => {
-    if (faces.length !== 2) return; // open edge - nothing to round between
-    if (normals[faces[0]].dot(normals[faces[1]]) < limit) sharp.push(k.split('_').map(Number));
-  });
-  return sharp;
-}
-
-// Returns a mesh with rounded edges, or null if there was nothing to round.
-function buildFilletedMesh(obj, radius, segments, profile) {
-  const src = obj.mesh;
-  const srcMats = Array.isArray(src.material) ? src.material : [src.material];
-  const tempGeo = src.geometry.clone();
-  tempGeo.userData = {};   // by reference otherwise - see cloneObjectInto
-  const temp = new THREE.Mesh(tempGeo, srcMats.map(m => m.clone()));
-  temp.userData.smoothGroups = { ...(src.userData.smoothGroups || {}) };
-  temp.userData.finishes = { ...(src.userData.finishes || {}) };
-  const wrapper = { id: -1, name: 'fillet', mesh: temp };
-
-  try {
-    const sharp = findSharpEdges(toEditable(temp));
-    if (!sharp.length) return null;
-    if (!bevelEdgesOp(wrapper, sharp, radius, segments || 1, profile || 'flat')) return null;
-  } catch (err) {
-    console.error('fillet preview failed', err);
-    return null;
-  }
-  /* The clones (and whatever bevelEdgesOp renumbered) lost the mask
-     compile patch - the preview rendered maskless (QA finding 4).
-     Re-dress every final material from its finishes entry. */
-  const pmats = Array.isArray(temp.material) ? temp.material : [temp.material];
-  const pfin = temp.userData.finishes || {};
-  pmats.forEach((m, gi) => applyFinish(m, pfin[gi] || 'standard'));
-  return temp;
-}
-
-function clearFillet(obj) {
-  const ud = obj.mesh.userData;
-  if (ud.filletMesh) {
-    obj.mesh.remove(ud.filletMesh);
-    disposeEdgeField(ud.filletMesh.geometry);
-    ud.filletMesh.geometry.dispose();
-    (Array.isArray(ud.filletMesh.material) ? ud.filletMesh.material : [ud.filletMesh.material])
-      .forEach(m => m.dispose());
-    ud.filletMesh = null;
-  }
-  // Show the real surface again. Hiding via the material rather than the mesh
-  // matters: the selection helpers are children, and hiding the mesh would
-  // take them with it.
-  (Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material])
-    .forEach(m => { m.visible = true; });
-}
-
-function refreshFillets() {
-  App.objects.forEach(obj => {
-    clearFillet(obj);
-    if (!App.fillet) return;
-    const preview = buildFilletedMesh(obj, App.filletRadius, App.filletSegments, App.filletProfile);
-    if (!preview) return;
-    preview.castShadow = true;
-    preview.receiveShadow = true;
-    obj.mesh.add(preview);
-    obj.mesh.userData.filletMesh = preview;
-    (Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material])
-      .forEach(m => { m.visible = false; });
-  });
 }
 
 /* ---------------- Creases ----------------
@@ -17256,7 +17131,6 @@ function pushHistory() {
   // Same reason as restoreDoc: this is the funnel every committed edit goes
   // through, and any of them moves the ground the cut was aimed at.
   if (App.knife) cancelKnife(true);
-  if (App.fillet) refreshFillets();
   scheduleAutosave();
   const doc = serializeDoc();
   /* A step identical to the one already at the cursor is not a step. Ops
@@ -17516,9 +17390,7 @@ function downloadBlob(parts, filename, mime) {
 function buildExportGroup() {
   const group = new THREE.Group();
   App.objects.forEach(o => {
-    // With rounded edges on, export what's on screen rather than the mesh
-    // underneath it.
-    const source = (App.fillet && o.mesh.userData.filletMesh) ? o.mesh.userData.filletMesh : o.mesh;
+    const source = o.mesh;
     const mats = Array.isArray(source.material) ? source.material : [source.material];
     const eg = source.geometry.clone();
     /* BufferGeometry.copy assigns userData by REFERENCE, and GLTFExporter
@@ -17526,7 +17398,7 @@ function buildExportGroup() {
        list as a 12000-key object plus the whole distance atlas as an array
        of 600000 numbers, per object. */
     eg.userData = {};
-    const m = new THREE.Mesh(eg, mats.map(mm => { const c = mm.clone(); c.visible = true; return c; }));
+    const m = new THREE.Mesh(eg, mats.map(mm => mm.clone()));
     m.position.copy(o.mesh.position);
     m.quaternion.copy(o.mesh.quaternion);
     m.scale.copy(o.mesh.scale);
@@ -17588,8 +17460,6 @@ const ICON = {
   inset:   '<path d="M3 3h18v18H3z"/><path d="M7.5 7.5h9v9h-9z"/>',
   // A block with its upper-right corner cut flat - one generous chamfer.
   bevel:   '<path d="M4 20V4h8l8 8v8z"/>',
-  // Bevel's sibling: the same block, the same corner, rounded instead.
-  fillet:  '<path d="M4 20V4h8a8 8 0 0 1 8 8v8z"/>',
   // An intact face with the cut being inserted: a dashed seam through it.
   loop:    '<path d="M3 3h18v18H3z"/><path d="M12 3v2.8M12 10.6v2.8M12 18.2v2.8"/>',
   // A surface with its arrow on one side, then on the other.
@@ -17747,10 +17617,9 @@ const HUB_TOOLS_VERTEX = [
 
 const HUB_TOOLS_EDGE = [
   // Seats replace the a2.7e declaration-order ergonomics: the "four
-  // basics" hold the seats around straight-up (Extrude 0, Bevel 1 - which
-  // Fillet mirrors in the Object ring; Inset takes 1 in the Face ring),
-  // Delete owns straight-down (7) in EVERY ring, and every tool shared with
-  // another ring keeps the same bearing there. Seat 2 was Loop until
+  // basics" hold the seats around straight-up (Extrude 0, Bevel 1; Inset
+  // takes 1 in the Face ring). Delete owns straight-down (7) in EVERY ring,
+  // and every tool shared with another ring keeps the same bearing there. Seat 2 was Loop until
   // Collapse claimed it as Merge's "melt together" bearing.
   { key: 'extrude', icon: 'extrude', label: 'Extrude', seat: 0, ring: 0, run: extrudeSelection },
   { key: 'bevel', icon: 'bevel', label: 'Bevel', seat: 1, ring: 0, run: bevelSelection },
@@ -17804,12 +17673,13 @@ const HUB_TOOLS_FACE = [
 ];
 
 const HUB_TOOLS_OBJECT_BASE = [
-  // Fillet sits on Bevel's seat (1) on purpose - the same corner op, the
-  // same pull, one ring over. Separate takes Split's bearing (4) by the
-  // same logic. Cap (6), Delete (7), Shade (8) and Flip normals (9) keep
-  // their compass seats from the component rings.
+  /* SEAT 1 IS FREE. It was Fillet's - Bevel's bearing, one ring over, the
+     same corner op - until a2.50 took the preview out. Whatever rebuilds it
+     should take this seat back, because the pairing was the good part.
+     Separate takes Split's bearing (4) by the same logic. Cap (6), Delete
+     (7), Shade (8) and Flip normals (9) keep their compass seats from the
+     component rings. */
   { key: 'duplicate', icon: 'dupe', label: 'Duplicate', seat: 0, ring: 0, run: duplicateSelection },
-  { key: 'fillet', icon: 'fillet', label: 'Fillet', seat: 1, ring: 1, run: toggleFilletPreview },
   { key: 'mirror', icon: 'mirroraction', label: 'Mirror', seat: 2, ring: 0, run: () => showMirrorChooser(App.symmetryAxis) },
   { key: 'flip', icon: 'flip', label: 'Flip', seat: 3, ring: 0, run: () => flipSelectedObjects(App.symmetryAxis) },
   { key: 'separate', icon: 'separate', label: 'Separate', seat: 4, ring: 1, run: separateSelection },
@@ -19004,7 +18874,6 @@ HELP_SECTIONS.push(
       ['subdiv', 'Subdivide', 'Divides every face. Smooth rounds, Keep shape holds the silhouette. Creases stay sharp.'],
       ['smoothangle', 'Smooth by angle', 'One threshold for the whole object: edges sharper than it stay hard, the rest blend.'],
       ['color', 'Materials', 'The tray under the view cube. Tap to apply, pencil or long press to edit.'],
-      ['fillet', 'Fillet', 'Previews rounded edges over the object without changing the mesh.'],
       ['flip', 'Flip', 'Mirrors the object in place, no copy left behind.'],
       ['flipnorm', 'Flip normals', 'Turns the whole object inside out.'],
       ['separate', 'Separate', 'One object per loose piece.'],
@@ -19043,8 +18912,7 @@ HELP_SECTIONS.push(
       [null, 'Scene', 'Every object. Tap one to make it active.'],
       [null, 'Appearance', 'Theme, environment and lighting.'],
       [null, 'Editing', 'Exact transform values, Clear creases, drag sensitivity, symmetry axis.'],
-      ['snap', 'Snap step', 'How far one snapped step moves, turns and scales.'],
-      ['fillet', 'Fillet', 'Flat or Round, and how wide.'],
+      ['snap', 'Snap amounts', 'How far one snapped step moves, turns and scales.'],
       [null, 'Models', 'Saves the scene inside the browser under a name. Survives closing the tab.'],
       [null, 'Files', 'Writes it to disk, and exports glTF, OBJ or STL.']
     ]
@@ -19151,21 +19019,12 @@ function setSelectGesture(mode) {
 // subdivideSelection('smooth'). subdivideSelection('keep') and
 // clearAllCreases stay defined and working, just without UI right now.
 
-// The Rounded-edges drawer section is gone, so there's no button label to
-// keep in step anymore - just the flag and the rebuild. App.filletRadius
-// keeps its default (0.04) since the slider that tuned it went with the
-// section; the fan's Fillet item is now the only way to switch this on.
-function toggleFilletPreview() {
-  App.fillet = !App.fillet;
-  refreshFillets();
-  toast(App.fillet ? 'Rounded edges on' : 'Rounded edges off');
-}
 // Finishes are picked in the materials tray on the right border (a2.9),
 // which calls the same applyFinishToSelection.
 
 const sensSliderEl = document.getElementById('sensSlider');
 const sensValueEl = document.getElementById('sensValue');
-/* One helper for all four sliders. Each writes straight into App and shows
+/* One helper for all three sliders. Each writes straight into App and shows
    its own value, so what the drawer reads is always what the app is using -
    there is no second copy of these numbers to drift. */
 function wireSetting(id, valueId, key, format, after) {
@@ -19184,23 +19043,6 @@ function wireSetting(id, valueId, key, format, after) {
 wireSetting('snapMove', 'snapMoveVal', 'snapMove', v => v.toFixed(2));
 wireSetting('snapRot', 'snapRotVal', 'snapRotate', v => Math.round(v) + '\u00b0');
 wireSetting('snapScale', 'snapScaleVal', 'snapScale', v => v.toFixed(2));
-// Fillet is a live preview, so changing its width has to rebuild it.
-wireSetting('filletWidth', 'filletWidthVal', 'filletRadius', v => v.toFixed(2),
-  () => { if (App.fillet) refreshFillets(); });
-
-const filletProfileEl = document.getElementById('filletProfileGroup');
-if (filletProfileEl) {
-  const paint = () => filletProfileEl.querySelectorAll('button').forEach(b =>
-    b.classList.toggle('active', b.dataset.prof === App.filletProfile));
-  filletProfileEl.querySelectorAll('button').forEach(b => {
-    b.addEventListener('click', () => {
-      App.filletProfile = b.dataset.prof;
-      paint();
-      if (App.fillet) refreshFillets();
-    });
-  });
-  paint();
-}
 
 document.getElementById('btnClearCreases').addEventListener('click', clearAllCreases);
 
