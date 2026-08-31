@@ -1322,7 +1322,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.65</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.65a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -1833,8 +1833,9 @@ function applyEnvLive() {
      analytic lights left a metal - lit almost entirely by the environment
      reflection - barely dimmed in Vertex and Edge, and impossible to
      flatten in Face: the reflection kept the gradient the flat hemisphere
-     exists to remove. Even the default Solid finish carries an
-     envMapIntensity of 0.5, so it was never only about metals. */
+     exists to remove. It was never only about metals - every finish takes
+     the environment at full strength, which is exactly why this is the one
+     dial that reaches all of them. */
   scene.environmentIntensity = App.env.intensity * modeView().env;
   applyEnvRig();   // the analytic lights turn with the reflections
   if (_matPreviewRig) {
@@ -2744,7 +2745,7 @@ function attachAllGizmos(pivot) {
 
 /* ---------------- Material library ----------------
    Materials are LIVE ASSETS, not copied values: a material is a named
-   {color, roughness, metalness, envMapIntensity}; face groups reference
+   {color, roughness, metalness}; face groups reference
    one by id through userData.finishes - the key name predates the
    library and is kept because every save and undo snapshot already
    carries it - and editing a definition updates everything wearing it.
@@ -2758,10 +2759,19 @@ function attachAllGizmos(pivot) {
    standard PBR charts. color null means "follow the theme's default" -
    the material-level form of the old themedDefault flag, which
    applyTheme still uses to retint. */
+/* NO envMapIntensity SINCE a2.65a. These three carried 0.5 / 0.7 / 1.0,
+   which was the whole design of how much environment each finish takes -
+   and none of it ever reached the screen. In three r184 the per-material
+   value applies only when the material owns an envMap; the environment
+   here is scene.environment, scaled by scene.environmentIntensity alone.
+   Measured: 6 -> 0.05 on a metal cube is pixel-identical, and the same
+   0.05 with mat.envMap bound crushes it to black. If per-material
+   environment strength is ever wanted it comes back as a control someone
+   designed, not as a field that was quietly doing nothing. */
 const MATERIAL_DEFAULTS = {
-  standard: { name: 'Solid',   color: null, roughness: 1.0,  metalness: 0.0, envMapIntensity: 0.5 },
-  plastic:  { name: 'Plastic', color: null, roughness: 0.4,  metalness: 0.0, envMapIntensity: 0.7 },
-  metal:    { name: 'Metal',   color: null, roughness: 0.25, metalness: 1.0, envMapIntensity: 1.0 }
+  standard: { name: 'Solid',   color: null, roughness: 1.0,  metalness: 0.0 },
+  plastic:  { name: 'Plastic', color: null, roughness: 0.4,  metalness: 0.0 },
+  metal:    { name: 'Metal',   color: null, roughness: 0.25, metalness: 1.0 }
 };
 const MATERIALS = new Map();
 let nextMaterialNum = 1;
@@ -2799,10 +2809,39 @@ function materialDefSig(d) {
     color: n.color || null,
     roughness: +n.roughness || 0,
     metalness: +n.metalness || 0,
-    envMapIntensity: n.envMapIntensity === undefined ? 1 : (+n.envMapIntensity || 0),
+    /* envMapIntensity is NOT here since a2.65a. It did nothing on screen,
+       and in here it could make two identical materials read as two - so an
+       old file carrying 0.5 minted "Solid (imported)" beside Solid. Old
+       files still carry the key; leaving it out is what makes them match. */
     bevel: +n.bevel || 0,
     masks: maskList(n)
   });
+}
+
+/* A SIGNATURE THE CURRENT CODE CANNOT PRODUCE NEVER MATCHES (a2.65a).
+   srcSig is a materialDefSig string kept on an imported material so the next
+   open of the same file recognises it instead of minting another copy. It is
+   persisted - into localStorage by saveMaterialLibrary and into every .json
+   by serializeDoc - so strings written before a2.65a still carry the
+   envMapIntensity key that materialDefSig no longer emits.
+
+   Left alone, every material imported before this release would mint one
+   more copy of itself the next time its file was opened, and a file shared
+   from an older build would hand the receiver "Metal (imported) (imported)".
+
+   Migrated rather than recomputed, because srcSig is the signature of what
+   the material came FROM and the local copy's name has " (imported)" on it -
+   there is nothing left to derive it from. Removing one key from the object
+   and restating it is exactly the format change, so this is the whole
+   migration. Unparseable strings are left alone; they simply will not match,
+   which is where they already were. */
+function migrateSig(s) {
+  if (typeof s !== 'string' || s.indexOf('envMapIntensity') < 0) return s;
+  try {
+    const o = JSON.parse(s);
+    delete o.envMapIntensity;
+    return stableStringify(o);
+  } catch (e) { return s; }
 }
 
 // An id nothing in the library is using.
@@ -2827,12 +2866,23 @@ function loadMaterialLibrary() {
     MATERIALS.set(id, Object.assign({ id: id, preset: true }, d)));
   try {
     const raw = JSON.parse(localStorage.getItem(MATLIB_KEY) || '{}');
+    /* The library outlives the release that wrote it, so both of these
+       arrive in whatever shape an older build left them: a dead
+       envMapIntensity, and a srcSig in the old signature format. Fixed on
+       the way IN, once, rather than guarded at every later reader. */
     (raw.customs || []).forEach(d => {
-      if (d && d.id) MATERIALS.set(d.id, Object.assign({}, d, { preset: false }));
+      if (!d || !d.id) return;
+      const c = Object.assign({}, d, { preset: false });
+      delete c.envMapIntensity;
+      if (c.srcSig) c.srcSig = migrateSig(c.srcSig);
+      MATERIALS.set(d.id, c);
     });
     Object.entries(raw.presetOverrides || {}).forEach(([id, ov]) => {
       const p = MATERIALS.get(id);
-      if (p && p.preset) Object.assign(p, ov, { id: id, preset: true });
+      if (!p || !p.preset) return;
+      Object.assign(p, ov, { id: id, preset: true });
+      delete p.envMapIntensity;
+      if (p.srcSig) p.srcSig = migrateSig(p.srcSig);
     });
     if (Number.isFinite(raw.nextNum)) nextMaterialNum = raw.nextNum;
   } catch (e) { /* a broken library entry must never stop the app */ }
@@ -2846,11 +2896,10 @@ function saveMaterialLibrary() {
     if (!d.preset) { customs.push(d); return; }
     const base = MATERIAL_DEFAULTS[d.id];
     if (d.color !== base.color || d.roughness !== base.roughness ||
-        d.metalness !== base.metalness || d.envMapIntensity !== base.envMapIntensity ||
+        d.metalness !== base.metalness ||
         d.name !== base.name || (d.masks && d.masks.length) || d.bevel) {
       presetOverrides[d.id] = { name: d.name, color: d.color, roughness: d.roughness,
-        metalness: d.metalness, envMapIntensity: d.envMapIntensity,
-        masks: d.masks, bevel: d.bevel || 0 };
+        metalness: d.metalness, masks: d.masks, bevel: d.bevel || 0 };
     }
   });
   try {
@@ -2880,7 +2929,6 @@ function applyFinish(mat, id) {
   mat.userData.themedDefault = (d.color === null || d.color === undefined);
   mat.roughness = d.roughness;
   mat.metalness = d.metalness;
-  mat.envMapIntensity = d.envMapIntensity;
   applyMaskPatch(mat, d);
   /* No blanket needsUpdate: this runs per slider TICK during live edits.
      Colour/roughness/metalness are uniform-tracked by three on their own,
@@ -2907,19 +2955,17 @@ function harvestLegacyMaterials() {
       const hex = '#' + m.color.getHexString();
       if (def.color && def.color.toLowerCase() === hex) return;
       if (!def.color && m.color.getHex() === DEFAULT_MATERIAL_COLOR) return;
-      const key = hex + '|' + m.roughness + '|' + m.metalness + '|' + m.envMapIntensity;
+      const key = hex + '|' + m.roughness + '|' + m.metalness;
       let nid = byLook.get(key);
       if (!nid) {
         MATERIALS.forEach(d => {
           if (!d.preset && d.color && d.color.toLowerCase() === hex &&
-              d.roughness === m.roughness && d.metalness === m.metalness &&
-              d.envMapIntensity === m.envMapIntensity) nid = d.id;
+              d.roughness === m.roughness && d.metalness === m.metalness) nid = d.id;
         });
         if (!nid) {
           nid = 'mat_' + nextMaterialNum.toString(36) + '_' + Math.abs(hex.split('').reduce((a, c) => (a * 31 + c.charCodeAt(0)) | 0, 7)).toString(36);
           MATERIALS.set(nid, { id: nid, preset: false, name: 'Material ' + nextMaterialNum++,
-            color: hex, roughness: m.roughness, metalness: m.metalness,
-            envMapIntensity: m.envMapIntensity });
+            color: hex, roughness: m.roughness, metalness: m.metalness });
           made++;
         }
         byLook.set(key, nid);
@@ -18091,7 +18137,6 @@ function serializeDoc() {
           color: '#' + m.color.getHexString(),
           roughness: m.roughness,
           metalness: m.metalness,
-          envMapIntensity: m.envMapIntensity,
           themed: !!m.userData.themedDefault
         })),
         /* COPIES. These four were live references, so every doc already in
@@ -18185,9 +18230,25 @@ function restoreDoc(doc, opts = {}) {
        the file's, and without remembering what it came from, the next open of
        the same file mints another copy, and the next, and the next. */
     const bySig = new Map();
-    MATERIALS.forEach((v, id) => bySig.set(v.srcSig || materialDefSig(v), id));
+    /* migrateSig as well as on the way in: a library that has not been
+       re-saved since the format changed is still holding old strings, and
+       this index is the only place they are ever compared. */
+    MATERIALS.forEach((v, id) => {
+      /* Healed IN PLACE, not just for this lookup. Migrating on read alone
+         left the old string on the object to be written back to localStorage
+         and into the next saved file, so the library never stopped being in
+         the old format and every future signature change would have to know
+         about this one as well. */
+      if (v.srcSig) v.srcSig = migrateSig(v.srcSig);
+      bySig.set(v.srcSig || materialDefSig(v), id);
+    });
     doc.materialLib.forEach(d => {
       if (!d || !d.id) return;
+      /* Old files carry envMapIntensity. Strip it on the way in rather
+         than letting it accumulate in a library that no longer means
+         anything by it (a2.65a). */
+      if (d.envMapIntensity !== undefined) delete d.envMapIntensity;
+      if (d.srcSig) d.srcSig = migrateSig(d.srcSig);
       if (!MATERIALS.has(d.id)) {
         MATERIALS.set(d.id, Object.assign({}, d, { preset: !!MATERIAL_DEFAULTS[d.id] }));
         bySig.set(materialDefSig(d), d.id);
@@ -18250,7 +18311,6 @@ function restoreDoc(doc, opts = {}) {
           color: '#' + m.color.getHexString(),
           roughness: m.roughness,
           metalness: m.metalness,
-          envMapIntensity: m.envMapIntensity,
           themed: !!m.userData.themedDefault
         })),
         finishes: { ...(o.mesh.userData.finishes || {}) }
@@ -18312,7 +18372,9 @@ function restoreDoc(doc, opts = {}) {
         // like, even if the preset name was lost along the way.
         mat.roughness = src.roughness;
         mat.metalness = src.metalness;
-        mat.envMapIntensity = Number.isFinite(src.envMapIntensity) ? src.envMapIntensity : 1;
+        /* An old file's envMapIntensity is ignored rather than restored
+           (a2.65a): three never used it here, so honouring it would only
+           put a dead number back on the material. */
       } else {
         applyFinish(mat, finishes[i] || 'standard');
       }
@@ -19539,7 +19601,7 @@ function buildMatTray() {
     // (bevel travels with the copy below, like colour and roughness)
     MATERIALS.set(id, { id: id, preset: false, name: 'Material ' + nextMaterialNum++,
       color: src.color, roughness: src.roughness, metalness: src.metalness,
-      envMapIntensity: src.envMapIntensity, bevel: src.bevel || 0,
+      bevel: src.bevel || 0,
       /* MASKS COME WITH IT (a2.64). Forking a material and losing the very
          thing that made it worth forking is the least useful copy there is
          - you would pick the material you liked, press +, and get a plain

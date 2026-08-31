@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~21,250 lines)
-- Version at time of writing: **a2.65**
+- Version at time of writing: **a2.65a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -5351,20 +5351,72 @@ one re-run (4 cubes, Euler 8 → 4).
 - The op sweep and the picking harness that produced the numbers above live
   only in a browser console. Turning them into a committed self-test is the
   obvious way to make "flawless" checkable rather than hoped for.
-- **Masks added to a PRESET material do not survive a project file.**
-  `restoreDoc` adopts a definition only when its id is absent, and Solid /
-  Plastic / Metal are always seeded by `loadMaterialLibrary` - so a mask put
-  on one of those three is written into the JSON and silently dropped on
-  open. Custom materials travel fine. Pre-existing, found by review at a2.24,
-  and the fix is a POLICY choice nobody has made yet: file wins, local wins,
-  or import under a new id.
+- ~~**Masks added to a PRESET material do not survive a project file.**~~
+  **NOT TRUE, retested at a2.65a.** Measured twice - once by hand in the live
+  app with a real reload and a cleared localStorage, once by `_mat_probe`,
+  which now guards it. A mask put on Metal is written into the JSON, and
+  opening that file in a library that has never seen it brings the mask back
+  as **"Metal (imported)"**, with every face repointed onto it. Nothing is
+  dropped, and the preset stays plain, which is the policy the note said
+  nobody had chosen: **import under a new id**, decided by the code.
+  What made it true once and false now is `materialDefSig` learning to
+  include `masks` - the file's masked Metal stopped matching the local plain
+  one, so the import path adopted it instead of recognising it. The note was
+  never re-measured after that.
 - **Normals from the masks** is the agreed next feature - a cloth mask is a
   greyscale field and a normal is its slope, so every noise type already
   built becomes a bump for free, as a third checkbox beside Colour and
   Roughness. Triplanar, so the no-UV policy survives.
-- **`material.envMapIntensity` has been inert** since `scene.environment` was
-  set - three overwrites it with `scene.environmentIntensity`. Drop the field
-  or make it multiply.
+- ~~**`material.envMapIntensity` has been inert**~~ **- RETIRED at a2.65a.**
+  The note was right; the reason it gave was not, and the mechanism matters
+  because it decides the fix. three does not "overwrite" the value: in r184
+  a material's `envMapIntensity` applies **only when the material owns an
+  `envMap`**. The environment here is `scene.environment`, scaled by
+  `scene.environmentIntensity` alone, and nothing in the file ever assigns
+  `material.envMap` - so the per-material value could never have applied.
+  Measured in the live app with a forced render: 6 -> 0.05 on a metal cube is
+  pixel-identical; `scene.environmentIntensity` 1 -> 8 is plainly different;
+  the same 0.05 **with `mat.envMap` bound** crushes the cube to black.
+
+  It was never exposed in the UI either - no slider, no readout - so "drop it
+  or make it multiply" was a smaller choice than it looked. Making it
+  multiply would have meant binding `scene.environment` per material and
+  would have changed how every existing model looks, because the presets were
+  written around it (Solid 0.5, Plastic 0.7, Metal 1.0) and none of that had
+  ever reached the screen. Dropped.
+
+  The one thing it really did was ride in `materialDefSig`, where a number
+  with no effect could make two identical materials read as two and mint a
+  spurious "(imported)" copy. Removing it from the signature **changed the
+  signature's format**, which is the part that needed care: `srcSig` is a
+  stored signature string, persisted into localStorage and into every saved
+  file, so every material imported before a2.65a holds a string the current
+  code can no longer produce. Left alone, each would have minted one more
+  copy of itself on the next open - the exact failure `srcSig` exists to
+  prevent. `migrateSig()` strips the retired key from a stored signature and
+  restates it, on every path a signature arrives by, and heals it in place so
+  the library stops being in the old format. Guarded by `_mat_probe`
+  section 5. **Any future change to the signature has to do the same.**
+- **`_mat_probe` (suite 23, a2.65a)** is the material library across a file:
+  a mask on a preset reaching the JSON, coming back into a library that has
+  never seen it, the preset left alone, faces repointed, reopening the same
+  file minting nothing, the retired field gone from definitions / signature /
+  file, and a pre-a2.65a signature still matching. It exists because a note
+  in this file was believed for a year without being retested.
+
+  Its first run reported the app losing a mask it had never been given:
+  `serializeDoc`'s `materialLib` is `Array.from(MATERIALS.values())
+  .map(normaliseDefMasks)`, and `normaliseDefMasks` returns its ARGUMENT when
+  `masks` is already an array - so the "file" aliases the live definitions,
+  and clearing the local mask emptied the file too. Harmless in the app,
+  where a save stringifies immediately; fatal to any test that holds a doc
+  and then edits state. **Deep-copy a serialised doc before touching
+  anything.**
+- Two probe lines are known to FLAKE, and neither is a regression:
+  `_perf_out` `slider_coalescing` (the middle number, a race on whether the
+  scheduled apply flushed before the probe looked) and `_theme_out`
+  `8.palette` (26 vs 28 tones off the view cube's SwiftShader canvas). Re-run
+  three times before believing either.
 - Unmeasured on a phone: the environment's full-float DataTexture
   (`OES_texture_float_linear` is missing on many mobile GPUs), the atlas's
   two-tap slice interpolation, and the four extra field fetches a2.29c and
