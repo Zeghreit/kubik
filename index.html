@@ -172,11 +172,9 @@
   }
   .brand { font-weight: 600; letter-spacing: 0.02em; color: var(--text); font-size: 13px; }
 
-  /* Edge switches, pinned to the middle of the left edge where a thumb
-     reaches them without moving the hand. Two halves, a knob that slides
-     between them, and no text - the icon in each half says what that half
-     means. The STACK is centred, not each switch, or the group sits
-     visibly high. */
+  /* Edge switches are gone (a2.65). Nothing in this file is two halves and
+     a sliding knob any more: #symPill and #projPill are single 44px toggles
+     under the view cube, and #hubBtn below is a round button that cycles. */
   /* Object / Component, back to a single round button in the bottom-left
      corner - opposite Help, with Undo/Redo between them. */
   /* Bottom EDGES, not centres. v1.99b aligned the row on centres, which is
@@ -197,70 +195,35 @@
     box-shadow: 0 6px 18px rgb(var(--shadow) / .16);
   }
 
-  /* Symmetry: horizontal two-state pill at the TOP-LEFT, directly under the
-     drawer button, in the space Undo/Redo used to occupy before they moved
-     to the bottom centre.
+  /* SYMMETRY: ONE BUTTON, UNDER THE VIEW CUBE (a2.65).
 
-     It sat under the view cube until v1.99d. Nothing was wrong with it
-     there, but it left the top-left empty and the top-right crowded - the
-     cube is already a 128px object with its own presence, and a pill hung
-     beneath it read as part of the cube rather than as a separate control.
-     Under the drawer button it has the corner to itself.
+     It was a two-seat edge switch in the top-left, showing both states side
+     by side at 100x46. Three things were wrong with that by a2.65: it was
+     the only control in the app wearing that shape; it spent 100px on a
+     binary every other toggle settles in 44; and it anchored a top-left
+     column of three unrelated things - menu, symmetry, lighting - which on a
+     phone with a 59pt top inset ran from 73pt to 211pt before the model got
+     a look in.
 
-     `top: calc(var(--edge) + 52px)`, and no inset of its own: --edge now
-     carries the top safe-area inset itself (see the variable), so adding one
-     here would push the pill down twice - the same mistake #thumbZone was
-     making at the bottom until v1.99c, and the same one #topBar's own padding
-     used to protect this rule from. The 52 clears the drawer button, which
-     floats where the bar used to be. */
+     The old rule against a cycling button ("you could not tell which state a
+     tap would leave you in") is answered rather than ignored. This is not a
+     cycle, it is a two-state toggle that SHOWS the state it is in: the mirror
+     glyph in the accent when on, the crossed glyph in dim when off - exactly
+     what #projPill has worn since a2.61. The swipe goes with the halves; the
+     tap, always the primary path, does not.
+
+     Paired with #projPill in the 44px strip under the cube. Both clear
+     #matFly, which moved down to 194 to make the room. */
   #symPill {
-    /* +52 clears the drawer button, which now floats where the bar used to
-       be. The pill lands within a few pixels of where it has always been on
-       screen - what changed is that the model shows through above it. */
-    position: absolute; left: var(--edge-l); top: calc(var(--edge) + 52px);
-    /* 100x44, up from 88x40: the two halves were 43x38 each. They stay TWO
-       halves - tapping the one you want, or swiping toward it, both work
-       without looking, and a button that cycles never did. The knob geometry
-       below is derived from this width and moves with it. */
-    /* 46 TALL, not 44. The halves are what you tap, and they live inside the
-       1px border - so a 44px pill gives 42px halves. Measured, not assumed:
-       this is the difference between passing the rule and looking like it. */
-    z-index: 13; width: 100px; height: 46px; border-radius: 23px;
+    position: absolute;
+    right: 66px; top: calc(env(safe-area-inset-top, 0px) + 130px);
+    z-index: 13; width: 44px; height: 44px; border-radius: var(--r-md);
     background: var(--panel2); border: 1px solid var(--line);
-    display: flex; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-dim); cursor: pointer;
     touch-action: none; -webkit-user-select: none; user-select: none;
   }
-  #symPill .sp-half {
-    flex: 1; display: flex; align-items: center; justify-content: center;
-    position: relative; z-index: 2; color: var(--text-dim);
-  }
-  #symPill .sp-half.on { color: var(--accent); }
-  /* The knob moves by TRANSFORM, and every number here is a plain pixel.
-     Transitioning `top` between 3px and calc(50% + 1px) reported 3px
-     forever - the animation never advanced, and setting top inline while
-     the transition was live was ignored too. Measured in the browser, not
-     reasoned about. Transform also animates without relayout, which is what
-     it should have been doing regardless.
-
-     The slider is 106px tall with a 1px border, so its content box is
-     104px: knob 48px tall at top 3px, shifted down 50px, lands 3px clear of
-     the bottom. Exact, and no percentage to resolve against the wrong box. */
-  /* Knob slides sideways here rather than down. Same reason as before for
-     using transform: it animates without relayout. */
-  /* Derived from the pill's width, which is why it changed with it: the
-     content box is 100 - 2 (border) = 98, so left 3 + knob 46 + travel 46
-     leaves the same 3px clear at the far end that it starts with. The old
-     41/41 against an 86px box left 1px on the right and 3 on the left; this
-     is the first time the two ends match. */
-  #symPill .sp-knob {
-    position: absolute; top: 3px; bottom: 3px; left: 3px;
-    width: 46px; border-radius: 20px; z-index: 1;
-    background: var(--accent-dim); border: 1px solid var(--accent);
-    transition: transform .18s cubic-bezier(.4, 0, .2, 1);
-  }
-  /* Symmetry off is a resting state, not a chosen one - the knob goes
-     quiet rather than staying accent-coloured on the right. */
-  #symPill.lower .sp-knob { transform: translateX(46px); background: transparent; border-color: var(--line); }
+  #symPill.on { border-color: var(--accent); color: var(--accent); }
 
   /* Shared by every tool icon the app shows, wherever it appears - right
      now that's only the press-and-hold ring, which supplies its own
@@ -439,10 +402,11 @@
        sitting inside the cube's square - and at z-index 25 against the cube's
        12, tapping the cube's side faces opened the material tray instead.
 
-       132, not 108: the cube is 128 tall from the inset, so this is the first
-       position that clears it outright rather than nicking its corner. */
+       194 since a2.65, not 132: the cube is 128 tall from the inset, and the
+       symmetry/projection pair now sits in the 44px strip below it, so this
+       is the first position that clears both outright. */
     position: absolute; right: env(safe-area-inset-right, 0px);
-    top: calc(132px + env(safe-area-inset-top, 0px));
+    top: calc(194px + env(safe-area-inset-top, 0px));
     z-index: 25; display: flex; flex-direction: column; align-items: flex-end;
     /* HOW TALL THE SHELF MAY GET. It used to be a flat 60vh, which on a
        laptop is about five cards - so the "+", the one control that makes a
@@ -450,16 +414,47 @@
        the list instead of after it. The editor had the same problem with its
        Done button. Now it runs from just under the tab to just clear of the
        bottom button row, so on any ordinary screen the list ends where its
-       content ends. 132 tab top + 62 tab and gap + 72 clearance = 266.
+       content ends: the tab's own top, plus 72px of clearance at the bottom.
 
        Both insets are subtracted because 100vh is the whole screen: the top
        one is now part of where the tab starts, and without it the shelf would
        be allowed to run a notch's worth past the bottom row.
 
-       204, not 266, since a2.63: the tab is the tray's left shoulder now
-       rather than a chip above it, so the shelf starts level with the tab
-       and gets back the 62px the tab and its gap used to cost it. */
-    --mat-max: calc(100vh - 204px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
+       266 since a2.65, back up from 204: the tab moved down 62px to clear the
+       symmetry/projection pair, and the shelf starts level with the tab, so
+       it gives back exactly what the tab travelled. */
+    --mat-max: calc(100vh - 266px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
+  }
+
+  /* SHORT VIEWPORTS: THE PAIR STEPS ASIDE (a2.65). The 44px strip under the
+     cube costs the material shelf 62px of height. In portrait that is
+     nothing - 852 tall still leaves 526px of shelf. In landscape it is most
+     of what there is: a 390-tall viewport drops from 186 to 124, and a
+     320-tall one from 116 to 54, which is less than one card and its
+     padding, so the tab would open onto an empty sliver. #matEditor shares
+     --mat-max, so the mask stack would have been scrolling in 54px too.
+
+     When the screen is short the PAIR steps aside instead - left of the
+     cube, level with its middle - and the shelf goes back to 132. The pair
+     is two toggles and can move; the shelf is a panel you work inside and
+     cannot. Here the right inset IS taken, because at 142px in there is no
+     notch to argue with and the pair is no longer hanging off the cube.
+
+     500px is below every phone in landscape and above every window the probe
+     suite runs in, so the suite keeps measuring the portrait layout. */
+  @media (max-height: 500px) {
+    #symPill {
+      right: calc(env(safe-area-inset-right, 0px) + 194px);
+      top: calc(env(safe-area-inset-top, 0px) + 42px);
+    }
+    #projPill {
+      right: calc(env(safe-area-inset-right, 0px) + 142px);
+      top: calc(env(safe-area-inset-top, 0px) + 42px);
+    }
+    #matFly {
+      top: calc(132px + env(safe-area-inset-top, 0px));
+      --mat-max: calc(100vh - 204px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
+    }
   }
   #matTab {
     /* 44 wide. It was 30 - the narrowest target in the app, on the edge of
@@ -628,63 +623,50 @@
   .group { display: inline-flex; gap: 2px; background: var(--panel2); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 2px; flex-shrink: 0; }
   .group button { border: none; background: transparent; border-radius: var(--r-sm); }
   .group button.active { background: var(--accent); color: var(--on-accent); font-weight: 600; }
-  /* A pill under Symmetry, and a list that falls out of it. Lighting is
-     picked rarely and adjusted often, so the PICKING gets a menu that stays
-     out of the way and the ADJUSTING gets a gesture (see lightHold). */
-  #lightPill {
-    position: absolute; left: var(--edge-l); top: calc(var(--edge) + 100px);
-    z-index: 13; height: 34px; min-width: 88px; padding: 0 12px;
-    border-radius: 17px; background: var(--panel2); border: 1px solid var(--line);
-    display: flex; align-items: center; justify-content: center; gap: 6px;
-    color: var(--text-dim); font-size: 12px;
-    touch-action: none; -webkit-user-select: none; user-select: none; cursor: pointer;
-  }
-  #lightPill.open { border-color: var(--accent); color: var(--accent); }
 
   /* PROJECTION, beside the thing that sets it. Tapping a face of the cube
      lands you in the flat view, so the switch that gets you back belongs
-     where you were looking - not in the drawer, and not in the left-hand
-     column of view settings where you would have to go hunting.
+     where you were looking - not in the drawer.
 
-     It sits in the free ground under the cube's 128px square. The offset
-     clears #matFly, which is what actually owns that edge: it is a
-     shrink-to-fit column whose width is the TRAY's 96px, not the 44px tab
-     you can see - so a pill tucked against the tab had its right end
-     silently dead to taps. 136 clears the flyout OPEN as well as closed -
-     104 only cleared the closed 96px, and a2.63 made the open one 128 by
-     welding the 32px tab onto its side, which left the pill's last 24px
-     covered and dead whenever the tray was out. With the material EDITOR
-     open the tray is 198 wide and covers this ground entirely, which is
-     fine: that is a panel you are working in, and the pill is behind it
-     rather than half-under it. */
+     A 44px GLYPH SINCE a2.65, not an 80px word. Converging edges against
+     parallel ones is what actually separates the two projections, so the
+     pair is the same box drawn both ways and says what it does without a
+     label. The word moved to the title.
+
+     The 136px dodge is gone with it. That offset existed to clear #matFly,
+     a shrink-to-fit column as wide as the 96px TRAY rather than the 44px tab
+     you can see - and it had pushed the pill out from under the cube and
+     off to its left, which is where your screenshot found it. #matFly moved
+     down to 194 instead, which frees the whole strip under the cube. */
   #projPill {
-    position: absolute; right: calc(env(safe-area-inset-right, 0px) + 136px);
-    top: calc(env(safe-area-inset-top, 0px) + 136px);
-    z-index: 13; height: 34px; min-width: 80px; padding: 0 12px;
-    border-radius: 17px; background: var(--panel2); border: 1px solid var(--line);
+    position: absolute; right: 14px;
+    top: calc(env(safe-area-inset-top, 0px) + 130px);
+    z-index: 13; width: 44px; height: 44px; border-radius: var(--r-md);
+    background: var(--panel2); border: 1px solid var(--line);
     display: flex; align-items: center; justify-content: center;
-    color: var(--text-dim); font-size: 12px;
+    color: var(--text-dim);
     touch-action: none; -webkit-user-select: none; user-select: none; cursor: pointer;
   }
   /* Flat view is a STATE you are in, not a button you pressed, so it wears
      the accent the way every other on-state in the app does. */
   #projPill.on { border-color: var(--accent); color: var(--accent); }
+  /* LIGHTING LIVES IN THE DRAWER NOW (a2.65). It was a pill in the viewport
+     with a menu falling out of it: a permanent word on screen and the third
+     seat of the top-left column, for a six-way choice you make once a
+     session. The GESTURE is untouched and is still how Turn and Strength are
+     set, because those are judged live against the model. Which preset is
+     not. */
   #lightMenu {
-    position: absolute; left: var(--edge-l); top: calc(var(--edge) + 138px);
-    z-index: 14; display: none; flex-direction: column; min-width: 132px;
-    background: var(--panel2); border: 1px solid var(--line);
-    border-radius: var(--r-md); padding: 4px; overflow: hidden;
-    box-shadow: 0 10px 26px rgb(var(--shadow) / .22);
+    display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 8px;
   }
-  #lightMenu.show { display: flex; }
   #lightMenu button {
     min-height: 36px; padding: 0 10px; justify-content: flex-start;
-    background: transparent; border: none; border-radius: var(--r-sm);
-    color: var(--text); font-size: 13px;
+    background: var(--panel2); border: 1px solid var(--line);
+    border-radius: var(--r-sm); color: var(--text); font-size: 13px;
   }
-  /* Same as button.active, and this one has no border at all to fall back
-     on - the tint and the weight are the whole cue. */
-  #lightMenu button.active { background: var(--accent-dim); color: var(--text); font-weight: 600; }
+  /* Same as button.active. In the drawer these carry a border, so the chosen
+     one takes the accent on it as well as the tint. */
+  #lightMenu button.active { background: var(--accent-dim); border-color: var(--accent); color: var(--text); font-weight: 600; }
   /* Only while two fingers are held. Placed high and centred so the hand
      doing the sliding is nowhere near it. */
   /* Soft mode rings the mode button rather than replacing its icon: the
@@ -1136,29 +1118,20 @@
          own reasons; this was the last one left in it. -->
     <button id="hubBtn" title="Object/Component - tap to switch"></button>
 
-    <!-- Two-position switches on the left edge, stacked and centred as a
-         GROUP. Tap the half you want or swipe toward it - both work without
-         looking, which a button that cycles never did. Symmetry sits above
-         because it is the rarer decision; the mode switch stays nearest the
-         middle of the edge, where the thumb rests. -->
-    <!-- Symmetry: a horizontal two-state pill tucked under the view cube,
-         where nothing competes for the space and it stays visible without
-         sitting in the way of the model. -->
-    <div id="symPill">
-      <div class="sp-knob"></div>
-      <div class="sp-half" data-v="on"><span class="ic"></span></div>
-      <div class="sp-half" data-v="off"><span class="ic"></span></div>
-    </div>
+    <!-- The mode switch stays nearest the middle of the bottom edge, where
+         the thumb rests. Symmetry left this corner in a2.65 for the strip
+         under the view cube, and the two-position switch went with it. -->
+    <!-- Symmetry: one 44px toggle under the view cube, beside projection.
+         It shows the state it is IN - see #symPill in the stylesheet. -->
+    <div id="symPill" title="Symmetry"><span class="ic"></span></div>
 
-    <!-- Lighting: the TYPE is picked here, rarely. Turn and Strength are
-         a gesture instead - hold two fingers anywhere and slide with the
-         other hand - because they are judged entirely by what happens to
-         the model, and no widget can be watched and dragged at once. -->
-    <!-- Perspective / orthographic. Under the cube, because the cube is
-         the other way into the flat view. -->
-    <div id="projPill" title="Perspective or orthographic view"><span id="projPillName">Perspective</span></div>
-    <div id="lightPill"><span id="lightPillName">Studio</span></div>
-    <div id="lightMenu"></div>
+    <!-- Perspective / orthographic. Under the cube, because the cube is the
+         other way into the flat view. Lighting used to sit here too; since
+         a2.65 the preset list is in the drawer, and Turn and Strength stay a
+         gesture - hold two fingers anywhere and slide with the other hand -
+         because they are judged entirely by what happens to the model, and
+         no widget can be watched and dragged at once. -->
+    <div id="projPill" title="Perspective or orthographic view"><span class="ic" id="projPillName"></span></div>
     <div id="lightHud">
       <div><div class="lh-k" id="lhTurnK">Turn</div><div class="lh-v" id="lhTurn">0&deg;</div></div>
       <div><div class="lh-k" id="lhStrK">Strength</div><div class="lh-v" id="lhStr">1.00</div></div>
@@ -1349,7 +1322,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.64a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.65</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -1375,8 +1348,9 @@
              part you cannot discover by looking. -->
         <div class="drawer-note">Colour is in the material — the tab on the right edge.
           See-through, Floor grid and Snap are in the ring you get by holding on empty space.</div>
-        <div class="drawer-note">Lighting: the pill below Symmetry picks the type.
-          Hold two fingers still anywhere, then slide with the other hand to aim it.</div>
+        <div class="drawer-note">Lighting - pick the type here. Hold two fingers still
+          anywhere, then slide with the other hand to aim it.</div>
+        <div id="lightMenu"></div>
       </div>
 
 
@@ -1399,7 +1373,7 @@
             <button data-sym="z">Z</button>
           </div>
         </div>
-        <div class="drawer-note">Symmetry on and off is the pill, top left.</div>
+        <div class="drawer-note">Symmetry on and off is the button under the view cube.</div>
       </div>
 
       <div class="drawer-sec">
@@ -2245,10 +2219,19 @@ const projPillEl = document.getElementById('projPill');
 const projPillNameEl = document.getElementById('projPillName');
 function refreshProjPill() {
   const on = !!orthoView;
-  projPillNameEl.textContent = on ? 'Orthographic' : 'Perspective';
+  /* The glyph says which projection you are IN; the accent says the flat one
+     is a state rather than the default. The same two cues #symPill wears
+     since a2.65. The word it used to carry is in the title. */
+  projPillNameEl.innerHTML = icon(on ? 'ortho' : 'persp', 20);
   projPillEl.classList.toggle('on', on);
+  projPillEl.title = on
+    ? 'Flat view - tap for perspective'
+    : 'Perspective - tap for the flat view';
 }
-refreshProjPill();
+/* NO EAGER CALL HERE ANY MORE (a2.65). It draws an icon now, and ICON is a
+   const declared much further down this file - calling it at this point in
+   module evaluation lands in the temporal dead zone and throws. refreshUI()
+   already runs at init, already calls icon(), and owns it instead. */
 
 projPillEl.addEventListener('click', () => {
   /* A swing in flight is heading for the flat view of its own accord; if
@@ -2513,7 +2496,6 @@ function buildEnvPresets() {
     b.textContent = p.name;
     b.dataset.env = p.id;
     b.addEventListener('click', () => {
-      setLightMenuOpen(false);
       if (App.env.preset === p.id) return;
       App.env.preset = p.id;
       applyEnvironment();       // the one control that costs a re-bake
@@ -2523,11 +2505,6 @@ function buildEnvPresets() {
     });
     m.appendChild(b);
   });
-}
-
-function setLightMenuOpen(open) {
-  document.getElementById('lightMenu').classList.toggle('show', open);
-  document.getElementById('lightPill').classList.toggle('open', open);
 }
 
 /* Only the shelf that is actually on screen is worth ten renders and ten
@@ -2541,8 +2518,6 @@ function refreshEnvControls() {
   const m = document.getElementById('lightMenu');
   if (m) m.querySelectorAll('button').forEach(b =>
     b.classList.toggle('active', b.dataset.env === App.env.preset));
-  const name = document.getElementById('lightPillName');
-  if (name) name.textContent = envPreset(App.env.preset).name;
   const t = document.getElementById('lhTurn');
   const i = document.getElementById('lhStr');
   if (t) t.textContent = Math.round(App.env.rotation) + '\u00B0';
@@ -2550,15 +2525,9 @@ function refreshEnvControls() {
 }
 
 function wireEnvControls() {
+  /* The list sits in the drawer since a2.65, so there is nothing to open,
+     nothing to close, and no document-wide outside-click listener to own. */
   buildEnvPresets();
-  const pill = document.getElementById('lightPill');
-  pill.addEventListener('click', () =>
-    setLightMenuOpen(!document.getElementById('lightMenu').classList.contains('show')));
-  // Anywhere else closes it, the same as every other transient panel here.
-  document.addEventListener('pointerdown', (ev) => {
-    if (ev.target.closest && (ev.target.closest('#lightMenu') || ev.target.closest('#lightPill'))) return;
-    setLightMenuOpen(false);
-  }, true);
   refreshEnvControls();
 }
 
@@ -18888,6 +18857,13 @@ const ICON = {
      and under the ~4.8u that would read as a gap. */
   collapse:'<path d="M4 6.5L8 12L4 17.5"/><path d="M20 6.5L16 12L20 17.5"/><circle cx="12" cy="12" r="2.1" fill="currentColor" stroke="none"/>',
   symoff:  '<path d="M12 3v18" opacity=".45"/><path d="M9 7L5 12l4 5z" opacity=".45"/><path d="M15 7l4 5-4 5z" opacity=".45"/><path d="M4 20L20 4"/>',
+  /* PROJECTION, AS A PAIR (a2.65). Converging edges against parallel ones
+     is what separates the two projections, so both glyphs are the same box
+     drawn each way: a lens at the left, a far face at the right, joined by
+     lines that meet or lines that never do. Nothing here is finer than the
+     1.8-unit floor and nothing is dashed, so both survive at 20px. */
+  persp:   '<rect x="3.2" y="9" width="4" height="6" rx=".8"/><path d="M7.2 9 20.5 4v16L7.2 15"/>',
+  ortho:   '<rect x="3.2" y="9" width="4" height="6" rx=".8"/><path d="M7.2 9h13.3M7.2 15h13.3M20.5 9v6"/>',
   centre:  '<circle cx="12" cy="12" r="2.2"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5"/><circle cx="12" cy="12" r="7.5" stroke-dasharray="2.5 3"/>'
 };
 
@@ -19401,52 +19377,23 @@ function closeToolRing(run) {
 // currentHubTools() fresh at the moment it blooms, so there's nothing left
 // that needs tracking between rebuilds.
 
-/* Edge switches, v1.89, generalised in v1.90 when Symmetry got one too.
-
-   A button that cycled was fine to hit and useless to read - you could not
-   tell which state a tap would leave you in without looking at the icon and
-   reasoning backwards. Two halves with a knob between them says the current
-   state and the available state at once, and can be worked without looking:
-   swipe toward the half you want, or tap it.
-
-   A swipe names a direction, a tap names a place, and the upper half is
-   always the "more" state - Object over Component, Symmetry on over off -
-   so the two gestures agree. */
-const MODE_SWIPE_PX = 16;   // past this the gesture is a swipe, not a tap
-
-function wireEdgeSwitch(el, onPick, axis) {
-  const horiz = axis === 'x';
-  let press = null;
-  el.addEventListener('pointerdown', (ev) => {
-    ev.stopPropagation();
-    ev.preventDefault();
-    // Capture so a swipe that leaves the pill still reports its release
-    // here. Guarded: a pointer id the browser doesn't recognise throws, and
-    // losing capture is survivable where losing the whole handler is not.
-    try { el.setPointerCapture(ev.pointerId); } catch (e) { /* no capture, still fine */ }
-    const r = el.getBoundingClientRect();
-    press = horiz
-      ? { a: ev.clientX, start: r.left, len: r.width }
-      : { a: ev.clientY, start: r.top, len: r.height };
-  });
-  el.addEventListener('pointerup', (ev) => {
-    ev.stopPropagation();
-    if (!press) return;
-    const p = press;
-    press = null;
-    const now = horiz ? ev.clientX : ev.clientY;
-    const d = now - p.a;
-    const first = Math.abs(d) > MODE_SWIPE_PX ? d < 0 : (now - p.start) < p.len / 2;
-    onPick(first);
-  });
-  el.addEventListener('pointercancel', () => { press = null; });
-}
+/* Edge switches (v1.89 - a2.64a) are gone. The two halves existed to answer
+   "which state will this tap leave me in", and by a2.65 the answer turned out
+   cheaper: a toggle that SHOWS the state it is in, in the accent, reads the
+   same and costs one seat instead of two. Symmetry was the last thing using
+   it - #hubBtn cycles three states and never did. */
 
 hubBtnEl.addEventListener('pointerdown', (ev) => ev.stopPropagation());
 hubBtnEl.addEventListener('click', (ev) => { ev.stopPropagation(); cycleEditMode(); });
 
-// The pill is horizontal, so the axis is x: swipe left/right, or tap a half.
-wireEdgeSwitch(symPillEl, (first) => setSymmetry(first), 'x');
+/* One tap, one toggle (a2.65). stopPropagation for the same reason #hubBtn
+   does it: a pointerdown that reaches the viewport arms a tap which would
+   clear the selection behind the button. */
+symPillEl.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+symPillEl.addEventListener('click', (ev) => {
+  ev.stopPropagation();
+  setSymmetry(!App.symmetry);
+});
 
 /* ---------------- Drawer ---------------- */
 
@@ -20146,7 +20093,7 @@ const HELP_SECTIONS = [
       [null, 'Zoom', 'Pinch, or the scroll wheel.'],
       [null, 'Pan', 'Two fingers together.'],
       [null, 'View cube', 'Top-right. Tap a face for a square-on, flat view. Panning and zooming stay flat; turning the view brings perspective back.'],
-      [null, 'Perspective / Orthographic', 'The pill under the cube says which one you are in, and switches it.'],
+      [null, 'Perspective / Orthographic', 'The right of the two buttons under the cube says which one you are in, and switches it.'],
       [null, 'The view follows the mode', 'Vertex dims the surface and grows the dots, Edge lights the wireframe, Face flattens into panels with dark seams. Object mode shows the model plain, and opening the material tray does too.'],
       [null, 'Double tap', 'On empty space, frames your work. Inside a tool, cancels it.'],
       [null, 'Isolate', 'Three-finger pinch, Object mode. Squeeze and everything else goes; spread brings it back. A chip says how many are hidden.'],
@@ -20264,7 +20211,7 @@ HELP_SECTIONS.push(
   },
   {
     title: 'Materials',
-    lead: 'The tab flush to the right edge, under the view cube. Colour lives in the material — there is no separate colour picker.',
+    lead: 'The tab flush to the right edge, below the two buttons under the view cube. Colour lives in the material — there is no separate colour picker.',
     rows: [
       ['color', 'Applying', 'Tap a ball to put it on. In Face mode it goes on the selected faces; anywhere else, on the whole object.'],
       [null, 'Editing', 'The pencil on the applied card, or a long press. Colour, Metal and Rough decide what it is made of, live on everything wearing it.'],
@@ -20281,7 +20228,7 @@ HELP_SECTIONS.push(
     title: 'Symmetry and Mirror',
     lead: 'Symmetry is a mode you leave switched on. Mirror is a one-off.',
     rows: [
-      ['mirror', 'Symmetry', 'The pill at the TOP LEFT, under the drawer button. Left half on, right half off.'],
+      ['mirror', 'Symmetry', 'The left of the two buttons under the view cube. Lit means on.'],
       [null, 'The plane', 'Captured when you switch it on, at the middle of the object, and it travels with the object. If a model stops mirroring after a big change, switch it off and on again.'],
       [null, 'What mirrors', 'Component edits, run once across both halves so nothing is built at the seam. Moving a whole object does not.'],
       [null, 'The catch', 'It pairs up vertices that already have a twin. It keeps a model symmetric; it cannot put symmetry back.'],
@@ -20297,7 +20244,7 @@ HELP_SECTIONS.push(
     lead: 'Hamburger, top-left. Settings and lists only — the tools all live in the rings.',
     rows: [
       [null, 'Scene', 'Every object. Tap one to make it active.'],
-      [null, 'Appearance', 'The light’s TYPE is the pill under Symmetry; you aim it with two fingers held still anywhere.'],
+      [null, 'Appearance', 'The light’s TYPE is the row of presets here; you aim it with two fingers held still anywhere.'],
       [null, 'Editing', 'Exact transform values, Clear creases, Drag speed, symmetry axis.'],
       ['snap', 'Snap amounts', 'How far one snapped step moves, turns and scales.'],
       [null, 'Models', 'Saves the scene inside the browser under a name.'],
@@ -20509,10 +20456,12 @@ function toggleShading() {
   shadeSelection(App.shadeSmooth);
   toast(App.shadeSmooth ? 'Shaded smooth' : 'Shaded flat');
 }
-/* Takes the state it should END in rather than flipping, because a two-
-   position switch already knows which side you asked for - re-deriving it
-   from the current value would let a stray repeat put the knob and the
-   state out of step. */
+/* Takes the state it should END in rather than flipping. The two-position
+   switch that made that necessary went in a2.65 and the only caller now
+   hands it !App.symmetry, so the equality guard below cannot fire today. It
+   stays because this is still the safer signature: every entry point this
+   might grow - a ring seat, a restored file, a keyboard key - knows the
+   state it WANTS, not the state it is flipping from. */
 function setSymmetry(on) {
   if (App.symmetry === on) { refreshObjComponentBtn(); return; }
   App.symmetry = on;
@@ -21050,18 +20999,20 @@ function refreshObjComponentBtn() {
   }
 
   if (symPillEl) {
-    symPillEl.classList.toggle('lower', !App.symmetry);
-    const halves = symPillEl.querySelectorAll('.sp-half');
-    if (halves.length >= 2) {
-      halves[0].classList.toggle('on', App.symmetry);
-      halves[1].classList.toggle('on', !App.symmetry);
-      halves[0].querySelector('.ic').innerHTML = icon('mirror', 19);
-      halves[1].querySelector('.ic').innerHTML = icon('symoff', 19);
-    }
+    /* One button since a2.65: the glyph is the STATE, not the action. Mirror
+       in the accent means symmetry is on; the crossed mirror, dim, means it
+       is off. Reading it needs no memory of what a tap would do. */
+    symPillEl.classList.toggle('on', App.symmetry);
+    const symIc = symPillEl.querySelector('.ic');
+    if (symIc) symIc.innerHTML = icon(App.symmetry ? 'mirror' : 'symoff', 20);
     symPillEl.title = App.symmetry
-      ? 'Symmetry on (' + App.symmetryAxis.toUpperCase() + ') - tap the right half to turn it off'
-      : 'Symmetry off - tap the left half to mirror edits across ' + App.symmetryAxis.toUpperCase();
+      ? 'Symmetry on (' + App.symmetryAxis.toUpperCase() + ') - tap to turn it off'
+      : 'Symmetry off - tap to mirror edits across ' + App.symmetryAxis.toUpperCase();
   }
+
+  /* Moved here from module scope, where drawing its glyph would have hit the
+     ICON temporal dead zone. */
+  refreshProjPill();
 }
 
 /* ---------------- Update detection ----------------

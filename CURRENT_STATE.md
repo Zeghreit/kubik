@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~20,200 lines)
-- Version at time of writing: **a2.64a**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~21,250 lines)
+- Version at time of writing: **a2.65**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -29,6 +29,117 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## The a2.65 chrome pass - READ BEFORE OLDER SECTIONS
+
+Everything below describes the chrome BEFORE this pass. Wherever an older
+section mentions the Symmetry pill, the lighting pill, the projection pill,
+or where the material tab sits, this section wins.
+
+**What the viewport carries now.** Menu, top-left, alone. "Move Axis" status
+text, top-centre. View cube, top-right. **Symmetry and projection, a 44px
+pair in the strip under the cube** - symmetry left, projection right.
+Material tab on the right edge below them. Mode, undo, redo and help along
+the bottom. Nine controls, one size, two shapes, no words.
+
+**One size, two shapes.** 44x44 for every chrome control, with two stated
+exceptions: `#hubBtn` at 56, because it is the primary, and the view cube at
+128, because it is a viewport object rather than a control. A CIRCLE means
+app-level - menu, help, mode. A `var(--r-md)` ROUNDED SQUARE means a state
+you flip in place - symmetry, projection, undo, redo. A new control has to
+answer that question before it gets a shape.
+
+Before this pass there were four control heights (34, 44, 46, 56) and five
+radii (50%, 23px, 17px, 12px, `--r-md`). Nothing enforced a scale; each
+control had been sized to fit its own corner. That irregularity, not the
+count, is what read as clutter - Blender shows far more and does not.
+
+**Symmetry is one button.** It was a 100x46 two-seat edge switch under the
+menu. It is a 44px toggle that SHOWS its state: the `mirror` glyph in the
+accent when on, `symoff` dim when off - the pattern `#projPill` has worn
+since a2.61. The old objection to a cycling button (you cannot tell which
+state a tap will leave you in) is answered by showing the state rather than
+the action, not by ignoring it. The swipe went with the halves; the tap,
+always the primary path, did not.
+
+**Projection is a glyph.** `persp` and `ortho` are the same box drawn with
+converging edges and with parallel ones, which is what actually separates
+the two projections. The word moved into the title.
+
+**Lighting moved into the drawer**, under Appearance, as a two-column list
+of the six presets. `#lightPill`, `#lightMenu`'s floating position, its
+`.show` class, `setLightMenuOpen()` and its document-wide outside-click
+listener are all gone. The two-finger gesture is untouched and is still the
+only way Turn and Strength are set - those are judged live against the
+model, and which preset is not.
+
+**The material tray moved down** from 132 to 194 to leave the pair its
+strip, and `--mat-max` went from `100vh - 204px` to `100vh - 266px`.
+
+**Edge switches are retired.** `wireEdgeSwitch()` and `MODE_SWIPE_PX` went
+with symmetry, their last caller. `#hubBtn` cycles three states and never
+used one.
+
+**`refreshProjPill()` has no eager call any more.** It draws an icon now,
+and `ICON` is a `const` declared much further down the same script -
+calling it at that point in module evaluation lands in the temporal dead
+zone and throws. `refreshUI()` owns it instead, which already calls `icon()`
+and therefore already runs late enough.
+
+### The first media query in the file
+
+`@media (max-height: 500px)` moves the pair to the LEFT of the cube and puts
+the tray back at 132. The strip under the cube costs the shelf 62px, which
+is nothing in portrait - 852 tall still leaves 526px - and nearly everything
+in landscape: 390 tall drops from 186 to 124, and 320 tall from 116 to 54,
+less than one card and its padding, so the tab would have opened onto an
+empty sliver. `#matEditor` shares `--mat-max`, so the whole mask stack would
+have been scrolling in that sliver too. The pair is two toggles and can
+move; the shelf is a panel you work inside and cannot. 500px is below every
+phone in landscape and above every window the probe suite runs in, so the
+suite keeps measuring the portrait layout.
+
+### Two things the review caught that the screen did not
+
+- **The help card still described the old chrome.** Symmetry as a two-half
+  pill at the top left; Appearance as "the pill under Symmetry", which this
+  change had deleted. Both sent the reader to an empty corner. The file's
+  own rule is that what you read in Help matches what is on screen, and
+  nothing on screen enforces it - only reading the help table does.
+- **The pair took a right safe-area inset the view cube does not.**
+  `#viewCube` is pinned to the physical corner on the record (`right: 0`, no
+  inset, because the cube carries its own margin inside its square).
+  Anything hanging under it has to use the SAME anchor or the two drift
+  apart by a whole notch the moment there is a right inset - portrait has
+  none, landscape does. The pair is `right: 14px` / `right: 66px` flat; only
+  the media query above takes the inset, because at 142px in there is no
+  notch left to argue with.
+
+### What did NOT change
+
+The Mode Hue system (a2.58). `#hubBtn` is still filled with `var(--accent)`,
+which is why it reads as a near-white disc in Object mode and salmon in Face
+mode. That is the swatch doing its job, not a control shouting - the thing
+to change, if it ever matters, is Object's neutral accent, not the button.
+
+### Probe suite
+
+`_theme_probe` section 9 was rewritten, and it was wrong in a way worth
+fixing regardless of this change: it compared X RANGES and called any
+horizontal overlap a collision. The pair shares a column with the material
+tray and clears it VERTICALLY, so the suite reported the new layout as
+broken while nothing on screen was touching anything. Section 9 and section
+11 now test real rectangle intersection, and section 9 adds: both toggles
+are 44x44, they are level with each other, they clear the cube, the tab and
+the flyout both open and closed, neither carries a word, and the lighting
+list is inside `#drawer`.
+
+**20 of the 22 suites came out byte-identical** across the change.
+`_theme_out.txt` changed as described; `_perf_out.txt` flickered once on
+`slider_coalescing` - "0 applies after a frame" reading 1 - and came back
+clean three runs running. That middle number is a race on whether the
+scheduled apply flushed before the probe looked, and it is worth knowing
+that it can flake before somebody reads it as a regression.
 
 ## The a2.7f -> a2.16a wave (2026-08-24/25) - READ BEFORE OLDER SECTIONS
 
