@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~21,070 lines)
-- Version at time of writing: **a2.70**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~21,400 lines)
+- Version at time of writing: **a2.71**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -30,7 +30,7 @@ still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
 
-## Import (a2.68 glTF, a2.69 materials, a2.70 OBJ) - READ BEFORE OLDER SECTIONS
+## Import (a2.68 glTF, a2.69 materials, a2.70 OBJ, a2.71 STL) - READ BEFORE OLDER SECTIONS
 
 The pipeline is one line long, because the app already owns both ends of it:
 
@@ -129,6 +129,115 @@ because the suite only ever fed it Kubik's own tightly packed, positively
 scaled, single-loop output. It now carries foreign fixtures: a square annulus
 with a hole, a negative-scale node, and a hand-built interleaved buffer with
 a poison value in the spare channels.
+
+## STL, and the depth band (a2.71)
+
+The format with the least in it: no materials, no objects, no shared
+vertices, no units. A triangle, its normal, and 49 more bytes, repeated. So
+the reader is short and **the whole quality of the result rests on
+`mergeCoplanarTriangles`** - which makes an .stl the honest test of whether
+`IMPORT_COPLANAR_DOT` was the right number. On a printable model it usually
+is not: a curved surface is thousands of facets differing by well over a
+degree, so the merge yields close to one face per triangle and
+`IMPORT_FACE_BUDGET` refuses the file. That is the correct answer and the
+refusal says the number.
+
+### THE DEPTH BAND FOLLOWS THE SCENE - this is the part that is not about STL
+
+The fog is 15..42 units in the background's own colour, and `frameBox` puts
+the camera at about 1.8x the model's largest dimension. **A model bigger than
+~23 units is therefore invisible the moment it is framed** - painted as pure
+background - while the fog-free helper lines keep drawing. You get vertex dots
+and edges floating on an empty screen.
+
+This is the same failure the flat view hit and `engageOrtho`'s note already
+describes ("from ~27x further out the whole scene was 100% fogged"), reached
+the other way round: by the scene growing instead of the camera retreating.
+a2.71 made it the DEFAULT outcome rather than an edge case, because an .stl
+carries no units and is nearly always authored in millimetres - a 25mm
+printed part is a 25-unit model.
+
+**The alternative was to rescale imports, and that is worse.** Silently
+resizing someone's geometry invents a fact the file does not state, and it
+would be wrong for a .glb, which does state its units. The scene is not
+wrong; the constant is. So `refreshDepthRange()` multiplies the fog band and
+the far plane by `contentScale()` - half the largest object dimension,
+floored at 1, so every number is exactly what it always was at the app's own
+scale. Geometry is left precisely as the file wrote it.
+
+`applyTheme` multiplies by `sceneScale` too, or a theme switch would put the
+unscaled band back under a large model. The flat view saves the band it
+engaged with, so those saved numbers move as well.
+
+### Binary or ASCII is decided by ARITHMETIC, never by the leading word
+
+A binary .stl's first 80 bytes are a free-form header and plenty of exporters
+write `solid <name>` into it. `84 + count*50` against the byte length is the
+only sound test. **Trailing bytes are still a binary file** - exact equality
+sent a file with one appended newline down the ASCII branch, where it found
+no `facet normal` and was refused as "No triangles in that .stl", the
+opposite of true. A file SHORT of what its header promises is named as
+truncated, which the same arithmetic already knows.
+
+### The stored normals get ONE VOTE for the whole file
+
+Both the normal and the winding are in the file and they disagree more often
+than they should: an exporter that mirrors a part transforms the coordinates
+and leaves the vertex order alone - the same failure the glTF path meets with
+a negative determinant, and it leaves a model invisible from outside and
+solid from within.
+
+But **the ecosystem trusts the winding**. three's own STLLoader never reads
+the stored normal, and neither does any slicer, because the normal is the
+field writers get wrong. So flipping per facet made two things worse: a file
+with correct winding and randomly garbage normals came out with MIXED
+winding, which breaks the coplanar merge (a flipped triangle reads as -1
+against its seed), inflates the face count, and can trip the face budget on a
+file that would otherwise have imported fine - silently.
+
+So the disagreement is counted and the file is re-wound only when the normals
+are nearly unanimous (>90% of at least half the facets), which is exactly the
+mirrored-export case and never the garbage-normals case. **And it is said out
+loud in the toast**, because turning a model inside out is the largest thing
+this importer does to a file.
+
+### A bound may only refuse in the direction it is sound
+
+The ASCII pre-check was `byteLength / 50`, and 50 bytes is the FLOOR of a
+conforming ASCII facet - so it was an UPPER bound on the triangle count, and
+refusing when an upper bound is too big refuses files that are fine. Blender
+writes ~227 bytes per facet, so a 2.1MB ASCII .stl holding 9,800 triangles
+was rejected as "43k triangles". Counting `facet normal` is exact and the
+string is needed anyway. The OBJ path counts `f` lines, which is a LOWER
+bound, and can therefore only refuse files that really are too big.
+
+## Refusals that name what the file needs (a2.71)
+
+Three known gaps used to surface as "Could not read that file", which tells
+the person nothing and reads like a bug in Kubik rather than a property of
+their file. `gltfRefusal()` names each one:
+
+- **Draco** and **meshopt** need decoders this app cannot carry - Draco's is
+  a WASM blob several times the size of the whole app. Checked in the JSON,
+  and caught again off the loader's own message for a compressed `.glb`.
+  **meshopt is refused only when it is in `extensionsRequired`**: listed
+  under `extensionsUsed` alone it is the fallback form, which carries
+  readable buffer data and which three loads correctly - refusing that turns
+  a working file into a broken one. Draco has no fallback mode.
+- **A `.gltf` with an external `.bin`.** A file input hands over the files it
+  was given; there is no directory to resolve a relative uri against, so the
+  loader fetches it against the page URL and gets Kubik's own HTML or a 404.
+- The JSON is **sniffed before it is decoded** - first non-whitespace byte
+  must be `{`. `wireImport` routes everything that is not .obj/.mtl/.stl
+  here, so a 200MB .blend picked by mistake was being decoded into a JS
+  string twice its size before the loader could fail.
+
+And the autosave quota, which `scheduleAutosave` swallowed: the scene then
+silently reverted on the next visit, which looks like data loss with no
+cause. Said once per session. **The message points at Download .json, not at
+"save it under a name"** - `saveProject` writes the same bytes to the same
+origin under one more key, so if the autosave just hit the quota it is
+strictly worse and fails too.
 
 ## OBJ (a2.70)
 
@@ -308,9 +417,9 @@ Blender used to show `Material.001` six times. `OBJExporter` only emits
 ### Still to do, and known
 
 Deliberately out of this increment, recorded so they are not discovered as
-surprises: STL is not read yet (and is deliberately absent from the file
-picker's `accept` until it is - offering a format the app refuses is worse
-than not offering it); a non-planar quad becomes one face group whose interior
+surprises: a multi-solid ASCII .stl lands as ONE object, welded, because STL
+has no object concept and there is nothing to name the parts by; a non-planar
+quad becomes one face group whose interior
 diagonal `computeTopology` will not expose, so a bent face cannot be creased -
 the .glb path would have refused to merge those two triangles and given two
 selectable faces instead; an imported material's texture,
