@@ -780,30 +780,21 @@
      transform tools next to it now, not to the view settings it was
      grouped with. */
 
-  /* ViewHelper always draws a 128x128 square anchored in a corner of its
-     element - `dim` is a fixed constant in the library, not a setting. This
-     box was 96px, so 32px of the helper was clipped off two sides, which is
-     why it looked cut at every camera angle.
+  /* 128 exactly. It was 96 while the old ViewHelper drew a fixed 128px
+     square, which clipped it on two sides; then briefly 1.5x scaled, which
+     made a 192px touch-action:none target sitting over a quarter of a phone
+     screen - taps and drags starting anywhere in that corner never reached
+     the model, and read as selection being broken.
 
-     So the box is exactly 128 and the SCALE does the enlarging. That also
-     keeps clicks accurate: handleClick offsets by (offsetWidth - dim),
-     which is now zero, and then measures getBoundingClientRect - which
-     includes the transform. Box and helper agree at any scale. */
-  /* 128 exactly, and no scaling. ViewHelper always draws a 128x128 square
-     anchored in a corner of its element - `dim` is a fixed constant in the
-     library - so at 96 it was clipped and at 1.5x it became a 192px hit
-     target with touch-action:none sitting over a quarter of a phone
-     screen. Taps and drags starting anywhere in that corner never reached
-     the model, which read as selection and dragging being broken.
-
-     128 is the size the library actually draws: nothing clipped, nothing
-     stolen. Pinned flush to the corner because the gizmo carries its own
-     padding inside that square, so any CSS inset reads as double. */
+     The cube draws itself to whatever size this box is now, so 128 is a
+     choice rather than a constraint: big enough that a face is a ~50px tap
+     target, small enough to stay out of the way. Pinned to the corner; the
+     cube carries its own margin inside the square. */
   #viewCube {
     /* `top: 0` was right while #viewport started below the bar. It starts at
        the top of the screen now, so the notch is the cube's own problem - and
-       ONLY the notch: the comment above is about the padding ViewHelper draws
-       inside its own square, which is why no --edge goes here. */
+       ONLY the notch: the cube leaves its own margin inside this square, so
+       no --edge goes here or the inset reads as double. */
     position: absolute; top: env(safe-area-inset-top, 0px); right: 0;
     width: 128px; height: 128px;
     z-index: 12; cursor: pointer; touch-action: none;
@@ -1247,7 +1238,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.59a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.60a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -1357,7 +1348,6 @@
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
@@ -1848,17 +1838,188 @@ const viewCubeEl = document.getElementById('viewCube');
    from the main viewport - sharing one caused blank frames on iPhone. */
 const cubeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 cubeRenderer.setPixelRatio(pixelRatio);
-cubeRenderer.setSize(128, 128);   // matches ViewHelper's fixed 128px draw
+cubeRenderer.setSize(128, 128);
 viewCubeEl.appendChild(cubeRenderer.domElement);
 
-const viewHelper = new ViewHelper(camera, viewCubeEl);
-viewHelper.location = { top: 0, right: 0, bottom: 0, left: 0 };
-viewHelper.center = orbit.target; // shares the same object, stays in sync automatically
+/* ---------------- The view cube (a2.60) ----------------
+
+   It is called a view cube in the help, in the code and in this file. Until
+   a2.60 it was three.js's ViewHelper: an axis tripod of coloured dots. Two
+   things were wrong with that, and replacing it fixes both at once.
+
+   THE COLOURS. The library draws saturated red / green / blue, hard-coded
+   in its constructor with no option to change them. The drag guide uses
+   coral / amber / dusty blue and this file wrote down why - saturated
+   primaries read as a technical instrument next to a muted palette, and
+   red-versus-green is the pair that collapses for the commonest colour
+   blindness. So the app had TWO palettes for the same three axes, and the
+   one on permanent display was the one it had argued against.
+
+   THE SHAPE. A tripod says which way the axes point. It never says which
+   way is FRONT - the thing you actually want from a corner widget. Faces
+   do, and they double as tap targets big enough for a finger.
+
+   It is deliberately small: one scene, one orthographic camera, six canvas
+   labels and an edge outline. Nothing here needs lighting or a material
+   system - MeshBasicMaterial with an sRGB texture on a renderer that has
+   no tone mapping draws exactly the colours written below. */
+
+const CUBE_FACE_BG = '#262b34';
+const CUBE_FACE_LINE = '#3d4553';
+/* BoxGeometry's own face order: +X, -X, +Y, -Y, +Z, -Z. Labels are coloured
+   by AXIS, matching GIZMO_AXES exactly - so the pair of faces you can see
+   for a given axis is the colour that axis's guide line will be. */
+const CUBE_FACES = [
+  { label: 'RIGHT', color: '#C85A47' },
+  { label: 'LEFT',  color: '#C85A47' },
+  { label: 'TOP',   color: '#E8C87A' },
+  { label: 'BTM',   color: '#E8C87A' },
+  { label: 'FRONT', color: '#4A82B8' },
+  { label: 'BACK',  color: '#4A82B8' }
+];
+
+function cubeFaceTexture(label, color) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = CUBE_FACE_BG;
+  g.fillRect(0, 0, 128, 128);
+  g.strokeStyle = CUBE_FACE_LINE;
+  g.lineWidth = 5;
+  g.strokeRect(2.5, 2.5, 123, 123);
+  g.fillStyle = color;
+  // FRONT is the longest label; size to it rather than per label, or the
+  // six faces read as six different type scales as the cube turns.
+  g.font = '700 25px "Noto Sans", system-ui, sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(label, 64, 67);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+
+const cubeScene = new THREE.Scene();
+/* Orthographic, so the cube reads as a diagram rather than as a tiny model
+   with its own perspective fighting the viewport's. Half-height 1.15
+   against a unit cube whose half-diagonal is 0.87 leaves a margin at every
+   angle - the old helper clipped at the corners, which was the single
+   most-reported thing about it - while still filling enough of the 128px
+   box that each face is a finger-sized target. */
+const cubeCam = new THREE.OrthographicCamera(-1.15, 1.15, 1.15, -1.15, 0.1, 10);
+const cubeMesh = new THREE.Mesh(
+  new THREE.BoxGeometry(1, 1, 1),
+  CUBE_FACES.map(f => new THREE.MeshBasicMaterial({ map: cubeFaceTexture(f.label, f.color) }))
+);
+cubeMesh.add(new THREE.LineSegments(
+  new THREE.EdgesGeometry(cubeMesh.geometry),
+  new THREE.LineBasicMaterial({ color: 0x4a5364 })
+));
+cubeScene.add(cubeMesh);
+
+const _cubeDir = new THREE.Vector3();
+function cubeSync() {
+  /* The cube does not turn; the little CAMERA orbits it, on the same unit
+     vector as the real one. That way the picture is a pure function of the
+     main camera's direction, which is what lets the render loop skip it
+     whenever the quaternion has not moved. */
+  _cubeDir.copy(camera.position).sub(orbit.target);
+  if (_cubeDir.lengthSq() < 1e-9) _cubeDir.set(0, 0, 1);
+  cubeCam.position.copy(_cubeDir.normalize()).multiplyScalar(4);
+  cubeCam.up.copy(camera.up);
+  cubeCam.lookAt(0, 0, 0);
+  cubeCam.updateMatrixWorld();
+}
+
+const cubeRay = new THREE.Raycaster();
+const _cubeNdc = new THREE.Vector2();
+let cubeAnim = null;
+
+/* A face tap swings the camera to look down that axis. NOT exactly down it:
+   the target is tilted 0.7 degrees off the pole for the two vertical faces,
+   because a camera whose direction is parallel to its own up vector has no
+   defined roll - lookAt spins, and OrbitControls clamps away from the pole
+   anyway. Below a degree the tilt is invisible, and the orthographic snap
+   that follows makes it read as a true plan view. The alternative is
+   swinging camera.up around mid-flight, which OrbitControls reads every
+   frame. */
+const CUBE_POLE_TILT = 0.7 * Math.PI / 180;
+function cubeAlignTo(n) {
+  const u2 = new THREE.Vector3(Math.round(n.x), Math.round(n.y), Math.round(n.z)).normalize();
+  if (Math.abs(u2.y) > 0.9) {
+    u2.set(0, Math.sign(u2.y) * Math.cos(CUBE_POLE_TILT), Math.sin(CUBE_POLE_TILT)).normalize();
+  }
+  /* SPEND THE COAST FIRST. Damping means a flick keeps feeding rotation
+     into the controls for about a second after the finger leaves - roughly
+     95% of what is left arrives over the next 25 frames. The swing derives
+     every frame from the direction captured HERE, so that leftover lands on
+     top of it and the "plan view" it ends in is quietly off-axis by
+     whatever the flick had left. One update with damping off applies the
+     whole remainder at once and zeroes it, which is public API doing
+     exactly what stopping the coast means. */
+  const damp = orbit.enableDamping;
+  orbit.enableDamping = false;
+  orbit.update();
+  orbit.enableDamping = damp;
+  const from = camera.position.clone().sub(orbit.target);
+  const radius = from.length() || 1;
+  const u1 = from.normalize();
+  cubeAnim = {
+    u1, radius,
+    q: new THREE.Quaternion().setFromUnitVectors(u1, u2),
+    start: performance.now(), duration: 420
+  };
+}
+
+const _cubeQ = new THREE.Quaternion();
+const _cubeQ0 = new THREE.Quaternion();
+function cubeUpdate() {          // no delta: the swing is clocked off its own start
+  if (!cubeAnim) return;
+  const t = Math.min(1, (performance.now() - cubeAnim.start) / cubeAnim.duration);
+  const e = easeInOutCubic(t);
+  _cubeQ.copy(_cubeQ0).slerp(cubeAnim.q, e);
+  camera.position.copy(orbit.target)
+    .addScaledVector(cubeAnim.u1.clone().applyQuaternion(_cubeQ), cubeAnim.radius);
+  camera.lookAt(orbit.target);
+  if (t >= 1) cubeAnim = null;
+}
+
+function cubeHandleClick(ev) {
+  const r = viewCubeEl.getBoundingClientRect();
+  if (!r.width || !r.height) return false;
+  _cubeNdc.set(((ev.clientX - r.left) / r.width) * 2 - 1,
+               -((ev.clientY - r.top) / r.height) * 2 + 1);
+  if (_cubeNdc.x < -1 || _cubeNdc.x > 1 || _cubeNdc.y < -1 || _cubeNdc.y > 1) return false;
+  cubeSync();
+  cubeRay.setFromCamera(_cubeNdc, cubeCam);
+  const hit = cubeRay.intersectObject(cubeMesh, false)[0];
+  /* The FACE NORMAL, not the material index. The cube is axis-aligned and
+     never rotated, so its local normals are the world axes - and a normal
+     cannot be knocked out of step by a change to the material array. */
+  if (!hit || !hit.face) return false;
+  cubeAlignTo(hit.face.normal);
+  return true;
+}
+
+const viewCube = {
+  get animating() { return !!cubeAnim; },
+  update: cubeUpdate,
+  /* Anything that takes the camera over abandons the swing. Without this a
+     drag started mid-swing fought a camera that was being rewritten every
+     frame - the drag read as dead - and then engageOrtho fired anyway when
+     the swing's clock ran out, teleporting to the long lens at whatever
+     angle the drag had reached. Which is not an axis, which is the one
+     thing the flat view is for. */
+  cancel() { cubeAnim = null; cubeAligning = false; },
+  render(r) { cubeSync(); r.render(cubeScene, cubeCam); },
+  handleClick: cubeHandleClick
+};
 
 /* ---------------- Tap-to-align + orthographic snap ----------------
    The cube was display-only for its whole life. Now a tap on one of its
-   axis dots swings the camera to that view (the ViewHelper's own
-   animation), and when the swing lands the projection snaps to an
+   face swings the camera to look down that axis, and when the swing
+   lands the projection snaps to an
    orthographic look. "Orthographic" is emulated with a LONG LENS: the same
    PerspectiveCamera narrows to ORTHO_FOV while backing away by the exact
    factor that keeps the framing identical. True enough to draft against -
@@ -1929,11 +2090,12 @@ viewCubeEl.addEventListener('click', (ev) => {
   /* The helper animates at the camera's CURRENT radius, so this works the
      same from the normal lens and from the long one - a second tap while
      already flat just swings to the new view and stays flat. */
-  if (viewHelper.handleClick(ev)) { cubeAligning = true; camAnim = null; }
+  if (viewCube.handleClick(ev)) { cubeAligning = true; camAnim = null; }
 });
 
-// A finger orbiting the viewport is a deliberate turn: back to perspective.
-orbit.addEventListener('start', () => disengageOrtho());
+// A finger orbiting the viewport is a deliberate turn: back to perspective,
+// and it abandons any swing the cube had running.
+orbit.addEventListener('start', () => { viewCube.cancel(); disengageOrtho(); });
 
 const raycaster = new THREE.Raycaster();
 
@@ -20340,7 +20502,7 @@ function renderWanted(now) {
      real gesture streams pointer events continuously, so four seconds of
      silence means the entry is stale, not that a finger is resting. */
   if (activePointers.size > 0 && now - lastPointerAt < POINTER_LIVE_MS) return true;
-  if (camAnim || viewHelper.animating) return true;
+  if (camAnim || viewCube.animating) return true;
   if (now <= renderUntil) return true;
   return now - lastRenderAt >= RENDER_HEARTBEAT_MS;
 }
@@ -20374,7 +20536,15 @@ function animate() {
     orbit.target.lerpVectors(camAnim.fromTarget, camAnim.toTarget, e);
     if (t >= 1) camAnim = null;
   }
-  if (viewHelper.animating) { viewHelper.update(delta); camAnim = null; }
+  /* A FOCUS FLIGHT OUTRANKS A SWING. It used to be the other way round -
+     the swing ran and nulled camAnim from under it, which left orbit.target
+     stranded half way through its lerp and silently threw away a focus the
+     user had just asked for by double-tapping. The tap that starts a swing
+     already cancels any flight in progress (see the cube's click handler),
+     so this branch only decides what happens when a flight starts DURING a
+     swing - and the newer instruction should win. */
+  if (camAnim) viewCube.cancel();
+  else if (viewCube.animating) viewCube.update();
   else if (cubeAligning) { cubeAligning = false; engageOrtho(); }
   // ALWAYS - it is what advances the damping, and it fires 'change' while it
   // is still settling, which is what keeps the frames coming during a flick.
@@ -20386,18 +20556,18 @@ function animate() {
   PERF.render++;
   renderer.render(scene, camera);
   /* Separate renderer - cannot affect the main viewport above. Its picture is
-     a pure function of the camera's QUATERNION (verified against r184's
-     ViewHelper: no hover state, and `center` is read only by update and
-     handleClick), so panning and dollying correctly cost it nothing.
+     a pure function of the camera's DIRECTION - cubeSync reads nothing
+     else, and the cube has no hover state - so panning and dollying
+     correctly cost it nothing.
 
      ...but it gets the heartbeat too. renderer.render repaints everything
      from current state once a second whatever happens; the cube had no such
      backstop, so anything that blanked its canvas without turning the camera
      - a lost-and-restored WebGL context, which backgrounding a tab on mobile
      does routinely - stayed blank until the user happened to orbit. */
-  if (viewHelper.animating || heartbeat || !camQuatSeen.equals(camera.quaternion)) {
+  if (viewCube.animating || heartbeat || !camQuatSeen.equals(camera.quaternion)) {
     camQuatSeen.copy(camera.quaternion);
-    viewHelper.render(cubeRenderer);
+    viewCube.render(cubeRenderer);
   }
 }
 let lastFrameTime = performance.now();
@@ -20586,7 +20756,10 @@ if (PICK_DEBUG) {
        off the rAF loop, which a BACKGROUNDED TAB freezes outright - so a
        harness that presses and waits gets no bloom at all, however long it
        waits. Calling these directly sidesteps the whole question. */
-    engageOrtho, disengageOrtho, viewHelper,
+    /* The cube's own renderer alongside it: the render loop only draws the
+       cube when the camera has turned or the heartbeat fires, so a harness
+       that wants to LOOK at it has no way to make it paint on demand. */
+    engageOrtho, disengageOrtho, viewCube, cubeRenderer, cubeScene, cubeCam,
     MATERIALS, getMaterialDef, updateMaterialEverywhere, saveMaterialLibrary,
     harvestLegacyMaterials, applyFinishToSelection,
     applyMaskPatch, ensureMaskPatches, rebakeMaskTexture,

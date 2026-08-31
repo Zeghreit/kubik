@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~20,200 lines)
-- Version at time of writing: **a2.59a**
+- Version at time of writing: **a2.60a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1812,6 +1812,86 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## The view cube is a cube (a2.60)
+
+It is called a view cube in the help, in the code and in this file. Until
+a2.60 it was three.js's `ViewHelper` — an axis tripod of coloured dots.
+Replacing it with a hand-written cube fixes two separate things.
+
+**The colours.** The library draws saturated red / green / blue, hard-coded
+in its constructor with no option to change them. The drag guide uses coral
+`#C85A47` / amber `#E8C87A` / dusty blue `#4A82B8`, and this file wrote down
+why: saturated primaries read as a technical instrument next to a muted
+palette, and red-versus-green is the pair that collapses for the commonest
+colour blindness. So the app had **two palettes for the same three axes**,
+and the one on permanent display was the one it had argued against. The
+labels are coloured by axis now, matching `GIZMO_AXES` exactly.
+
+**The shape.** A tripod says which way the axes point. It never says which
+way is FRONT — the thing you actually want from a corner widget. Faces do,
+and they double as tap targets.
+
+It is deliberately small: one scene, one orthographic camera, six canvas
+labels and an edge outline. `MeshBasicMaterial` with an sRGB texture on a
+renderer with no tone mapping draws exactly the colours written down.
+
+- **The cube never turns; the little camera orbits it**, on the same unit
+  vector as the real one. That keeps the picture a pure function of the
+  main camera's direction, which is what lets the render loop skip drawing
+  it whenever the quaternion has not moved.
+- **A tap uses the face NORMAL, not the material index** — the cube is
+  axis-aligned and never rotated, so its local normals are the world axes,
+  and a normal cannot fall out of step with a change to the material array.
+- **A face tap does not aim exactly down its axis.** The two vertical faces
+  are tilted `0.7°` off the pole, because a camera whose direction is
+  parallel to its own up vector has no defined roll — `lookAt` spins, and
+  OrbitControls clamps away from the pole regardless. Below a degree the
+  tilt is invisible, and the orthographic snap that follows makes it read
+  as a true plan view. The alternative is swinging `camera.up` mid-flight,
+  which OrbitControls reads every frame.
+- A miss returns false, so a tap on the empty part of the 128px box is not
+  claimed. *Still open:* the box does not forward that miss to the model, so
+  the corner is dead for anything but the cube. It always was — the cube now
+  covers 34% of it against the tripod's handful of dots — but forwarding is
+  the real fix and it is not written yet.
+
+### What the review found (a2.60a)
+
+The reviewer downloaded the actual r184 OrbitControls source rather than
+working from memory, which is what turned up the first two:
+
+- **BLOCKER — orbiting during a swing still ended in an ortho snap.** The
+  swing rewrote `camera.position` every frame, so a drag started mid-swing
+  read as dead; then `engageOrtho` fired anyway when the clock ran out and
+  teleported to the long lens at whatever angle the drag had reached. Which
+  is not an axis, which is the one thing the flat view is for.
+  `viewCube.cancel()` now runs from the controls' own `start` event.
+- **The damping coast landed on top of the swing.** `dampingFactor 0.11`
+  keeps feeding rotation in for about a second after the finger leaves —
+  roughly 95% of the remainder arrives over the next 25 frames. The swing
+  derives every frame from the direction captured at tap time, so that
+  leftover pushed the *final* frame off-axis and `engageOrtho` locked it in:
+  a plan view that was quietly not a plan view. One `orbit.update()` with
+  damping switched off spends the whole remainder at once and zeroes it,
+  which is public API doing exactly what "stop the coast" means.
+- **A focus flight now outranks a swing.** It used to be the other way
+  round: the swing nulled `camAnim` from under the flight, which stranded
+  `orbit.target` half way through its lerp and silently threw away a focus
+  the user had just double-tapped for.
+- The cube grew — ortho half-height 1.35 to 1.15 — taking it from 24% to
+  34% of its box, which is both a bigger target and less dead corner.
+
+`_theme_probe` section 8 covers it, including the one assertion that matters
+most: it renders the cube into its own renderer and **reads the pixels
+back** (34% of a 128x128 canvas drawn on, 26 distinct tones). Everything
+else in that section could pass on a widget that paints nothing.
+
+*Harness note:* the view cube does not appear in `_shots.py` screenshots and
+that is the harness, not the app — its canvas is a second WebGL context and
+headless SwiftShader will not provide one. Drawing its scene through the
+main renderer instead was tried and also came back blank. The pixel readback
+is the check.
 
 ## The selection follows the mode (a2.59)
 
