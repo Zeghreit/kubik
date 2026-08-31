@@ -613,6 +613,32 @@
     touch-action: none; -webkit-user-select: none; user-select: none; cursor: pointer;
   }
   #lightPill.open { border-color: var(--accent); color: var(--accent); }
+
+  /* PROJECTION, beside the thing that sets it. Tapping a face of the cube
+     lands you in the flat view, so the switch that gets you back belongs
+     where you were looking - not in the drawer, and not in the left-hand
+     column of view settings where you would have to go hunting.
+
+     It sits in the free ground under the cube's 128px square. The offset
+     clears #matFly, which is what actually owns that edge: it is a
+     shrink-to-fit column whose width is the TRAY's 96px, not the 44px tab
+     you can see - so a pill tucked against the tab had its right end
+     silently dead to taps. 104 clears the closed flyout outright. With the
+     material EDITOR open the tray is 198 wide and covers this ground
+     entirely, which is fine: that is a panel you are working in, and the
+     pill is behind it rather than half-under it. */
+  #projPill {
+    position: absolute; right: calc(env(safe-area-inset-right, 0px) + 104px);
+    top: calc(env(safe-area-inset-top, 0px) + 136px);
+    z-index: 13; height: 34px; min-width: 80px; padding: 0 12px;
+    border-radius: 17px; background: var(--panel2); border: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-dim); font-size: 12px;
+    touch-action: none; -webkit-user-select: none; user-select: none; cursor: pointer;
+  }
+  /* Flat view is a STATE you are in, not a button you pressed, so it wears
+     the accent the way every other on-state in the app does. */
+  #projPill.on { border-color: var(--accent); color: var(--accent); }
   #lightMenu {
     position: absolute; left: var(--edge-l); top: calc(var(--edge) + 138px);
     z-index: 14; display: none; flex-direction: column; min-width: 132px;
@@ -1054,6 +1080,9 @@
          a gesture instead - hold two fingers anywhere and slide with the
          other hand - because they are judged entirely by what happens to
          the model, and no widget can be watched and dragged at once. -->
+    <!-- Perspective / orthographic. Under the cube, because the cube is
+         the other way into the flat view. -->
+    <div id="projPill" title="Perspective or orthographic view"><span id="projPillName">Perspective</span></div>
     <div id="lightPill"><span id="lightPillName">Studio</span></div>
     <div id="lightMenu"></div>
     <div id="lightHud">
@@ -1238,7 +1267,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.60a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.61a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -1970,6 +1999,12 @@ function cubeAlignTo(n) {
     q: new THREE.Quaternion().setFromUnitVectors(u1, u2),
     start: performance.now(), duration: 420
   };
+  /* The turn watch is armed against the direction you were looking from
+     when the last gesture began. A swing changes that direction wholesale
+     and on purpose, so anything the watch was holding is now stale - it
+     would read the swing's own arrival as a turn and drop straight back out
+     of the flat view it was heading for. */
+  watchingTurn = false;
 }
 
 const _cubeQ = new THREE.Quaternion();
@@ -2040,7 +2075,6 @@ function engageOrtho() {
   orthoView = { fov: camera.fov, near: camera.near, far: camera.far };
   const f = orthoFactor(camera.fov);
   const dir = camera.position.clone().sub(orbit.target);
-  const teleDist = dir.length() * f;
   /* Fog is banded by CAMERA distance (15..42, in the background colour),
      so from ~27x further out the whole scene was 100% fogged - invisible,
      while the fog-free helper lines still drew. Shift the band out by the
@@ -2049,24 +2083,45 @@ function engageOrtho() {
      Restored below, and only onto the SAME fog object - a theme switch
      mid-flat replaces the fog, and stale numbers must not land on it. */
   if (scene.fog) {
-    const shift = teleDist - dir.length();
     orthoView.fog = scene.fog;
     orthoView.fogNear = scene.fog.near;
     orthoView.fogFar = scene.fog.far;
-    scene.fog.near += shift;
-    scene.fog.far += shift;
   }
   camera.position.copy(orbit.target).addScaledVector(dir, f);
   camera.fov = ORTHO_FOV;
-  /* Near and far BOTH travel with the lens. Near: a 0.01 plane from ~27x
-     out wastes all the depth precision. Far: from any orbit distance past
-     ~37 units the tele position lands beyond the stock 1000 far plane and
-     the whole scene clips to nothing - measured, dist 40 parked at 1069.
-     Both restored on the way back. */
-  camera.near = teleDist * 0.05;
-  camera.far = Math.max(camera.far, teleDist * 2);
-  camera.updateProjectionMatrix();
+  watchingTurn = false;   // a fresh flat view owes nothing to the last gesture
+  syncOrthoDepth();
+  refreshProjPill();
   toast('Orthographic view');
+}
+
+/* THE DEPTH BAND TRAVELS WITH THE LENS, AND KEEPS TRAVELLING (a2.61a).
+
+   Near: a 0.01 plane from ~27x out wastes all the depth precision. Far:
+   from any orbit distance past ~37 units the tele position lands beyond the
+   stock 1000 far plane and the whole scene clips to nothing - measured,
+   dist 40 parked at 1069. Fog is banded by CAMERA distance in the
+   background colour, so from 27x further out the whole scene reads as 100%
+   fogged - invisible, while the fog-free helper lines still draw.
+
+   All three were computed ONCE, at engage, which was fine while any gesture
+   at all dropped you back to perspective. a2.61 let you zoom in the flat
+   view, and a frozen band is only correct at the distance it was frozen at:
+   3% out and the model starts fogging, 16% - three wheel notches - and it
+   is solid background colour. So the shift is recomputed from the CURRENT
+   distance whenever the camera moves while flat. It is the same arithmetic,
+   just not done once and forgotten. */
+function syncOrthoDepth() {
+  if (!orthoView) return;
+  const d = camera.position.distanceTo(orbit.target);
+  const shift = d - d / orthoFactor(orthoView.fov);
+  if (orthoView.fog && scene.fog === orthoView.fog) {
+    scene.fog.near = orthoView.fogNear + shift;
+    scene.fog.far = orthoView.fogFar + shift;
+  }
+  camera.near = d * 0.05;
+  camera.far = Math.max(orthoView.far, d * 2);
+  camera.updateProjectionMatrix();
 }
 
 function disengageOrtho(silent) {
@@ -2083,8 +2138,31 @@ function disengageOrtho(silent) {
   }
   camera.updateProjectionMatrix();
   orthoView = null;
+  /* Otherwise the watch keeps the direction it was armed with under the
+     LAST gesture, and the next engage inherits it - so a pan, a programmatic
+     camera flight and then a tap on the pill would read the flight as a
+     turn and switch straight back out again. */
+  watchingTurn = false;
+  refreshProjPill();
   if (!silent) toast('Perspective view');
 }
+
+const projPillEl = document.getElementById('projPill');
+const projPillNameEl = document.getElementById('projPillName');
+function refreshProjPill() {
+  const on = !!orthoView;
+  projPillNameEl.textContent = on ? 'Orthographic' : 'Perspective';
+  projPillEl.classList.toggle('on', on);
+}
+refreshProjPill();
+
+projPillEl.addEventListener('click', () => {
+  /* A swing in flight is heading for the flat view of its own accord; if
+     you have just asked for a projection by hand, that pending decision is
+     not yours any more. */
+  viewCube.cancel();
+  if (orthoView) disengageOrtho(); else engageOrtho();
+});
 
 viewCubeEl.addEventListener('click', (ev) => {
   /* The helper animates at the camera's CURRENT radius, so this works the
@@ -2093,9 +2171,57 @@ viewCubeEl.addEventListener('click', (ev) => {
   if (viewCube.handleClick(ev)) { cubeAligning = true; camAnim = null; }
 });
 
-// A finger orbiting the viewport is a deliberate turn: back to perspective,
-// and it abandons any swing the cube had running.
-orbit.addEventListener('start', () => { viewCube.cancel(); disengageOrtho(); });
+/* ONLY TURNING LEAVES THE FLAT VIEW (a2.61).
+
+   It used to be any gesture at all: the controls fire `start` for a rotate,
+   a pan and a dolly alike, so nudging the model sideways or zooming in to
+   check a corner threw you back into perspective and you had to tap the
+   cube again. Which made the flat view something you visited rather than
+   something you worked in - and drafting is exactly the thing it is for.
+
+   A TURN is the one that changes the direction you are looking FROM. Pan
+   moves the camera and its target together and a dolly only changes the
+   distance, so both leave that unit vector alone; a rotate moves it
+   immediately. Measuring the vector rather than asking the controls which
+   gesture is running also keeps this working for a mouse wheel, a trackpad
+   pinch and two fingers without knowing anything about any of them.
+
+   One degree, not zero, so the odd sub-pixel wobble in a pan does not count
+   as a turn. And the swap itself is invisible: disengageOrtho restores the
+   framing exactly, so the picture does not jump - only the perspective in
+   it relaxes. */
+const ORTHO_TURN_COS = Math.cos(1 * Math.PI / 180);
+const _turnFrom = new THREE.Vector3();
+const _turnNow = new THREE.Vector3();
+let watchingTurn = false;
+
+orbit.addEventListener('start', () => {
+  // A gesture abandons a swing whatever kind of gesture it is.
+  viewCube.cancel();
+  if (!orthoView) { watchingTurn = false; return; }
+  _turnFrom.copy(camera.position).sub(orbit.target).normalize();
+  watchingTurn = true;
+});
+orbit.addEventListener('change', () => {
+  /* NOT DISARMED ON `end`. Damping means a flick keeps turning the view for
+     about a second after the finger leaves, and the controls keep firing
+     `change` the whole time. Disarming on `end` let a fast flick - one that
+     had barely moved by the time the finger lifted - coast thirty degrees
+     round while still claiming to be a plan view. The watch stays live
+     until it finds a turn, or until the next gesture re-arms it with a
+     fresh reference.
+
+     A cube swing is excluded because it is not a gesture: it is on its way
+     to the flat view by design, and cubeAlignTo re-arms when it lands. */
+  // Zooming stays flat, so the depth band has to follow it.
+  syncOrthoDepth();
+  if (!watchingTurn || !orthoView || viewCube.animating) return;
+  _turnNow.copy(camera.position).sub(orbit.target).normalize();
+  if (_turnNow.dot(_turnFrom) < ORTHO_TURN_COS) {
+    watchingTurn = false;
+    disengageOrtho();
+  }
+});
 
 const raycaster = new THREE.Raycaster();
 
@@ -15625,7 +15751,7 @@ document.addEventListener('touchmove', (ev) => {
 
      #hubBtn replaces #thumbZone, which no longer exists. */
   if (ev.target && ev.target.closest &&
-      ev.target.closest('#btnMenu, #drawer, #inspector, #opBar, #geoBar, #pivotBar, #hubBtn, #symPill, #helpCard, #matFly')) return;
+      ev.target.closest('#btnMenu, #drawer, #inspector, #opBar, #geoBar, #pivotBar, #hubBtn, #symPill, #projPill, #helpCard, #matFly')) return;
   if (ev.cancelable) ev.preventDefault();
 }, { passive: false });
 
@@ -19713,7 +19839,8 @@ const HELP_SECTIONS = [
       [null, 'Orbit', 'One finger on empty space.'],
       [null, 'Zoom', 'Pinch, or the scroll wheel.'],
       [null, 'Pan', 'Two fingers together.'],
-      [null, 'View cube', 'Top-right. Tap a dot for a square-on, flat view. Orbit by hand and perspective returns.'],
+      [null, 'View cube', 'Top-right. Tap a face for a square-on, flat view. Panning and zooming stay flat; turning the view brings perspective back.'],
+      [null, 'Perspective / Orthographic', 'The pill under the cube says which one you are in, and switches it.'],
       [null, 'Double tap', 'On empty space, frames your work. Inside a tool, cancels it.'],
       [null, 'Isolate', 'Three-finger pinch, Object mode. Squeeze and everything else goes; spread brings it back. A chip says how many are hidden.'],
       ['eye', 'See-through', 'Lets the selection show through the surface. From the ring on empty space.']
@@ -20319,7 +20446,14 @@ function frameBox(box) {
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z, 0.6);
-  const fitDist = (maxDim / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2))) * 1.7;
+  /* THE LENS YOU WILL BE LOOKING THROUGH, not the one you are looking
+     through now. animateCameraTo leaves the flat view on the way out, so in
+     the flat view camera.fov is 2 and this over-fits by tan(25)/tan(1) -
+     about 27x. Double-tapping to focus while flat framed the object as a
+     dot. It was reachable before a2.61 only through the outliner's
+     double-tap, because a tap in the viewport disengaged first. */
+  const fov = orthoView ? orthoView.fov : camera.fov;
+  const fitDist = (maxDim / (2 * Math.tan(THREE.MathUtils.degToRad(fov) / 2))) * 1.7;
   let dir = new THREE.Vector3().subVectors(camera.position, orbit.target);
   if (dir.lengthSq() < 1e-6) dir.set(0.6, 0.5, 0.6);
   dir.normalize();
@@ -20760,6 +20894,7 @@ if (PICK_DEBUG) {
        cube when the camera has turned or the heartbeat fires, so a harness
        that wants to LOOK at it has no way to make it paint on demand. */
     engageOrtho, disengageOrtho, viewCube, cubeRenderer, cubeScene, cubeCam,
+    get orthoOn() { return !!orthoView; },
     MATERIALS, getMaterialDef, updateMaterialEverywhere, saveMaterialLibrary,
     harvestLegacyMaterials, applyFinishToSelection,
     applyMaskPatch, ensureMaskPatches, rebakeMaskTexture,

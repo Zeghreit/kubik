@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~20,200 lines)
-- Version at time of writing: **a2.60a**
+- Version at time of writing: **a2.61a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1812,6 +1812,89 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## Perspective and orthographic (a2.61)
+
+Zeghreit: *"add perspective/orthogonal switch near axis cube, and after going
+into orthographic via tapping the cube, only turning the view (or the switch)
+switches back to perspective — moving and zooming stay in ortho."*
+
+**The switch.** `#projPill` under the cube, reading **Perspective** or
+**Orthographic** and toggling on tap. It lives under the cube because the
+cube is the other way into the flat view, and it is offset far enough left
+to clear `#matFly` — which is a shrink-to-fit column whose width is the
+TRAY's 96px, not the 44px tab you can see. A pill tucked against the tab had
+its right end silently dead to taps.
+
+**Only turning leaves it.** It used to be any gesture at all: the controls
+fire `start` for a rotate, a pan and a dolly alike, so nudging the model
+sideways or zooming in to check a corner threw you back into perspective and
+you had to tap the cube again. That made the flat view something you visited
+rather than something you worked in — and drafting is exactly what it is
+for.
+
+A TURN is the gesture that changes the direction you look **from**. Pan
+moves the camera and its target together; a dolly only changes the distance;
+both leave that unit vector alone. So the rule is measured off the vector
+rather than asked of the controls, which also means it works for a mouse
+wheel, a trackpad pinch and two fingers without knowing anything about any
+of them. The threshold is one degree, not zero, so a sub-pixel wobble in a
+pan does not count.
+
+The watch is armed on `start` and **not disarmed on `end`**. Damping keeps
+turning the view for about a second after the finger leaves, and a fast
+flick has barely moved by the time it lifts — disarming on `end` let that
+coast carry the view thirty degrees round while the app still claimed to be
+showing a plan view. A cube swing is excluded, and re-arms when it lands.
+
+The swap itself is invisible: `disengageOrtho` restores the framing exactly,
+so the picture does not jump — only the perspective in it relaxes.
+
+### What the review found (a2.61a)
+
+Letting the zoom stay flat broke two things that had been safe only because
+any gesture used to drop you out of it.
+
+- **BLOCKER — zooming out erased the scene.** Fog is banded by camera
+  distance, and the flat view sits ~27x further out, so `engageOrtho` shifts
+  the band to match. It computed that shift ONCE. Three wheel notches out
+  and the model was 100% background colour; further still and it passed the
+  far plane and clipped. `syncOrthoDepth()` now recomputes the shift, the
+  near plane and the far plane from the CURRENT distance on every camera
+  move while flat. The invariant it holds is the one the original comment
+  claimed: the band sits the same distance ahead of the model as it does in
+  perspective — measured at 9.0, 0.1 and 12.8 units ahead at three zoom
+  levels, matching the perspective equivalent every time.
+- **BLOCKER — double-tap focus flew ~27x too far.** `frameBox` read
+  `camera.fov` to work out how far back to sit, but `animateCameraTo` leaves
+  the flat view on the way out — so while flat it measured with the 2 degree
+  lens and framed the object as a dot. It reads `orthoView.fov` when there
+  is one. (The Scene-list double-tap had this bug already; a tap in the
+  viewport used to disengage first, which hid it.)
+- **The watch outlived its own gesture.** Nothing cleared it on engage or
+  disengage, so a pan, then a programmatic camera flight, then a tap on the
+  pill would read the flight as a turn and switch straight back out.
+
+Covered by `_theme_probe` section 9: pan, zoom and a 0.3 degree wobble all
+keep the flat view; a 6 degree turn and a flick's coast both leave it; the
+fog band and far plane stay healthy across a 2.5x zoom out and back in;
+focus frames identically flat or not; the pill toggles both ways and clears
+the material flyout at phone width.
+
+### The harness was lying about the right-hand side
+
+Worth knowing before trusting a screenshot again. `_shots.py` asked for
+`--window-size=375,812`; **headless Chrome on Windows will not give you a
+375px window** — it clamps to about 500 — so the app laid out at **512 CSS
+px** and the capture kept the leftmost 375 of it. Everything anchored to the
+LEFT looked right, which is why it went unnoticed for several versions;
+everything anchored to the RIGHT was outside the frame or cut in half by it.
+That is why the view cube never appeared in a single screenshot: it was
+drawing correctly, off the edge of the picture.
+
+The shots now ask for a window Chrome will honour, force the APP to 375 with
+an injected `html, body { right: auto; width: 375px }`, and crop the PNG
+back down afterwards.
 
 ## The view cube is a cube (a2.60)
 
