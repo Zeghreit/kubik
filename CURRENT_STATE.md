@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~20,200 lines)
-- Version at time of writing: **a2.63a**
+- Version at time of writing: **a2.64a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1812,6 +1812,84 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## The recorded debt, gone through (a2.64)
+
+Seven things had been written down over the versions and never scheduled.
+Going through them properly turned out to be as much about **retiring notes
+as fixing code** — three of the seven were not what the note said, and one
+of the fixes had to be reverted after the review took it apart.
+
+### Fixed
+
+- **Forking a material dropped its masks.** The `+` card copied `color`,
+  `roughness`, `metalness`, `envMapIntensity` and `bevel` — so you would
+  pick the material you liked, press `+`, and get a plain one. It copies
+  `masks` now, one level deep, so the fork owns them: a shallow array would
+  hand the new material the SAME mask objects, and editing one would
+  silently edit both.
+- **`syncSelectionOverlay` had no active-object guard**, the one
+  `syncFaceOverlay` was given at a2.54 for exactly the same reason.
+  `App.selectedElements` holds indices, not identities, so drawing it
+  against any object but the active one paints THAT model's vertex 2
+  because vertex 2 of something else is selected. The paths that reach it
+  with a passer-by are the ones that refresh colours on a merge or a weld.
+  Anything already drawn on a non-active object is torn down rather than
+  left behind.
+- **The view cube's box swallowed taps that missed the cube.** The box is
+  square and the cube is not: at any angle its silhouette is a hexagon
+  covering about a third of the square, and the rest was a 128px corner
+  that ate taps and did nothing with them. `clip-path: circle(40%)` clips
+  HIT TESTING as well as paint, so the corners fall through — at no cost
+  and with no JavaScript. 40% is 51.2px against the cube's own 48.4px
+  silhouette radius, about 3px of clearance.
+
+### Fixed, then fixed again
+
+Falling through was right for a DRAG — the corner orbits the camera now
+instead of dying — and wrong for a TAP: it went through to empty space,
+which clears the whole selection. A tap aimed at a control and landing a
+few pixels wide of it should not throw your selection away. `onEmptySpaceTap`
+exempts the cube's box and nothing else.
+
+### Reverted
+
+**The face overlay's index buffer.** The note said a drag select abandoned a
+GL buffer per pointermove. It does abandon buffers — `setIndex` replaces the
+attribute, and three keys uploaded buffers by the attribute object in a
+WeakMap, so the superseded one is forgotten rather than deleted — but **not
+per pointermove**. A marquee drag only moves the marquee;
+`performRegionSelect` runs once, on pointerup. The one thing that does run
+per frame, `syncHelperGeometry` into `refreshElementColors`, takes the early
+return, because a drag cannot change WHICH faces are selected.
+
+a2.64 tried reusing the attribute in place with a draw range. The review
+showed it made things worse on both counts: `needsUpdate` with no update
+range re-uploads the WHOLE array, so after one 300-face selection every
+2-face selection uploaded 900 indices instead of 6 — and growth, which is
+the normal direction of a selection, still allocated. **Reverted.** The item
+is closed as mis-stated rather than fixed.
+
+### Notes retired without a change
+
+- **`HUB_TOOLS_EMPTY` is not dead code.** `currentHubTools()` returns it
+  whenever Object mode has nothing selected. The a2.56 note calling it
+  unreachable was wrong.
+- **The edge-distance field is not lost across a rebuild.**
+  `rebuildFromEditable` disposes it deliberately and `ensureEdgeField`
+  rebakes it on the next call. That is a cost, not a bug.
+
+*The lesson worth keeping:* a note written at the moment of noticing is a
+hypothesis, not a finding. Three of these seven had drifted from what the
+code actually does, and one of them sent a fix in the wrong direction until
+the review caught it. Read the code again before believing your own list.
+
+Covered by `_theme_probe` section 12: that an unchanged selection rebuilds
+nothing and a changed one does, that a passer-by gets no overlay while the
+active object keeps its own, that a fork carries and owns its masks, that
+the cube's corners hit-test to the model and its middle to the cube, and
+that a near miss at the cube keeps the selection while real empty space
+still clears it.
 
 ## One primary, one silhouette (a2.63)
 
