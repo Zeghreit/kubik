@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~21,250 lines)
-- Version at time of writing: **a2.65a**
+- Version at time of writing: **a2.66**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -29,6 +29,91 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## The a2.66 first run - READ BEFORE OLDER SECTIONS
+
+The app now says exactly two things unasked, each once in the life of a
+browser, and never again.
+
+**The chip.** `#firstHint`, centred above the bottom row: *Press and hold -
+tools bloom under your finger*. It is a chip and not a toast on purpose - a
+toast times out, and something you have not learned yet must not disappear
+while you are still looking at the model wondering what to do. It goes when
+a ring blooms, which is the moment it stopped being true, or when you tap
+its x. Either way `hold` is written to the store below.
+
+**The sentence about selection.** *Taps add up - tap empty space to clear*,
+raised from `selectObjectClick` and `toggleElement` at the tap that takes the
+selection from one to two - the tap whose next drag moves something you did
+not mean to move. One flag, `taps-add`, shared by objects and components,
+because it is one lesson and not two.
+
+**`kubik.learned.v1`** is one key holding one flat object, so the next
+one-time hint costs a string rather than another key and another try/catch.
+`learnedAll()` reads storage on EVERY call and caches nothing: it is asked a
+handful of times a session, a cached copy goes stale against another tab, and
+- the reason it was changed - a cache makes the thing untestable, because
+clearing the store no longer clears what the app believes.
+
+### What was NOT wrong
+
+`App.multiSelect: true` is a decision, on the record since long before this:
+*"permanently on: every tap adds, tap empty space to clear"*, with nothing in
+the file writing it and the Free / Box / Lasso seats commented *"choose the
+drag gesture, not whether taps add to the selection - that's permanent now"*.
+It was written up as a first-five-minutes hazard during the a2.65 stock-take.
+That was wrong, and the correction is the same lesson this file keeps
+recording: the note was written at the moment of noticing and never checked
+against the code.
+
+The help card was not wrong either. `HELP_QUICKSTART` already opens with
+*"Hold on empty space, slide to Add geo, lift, then pick a shape"*, and Quick
+start is the one section that opens by default. It needed nothing. What was
+missing was any reason to open the card at all.
+
+### Four things the review caught, and one the probe should have
+
+- **`[hidden]` did nothing.** `#firstHint` set `display: flex`, an AUTHOR
+  declaration; `[hidden] { display: none }` lives only in the UA sheet, and
+  author origin wins. Nothing else in this file uses the hidden attribute, so
+  there was no rule to inherit. The chip would have painted on every load for
+  every user, ignored its own flag, and - because `dismissFirstHint` returns
+  early once `hidden` is set - become permanently un-dismissable, swallowing
+  pointerdown in a band across the bottom of the viewport. **`#firstHint[hidden]
+  { display: none; }` is load-bearing. Any element that uses the attribute in
+  this file needs its own rule.**
+- **The chip ate the gesture it described.** It is a child of `#viewport`,
+  but press-and-hold lives on `renderer.domElement`, a SIBLING - so a
+  pointerdown landing on the chip never armed the ring timer. Reading the one
+  sentence the app volunteers and doing exactly what it says produced
+  nothing, and the click then recorded it as learned. The body is
+  `pointer-events: none` and only the x is hit-testable.
+- **The one-time toast could be spent behind the drawer.** `#toast` had no
+  z-index at all, and the drawer's object list raises one through the same
+  `selectObjectClick`. On a 390px phone a 340px opaque panel covered it.
+  Harmless while every toast repeated itself; not harmless for a sentence
+  said once in the life of a browser. `#toast` is now `z-index: 33`.
+- **Gating on "no autosave came back" was strictly worse than the flag.**
+  `init`'s own `pushHistory` schedules an autosave 900ms in, so from the
+  second load there is always one - and a first-time user who reloaded, or
+  whose iOS tab was evicted while backgrounded, saw the chip for a few
+  seconds and never again with nothing learned. The flag alone is the gate.
+
+**And the lesson for the suite:** section 13 originally asserted `fh.hidden`
+- the property it had just set - and passed while the chip was painted on
+screen regardless. **A test that reads back the property it wrote is not a
+test.** Every visibility assertion there now goes through
+`getComputedStyle().display`, and there is an assertion that the attribute
+hides the element at all. `forgetLearned()` exists so the harness resets
+through the app rather than reaching around it to localStorage - a probe that
+clears the store while the app holds a cache is testing neither.
+
+`_theme_probe` section 13 covers: the chip shows on an untold browser, the
+attribute hides it, it clears the undo row and the three corner buttons, it
+fits on screen, its body passes the hold through while its x stays tappable,
+tapping the x is remembered, it does not come back, the selection sentence is
+silent at one and said at two and never again, and the toast paints over the
+drawer. 22 of the 23 suites were byte-identical across the change.
 
 ## The a2.65 chrome pass - READ BEFORE OLDER SECTIONS
 

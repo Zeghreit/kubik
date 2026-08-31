@@ -225,6 +225,66 @@
   }
   #symPill.on { border-color: var(--accent); color: var(--accent); }
 
+  /* THE ONE THING THE APP SAYS UNASKED (a2.66). It sits above the bottom
+     row rather than beside the hub, because the gesture it describes works
+     ANYWHERE - pinning it to a button would say the opposite. Centred, so it
+     reads on the way to the undo row your thumb already knows.
+
+     It is a chip, not a toast: a toast times out, and something you have not
+     learned yet must not disappear while you are still looking at the model
+     wondering what to do. It goes when the ring blooms, which is the moment
+     it stopped being true. */
+  #firstHint {
+    position: absolute; left: 50%; transform: translateX(-50%);
+    bottom: calc(var(--edge-b) + 62px); z-index: 17;
+    display: flex; align-items: center; gap: 6px;
+    padding: 9px 8px 9px 14px; border-radius: var(--r-md);
+    background: var(--panel2); border: 1px solid var(--line);
+    color: var(--text-dim); font-size: 12.5px;
+    /* Wraps. At 12.5px this sentence is ~300px, and a 320px phone with
+       nowrap clipped BOTH ends - losing the verb and its object. */
+    max-width: calc(100vw - 32px); text-align: center; line-height: 1.35;
+    -webkit-user-select: none; user-select: none;
+    box-shadow: 0 8px 22px rgb(var(--shadow) / .20);
+    animation: firstHintIn 320ms cubic-bezier(.16, .84, .44, 1) both;
+    /* THE CHIP MUST NOT EAT THE GESTURE IT DESCRIBES. It is a child of
+       #viewport, but press-and-hold lives on renderer.domElement - a
+       SIBLING - so a pointerdown that lands here never arms the ring timer.
+       Read literally, the one sentence the app volunteers ("press and hold")
+       would then do nothing on the very words telling you to do it, and the
+       click would mark it learned. Only the x is hit-testable; a hold
+       anywhere on the chip falls through to the canvas and blooms a ring,
+       which is what takes the chip down. */
+    pointer-events: none;
+  }
+  /* THE ATTRIBUTE NEEDS A RULE. `display:flex` above is an AUTHOR
+     declaration and `[hidden]{display:none}` lives only in the UA sheet, so
+     author origin wins and the attribute is inert. Without this line the
+     chip paints on every load for every user, ignores its own localStorage
+     flag, and cannot be dismissed. Nothing else in this file uses the hidden
+     attribute, which is why it had no rule to inherit. */
+  #firstHint[hidden] { display: none; }
+  #firstHint .fh-x {
+    color: var(--text-dim); opacity: .7; font-size: 15px; line-height: 1;
+    padding: 4px 8px; margin: -4px 0; cursor: pointer;
+    pointer-events: auto; touch-action: none;
+  }
+  /* Surfaces rather than appears - the same rise the rings and the op bar
+     will get when that lands. Reduced motion takes the plain state. */
+  @keyframes firstHintIn {
+    from { opacity: 0; filter: blur(8px); transform: translateX(-50%) scale(.94) translateY(5px); }
+    to   { opacity: 1; filter: blur(0);   transform: translateX(-50%) scale(1) translateY(0); }
+  }
+  #firstHint.going { animation: firstHintOut 200ms cubic-bezier(.55, .06, .68, .19) both; }
+  @keyframes firstHintOut {
+    from { opacity: 1; filter: blur(0);   transform: translateX(-50%) scale(1); }
+    to   { opacity: 0; filter: blur(8px); transform: translateX(-50%) scale(.94); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #firstHint, #firstHint.going { animation: none; }
+    #firstHint.going { opacity: 0; }
+  }
+
   /* Shared by every tool icon the app shows, wherever it appears - right
      now that's only the press-and-hold ring, which supplies its own
      unconditional display rule since it isn't scoped under a fixed #hubArc
@@ -771,6 +831,12 @@
      to be behind it. */
   #toast {
     position: absolute; left: 50%; top: calc(var(--edge) + 44px + 6px); transform: translateX(-50%);
+    /* ABOVE THE DRAWER (a2.66). It had no z-index at all, so every toast
+       raised by a drawer action - and the object list raises one - was
+       painted behind a 340px opaque panel on a 390px phone. Harmless while
+       toasts only ever repeated themselves; not harmless now that one of
+       them is said exactly once in the life of the browser. */
+    z-index: 33;
     color: var(--text); font-size: 12px; font-weight: 600;
     text-shadow: 0 1px 4px rgb(var(--shadow) / .8), 0 1px 2px rgb(var(--shadow) / .6);
     opacity: 0; pointer-events: none;
@@ -1165,6 +1231,9 @@
          arbitrary touch point and needs real viewport coordinates. -->
     <div id="touchToolRing"></div>
 
+    <!-- Shown once, ever. See #firstHint in the stylesheet. -->
+    <div id="firstHint" hidden><span>Press and hold — tools bloom under your finger</span><span class="fh-x">&times;</span></div>
+
     <!-- Anchored to the viewport for the same reason: this needs the full
          viewport width to centre against. -->
     <div id="quickRow">
@@ -1322,7 +1391,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.65a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.66</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -12550,17 +12619,29 @@ function refreshIsoChip() {
 function clearObjectSelection() { App.selectedObjectIds.clear(); }
 
 function selectObjectClick(id, additive) {
+  const was = App.selectedObjectIds.size;
   if (!additive) App.selectedObjectIds.clear();
   if (App.selectedObjectIds.has(id) && additive) App.selectedObjectIds.delete(id);
   else App.selectedObjectIds.add(id);
+  /* ONE AND ONLY ONE OF THESE, EVER (a2.66). Said at the moment it first
+     becomes true - the tap that takes you from one to two - because that is
+     the tap whose next drag moves something you did not mean to move. */
+  if (was === 1 && App.selectedObjectIds.size === 2) {
+    sayOnce('taps-add', 'Taps add up - tap empty space to clear');
+  }
   refreshUI();
   refreshGizmoAttachment();
 }
 
 function toggleElement(idx, additive) {
+  const was = App.selectedElements.size;
   if (!additive) App.selectedElements.clear();
   if (App.selectedElements.has(idx) && additive) App.selectedElements.delete(idx);
   else App.selectedElements.add(idx);
+  // Same sentence, same flag: it is one lesson, not two.
+  if (was === 1 && App.selectedElements.size === 2) {
+    sayOnce('taps-add', 'Taps add up - tap empty space to clear');
+  }
   const obj = findObject(App.activeObjectId);
   if (obj) refreshElementColors(obj);
   refreshUI();
@@ -18582,6 +18663,68 @@ document.getElementById('btnRedo').addEventListener('click', redo);
 const PROJECT_PREFIX = 'kubik.project.';
 const AUTOSAVE_KEY = 'kubik.autosave';
 
+/* WHAT THIS BROWSER HAS ALREADY BEEN TOLD (a2.66).
+   One key, one flat object, so the next one-time hint costs a string rather
+   than another key and another try/catch. Storage failing is not an error
+   here: the worst case is being told something twice, which is what happens
+   today anyway, every session, for ever. */
+const LEARNED_KEY = 'kubik.learned.v1';
+/* READ EVERY TIME, not cached. It is asked a handful of times in a session -
+   once at init, once per ring bloom - and a cached copy can only ever be
+   wrong: it goes stale against another tab, and it makes the thing
+   untestable, because clearing the store no longer clears what the app
+   believes. A localStorage read of a few dozen bytes is not worth a class of
+   bug. */
+function learnedAll() {
+  try { return JSON.parse(localStorage.getItem(LEARNED_KEY) || '{}') || {}; }
+  catch (e) { return {}; }
+}
+function hasLearned(what) { return !!learnedAll()[what]; }
+/* Debug only, and the reason the export exists: nothing in the app forgets,
+   so without this a harness has to reach around the API to localStorage and
+   test something other than what the app reads. */
+function forgetLearned(what) {
+  const all = learnedAll();
+  if (what === undefined) { try { localStorage.removeItem(LEARNED_KEY); } catch (e) {} return; }
+  delete all[what];
+  try { localStorage.setItem(LEARNED_KEY, JSON.stringify(all)); } catch (e) {}
+}
+function noteLearned(what) {
+  const all = learnedAll();
+  if (all[what]) return false;
+  all[what] = 1;
+  try { localStorage.setItem(LEARNED_KEY, JSON.stringify(all)); } catch (e) { /* see above */ }
+  return true;
+}
+
+/* Said the first time it becomes true, not on a timer and not on every
+   load. `taps-add` is the one that surprises people: multiSelect is
+   permanently on (see App.multiSelect), so a second tap adds rather than
+   replaces, and the next drag moves both - correct, deliberate, and
+   completely silent until now. */
+function sayOnce(what, msg) {
+  if (noteLearned(what)) toast(msg);
+}
+
+const firstHintEl = document.getElementById('firstHint');
+function dismissFirstHint(learn) {
+  if (!firstHintEl || firstHintEl.hidden) return;
+  if (learn) noteLearned('hold');
+  firstHintEl.classList.add('going');
+  setTimeout(() => { firstHintEl.hidden = true; firstHintEl.classList.remove('going'); }, 220);
+}
+function maybeShowFirstHint() {
+  if (!firstHintEl || hasLearned('hold')) return;
+  firstHintEl.hidden = false;
+}
+/* Only the x listens. The rest of the chip is pointer-events:none so a hold
+   reaches the canvas - see the stylesheet. Tapping the x counts as learning
+   it: you read it and chose to put it away. */
+const firstHintXEl = firstHintEl && firstHintEl.querySelector('.fh-x');
+if (firstHintXEl) {
+  firstHintXEl.addEventListener('click', () => dismissFirstHint(true));
+}
+
 function storageAvailable() {
   try {
     localStorage.setItem('kubik.test', '1');
@@ -19279,6 +19422,11 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
   const place = (v, span) => (span < margin * 2 ? span / 2 : THREE.MathUtils.clamp(v, margin, span - margin));
   const cx = place(x - rect.left, rect.width);
   const cy = place(y - rect.top, rect.height);
+
+  /* The gesture just happened, so the chip has done its job - and it goes
+     whether or not a tool is picked, because backing out of a ring still
+     means you found it (a2.66). */
+  dismissFirstHint(true);
 
   touchToolRingEl.innerHTML = '';
   touchToolRingEl.style.left = cx + 'px';
@@ -21148,6 +21296,15 @@ function init() {
   refreshGizmoAttachment();
   pushHistory();
   animate();
+  /* LAST, and gated on the FLAG alone (a2.66). It was gated on "no autosave
+     came back" as well, which sounds stronger and is strictly worse:
+     init's own pushHistory schedules an autosave 900ms in, so by the second
+     load there is always one - and a first-time user who reloads, or whose
+     iOS tab is evicted while backgrounded, had seen the chip for a few
+     seconds and would never see it again, with nothing learned. The flag
+     says what actually matters: has this browser been told. Someone who
+     already knows the gesture spends one ring bloom putting it away. */
+  maybeShowFirstHint();
   checkForUpdate();
 }
 init();
@@ -21169,6 +21326,10 @@ if (PICK_DEBUG) {
     // and requestAnimationFrame never runs to apply it.
     get camAnim() { return camAnim; },
     findObject, worldToScreenPx, vertexVisible, ensureHelpers,
+    // What this browser has already been told, and the chip that tells it
+    // (a2.66) - a harness has to be able to put it back to test it.
+    hasLearned, noteLearned, forgetLearned, maybeShowFirstHint, dismissFirstHint,
+    selectObjectClick,
     // Winding: __kubik.windingAudit() for every object, or (id) for one.
     auditWinding, windingAudit,
     // The captured plane: __kubik.symmetryPlane(obj, axis).
