@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~20,200 lines)
-- Version at time of writing: **a2.62a**
+- Version at time of writing: **a2.63a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1812,6 +1812,96 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## One primary, one silhouette (a2.63)
+
+The last two picks from the visual review, and with them that whole thread
+closes.
+
+### The op bar: three primaries is no primary
+
+The accent used to draw the bar's outline, the chosen segment inside it AND
+the confirm button, so the eye had nowhere to land first. Now:
+
+- The bar earns its edge from a shadow and a `--line` hairline.
+- The segmented control is neutral-on-recessed — a raised tile in a sunken
+  track, which is what a segmented control has always been.
+- The slider knob is `--text`: a thing you hold, not a thing you commit
+  with.
+- The value stopped being a bordered box and became a **readout beside the
+  slider that sets it** — still an input, so an exact number can still be
+  typed, it just stops shouting about it.
+- OK is `✓` rather than `✓ OK`.
+
+**The accent now means exactly one thing on screen: THIS COMMITS.** The
+probe counts it — every element in the bar wearing the accent as a fill or a
+border, and the answer has to be `opOk` and nothing else.
+
+*Honest about the height:* an op with three grouping chips still wraps to
+two rows at phone width — Inset's `Each / Organic / Keep shape` plus a
+slider, a value and two buttons will not fit 375px however it is dressed.
+What one row buys is every op that has no chips, and the second row is
+slimmer than it was.
+
+**One decimal separator, at last.** `#opValue` was `type="number"`, and a
+number input renders its value with the BROWSER's separator — so it read
+`0,25` while every other readout in the app, all of them spans formatted
+with `toFixed`, read `0.25`, a second apart on the same screen. It is
+`type="text" inputmode="decimal"` now and always shows a point; `parseAmount`
+accepts either.
+
+### The material tray: a handle that holds on to its tray
+
+Open, the tab used to take `margin-right: 26px` and a full radius, which
+floated it clear of the panel it is the handle OF — two unrelated chips at
+the right edge. The flyout lays out as a ROW when open and the tab becomes
+the tray's left shoulder: one silhouette, one border, and the close
+affordance sits where your thumb already is.
+
+- 32px wide open, not the 44 it has closed and not the 26 the sketch drew.
+  Closed it is the only target there and wants the full 44; open, the whole
+  tray is the target and the tab only has to be grabbable.
+- The shelf starts level with the tab now rather than below it, so
+  `--mat-max` got back the 62px the tab and its gap used to cost it.
+- The applied card said so twice — a border AND a recoloured label — for one
+  boolean. The border alone is enough. (`.mat-edit` stays: it is a control,
+  not a status.)
+
+### What the review found (a2.63a)
+
+- **BLOCKER — the chosen segment was no longer visibly chosen.** Neutral on
+  recessed is right, but the first attempt used `--panel2` on the `--bg`
+  track: **1.20:1**, where the WCAG minimum for the edge of a control is
+  3:1. Worse, the plain `button:hover` fill was BRIGHTER than the chosen
+  tile, so on a desktop hovering an unchosen chip made it read as the chosen
+  one. `#5c6575` is 3.19:1 against the track, 2.42:1 against hover, with
+  `--text` on it at 4.84:1. Every chip carries a transparent border now, so
+  the active one is not 2px wider and cannot nudge a wrapping bar onto
+  another line.
+- **Arrow keys were dead.** A number input supplied ±step natively; a text
+  input does not, and the global stepper shortcut bails on any `INPUT`
+  target. Up and Down step by the slider's own step. A `blur` handler also
+  puts the real amount back, because half-typed text — `1.2.3`, `-`, an
+  empty box — parses to something the op never took, and the field went on
+  showing it.
+- **Every close reflowed mid-animation.** Dropping `.open` in one frame
+  flipped the flyout back to a column instantly while the tray was still
+  220ms into collapsing, so the still-opaque shelf visibly jumped from
+  beside the tab to below it before disappearing. A `.closing` class keeps
+  the row layout for one transition longer.
+- **The projection pill was 24px under the open tray.** Welding the 32px tab
+  on took the flyout's open width from 96 to 128, and the pill's 104px
+  offset had been chosen against the closed width. 136 clears both.
+
+Covered by `_theme_probe` section 11: the accent count, the readout's
+border and separator, the OK label, the bar height, the chip's measured
+contrast against its track, the arrow keys stepping the amount, the welded
+geometry, and the pill clearing the flyout open as well as closed.
+
+*Measuring a transitioned property is the trap that caught this suite
+twice now:* `getBoundingClientRect` and `getComputedStyle` mid-transition
+return the FROM value. Finish the animations first —
+`el.getAnimations().forEach(a => a.finish())`.
 
 ## Mode, all the way down (a2.62)
 

@@ -454,8 +454,12 @@
 
        Both insets are subtracted because 100vh is the whole screen: the top
        one is now part of where the tab starts, and without it the shelf would
-       be allowed to run a notch's worth past the bottom row. */
-    --mat-max: calc(100vh - 266px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
+       be allowed to run a notch's worth past the bottom row.
+
+       204, not 266, since a2.63: the tab is the tray's left shoulder now
+       rather than a chip above it, so the shelf starts level with the tab
+       and gets back the 62px the tab and its gap used to cost it. */
+    --mat-max: calc(100vh - 204px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
   }
   #matTab {
     /* 44 wide. It was 30 - the narrowest target in the app, on the edge of
@@ -466,12 +470,24 @@
     justify-content: center; font-size: 20px; color: var(--text-dim);
     transition: margin-right .22s ease;
   }
-  /* Open, the switch slides clear of the screen edge - a full margin
-     further in, so a thumb reaches it without scraping the bezel - and
-     ends up centred over the 96px tray below it. */
+  /* WELDED (a2.63). Open, the tab used to take a 26px margin and a full
+     radius, which floated it clear of the panel it is the handle OF - two
+     unrelated chips at the right edge. It becomes the tray's left shoulder
+     instead: the flyout lays out as a ROW, the tab keeps its edge-flush
+     shape, and the two share one silhouette and one border.
+
+     32 wide, not the 44 it has when closed and not the 26 the sketch drew.
+     Closed it is the only target there and wants the full 44; open, the
+     whole tray is the target and the tab only has to be grabbable - 32 with
+     56 of height still clears what a thumb needs. */
+  #matFly.open { flex-direction: row; align-items: flex-start; }
   #matFly.open #matTab {
-    margin-right: 26px; border-radius: var(--r-md);
-    border-right: 1px solid var(--line);
+    width: 32px; margin-right: 0; font-size: 15px;
+    /* The width and the fill are part of the same movement as the tray, so
+       they travel with it rather than snapping. */
+    transition: width .22s ease, background-color .22s ease;
+    background: var(--panel); border-right: none;
+    border-radius: var(--r-md) 0 0 var(--r-md);
   }
   #matTray {
     width: 96px; max-height: 0; opacity: 0; overflow: hidden; margin-top: 6px;
@@ -479,6 +495,14 @@
     background: var(--panel); border: 1px solid var(--line); border-right: none;
     border-radius: var(--r-md) 0 0 var(--r-md);
   }
+  /* No left border and no left radius: the tab supplies both. */
+  #matFly.open #matTray { margin-top: 0; border-left: none; border-radius: 0; }
+  /* CLOSING KEEPS THE LAYOUT AND DROPS THE TRAY (a2.63a). Removing .open in
+     one frame flipped the flyout back to a column instantly while the tray
+     was still 220ms into collapsing, so the still-opaque shelf visibly
+     jumped from beside the tab to below it before disappearing. This rule
+     comes after the .open one deliberately: same specificity, later wins. */
+  #matFly.closing #matTray { max-height: 0; opacity: 0; }
   #matFly.open #matTray { max-height: var(--mat-max); opacity: 1; }
   #matTrayInner {
     display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px; overflow-x: hidden;
@@ -490,8 +514,12 @@
   }
   .mat-card img { width: 50px; height: 50px; border-radius: 50%; display: block; pointer-events: none; }
   .mat-card span { font-size: 10px; color: var(--text-dim); pointer-events: none; }
+  /* ONE SIGNAL (a2.63). The applied card said so twice - a border AND a
+     recoloured label - for one boolean. The border alone is enough, and
+     dropping the second is what buys back the calm in a shelf of small
+     round things. (The third thing riding the active card, .mat-edit, is a
+     CONTROL rather than a status, so it stays.) */
   .mat-card.active { border-color: var(--accent); }
-  .mat-card.active span { color: var(--accent); }
   .mat-card { position: relative; }
   /* The edit affordance rides whichever card the selection is wearing. */
   .mat-edit {
@@ -509,7 +537,6 @@
   }
   #matFly.editing #matTrayInner { display: none; }
   #matFly.editing #matTray { width: 198px; }
-  #matFly.editing #matTab { margin-right: 77px; }
   #matFly.editing #matEditor { display: flex; }
   #matEditor img { width: 64px; height: 64px; border-radius: 50%; align-self: center; }
   #matEditor .me-name { font-size: 12px; text-align: center; color: var(--text); }
@@ -623,12 +650,15 @@
      clears #matFly, which is what actually owns that edge: it is a
      shrink-to-fit column whose width is the TRAY's 96px, not the 44px tab
      you can see - so a pill tucked against the tab had its right end
-     silently dead to taps. 104 clears the closed flyout outright. With the
-     material EDITOR open the tray is 198 wide and covers this ground
-     entirely, which is fine: that is a panel you are working in, and the
-     pill is behind it rather than half-under it. */
+     silently dead to taps. 136 clears the flyout OPEN as well as closed -
+     104 only cleared the closed 96px, and a2.63 made the open one 128 by
+     welding the 32px tab onto its side, which left the pill's last 24px
+     covered and dead whenever the tray was out. With the material EDITOR
+     open the tray is 198 wide and covers this ground entirely, which is
+     fine: that is a panel you are working in, and the pill is behind it
+     rather than half-under it. */
   #projPill {
-    position: absolute; right: calc(env(safe-area-inset-right, 0px) + 104px);
+    position: absolute; right: calc(env(safe-area-inset-right, 0px) + 136px);
     top: calc(env(safe-area-inset-top, 0px) + 136px);
     z-index: 13; height: 34px; min-width: 80px; padding: 0 12px;
     border-radius: 17px; background: var(--panel2); border: 1px solid var(--line);
@@ -873,8 +903,13 @@
        grew to 44 and the bar should not grow with them. The gap between rows
        matters more than the gap along one, so they are set separately. */
     flex-wrap: wrap; row-gap: 6px; column-gap: 6px;
-    background: var(--panel2); border: 1px solid var(--accent);
-    border-radius: var(--r-md); padding: 6px 10px; box-shadow: 0 8px 24px rgb(var(--shadow) / .16);
+    /* THREE PRIMARIES IS NO PRIMARY (a2.63). The accent used to draw this
+       bar's outline, the chosen segment inside it AND the confirm button,
+       so the eye had nowhere to land first. The bar earns its edge from a
+       shadow instead, the segments go neutral-on-recessed, and the accent
+       is left meaning exactly one thing on screen: THIS COMMITS. */
+    background: var(--panel2); border: 1px solid var(--line);
+    border-radius: var(--r-md); padding: 6px 10px; box-shadow: 0 10px 30px rgb(var(--shadow) / .45);
   }
   #opBar.show { display: flex; }
   #opLabel { font-size: 12px; color: var(--text); font-weight: 600; flex-shrink: 0; }
@@ -900,11 +935,13 @@
        / 2 = -10. It is unchanged because the TRACK is unchanged - the taller
        box centres the track itself, so the thumb still lands on it. */
     -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%;
-    background: var(--accent); border: 2px solid var(--panel2); margin-top: -10px;
+    /* --text, not --accent: a slider knob is a thing you hold, not a thing
+       you commit with. */
+    background: var(--text); border: 2px solid var(--panel2); margin-top: -10px;
   }
   #opBar input[type=range]::-moz-range-track { height: 4px; background: var(--line); border-radius: 2px; }
   #opBar input[type=range]::-moz-range-thumb {
-    width: 22px; height: 22px; border-radius: 50%; background: var(--accent); border: 2px solid var(--panel2);
+    width: 22px; height: 22px; border-radius: 50%; background: var(--text); border: 2px solid var(--panel2);
   }
   .stepper {
     display: flex; align-items: center; gap: 2px; flex-shrink: 0;
@@ -916,18 +953,42 @@
   }
   .stepper span { min-width: 18px; text-align: center; font-size: 13px; font-weight: 600; }
   #opValue {
-    /* 16px is the threshold below which iOS Safari zooms the page when a field
-       takes focus - which drags the whole interface off screen. */
-    width: 66px; min-height: 44px; background: var(--panel2); border: 1px solid var(--line); color: var(--text);
-    border-radius: var(--r-sm); padding: 6px 4px; font-size: 16px; text-align: center;
-    -moz-appearance: textfield; flex-shrink: 0;
+    /* A READOUT BESIDE THE SLIDER THAT SETS IT (a2.63), not a boxed field
+       floating next to it - the box was a second bordered object in a bar
+       that already has too many. Still an input, so an exact number can
+       still be typed; it just stops shouting about it. Right-aligned and
+       tabular so the digits do not shuffle as the value changes.
+
+       16px stays: it is the threshold below which iOS Safari zooms the page
+       when a field takes focus, which drags the whole interface off screen. */
+    width: 54px; min-height: 44px; background: transparent; border: none; color: var(--text);
+    padding: 6px 2px; font-size: 16px; text-align: right;
+    font-variant-numeric: tabular-nums; flex-shrink: 0;
   }
-  #opValue::-webkit-outer-spin-button, #opValue::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  #opValue:focus { outline: none; box-shadow: inset 0 -2px 0 var(--accent); }
   /* Covers OK, Cancel, the grouping chips and the Even toggle in one line -
      they are all plain buttons inside the bar. */
   /* min-WIDTH too. Height alone left ✕ at 42x44 - it holds one glyph, so
      nothing else was making it wide enough. */
   #opBar button { min-height: 44px; min-width: 44px; flex-shrink: 0; }
+  /* Neutral on recessed. The chosen segment is a raised tile in a sunken
+     track, which is what a segmented control has always been; it does not
+     need to borrow the confirm colour to say "this one".
+
+     RAISED MEANS LIGHTER, and by enough to see. The first attempt used
+     --panel2 on the --bg track, which measures 1.20:1 - the WCAG minimum
+     for the edge of a control is 3:1, and worse, the plain hover state was
+     BRIGHTER than the chosen tile, so hovering an unchosen chip made it
+     read as the chosen one. #5c6575 is 3.19:1 against the track and 2.42:1
+     against hover, with --text on it at 4.84:1.
+
+     The transparent border on every chip keeps the widths equal: only the
+     active one used to carry a border, so switching chips changed the row's
+     width by 2px and could nudge a wrapping bar onto another line. */
+  #opBar .group { background: var(--bg); }
+  #opBar .group button { border: 1px solid transparent; }
+  #opBar .group button.active { background: #5c6575; color: var(--text); }
+  #opBar .stepper { background: var(--bg); }
   #opBar button.ok { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
 
   /* Wears the op bar's clothes deliberately. Its own rules are only what the
@@ -1135,8 +1196,16 @@
         <button id="opSegPlus" title="More loops">+</button>
       </div>
       <input type="range" id="opSlider" />
-      <input type="number" id="opValue" step="0.01" />
-      <button id="opOk" class="ok">✓ OK</button>
+      <!-- TEXT, not number (a2.63). A number input renders its value with
+           the BROWSER's decimal separator, so this field read 0,25 while
+           every other readout in the app - all of them spans formatted with
+           toFixed - read 0.25, a second apart on the same screen. As text it
+           always shows a point, and the parse below accepts either. -->
+      <input type="text" id="opValue" inputmode="decimal" />
+      <!-- The glyph alone (a2.63). It is the only accent-filled thing on
+           screen while the bar is up, which says "this commits" without the
+           two extra characters that were pushing the bar onto a second row. -->
+      <button id="opOk" class="ok" title="Apply">✓</button>
       <button id="opCancel">✕</button>
     </div>
 
@@ -1267,7 +1336,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.62a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.63a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -9656,11 +9725,13 @@ function showOpBar() {
   // The extrude grouping chooser borrows this bar and hides some of these -
   // put them all back before a real pending op uses it.
   ['opSlider', 'opValue', 'opOk', 'opCancel'].forEach(id => { document.getElementById(id).style.display = ''; });
-  document.getElementById('opOk').textContent = '✓ OK';
+  document.getElementById('opOk').textContent = '✓';
   document.getElementById('opLabel').textContent = spec.label;
   opSliderEl.min = spec.min; opSliderEl.max = spec.max; opSliderEl.step = spec.step;
   opSliderEl.value = op.amount;
-  opValueEl.min = spec.min; opValueEl.max = spec.max; opValueEl.step = spec.step;
+  /* min/max/step used to be set on this element. They did nothing once it
+     stopped being type="number" (a2.63) - the range slider beside it and
+     setPendingAmount's own clamp are what actually bound the value. */
   opValueEl.value = Number(op.amount.toFixed(3));
   // Segment count only applies to bevel; everything else hides it.
   const wantsSegments = !!spec.segments;
@@ -9796,7 +9867,7 @@ function hideOpBar() {
   // know nothing about the toggle, so it goes away with the bar itself.
   document.getElementById('opToggleWrap').style.display = 'none';
   ['opSlider', 'opValue', 'opOk', 'opCancel'].forEach(id => { document.getElementById(id).style.display = ''; });
-  document.getElementById('opOk').textContent = '✓ OK';
+  document.getElementById('opOk').textContent = '✓';
 }
 
 /* COALESCED TO ONE APPLY PER FRAME.
@@ -9868,8 +9939,33 @@ function stepSegments(delta) {
 }
 document.getElementById('opSegMinus').addEventListener('click', () => stepSegments(-1));
 document.getElementById('opSegPlus').addEventListener('click', () => stepSegments(1));
-opValueEl.addEventListener('input', () => setPendingAmount(parseFloat(opValueEl.value)));
-opValueEl.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); confirmPendingOp(); } ev.stopPropagation(); });
+// A comma is what half the world's keyboards put there, so take it.
+function parseAmount(v) { return parseFloat(String(v).replace(',', '.')); }
+opValueEl.addEventListener('input', () => setPendingAmount(parseAmount(opValueEl.value)));
+opValueEl.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') { ev.preventDefault(); confirmPendingOp(); }
+  /* UP AND DOWN BY ONE STEP. A number input gave this for free; a text
+     input does not, and the global stepper shortcut bails on any INPUT
+     target, so the arrows did nothing at all. The step is the slider's,
+     which is the same number the op's own spec set. */
+  if (ev.key === 'ArrowUp' || ev.key === 'ArrowDown') {
+    ev.preventDefault();
+    const st = parseFloat(opSliderEl.step) || 0.01;
+    const cur = parseAmount(opValueEl.value);
+    const from = Number.isFinite(cur) ? cur : (App.pendingOp ? App.pendingOp.amount : 0);
+    setPendingAmount(from + (ev.key === 'ArrowUp' ? st : -st));
+    // setPendingAmount will not write back into a focused field, so say it.
+    if (App.pendingOp) opValueEl.value = Number(App.pendingOp.amount.toFixed(3));
+  }
+  ev.stopPropagation();
+});
+/* Leaving the field puts the real amount back in it. Half-typed text -
+   "1.2.3", "-", an empty box - parses to something the op never took, and
+   without this the readout went on showing what was typed rather than what
+   the model is about to do. */
+opValueEl.addEventListener('blur', () => {
+  if (App.pendingOp) opValueEl.value = Number(App.pendingOp.amount.toFixed(3));
+});
 document.getElementById('opOk').addEventListener('click', confirmPendingOp);
 document.getElementById('opCancel').addEventListener('click', cancelPendingOp);
 
@@ -19451,10 +19547,26 @@ function buildMatTray() {
   matTrayInnerEl.appendChild(add);
 }
 
+let _matCloseTimer = null;
+function matTrayIsOpen() {
+  return matFlyEl.classList.contains('open') && !matFlyEl.classList.contains('closing');
+}
 function setMatTrayOpen(open) {
   if (!open) { matEditingId = null; matFlyEl.classList.remove('editing'); }
   if (open && !_matPreviews) buildMatTray();
-  matFlyEl.classList.toggle('open', open);
+  clearTimeout(_matCloseTimer);
+  if (open) {
+    matFlyEl.classList.remove('closing');
+    matFlyEl.classList.add('open');
+  } else if (matFlyEl.classList.contains('open')) {
+    // See the .closing rule: the row layout outlives the tray by one
+    // transition, so nothing jumps while it is still on screen.
+    matFlyEl.classList.add('closing');
+    _matCloseTimer = setTimeout(() => {
+      matFlyEl.classList.remove('open', 'closing');
+      _matCloseTimer = null;
+    }, 240);
+  }
   matTabEl.innerHTML = open ? '&#8250;' : '&#8249;';
   if (open) refreshMatTray();
   /* THE TRAY SUSPENDS THE MODE'S LOOK (a2.62). A mode that dims the surface
@@ -19465,7 +19577,7 @@ function setMatTrayOpen(open) {
   refreshModeView();
   refreshUI();
 }
-matTabEl.addEventListener('click', () => setMatTrayOpen(!matFlyEl.classList.contains('open')));
+matTabEl.addEventListener('click', () => setMatTrayOpen(!matTrayIsOpen()));
 
 /* ---------------- Material editor ----------------
    Lives inside the tray: the card column swaps out for a compact panel.
