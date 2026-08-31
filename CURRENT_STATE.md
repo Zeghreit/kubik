@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~21,250 lines)
-- Version at time of writing: **a2.67**
+- Version at time of writing: **a2.68**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -29,6 +29,120 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## Import (a2.68) - READ BEFORE OLDER SECTIONS
+
+The pipeline is one line long, because the app already owns both ends of it:
+
+```
+a file  ->  { positions, groups:[{triangles}] }  ->  rebuildFromEditable
+```
+
+`rebuildFromEditable` derives the topology, the logical vertices, the
+finishes and the shading, exactly as it does for extrude, inset and every
+other op. **So the importer's entire output contract is that plain object.**
+
+**Welding is free.** `computeLogicalOf` recovers logical vertices by rounding
+positions to 1e4, so a file whose vertices are split per face - which is every
+file, since that is how normals and UVs are carried - re-merges itself.
+
+**Grouping is the feature.** `computeTopology` exposes an edge only when some
+face uses it exactly ONCE. One triangle per group would make every
+triangulation diagonal a real, selectable, drawn edge: an imported cube with
+18 edges and a seam across all six faces. Coplanar triangles are merged into
+one face instead, compared against the SEED triangle's normal rather than the
+neighbour's, so the plane cannot drift a degree at a time around a curve.
+
+`IMPORT_COPLANAR_DOT` is 0.9998, about 1.15 degrees, chosen the way
+`SHARP_ANGLE` was - to land on no regular polygon. Facets of a regular n-gon
+prism meet at 360/n, which is 1.2 degrees at n=300: past anything a person
+models by hand or a phone can subdivide.
+
+### ONE SIMPLE LOOP, or it is not merged whole
+
+`getGroupBoundaryLoopAttr` walks ONE boundary loop and has no concept of a
+second, and `insetRegionOp` and `extrudeRegionOp` build their rim from what
+it returns. Every primitive this app makes is a fan over one convex polygon,
+so that limit has existed forever and has never been reachable.
+
+**Coplanar merging makes it reachable**, with the most ordinary imported
+geometry there is: a plate with bolt holes, the face of a picture frame, the
+ring of triangles left around a boss on a cube's top. Inset one of those and
+the outer rim pulls in, the hole's rim stays put, and the face
+self-intersects, with no refusal - `rim.length < 3` does not fire.
+
+So a region is merged whole only when its boundary is **one simple loop**:
+one connected component, and every boundary vertex carrying exactly two
+boundary edges - which also rejects a bowtie and a non-manifold sheet, both
+of which truncate that same walk. Anything else falls back to pairing
+coplanar triangles into **quads**, which cannot have a hole by construction.
+A triangle with no clean partner stays its own face.
+
+**If Inset and Extrude ever learn about multiple boundary loops, this
+fallback is the thing to delete.**
+
+### Two budgets, and the second one is the one that matters
+
+`IMPORT_TRI_BUDGET` is 40000. `IMPORT_FACE_BUDGET` is 4000, checked AFTER the
+merge because before it there is nothing to count.
+
+Triangles are not what costs. Every face is a geometry group, a
+`MeshStandardMaterial` and a draw call, and `ensureMaskPatches` walks all of
+them on every `refreshUI` for the rest of the session. On a smooth or scanned
+mesh neighbours differ by well over a degree, so the merge yields close to one
+face per triangle: a 12k-triangle bust sits comfortably inside the triangle
+budget and lands 12k materials. Both refusals say the number out loud.
+
+### Three things a Kubik file could never have taught us
+
+All three were found by review, not by the round trip, and each is a class of
+file the app will meet the first time somebody imports something they did not
+make here.
+
+- **A negative determinant inverts the model.** `applyMatrix4` transforms
+  positions and leaves index order alone, so a mirrored node - Blender
+  mirrored objects, most FBX conversions - arrives wound backwards. The
+  existing mirrored escape hatch (`matrixWorld.determinant() < 0` ->
+  `DoubleSide`) cannot save it, because the importer BAKES the transform and
+  the new mesh's own determinant is positive: it gets `FrontSide` and the
+  object is invisible from outside and solid from within. Triangles are
+  re-wound at import when the determinant is negative.
+- **`pos.array.length` is not `pos.count * 3`** for an
+  `InterleavedBufferAttribute`, which GLTFLoader builds whenever a bufferView
+  is shared - i.e. for anything gltfpack or meshopt produced. Reading the
+  array pushed normals and UVs in among the coordinates. Use
+  `getX/getY/getZ` over `count`. **Kubik's own exporter writes tightly packed
+  data, which is exactly why a round trip could never catch this.**
+- **`Infinity` passed as a valid normal.** `l > 1e-12` is true when `l` is
+  `Infinity`, so the normal came back `[NaN,NaN,NaN]` - a truthy array - and
+  then `NaN < IMPORT_COPLANAR_DOT` is false, so the coplanarity rejection
+  never fired either. One bad vertex swallowed the entire connected mesh into
+  a single face AND NaN'd every position in the object, after it had been
+  pushed to history and handed to the autosave.
+
+### The lesson
+
+**A round-trip test proves the round trip and nothing else.** Every assertion
+in `_imp_probe` passed while the importer could not read an optimised .glb,
+inverted mirrored models, and produced faces the app's own ops corrupt -
+because the suite only ever fed it Kubik's own tightly packed, positively
+scaled, single-loop output. It now carries foreign fixtures: a square annulus
+with a hole, a negative-scale node, and a hand-built interleaved buffer with
+a poison value in the spare channels.
+
+### Still to do, and known
+
+Deliberately out of this increment, recorded so they are not discovered as
+surprises: materials are not mapped (everything lands on `standard`); OBJ and
+STL are not read yet; `InstancedMesh` loses every instance but the first and
+`SkinnedMesh` imports its bind pose, both silently; Draco and meshopt files
+reject with the generic error because no decoder is set; `.gltf` is
+advertised but external `.bin` and textures resolve against the page URL and
+404; a large import can exceed the autosave quota, which `scheduleAutosave`
+swallows, so the scene silently reverts on the next visit; `setMode('object')`
+runs after the objects exist, so an open geo setup pushes history first and
+one Undo takes back both; and `focusOnAll()` reframes existing work rather
+than the import.
 
 ## The a2.67 accent rule - READ BEFORE OLDER SECTIONS
 

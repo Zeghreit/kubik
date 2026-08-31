@@ -1443,7 +1443,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.67</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.68</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -1544,6 +1544,13 @@
           <button id="btnExportObj" title="Export Wavefront OBJ">.obj</button>
           <button id="btnExportStl" title="Export STL">.stl</button>
         </div>
+        <!-- "Bring in", not "Import": the row above is what goes OUT, and
+             the two read as a pair without either needing a heading. -->
+        <div class="drawer-row">
+          <label class="btn fileBtn">Bring in .glb<input type="file" id="fileImport" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" /></label>
+        </div>
+        <div class="drawer-note">A model comes back as faces, not triangles -
+          coplanar ones are joined, so it edits like something you built here.</div>
       </div>
 
     </div>
@@ -1555,6 +1562,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 // Plain lines are stuck at 1px in WebGL - linewidth is ignored on every
@@ -18939,6 +18947,431 @@ function downloadBlob(parts, filename, mime) {
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
+
+/* ---------------- Import ----------------
+
+   The inverse of the Export block below it, and much shorter, because
+   rebuildFromEditable already owns everything downstream: give it
+   { positions, groups:[{triangles}] } and it derives the topology, the
+   logical vertices, the finishes and the shading.
+
+   WELDING IS FREE. computeLogicalOf recovers logical vertices by rounding
+   positions to 1e4 and grouping, so a file whose vertices are split per
+   face - which is every file, since that is how normals and UVs are carried
+   - re-merges itself with nothing from us.
+
+   GROUPING IS NOT FREE, and it is the whole feature. computeTopology
+   exposes an edge only when some face uses it exactly ONCE; an edge used
+   twice inside one group is that group's internal triangulation and is
+   invisible. So one triangle per group would mean every triangulation
+   diagonal becomes a real, selectable, drawn edge - an imported cube with
+   18 edges and a seam across all six faces. Merging coplanar triangles into
+   one group is what makes an import editable rather than only viewable. */
+
+/* 0.9998 is about 1.15 degrees, and the number is chosen the way SHARP_ANGLE
+   was: to land on no regular polygon. Neighbouring facets of a regular
+   n-gon prism meet at 360/n, which is 1.2 degrees at n=300 and 1.13 at
+   n=318 - well past any tessellation a person models by hand, and past what
+   a phone can subdivide. Tighter than this and an exporter's float noise
+   splits a genuinely flat face; looser and a smooth sphere merges into one
+   face and arrives uneditable in a new way.
+
+   Compared against the SEED triangle, never the neighbour. Chaining
+   neighbour-to-neighbour lets the normal drift a degree at a time all the
+   way around a curve, and a cylinder becomes one face. */
+const IMPORT_COPLANAR_DOT = 0.9998;
+
+/* The same rounding computeLogicalOf uses. Adjacency has to be found across
+   vertices that are separate in the buffer but identical in space, or every
+   triangle looks like an island and nothing merges. */
+function importWeldKey(px, i) {
+  return Math.round(px[i * 3] * 1e4) + '_' +
+         Math.round(px[i * 3 + 1] * 1e4) + '_' +
+         Math.round(px[i * 3 + 2] * 1e4);
+}
+
+/* Infinity is not a normal. `l > 1e-12` is TRUE when l is Infinity, which
+   returned [NaN,NaN,NaN] - a truthy array, so the triangle counted as valid.
+   Then `NaN < IMPORT_COPLANAR_DOT` is false, so the coplanarity rejection
+   never fired either: one bad vertex swallowed the whole connected mesh into
+   a single face. Two failures from one missing check. */
+function importTriNormal(px, t) {
+  const ax = px[t[0] * 3], ay = px[t[0] * 3 + 1], az = px[t[0] * 3 + 2];
+  const bx = px[t[1] * 3], by = px[t[1] * 3 + 1], bz = px[t[1] * 3 + 2];
+  const cx = px[t[2] * 3], cy = px[t[2] * 3 + 1], cz = px[t[2] * 3 + 2];
+  const ux = bx - ax, uy = by - ay, uz = bz - az;
+  const vx = cx - ax, vy = cy - ay, vz = cz - az;
+  const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+  const l = Math.hypot(nx, ny, nz);
+  if (!Number.isFinite(l) || l <= 1e-12) return null;
+  const n = [nx / l, ny / l, nz / l];
+  return Number.isFinite(n[0]) && Number.isFinite(n[1]) && Number.isFinite(n[2]) ? n : null;
+}
+
+/* Triangles -> face groups. Flood fill over shared welded edges, refusing to
+   cross a material boundary or a fold. Degenerate triangles (zero area, no
+   normal) are dropped rather than merged: they have no plane to agree with,
+   and one of them in a region would otherwise anchor a seed that matches
+   nothing. */
+function mergeCoplanarTriangles(positions, tris, matOf) {
+  const keyOf = new Map();          // welded key -> small integer
+  const lg = new Int32Array(positions.length / 3);
+  for (let i = 0; i < lg.length; i++) {
+    const k = importWeldKey(positions, i);
+    let id = keyOf.get(k);
+    if (id === undefined) { id = keyOf.size; keyOf.set(k, id); }
+    lg[i] = id;
+  }
+
+  const normals = tris.map(t => importTriNormal(positions, t));
+  const edgeMap = new Map();        // "la_lb" -> [triIndex, ...]
+  tris.forEach((t, ti) => {
+    if (!normals[ti]) return;
+    const a = lg[t[0]], b = lg[t[1]], c = lg[t[2]];
+    [[a, b], [b, c], [c, a]].forEach(pair => {
+      const k = pair[0] < pair[1] ? pair[0] + '_' + pair[1] : pair[1] + '_' + pair[0];
+      if (!edgeMap.has(k)) edgeMap.set(k, []);
+      edgeMap.get(k).push(ti);
+    });
+  });
+
+  const ekey = (a, b) => (a < b ? a + '_' + b : b + '_' + a);
+
+  /* ONE SIMPLE LOOP, or the region is not safe to merge whole.
+
+     getGroupBoundaryLoopAttr walks a single boundary loop and has no concept
+     of a second, and insetRegionOp and extrudeRegionOp build their rim from
+     what it returns. Every primitive this app makes is a fan over one convex
+     polygon, so that has never mattered; a merged import makes it matter with
+     the most ordinary geometry there is - a plate with bolt holes, a picture
+     frame, the ring of triangles left around a boss on a cube's top face.
+     Inset one of those and the outer rim pulls in, the hole stays put, and
+     the face self-intersects with no refusal.
+
+     Counted as connected components of the boundary graph, and every boundary
+     vertex must have exactly two boundary edges - which also rejects a bowtie
+     and a non-manifold sheet, both of which truncate that same walk. */
+  function boundaryIsOneSimpleLoop(regionTris) {
+    const cnt = new Map();
+    regionTris.forEach(ti => {
+      const t = tris[ti];
+      const a = lg[t[0]], b = lg[t[1]], c = lg[t[2]];
+      [[a, b], [b, c], [c, a]].forEach(p => {
+        const k = ekey(p[0], p[1]);
+        cnt.set(k, (cnt.get(k) || 0) + 1);
+      });
+    });
+    const adj = new Map();
+    cnt.forEach((n, k) => {
+      if (n !== 1) return;
+      const ab = k.split('_');
+      const a = +ab[0], b = +ab[1];
+      if (!adj.has(a)) adj.set(a, []);
+      if (!adj.has(b)) adj.set(b, []);
+      adj.get(a).push(b);
+      adj.get(b).push(a);
+    });
+    if (!adj.size) return false;
+    let simple = true;
+    adj.forEach(list => { if (list.length !== 2) simple = false; });
+    if (!simple) return false;
+    let loops = 0;
+    const visited = new Set();
+    adj.forEach((_l, v) => {
+      if (visited.has(v)) return;
+      loops++;
+      const st = [v];
+      visited.add(v);
+      while (st.length) {
+        const x = st.pop();
+        (adj.get(x) || []).forEach(y => { if (!visited.has(y)) { visited.add(y); st.push(y); } });
+      }
+    });
+    return loops === 1;
+  }
+
+  /* The fallback: coplanar PAIRS. A quad built from two triangles across one
+     shared edge has one boundary loop by construction, so nothing here can
+     reach the failure above. A triangle with no clean partner stays its own
+     face - its diagonal becomes a visible edge, which is honest about what
+     the file actually contains. */
+  function emitPairs(region, out) {
+    const inRegion = new Set(region);
+    const paired = new Set();
+    region.forEach(ti => {
+      if (paired.has(ti)) return;
+      const t = tris[ti];
+      const a = lg[t[0]], b = lg[t[1]], c = lg[t[2]];
+      let mate = -1;
+      [[a, b], [b, c], [c, a]].some(p => {
+        const occ = edgeMap.get(ekey(p[0], p[1])) || [];
+        if (occ.length !== 2) return false;      // only a clean manifold pair
+        const other = occ[0] === ti ? occ[1] : occ[0];
+        if (other === ti || paired.has(other) || !inRegion.has(other)) return false;
+        mate = other;
+        return true;
+      });
+      paired.add(ti);
+      if (mate >= 0) { paired.add(mate); out.push({ triangles: [tris[ti], tris[mate]] }); }
+      else out.push({ triangles: [tris[ti]] });
+    });
+  }
+
+  const seen = new Uint8Array(tris.length);
+  const groups = [];
+  for (let s = 0; s < tris.length; s++) {
+    if (seen[s] || !normals[s]) continue;
+    const seedN = normals[s], seedMat = matOf(s);
+    const region = [];
+    const queue = [s];
+    seen[s] = 1;
+    while (queue.length) {
+      const ti = queue.pop();
+      region.push(ti);
+      const t = tris[ti];
+      const a = lg[t[0]], b = lg[t[1]], c = lg[t[2]];
+      [[a, b], [b, c], [c, a]].forEach(pair => {
+        (edgeMap.get(ekey(pair[0], pair[1])) || []).forEach(nb => {
+          if (seen[nb] || !normals[nb] || matOf(nb) !== seedMat) return;
+          const n = normals[nb];
+          if (seedN[0] * n[0] + seedN[1] * n[1] + seedN[2] * n[2] < IMPORT_COPLANAR_DOT) return;
+          seen[nb] = 1;
+          queue.push(nb);
+        });
+      });
+    }
+    if (region.length === 1 || boundaryIsOneSimpleLoop(region)) {
+      groups.push({ triangles: region.map(ti => tris[ti]) });
+    } else {
+      emitPairs(region, groups);
+    }
+  }
+  return groups;
+}
+
+
+/* A budget, refused out loud (a2.68). Subdivide is already superlinear -
+   L5 is 1454ms on a cube - and the picker's 28px radius does not scale with
+   how many vertices are under it. Landing a 200k-triangle mesh gives you an
+   app that appears to work and then cannot do anything; saying no is the
+   kinder answer, and it says the number so you know what to decimate to. */
+const IMPORT_TRI_BUDGET = 40000;
+
+/* AND A FACE BUDGET, because triangles are not what costs. On any smooth or
+   scanned mesh neighbouring triangles differ by well over a degree, so the
+   merge yields close to one face per triangle - and every face is a geometry
+   group, a MeshStandardMaterial and a draw call. A 12k-triangle bust sits
+   comfortably inside the triangle budget and lands 12k materials that
+   ensureMaskPatches then walks on every refreshUI for the rest of the
+   session. Checked AFTER the merge, because before it there is nothing to
+   count. */
+const IMPORT_FACE_BUDGET = 4000;
+
+/* One object's worth of meshes -> the app's editable form.
+
+   Several meshes because a glTF mesh's primitives arrive split; their
+   positions are concatenated and each source primitive keeps its own
+   material key, so the merge below never joins across two of them. That is
+   what makes a Kubik file come back with exactly the faces it left with:
+   coplanar triangles inside one primitive rejoin, and two primitives that
+   happen to be coplanar - the two halves of a bevelled corner, say - stay
+   the two faces the modeller made.
+
+   Baked into world space rather than copied onto the object: a glTF node can
+   carry rotation and scale, and this app's ops read positions straight out
+   of the buffer, so a scaled object would extrude by the wrong distance and
+   snap to the wrong grid. */
+function editableFromImportedMeshes(meshes) {
+  const positions = [];
+  const tris = [];
+  const matOfTri = [];
+  let triCount = 0;
+  meshes.forEach((m, mi) => {
+    const geo = m.geometry.clone();
+    geo.applyMatrix4(m.matrixWorld);
+    const pos = geo.attributes.position;
+    if (!pos) { geo.dispose(); return; }
+    const base = positions.length / 3;
+    /* getX/getY/getZ over count, NOT `array` over its length. GLTFLoader
+       builds an InterleavedBufferAttribute whenever a bufferView is shared -
+       which is what gltfpack and meshopt produce - and .array is then the
+       WHOLE interleaved buffer, normals and UVs included. Pushing that made a
+       nonsense mesh with a plausible face count in the toast, and Kubik's own
+       exporter writes tightly packed data, which is exactly why the
+       round-trip probe could not catch it. */
+    for (let i = 0; i < pos.count; i++) {
+      positions.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+    }
+    const n = (geo.index ? geo.index.count : pos.count) / 3;
+    /* A NEGATIVE DETERMINANT INVERTS THE MODEL. applyMatrix4 transforms
+       positions and leaves the index order alone, so a mirrored node - which
+       Blender and most FBX conversions produce - arrives wound backwards.
+       The existing mirrored escape hatch cannot save it either: the transform
+       is BAKED here, so the new mesh's own determinant is positive, it gets
+       FrontSide, and the object is invisible from outside and solid from
+       within. That is the "hole in my model that moves when I orbit" the
+       flip-normals note was written about. */
+    const flip = m.matrixWorld.determinant() < 0;
+    /* A primitive can carry its OWN groups as well - three merges a
+       multi-material mesh that way - so the material key is the pair. */
+    const gsrc = geo.groups && geo.groups.length ? geo.groups : null;
+    const sub = new Int32Array(n);
+    if (gsrc) gsrc.forEach((g, gi) => {
+      const from = g.start / 3, to = from + g.count / 3;
+      for (let t = from; t < to && t < n; t++) sub[t] = gi;
+    });
+    for (let t = 0; t < n; t++) {
+      const tri = geo.index
+        ? [base + geo.index.getX(t * 3), base + geo.index.getX(t * 3 + 1), base + geo.index.getX(t * 3 + 2)]
+        : [base + t * 3, base + t * 3 + 1, base + t * 3 + 2];
+      if (flip) { const sw = tri[1]; tri[1] = tri[2]; tri[2] = sw; }
+      tris.push(tri);
+      matOfTri.push(mi * 4096 + sub[t]);
+    }
+    triCount += n;
+    geo.dispose();
+  });
+  if (!tris.length) return null;
+  /* One non-finite coordinate is enough to NaN the whole object: it survives
+     into the recentring below, every position becomes NaN, and the mesh is
+     unrenderable and unpickable - after it has been pushed to history and
+     handed to the autosave. Refuse the file instead. */
+  for (let i = 0; i < positions.length; i++) {
+    if (!Number.isFinite(positions[i])) return null;
+  }
+  const groups = mergeCoplanarTriangles(positions, tris, ti => matOfTri[ti]);
+  return { positions, groups, triCount };
+}
+
+/* Meshes, gathered into the OBJECTS they belong to.
+
+   A glTF mesh with several primitives comes back from GLTFLoader as a Group
+   with one THREE.Mesh per primitive - and our own export writes one
+   primitive per face group, so a plain traverse turned one cube into six
+   one-face objects. The probe caught it on its first run, which is the whole
+   reason it exists.
+
+   The rule: primitives of one glTF mesh share a Group parent, so a mesh
+   whose parent is a Group below the root belongs to that parent's object.
+   Anything else - a lone node, a single-primitive mesh - is its own object.
+   Non-mesh children are skipped, which is also how the .glb's edge-outline
+   LineSegments stays out of the geometry. */
+function collectImportableMeshes(root) {
+  root.updateMatrixWorld(true);
+  const byOwner = new Map();
+  root.traverse(n => {
+    if (!n.isMesh || !n.geometry || !n.geometry.attributes.position) return;
+    if (n.geometry.attributes.position.count < 3) return;
+    const owner = (n.parent && n.parent !== root && n.parent.isGroup) ? n.parent : n;
+    if (!byOwner.has(owner)) byOwner.set(owner, []);
+    byOwner.get(owner).push(n);
+  });
+  return Array.from(byOwner.entries()).map(([owner, meshes]) => ({
+    name: (owner.name || meshes[0].name || '').trim(), meshes
+  }));
+}
+
+async function importGltfBuffer(buf, label) {
+  const loader = new GLTFLoader();
+  const gltf = await loader.parseAsync(buf, '');
+  const parts = collectImportableMeshes(gltf.scene);
+  if (!parts.length) { toast('No mesh in that file'); return; }
+
+  let total = 0;
+  parts.forEach(p => p.meshes.forEach(m => {
+    const g = m.geometry;
+    total += (g.index ? g.index.count : g.attributes.position.count) / 3;
+  }));
+  if (total > IMPORT_TRI_BUDGET) {
+    toast(Math.round(total / 1000) + 'k triangles - too heavy to edit (limit ' +
+      Math.round(IMPORT_TRI_BUDGET / 1000) + 'k)');
+    return;
+  }
+
+  /* Converted first, then judged. The face count only exists after the
+     merge, and a file that passes on triangles can still be unusable. */
+  const built = [];
+  let faceTotal = 0;
+  for (const part of parts) {
+    const ed = editableFromImportedMeshes(part.meshes);
+    if (!ed || !ed.groups.length) continue;
+    faceTotal += ed.groups.length;
+    built.push({ part, ed });
+  }
+  if (!built.length) { toast('Nothing importable in that file'); return; }
+  if (faceTotal > IMPORT_FACE_BUDGET) {
+    toast(faceTotal + ' faces - too many to edit (limit ' + IMPORT_FACE_BUDGET +
+      '). It is probably a scan or a smooth-shaded model.');
+    return;
+  }
+
+  const made = [];
+  built.forEach(({ part, ed }, i) => {
+
+    /* CENTRED ON ITS OWN ORIGIN, and positioned by the mesh - the way every
+       primitive this app makes is built. The world transform is baked into
+       the vertices (ops read positions straight out of the buffer, so a
+       scaled object would extrude by the wrong distance), which leaves the
+       shape sitting wherever the file put it with an origin at 0,0,0. Rotate
+       and scale pivot on the origin, so an import that skipped this would
+       swing around a point outside itself. */
+    let cx = Infinity, cy = Infinity, cz = Infinity;
+    let mx = -Infinity, my = -Infinity, mz = -Infinity;
+    for (let p = 0; p < ed.positions.length; p += 3) {
+      if (ed.positions[p] < cx) cx = ed.positions[p];
+      if (ed.positions[p] > mx) mx = ed.positions[p];
+      if (ed.positions[p + 1] < cy) cy = ed.positions[p + 1];
+      if (ed.positions[p + 1] > my) my = ed.positions[p + 1];
+      if (ed.positions[p + 2] < cz) cz = ed.positions[p + 2];
+      if (ed.positions[p + 2] > mz) mz = ed.positions[p + 2];
+    }
+    const ox = (cx + mx) / 2, oy = (cy + my) / 2, oz = (cz + mz) / 2;
+    for (let p = 0; p < ed.positions.length; p += 3) {
+      ed.positions[p] -= ox; ed.positions[p + 1] -= oy; ed.positions[p + 2] -= oz;
+    }
+
+    const obj = createCubeObject(
+      built.length > 1 ? (part.name || label + ' ' + (i + 1)) : label,
+      new THREE.Vector3(ox, oy, oz));
+    obj.mesh.material.forEach(mm => mm.dispose());
+    obj.mesh.material = makeMaterialSet(ed.groups.length, DEFAULT_MATERIAL_COLOR);
+    rebuildFromEditable(obj, { positions: ed.positions, groups: ed.groups });
+    made.push({ obj: obj, tris: ed.triCount, faces: ed.groups.length });
+  });
+
+  if (!made.length) { toast('Nothing importable in that file'); return; }
+  App.selectedObjectIds = new Set(made.map(x => x.obj.id));
+  App.activeObjectId = made[made.length - 1].obj.id;
+  setMode('object');
+  refreshUI();
+  refreshGizmoAttachment();
+  pushHistory();
+  scheduleAutosave();
+  focusOnAll();
+  const tris = made.reduce((a, x) => a + x.tris, 0);
+  const faces = made.reduce((a, x) => a + x.faces, 0);
+  toast('Imported ' + made.length + (made.length === 1 ? ' object' : ' objects') +
+    ' - ' + faces + ' faces from ' + tris + ' triangles');
+}
+
+function wireImport() {
+  const el = document.getElementById('fileImport');
+  if (!el) return;
+  el.addEventListener('change', async (ev) => {
+    const f = ev.target.files && ev.target.files[0];
+    ev.target.value = '';            // same file twice must work
+    if (!f) return;
+    const stem = f.name.replace(/\.[^.]+$/, '').slice(0, 32) || 'Imported';
+    try {
+      toast('Reading ' + f.name + '…');
+      await importGltfBuffer(await f.arrayBuffer(), stem);
+    } catch (err) {
+      console.error('import failed', err);
+      toast('Could not read that file');
+    }
+  });
+}
+
 /* ---------------- Export ---------------- */
 
 function buildExportGroup() {
@@ -21359,6 +21792,7 @@ function init() {
      throws; the restore applies its own afterwards if it carries one. */
   applyEnvironment();
   wireEnvControls();
+  wireImport();
   // Pick up where you left off. Only fall back to a fresh cube when there's
   // nothing to come back to.
   if (!restoreAutosave()) {
@@ -21404,6 +21838,11 @@ if (PICK_DEBUG) {
     // (a2.66) - a harness has to be able to put it back to test it.
     hasLearned, noteLearned, forgetLearned, maybeShowFirstHint, dismissFirstHint,
     selectObjectClick,
+    // Import (a2.68). buildExportGroup is here too so a harness can measure
+    // the ROUND TRIP through the real export path rather than a shortcut to
+    // GLTFExporter, which is how a bug that did not exist got reported once.
+    importGltfBuffer, mergeCoplanarTriangles, editableFromImportedMeshes,
+    collectImportableMeshes, buildExportGroup,
     // Winding: __kubik.windingAudit() for every object, or (id) for one.
     auditWinding, windingAudit,
     // The captured plane: __kubik.symmetryPlane(obj, axis).
