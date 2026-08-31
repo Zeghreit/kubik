@@ -1443,7 +1443,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.69</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.70</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -1547,10 +1547,15 @@
         <!-- "Bring in", not "Import": the row above is what goes OUT, and
              the two read as a pair without either needing a heading. -->
         <div class="drawer-row">
-          <label class="btn fileBtn">Bring in .glb<input type="file" id="fileImport" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" /></label>
+          <!-- `multiple`, only so an .obj can be picked together with its
+               .mtl. Everything else takes the first file and ignores the
+               rest; asking for two files up front would be worse than
+               losing the colours of the one format that has a sidecar. -->
+          <label class="btn fileBtn">Bring in a model<input type="file" id="fileImport" multiple accept=".glb,.gltf,.obj,.mtl,model/gltf-binary,model/gltf+json" /></label>
         </div>
-        <div class="drawer-note">A model comes back as faces, not triangles -
-          coplanar ones are joined, so it edits like something you built here.</div>
+        <div class="drawer-note">.glb, .gltf or .obj. A model comes back as
+          faces, not triangles, so it edits like something you built here. For
+          an .obj's colours, pick its .mtl at the same time.</div>
       </div>
 
     </div>
@@ -19404,13 +19409,20 @@ function importMaterialContext() {
          entry, which the autosave then wrote out. */
       const raw = String(src.name == null ? '' : src.name).trim().slice(0, 32) || 'Imported';
       const hex = '#' + src.color.getHexString();
+      /* `kubikThemed` is set only by parseMtl, for an .mtl material that
+         never stated a Kd. Everything arriving from a glTF has a
+         baseColorFactor - the spec gives it a default of [1,1,1,1] - so
+         there is no such thing as an unstated colour on that path and the
+         flag is never set there. */
+      const themedSrc = src.kubikThemed === true;
+      const defColor = themedSrc ? null : hex;
       /* A baseColorFactor of ["a","b","c"] makes a Color with NaN channels,
          and getHexString() returns "000NaN" - which would go into the
          library, into localStorage and into every saved file. Nothing
          crashes on it; it is simply garbage in a format that outlives the
          session, so it never gets in. */
-      if (!/^#[0-9a-f]{6}$/.test(hex)) { cache.set(src, 'standard'); return 'standard'; }
-      const sig = materialDefSig({ name: raw, color: hex, roughness: rough, metalness: metal });
+      if (!themedSrc && !/^#[0-9a-f]{6}$/.test(hex)) { cache.set(src, 'standard'); return 'standard'; }
+      const sig = materialDefSig({ name: raw, color: defColor, roughness: rough, metalness: metal });
       /* THE LIBRARY IS ASKED FIRST. This used to sit below the themed-preset
          shortcut, which meant a material a person had mixed by hand to be
          exactly the theme grey - named, exported, re-imported - was answered
@@ -19433,7 +19445,7 @@ function importMaterialContext() {
          came back as 0.4000000059604645 - and because a colour that goes
          sRGB -> linear -> sRGB can land one 8-bit step out. */
       const themed = themedGreyHex();
-      if (nearHex(hex, themed)) {
+      if (!themedSrc && nearHex(hex, themed)) {
         let hit = null;
         MATERIALS.forEach((v, id) => {
           if (hit || !v.preset) return;
@@ -19453,7 +19465,7 @@ function importMaterialContext() {
         name = raw + ' (imported' + (k > 1 ? ' ' + k : '') + ')'; k++;
       }
       const nid = freshMaterialId(raw.replace(/[^a-z0-9]/gi, '').toLowerCase() || 'imp');
-      MATERIALS.set(nid, { id: nid, preset: false, name: name, color: hex,
+      MATERIALS.set(nid, { id: nid, preset: false, name: name, color: defColor,
         roughness: rough, metalness: metal, srcSig: sig });
       byName.add(name.toLowerCase());
       bySig.set(sig, nid);
@@ -19462,6 +19474,316 @@ function importMaterialContext() {
       return nid;
     }
   };
+}
+
+/* ---------------- OBJ (a2.70) ----------------
+
+   HAND-WRITTEN, and that is the point. `three/addons/loaders/OBJLoader.js`
+   fan-triangulates every face on the way in and hands back a
+   BufferGeometry - so a cube's six quads arrive as twelve triangles and the
+   importer would have to GUESS them back together with the coplanar merge,
+   the way it must for a .glb. But an .obj already says, in the file, which
+   triangles are one face. `f 1 2 3 4` IS a quad. Throwing that away and
+   inferring it again is the one thing this reader must not do.
+
+   So there is no merge pass on this path at all, and none of its
+   compromises: a concave face stays one face, and two coplanar faces the
+   modeller kept apart stay apart.
+
+   What is read: v, f, o/g, usemtl, mtllib. What is ignored: vt, vn, s, and
+   everything else - this app has no UVs, and derives its own normals. */
+
+// v -1 is the LAST vertex so far, not the first. Positive indices are 1-based.
+function objResolveIndex(tok, count) {
+  const i = parseInt(tok, 10);
+  if (!Number.isFinite(i) || i === 0) return -1;
+  return i > 0 ? i - 1 : count + i;
+}
+
+/* A polygon -> triangles, WITHOUT the fan that a fan-triangulation of a
+   concave face gives you (triangles outside the shape, and a silhouette
+   that is wrong from every angle).
+
+   Projected onto the plane it lies in by dropping its largest normal
+   component, then ear-clipped by three's own ShapeUtils. The winding is
+   checked against the polygon's Newell normal afterwards and flipped if
+   ShapeUtils reversed it - it normalises to counter-clockwise in ITS 2D
+   frame, which is not necessarily ours. A degenerate face falls back to a
+   fan, which is what it would have been anyway. */
+function triangulatePolygon(positions, ring) {
+  if (ring.length < 3) return [];
+  if (ring.length === 3) return [[ring[0], ring[1], ring[2]]];
+  // Newell: correct for a non-planar polygon too, where a cross product of
+  // any three points is not.
+  let nx = 0, ny = 0, nz = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i] * 3, b = ring[(i + 1) % ring.length] * 3;
+    nx += (positions[a + 1] - positions[b + 1]) * (positions[a + 2] + positions[b + 2]);
+    ny += (positions[a + 2] - positions[b + 2]) * (positions[a] + positions[b]);
+    nz += (positions[a] - positions[b]) * (positions[a + 1] + positions[b + 1]);
+  }
+  const ax = Math.abs(nx), ay = Math.abs(ny), az = Math.abs(nz);
+  const fan = () => {
+    const out = [];
+    for (let i = 1; i + 1 < ring.length; i++) out.push([ring[0], ring[i], ring[i + 1]]);
+    return out;
+  };
+  if (!Number.isFinite(ax + ay + az) || ax + ay + az < 1e-20) return fan();
+  // Drop the dominant axis; the other two are the 2D frame.
+  let u = 0, v = 1;
+  if (ax >= ay && ax >= az) { u = 1; v = 2; }
+  else if (ay >= ax && ay >= az) { u = 2; v = 0; }
+  const pts = ring.map(i => new THREE.Vector2(positions[i * 3 + u], positions[i * 3 + v]));
+  let faces;
+  try { faces = THREE.ShapeUtils.triangulateShape(pts, []); }
+  catch (e) { return fan(); }
+  if (!faces || !faces.length) return fan();
+  const tris = faces.map(f => [ring[f[0]], ring[f[1]], ring[f[2]]]);
+  /* Does the result face the way the polygon does?
+
+     ASKED OF THE SUM, not of tris[0]. Ear clipping emits zero-area
+     triangles routinely - a collinear ear, which is what you get the moment
+     a neighbouring face's vertex lies on this face's edge - and
+     importTriNormal returns null for one of those. Testing the first
+     triangle alone meant that whenever the clipper happened to put a
+     degenerate ear first, the test was skipped and the whole n-gon kept the
+     clipper's winding instead of the polygon's: a back-facing face in the
+     middle of the model, which reads as a hole that moves when you orbit.
+
+     Unnormalised, so each triangle contributes in proportion to its area
+     and a degenerate one contributes nothing at all. */
+  let sx = 0, sy = 0, sz = 0;
+  tris.forEach(t => {
+    const ax = positions[t[0] * 3], ay = positions[t[0] * 3 + 1], az = positions[t[0] * 3 + 2];
+    const ux = positions[t[1] * 3] - ax, uy = positions[t[1] * 3 + 1] - ay, uz = positions[t[1] * 3 + 2] - az;
+    const vx = positions[t[2] * 3] - ax, vy = positions[t[2] * 3 + 1] - ay, vz = positions[t[2] * 3 + 2] - az;
+    sx += uy * vz - uz * vy; sy += uz * vx - ux * vz; sz += ux * vy - uy * vx;
+  });
+  if (sx * nx + sy * ny + sz * nz < 0) {
+    tris.forEach(t => { const sw = t[1]; t[1] = t[2]; t[2] = sw; });
+  }
+  return tris;
+}
+
+/* An .mtl -> the same shape a THREE material presents to importMaterialContext,
+   so both formats mint library entries through one funnel.
+
+   Kd is the diffuse colour, and MTL says nothing about colour space; every
+   tool that writes one writes what it showed on screen, so it is read as
+   sRGB - the same space the picker uses.
+
+   Ns is a Blinn-Phong specular exponent, 0..1000, which is not roughness and
+   has to be converted: roughness = sqrt(2 / (Ns + 2)), the standard
+   Phong-to-microfacet mapping. Ns 0 -> rough 1, Ns 1000 -> 0.045. Pr and Pm
+   are the PBR extension nearly every modern exporter now writes; where they
+   exist they are believed over Ns, because they mean exactly what this app
+   means. */
+function parseMtl(text) {
+  const out = new Map();
+  let cur = null;
+  String(text || '').split('\n').forEach(raw => {
+    const line = raw.replace(/[\r\t]/g, ' ').trim();
+    if (!line || line[0] === '#') return;
+    const sp = line.indexOf(' ');
+    const key = (sp < 0 ? line : line.slice(0, sp)).toLowerCase();
+    const rest = sp < 0 ? '' : line.slice(sp + 1).trim();
+    if (key === 'newmtl') {
+      /* THE THEME'S GREY, not a hardcoded one. A material with no Kd is
+         "whatever grey you like", and importMaterialContext already has a
+         rule for exactly that colour: it maps onto the Solid preset, which
+         follows the theme. Minting #cccccc instead gave every Kd-less MTL
+         material a fixed grey that stops following the theme for ever - the
+         trap themedGreyHex exists to keep files out of. */
+      /* NO Kd IS NOT A GREY. An .mtl that never states a colour is saying
+         "whatever colour you like", and this app already has a way to say
+         exactly that: `color: null`, which is what the Solid, Plastic and
+         Metal presets carry and what makes them follow the theme. Minting a
+         literal grey instead - #cccccc, or even the theme's own current
+         grey - freezes it, and that material stops following the theme for
+         ever, which is the trap themedGreyHex was written to keep files out
+         of. The flag is read by importMaterialContext. */
+      cur = { name: rest.slice(0, 32), color: new THREE.Color(DEFAULT_MATERIAL_COLOR),
+        kubikThemed: true, roughness: 1, metalness: 0,
+        _ns: null, _pr: null, _pm: null };
+      out.set(rest, cur);
+      return;
+    }
+    if (!cur) return;
+    const num = () => rest.split(/\s+/).map(parseFloat);
+    if (key === 'kd') {
+      const c = num();
+      // setRGB in sRGB, so getHexString() gives back exactly these bytes.
+      if (c.length >= 3 && c.slice(0, 3).every(Number.isFinite)) {
+        cur.color.setRGB(c[0], c[1], c[2], THREE.SRGBColorSpace);
+        cur.kubikThemed = false;
+      } else if (c.length === 1 && Number.isFinite(c[0])) {
+        // `Kd 0.8` is grey, per the spec - g and b default to r.
+        cur.color.setRGB(c[0], c[0], c[0], THREE.SRGBColorSpace);
+        cur.kubikThemed = false;
+      }
+      /* Anything else is a form this app cannot read - `Kd spectral f.rfl`,
+         or `Kd xyz 0.2 0.3 0.4`, which is CIE XYZ and NOT rgb. The slice
+         above is what rejects the xyz form: its first token is not a
+         number, and reading tokens 2-4 as rgb would be a wrong colour
+         rather than a missing one. */
+    } else if (key === 'ns') { const x = parseFloat(rest); if (Number.isFinite(x)) cur._ns = x; }
+    else if (key === 'pr') { const x = parseFloat(rest); if (Number.isFinite(x)) cur._pr = x; }
+    else if (key === 'pm') { const x = parseFloat(rest); if (Number.isFinite(x)) cur._pm = x; }
+  });
+  out.forEach(m => {
+    m.roughness = m._pr !== null ? m._pr
+      : (m._ns !== null ? Math.sqrt(2 / (Math.max(0, m._ns) + 2)) : 1);
+    m.metalness = m._pm !== null ? m._pm : 0;
+    delete m._ns; delete m._pr; delete m._pm;
+  });
+  return out;
+}
+
+/* The reader. One pass, because an .obj is a stream of statements and
+   nothing in it refers forwards.
+
+   POSITIONS ARE SHARED ACROSS THE WHOLE FILE and every object gets the whole
+   array. That is what the file says - `f` indexes the file's vertex list, not
+   an object's - and separateGroupVertices drops what a group does not use on
+   the way into geometry, so the waste never reaches a buffer. */
+function editableFromObjText(text, mtlText) {
+  const verts = [];
+  const mtls = parseMtl(mtlText);
+  const objects = [];
+  let cur = null;
+  let curMtl = '';
+  let skipped = 0;
+  /* `g` MEANS TWO DIFFERENT THINGS and the file says which. Blender writes
+     `o Name` per object; Maya, 3ds Max, SketchUp and most CAD exporters
+     write `g Name` per object and no `o` at all; and plenty of files write
+     `o Solid` once and then a `g` per material INSIDE it.
+
+     Treating every `g` as an object split turned that last case into one
+     Kubik object per material group - which also severs the connectivity, so
+     no op can cross the seam and the halves can never weld. So: if the file
+     uses `o` anywhere, `g` is a sub-group and never splits. If it does not,
+     `g` is the only thing that can split, and does. */
+  const hasO = /^[ \t]*o[ \t]/m.test(String(text || ''));
+  const start = (name) => {
+    cur = { name: (name || '').slice(0, 32), groups: [], tris: 0, matSrc: new Map() };
+    objects.push(cur);
+  };
+  const lines = String(text || '').split('\n');
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li].replace(/[\r\t]/g, ' ').trim();
+    if (!line || line[0] === '#') continue;
+    const sp = line.indexOf(' ');
+    const key = sp < 0 ? line : line.slice(0, sp);
+    const rest = sp < 0 ? '' : line.slice(sp + 1).trim();
+    if (key === 'v') {
+      const c = rest.split(/\s+/);
+      verts.push(+c[0], +c[1], +c[2]);
+    } else if (key === 'o' || (key === 'g' && !hasO)) {
+      /* A split before any faces have arrived is not a split - it is the
+         name of the thing about to be built. Only an EMPTY name is filled,
+         so `o Cube.001` followed by `g Cube.001_Material` keeps the better
+         of the two rather than the later one. */
+      if (cur && !cur.groups.length) { if (rest && !cur.name) cur.name = rest.slice(0, 32); }
+      else start(rest);
+    } else if (key === 'usemtl') {
+      curMtl = rest;
+    } else if (key === 'f') {
+      if (!cur) start('');
+      const toks = rest.split(/\s+/);
+      const ring = [];
+      let broken = false;
+      for (let t = 0; t < toks.length; t++) {
+        if (!toks[t]) continue;
+        // v, v/vt, v//vn, v/vt/vn - only the first field is position.
+        const vi = objResolveIndex(toks[t].split('/')[0], verts.length / 3);
+        /* A token that does not resolve - out of range, or a forward
+           reference in a file that lists faces before vertices - used to be
+           dropped, which silently turned `f 1 2 3 99` into a triangle. A
+           quad quietly becoming a triangle is worse than a missing face, so
+           the whole face goes and the count is reported. */
+        if (vi < 0 || vi * 3 + 2 >= verts.length) { broken = true; break; }
+        ring.push(vi);
+      }
+      if (broken) { skipped++; continue; }
+      /* DEDUPED BY WELDED POSITION, not by index. Two ring corners within
+         1e-4 of each other are ONE vertex to computeLogicalOf, and Inset and
+         Extrude map the boundary loop through exactly that welding - so a
+         sliver corner (`v 1 1 0` beside `v 0.99999 1 0`, ordinary in
+         CAD-tessellated .obj) gave a rim with a self-edge in it and an inset
+         that tore along a seam, with no refusal. Same key the rest of the
+         app welds by. */
+      const seen = new Set(), clean = [];
+      ring.forEach(v2 => {
+        const wk = importWeldKey(verts, v2);
+        if (!seen.has(wk)) { seen.add(wk); clean.push(v2); }
+      });
+      if (clean.length < 3) { skipped++; continue; }
+      /* Zero-area triangles dropped, the same rule mergeCoplanarTriangles
+         applies: they have no plane, no normal and no raycast hit, so a face
+         made only of them is a material slot and a budget slot that the user
+         can neither see nor select nor delete. */
+      const tris = triangulatePolygon(verts, clean)
+        .filter(t => !!importTriNormal(verts, t));
+      if (!tris.length) { skipped++; continue; }
+      /* ONE FACE PER `f`. No merge, no inference - the file said so. */
+      cur.groups.push({ triangles: tris, mat: curMtl });
+      cur.tris += tris.length;
+      if (!cur.matSrc.has(curMtl)) cur.matSrc.set(curMtl, mtls.get(curMtl) || null);
+    }
+  }
+  /* COMPACTED PER OBJECT, and this is not an optimisation - handing every
+     object the same array was a correctness bug with a very quiet symptom.
+
+     landImport recentres by subtracting the bounding-box centre from
+     `ed.positions` IN PLACE. With one shared array, the first object
+     subtracted the WHOLE FILE's centre and was placed back at it - correct
+     by luck - and the second then measured an array that had already been
+     shifted, got an offset of zero, and was placed at the origin. So every
+     object after the first landed displaced by the file's centre, and a file
+     centred on the origin (a Blender default cube) hid it completely.
+
+     It also delivers what the recentring comment always claimed and never
+     did: each object's origin is now its OWN centre, so rotate and scale
+     pivot inside it rather than around a point in another object. And the
+     `Number.isFinite` sweep downstream becomes reference-aware for free - a
+     malformed `v` that no face uses is no longer in anybody's array. */
+  const outObjs = objects.filter(o => o.groups.length).map(o => {
+    const remap = new Map();
+    const positions = [];
+    o.groups.forEach(g => g.triangles.forEach(t => {
+      for (let i = 0; i < 3; i++) {
+        let ni = remap.get(t[i]);
+        if (ni === undefined) {
+          ni = positions.length / 3;
+          remap.set(t[i], ni);
+          positions.push(verts[t[i] * 3], verts[t[i] * 3 + 1], verts[t[i] * 3 + 2]);
+        }
+        t[i] = ni;
+      }
+    }));
+    return { name: o.name, ed: { positions, groups: o.groups, triCount: o.tris, matSrc: o.matSrc } };
+  });
+  /* Hung off the array rather than wrapping it in an object: every caller
+     wants the list, and one wants the footnote. */
+  outObjs.skipped = skipped;
+  return outObjs;
+}
+
+function importObjText(text, mtlText, label) {
+  /* REFUSED BEFORE IT IS PARSED. The accurate count only exists after every
+     face has been ear-clipped, and on a 2-million-triangle file that is two
+     million clipper runs before the app gets to say no - which is the exact
+     hang the budget exists to prevent. One `f` is at least one triangle, so
+     counting the lines is a sound lower bound and costs one regex. */
+  const fLines = (String(text || '').match(/^[ \t]*f[ \t]/gm) || []).length;
+  if (fLines > IMPORT_TRI_BUDGET) {
+    toast(Math.round(fLines / 1000) + 'k faces - too heavy to edit (limit ' +
+      Math.round(IMPORT_TRI_BUDGET / 1000) + 'k)');
+    return;
+  }
+  const built = editableFromObjText(text, mtlText);
+  if (!built.length) { toast('No faces in that .obj'); return; }
+  landImport(built, label, built.skipped);
 }
 
 async function importGltfBuffer(buf, label) {
@@ -19488,10 +19810,46 @@ async function importGltfBuffer(buf, label) {
   for (const part of parts) {
     const ed = editableFromImportedMeshes(part.meshes);
     if (!ed || !ed.groups.length) continue;
-    faceTotal += ed.groups.length;
-    built.push({ part, ed });
+    built.push({ name: part.name, ed });
   }
+  landImport(built, label);
+}
+
+/* EVERY READER ENDS HERE (a2.70). glTF and OBJ disagree about almost
+   everything - what a face is, how materials are named, whether there is a
+   scene graph at all - and agree completely about what comes out: a list of
+   `{ name, ed }`, where `ed` is the same `{ positions, groups, triCount }`
+   the app's own ops speak, optionally with a `matSrc` map behind the groups'
+   `mat` keys.
+
+   So both budgets, the finite sweep, the recentring, the material mapping,
+   the selection, the history step and the toast are written once, here, and
+   a new format is a parser and nothing else. */
+function landImport(built, label, skipped) {
   if (!built.length) { toast('Nothing importable in that file'); return; }
+  /* BOTH BUDGETS AND THE FINITE SWEEP ARE HERE, not in the readers. Each
+     reader may also refuse early - the glTF one counts triangles off the
+     geometry before converting, the .obj one counts `f` lines before
+     parsing - but those are optimisations. This is the one a fourth format
+     cannot forget to write. */
+  let faceTotal = 0, triTotal = 0;
+  built.forEach(b => { faceTotal += b.ed.groups.length; triTotal += (b.ed.triCount || 0); });
+  if (triTotal > IMPORT_TRI_BUDGET) {
+    toast(Math.round(triTotal / 1000) + 'k triangles - too heavy to edit (limit ' +
+      Math.round(IMPORT_TRI_BUDGET / 1000) + 'k)');
+    return;
+  }
+  /* One non-finite coordinate is enough to NaN a whole object: it survives
+     the recentring, every position becomes NaN, and the mesh is
+     unrenderable and unpickable - after it has been pushed to history and
+     handed to the autosave. */
+  for (const b of built) {
+    for (let i = 0; i < b.ed.positions.length; i++) {
+      if (!Number.isFinite(b.ed.positions[i])) {
+        toast('That file has broken coordinates'); return;
+      }
+    }
+  }
   if (faceTotal > IMPORT_FACE_BUDGET) {
     toast(faceTotal + ' faces - too many to edit (limit ' + IMPORT_FACE_BUDGET +
       '). It is probably a scan or a smooth-shaded model.');
@@ -19502,7 +19860,7 @@ async function importGltfBuffer(buf, label) {
   /* ONE context for the whole file, so two objects that share a material
      share the library entry too. */
   const matCtx = importMaterialContext();
-  built.forEach(({ part, ed }, i) => {
+  built.forEach(({ name, ed }, i) => {
 
     /* CENTRED ON ITS OWN ORIGIN, and positioned by the mesh - the way every
        primitive this app makes is built. The world transform is baked into
@@ -19527,7 +19885,7 @@ async function importGltfBuffer(buf, label) {
     }
 
     const obj = createCubeObject(
-      built.length > 1 ? (part.name || label + ' ' + (i + 1)) : label,
+      built.length > 1 ? (name || label + ' ' + (i + 1)) : label,
       new THREE.Vector3(ox, oy, oz));
     obj.mesh.material.forEach(mm => mm.dispose());
     obj.mesh.material = makeMaterialSet(ed.groups.length, DEFAULT_MATERIAL_COLOR);
@@ -19569,20 +19927,47 @@ async function importGltfBuffer(buf, label) {
   toast('Imported ' + made.length + (made.length === 1 ? ' object' : ' objects') +
     ' - ' + faces + ' faces from ' + tris + ' triangles' +
     (matCtx.minted ? ', ' + matCtx.minted + ' new material' +
-      (matCtx.minted === 1 ? '' : 's') : ''));
+      (matCtx.minted === 1 ? '' : 's') : '') +
+    /* Said out loud. A face whose indices did not resolve is dropped whole
+       rather than quietly shrunk, and a silent drop is how a model comes in
+       with a hole nobody can account for. */
+    (skipped ? '. ' + skipped + ' face' + (skipped === 1 ? '' : 's') +
+      ' skipped - the file references vertices it does not have' : ''));
 }
 
 function wireImport() {
   const el = document.getElementById('fileImport');
   if (!el) return;
   el.addEventListener('change', async (ev) => {
-    const f = ev.target.files && ev.target.files[0];
+    const files = Array.from(ev.target.files || []);
     ev.target.value = '';            // same file twice must work
-    if (!f) return;
-    const stem = f.name.replace(/\.[^.]+$/, '').slice(0, 32) || 'Imported';
+    if (!files.length) return;
+    const ext = f => (f.name.match(/\.([^.]+)$/) || [, ''])[1].toLowerCase();
+    /* The .mtl is a SIDECAR, never the subject: picking one on its own is
+       picking a palette with no model, and saying so is better than
+       "Could not read that file". */
+    const mtl = files.find(f => ext(f) === 'mtl');
+    const models = files.filter(f => ext(f) !== 'mtl');
+    if (!models.length) { toast('That is a material file - pick the .obj as well'); return; }
+    /* `multiple` is on for the .mtl sidecar and for nothing else. Two models
+       in one selection used to open the first and drop the rest without a
+       word, which the control's own affordance invited. */
+    if (models.length > 1) toast('One model at a time - opening ' + models[0].name);
+    const main = models[0];
+    const kind = ext(main);
+    const stem = main.name.replace(/\.[^.]+$/, '').slice(0, 32) || 'Imported';
     try {
-      toast('Reading ' + f.name + '…');
-      await importGltfBuffer(await f.arrayBuffer(), stem);
+      toast('Reading ' + main.name + '…');
+      if (kind === 'obj') {
+        /* An .obj names its .mtl, but the browser cannot go and fetch it -
+           a file input hands over the files it was given and nothing else,
+           and there is no directory to resolve `mtllib` against. So the
+           sidecar is whatever was selected alongside, and its absence is
+           silent: the model still opens, on Solid. */
+        importObjText(await main.text(), mtl ? await mtl.text() : '', stem);
+      } else {
+        await importGltfBuffer(await main.arrayBuffer(), stem);
+      }
     } catch (err) {
       console.error('import failed', err);
       toast('Could not read that file');
@@ -22074,6 +22459,8 @@ if (PICK_DEBUG) {
     collectImportableMeshes, buildExportGroup,
     // a2.69: the glTF-PBR -> library mapping, askable of one material.
     importMaterialContext,
+    // a2.70: OBJ, and the shared landing the three readers all end at.
+    editableFromObjText, importObjText, triangulatePolygon, parseMtl, landImport,
     // Winding: __kubik.windingAudit() for every object, or (id) for one.
     auditWinding, windingAudit,
     // The captured plane: __kubik.symmetryPlane(obj, axis).

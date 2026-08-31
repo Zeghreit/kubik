@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~20,700 lines)
-- Version at time of writing: **a2.69**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~21,070 lines)
+- Version at time of writing: **a2.70**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -30,7 +30,7 @@ still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
 
-## Import (a2.68 geometry, a2.69 materials) - READ BEFORE OLDER SECTIONS
+## Import (a2.68 glTF, a2.69 materials, a2.70 OBJ) - READ BEFORE OLDER SECTIONS
 
 The pipeline is one line long, because the app already owns both ends of it:
 
@@ -130,6 +130,106 @@ scaled, single-loop output. It now carries foreign fixtures: a square annulus
 with a hole, a negative-scale node, and a hand-built interleaved buffer with
 a poison value in the spare channels.
 
+## OBJ (a2.70)
+
+**Hand-written, and that is the whole point.** `three/addons/loaders/OBJLoader.js`
+fan-triangulates every face on the way in and returns a BufferGeometry, so a
+cube's six quads arrive as twelve triangles - and the importer would then have
+to GUESS them back together with the coplanar merge, exactly as it must for a
+.glb. But an .obj already says, in the file, which triangles are one face.
+`f 1 2 3 4` IS a quad. Throwing that away and inferring it again is the one
+thing this reader must not do.
+
+**So there is no merge pass on this path at all**, and none of its
+compromises. Two coplanar quads a modeller deliberately kept apart stay two
+faces; a concave face stays one face. `IMPORT_COPLANAR_DOT` is not consulted.
+
+Read: `v`, `f`, `o`, `g`, `usemtl`, `mtllib`. Ignored: `vt`, `vn`, `s` - this
+app has no UVs and derives its own normals.
+
+### Every reader ends at `landImport`
+
+glTF and OBJ agree on nothing except what comes out: a list of `{ name, ed }`
+where `ed` is the `{ positions, groups, triCount }` the app's own ops speak.
+`landImport` owns **both budgets, the non-finite sweep, the recentring, the
+material mapping, the selection, the history step and the toast** - so a third
+format is a parser and nothing else, and cannot forget a refusal. Readers may
+also refuse early (glTF counts triangles off the geometry before converting,
+OBJ counts `f` lines before parsing); those are optimisations, not the rule.
+
+### `g` means two different things and the file says which
+
+Blender writes `o Name` per object. Maya, 3ds Max, SketchUp and most CAD
+exporters write `g Name` per object and no `o` at all. And plenty of files
+write `o Solid` once and then a `g` per material INSIDE it.
+
+**So: if the file uses `o` anywhere, `g` is a sub-group and never splits. If
+it does not, `g` is the only thing that can split, and does.** Splitting on
+every `g` turned one cube into one object per material group - and severed the
+connectivity, so no op could cross the seam and the halves could never weld.
+
+### An n-gon is ear-clipped, not fanned
+
+A fan over a concave face produces triangles that stick out past the shape,
+and their SIGNED areas still sum to the right number, so only an unsigned-area
+test catches it. The polygon's Newell normal picks a 2D frame (drop the
+dominant axis; all three frames are right-handed, so the projection is never
+mirrored), `THREE.ShapeUtils.triangulateShape` clips it, and the winding is
+compared back against Newell.
+
+**That comparison is made against the SUM of all triangle normals, never
+`tris[0]`.** Ear clipping emits zero-area triangles routinely - a collinear
+ear is what you get the moment a neighbouring face's vertex lands on this
+face's edge - and `importTriNormal` returns null for one. Testing the first
+triangle alone meant that whenever the clipper put a degenerate ear first, the
+whole n-gon kept the clipper's winding: a back-facing face in the middle of the
+model, which reads as a hole that moves when you orbit.
+
+### Two things that look like tidiness and are not
+
+- **Ring vertices are deduped by WELDED POSITION, not by index.** Two corners
+  within 1e-4 are one vertex to `computeLogicalOf`, and Inset and Extrude map
+  the boundary loop through exactly that welding - so a sliver corner
+  (`v 1 1 0` beside `v 0.99999 1 0`, ordinary in CAD-tessellated .obj) gave a
+  rim with a self-edge in it and an inset that tore, with no refusal.
+- **Every object gets its own compacted positions array.** Sharing one was a
+  correctness bug with a silent symptom: `landImport` recentres in place, so
+  the first object subtracted the whole file's centre and was placed back at
+  it - correct by luck - and the second measured an already-shifted array, got
+  an offset of zero, and went to the origin. A file centred on 0,0,0 (a
+  Blender default cube) hides it completely. Compacting also finally delivers
+  what the recentring comment always claimed: each object's origin is its own
+  centre, so it pivots inside itself.
+
+### A face that does not resolve is dropped WHOLE
+
+`f 1 2 3 99` in a four-vertex file used to become a triangle. A quad quietly
+shrinking is worse than a missing face, so the face goes and the toast says
+how many. Zero-area faces are dropped too, on `mergeCoplanarTriangles`' rule:
+they have no plane, no normal and no raycast hit, so one would be a material
+slot and a budget slot the user can neither see, select nor delete.
+
+### The .mtl is a sidecar the browser cannot fetch
+
+An .obj names its `mtllib`, but a file input hands over the files it was given
+and there is no directory to resolve against - so the sidecar is whatever was
+selected alongside, and its absence is silent: the model opens on Solid. That
+is why the control takes `multiple` and says so.
+
+`Kd` is read as sRGB, the space the picker writes. `Ns` is a Blinn-Phong
+exponent and is converted - `roughness = sqrt(2 / (Ns + 2))`, so Ns 0 is rough
+1 and Ns 1000 is 0.045. `Pr` and `Pm` are the PBR extension nearly every
+modern exporter writes; where they exist they win, because they mean exactly
+what this app means.
+
+**A material with no `Kd` gets `color: null`, not a grey.** An .mtl that never
+states a colour is saying "whatever colour you like", and `color: null` is how
+this app already says that - it is what the presets carry and what makes them
+follow the theme. Minting a literal grey (even the theme's own current one)
+freezes it, and that material stops following the theme for ever. glTF has no
+equivalent case: the spec gives `baseColorFactor` a default of `[1,1,1,1]`, so
+an unstated colour cannot arrive on that path.
+
 ### Materials (a2.69)
 
 glTF's core PBR numbers are the three this app already stores, so the mapping
@@ -208,7 +308,12 @@ Blender used to show `Material.001` six times. `OBJExporter` only emits
 ### Still to do, and known
 
 Deliberately out of this increment, recorded so they are not discovered as
-surprises: OBJ and STL are not read yet; an imported material's texture,
+surprises: STL is not read yet (and is deliberately absent from the file
+picker's `accept` until it is - offering a format the app refuses is worse
+than not offering it); a non-planar quad becomes one face group whose interior
+diagonal `computeTopology` will not expose, so a bent face cannot be creased -
+the .glb path would have refused to merge those two triangles and given two
+selectable faces instead; an imported material's texture,
 emissive and opacity are dropped (see Materials above); the material budget is
 per-import, not per-library, so ten imports can leave 640 entries in a tray
 that renders a sphere for each, and undo does not remove a minted entry - it
