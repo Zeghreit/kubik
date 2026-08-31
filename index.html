@@ -1247,7 +1247,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.58a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.59a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -2083,6 +2083,29 @@ const THEME = {
      a glance, which matters more here than palette tidiness. */
   select: 0xff4d47, vert: 0x8b93a3, edge: 0x656d80, crease: 0xff7a45,
   material: 0x303338
+};
+
+/* THE SELECTION FOLLOWS THE MODE (a2.59).
+
+   a2.58 put the mode's colour on the chrome and deliberately left the
+   viewport alone, on the v1.91 reasoning that the selection should wear a
+   colour nothing else in the app wears. Tried in use, the split read as two
+   unrelated systems: the whole screen says "you are editing edges" and the
+   edge you picked says something else.
+
+   So these are the same three hues as the chrome, pushed brighter and more
+   saturated because they have to sit on a lit grey surface rather than on a
+   dark panel - the chrome values are tuned for #181b21 and would sink into
+   the model. Object mode keeps THEME.select: there are no components to
+   select there, and the frame is what marks a chosen object.
+
+   They stay clear of the two things the viewport already says in colour:
+   the axis guides (X #C85A47, Y #E8C87A, Z #4A82B8) are all darker and
+   greyer than these, and the crease/sharp marks are orange, not gold. */
+const MODE_SELECT = {
+  vertex: 0xFFC24D,   // gold
+  edge:   0x4FB0FF,   // sky
+  face:   0xFF6A4D    // salmon
 };
 
 let SELECT_COLOR = THEME.select;
@@ -11132,6 +11155,14 @@ function refreshElementColors(obj) {
   const points = obj.mesh.userData.vertexPoints;
   const lines = obj.mesh.userData.edgeLines;
   const topo = obj.mesh.userData.topo;
+  /* NO TOPOLOGY, NOTHING TO SAY (a2.59a). Every real path builds and drops
+     topo, vertexPoints and edgeLines together, so this used to be
+     unreachable - but a2.57 made "an object with no helpers at all" the
+     normal state for anything you are not editing, and both applyTheme and
+     applyModeSelectColor sweep EVERY object. One of them meeting a mesh
+     with dots but no topology threw and took the whole refresh with it.
+     Cheap, and it is the guard the two sweeps have always implied. */
+  if (!topo) return;
   /* Both vertex and edge colours are refreshed every time, not just the
      active mode's - they're now both on screen in any component mode, so
      the inactive one would otherwise sit there showing a stale selection
@@ -11746,6 +11777,37 @@ function updateFrameVisibility() {
     const pts = o.mesh.userData.vertexPoints;
     if (pts) pts.material.color.setScalar(FRAME_ACTIVE);
   });
+}
+
+/* Called when the MODE changes, which is the only thing that moves
+   SELECT_COLOR now. setMode clears the element selection, so in practice
+   there is usually nothing to repaint - but switchToComponentType and a
+   restore both land here with a live selection, and the overlays bake the
+   colour into their materials rather than reading it per frame. */
+function applyModeSelectColor() {
+  const next = MODE_SELECT[App.mode] || THEME.select;
+  /* Nothing to repaint if the colour did not actually move. Worth the
+     check: switchToComponentType and restoreDoc both reach refreshUI having
+     already run refreshElementColors once, so without this every
+     type-switching tap walks every vertex and edge twice. */
+  if (next === SELECT_COLOR) return;
+  SELECT_COLOR = next;
+  App.objects.forEach(o => {
+    const ud = o.mesh.userData;
+    if (ud.selPoints) ud.selPoints.material.color.setHex(SELECT_COLOR);
+    if (ud.selLines) ud.selLines.material.color.setHex(SELECT_COLOR);
+    if (ud.faceOverlay) ud.faceOverlay.material.color.setHex(SELECT_COLOR);
+  });
+  /* EVERY OBJECT, not just the active one. The per-vertex colour arrays
+     hold the selection colour as DATA, and an object that used to be
+     active keeps the buffer it was last painted with: the two re-target
+     paths (the Scene chip and handleTap) clear the selection and hide the
+     helpers, but neither repaints. Before a2.59 that stale buffer always
+     held the one red, so coming back to that object showed a phantom
+     selection; painting only the active object would have made it a
+     phantom in the WRONG HUE, contradicting the chrome. applyTheme has
+     always swept all objects for exactly this reason. */
+  App.objects.forEach(o => refreshElementColors(o));
 }
 
 function hideAllHelpers() {
@@ -19910,6 +19972,11 @@ function refreshUI() {
      the UI. Written only when it differs, because touching an attribute on
      the root element invalidates style for the entire document. */
   if (document.documentElement.dataset.mode !== App.mode) {
+    /* The colour BEFORE the attribute, because the attribute is the gate:
+       a throw inside the repaint would otherwise leave the gate satisfied
+       and the selection colour stuck on the previous mode for the whole
+       session, with no way to retry it. */
+    applyModeSelectColor();
     document.documentElement.dataset.mode = App.mode;
   }
   /* A SELECTION CAN OUTLIVE ITS OBJECT. The six "that collapsed the whole

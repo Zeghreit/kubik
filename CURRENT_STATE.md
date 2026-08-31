@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~20,200 lines)
-- Version at time of writing: **a2.58a**
+- Version at time of writing: **a2.59a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1813,6 +1813,78 @@ otherwise the inspector reports the position the object was reflected FROM.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
 
+## The selection follows the mode (a2.59)
+
+**a2.58 stopped at the chrome on purpose. In use, that was the wrong
+place to stop.** The whole screen said "you are editing edges" and the edge
+you had picked said something else — two systems that did not agree.
+Zeghreit, after looking at it: *"how about making selection color match
+component color? now chrome changing its color but selection is still red on
+all components."*
+
+```js
+const MODE_SELECT = { vertex: 0xFFC24D, edge: 0x4FB0FF, face: 0xFF6A4D };
+```
+
+Gold, sky, salmon — the same three hues as the chrome, **pushed brighter and
+more saturated**, because they have to sit on a lit grey surface rather than
+on a dark panel. The chrome values are tuned for `#181b21` and would sink
+into the model. Object mode keeps `THEME.select`: there are no components to
+select there, and the frame is what marks a chosen object.
+
+**This does not repeal v1.91.** That decision was *the selection must not
+wear a colour that reads as something else on the model* — it was written
+after an accent-coloured selection disappeared against a blue-grey cube.
+These three are still colours nothing else in the viewport wears: all three
+are brighter and more saturated than the axis guides (X `#C85A47`, Y
+`#E8C87A`, Z `#4A82B8`), and the crease and sharp marks are orange, not
+gold. What changed is that "the one selection colour" became "the one
+selection colour *per mode*" — and the mode is now unmistakable, so the
+colour is still unambiguous.
+
+`applyModeSelectColor()` runs from the same hook as Mode Hue — the one place
+in `refreshUI` that notices the mode changed. It early-returns when the
+colour has not actually moved, and repaints the two kinds of consumer:
+
+- **Materials that bake the colour** — `selPoints`, `selLines`,
+  `faceOverlay`. They read `SELECT_COLOR` when they are built, not per
+  frame.
+- **The per-vertex colour arrays**, via `refreshElementColors` on **every
+  object, not just the active one**. An object that stops being active
+  keeps the buffer it was last painted with, and neither re-target path (the
+  Scene chip, `handleTap`) repaints. Before a2.59 that stale buffer always
+  held the one red and read as a phantom selection; painting only the active
+  object would have made it a phantom in the *wrong hue*, contradicting the
+  chrome.
+
+The colour is applied BEFORE the `data-mode` attribute, because the
+attribute is the gate: a throw inside the repaint would otherwise leave the
+gate satisfied and the colour stuck on the previous mode for the session.
+
+### The crash this uncovered (a2.59a)
+
+Sweeping every object made a latent hole reachable. `refreshElementColors`
+had no `topo` guard — every real path builds and drops `topo`,
+`vertexPoints` and `edgeLines` together, so a mesh with dots but no
+topology was impossible. **a2.57 changed that premise**: "no helpers at
+all" became the normal state for anything you are not editing. The first
+sweep to meet such a mesh threw `Cannot read properties of null (reading
+'logicalCount')` and took the whole refresh with it — and `applyTheme` has
+been sweeping every object the same way since long before a2.59, so this
+was a live trap, not a new one.
+
+`if (!topo) return;` at the top of `refreshElementColors`. **Fifth entry in
+the same ledger**: a change that removes work removes a premise something
+else was quietly standing on. Here the removed work was a2.57's "give every
+object helpers", and the premise was "an object with dots has topology".
+
+Caught by `_lock_probe`, which nulls `topo` deliberately to prove framing
+does not rebuild it — an artificial state that turned out to be the exact
+shape of a real one.
+
+Covered by `_theme_probe` section 7: the three overlay colours, that they
+are distinct, and the stale-buffer case.
+
 ## Mode Hue — the accent IS the mode (a2.58)
 
 **One accent at a time, and which accent tells you what you are editing.**
@@ -1846,8 +1918,10 @@ in the mode's colour. Absent in Object mode rather than grey — a permanent
 stripe would be the top bar coming back, and a2.48 deleted that for costing
 7.2% of the screen.
 
-**IT STOPS AT THE CHROME.** This was the design decision, and it was
-Zeghreit's: the canvas proposed giving the selection highlight the mode
+**IT STOPPED AT THE CHROME — until a2.59 moved the line.** Read the
+section above for where it ended up; the reasoning below is why the split
+was drawn here first, and it still governs everything except the selection
+highlight. The decision was Zeghreit's: the canvas proposed giving the selection highlight the mode
 colour too, so hairline, mode button and highlight would all agree. The
 viewport already has two vocabularies that were decided on the record —
 **red means selected** (v1.91: an accent-coloured selection disappeared
