@@ -1267,7 +1267,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.61a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.62a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -1711,7 +1711,10 @@ function applyEnvRig() {
   /* Flat, not scaled by the preset's ambient. The preset's sky and ground
      COLOURS still come through; its overall level does not, or the darker
      presets go dim again through the back door. */
-  hemi.intensity = t.hemi.intensity * gain;
+  const mv = modeView();
+  hemi.intensity = t.hemi.intensity * gain * mv.hemi;
+  // Face mode flattens the hemisphere into a plain ambient (see MODE_VIEW).
+  if (mv.flat) hemi.groundColor.copy(hemi.color);
 
   const panels = (spec.lights || []).slice().sort((a, b) => envPanelWeight(b) - envPanelWeight(a));
   /* Brightest panel drives the KEY, which is also the shadow caster. The
@@ -1738,7 +1741,10 @@ function applyEnvRig() {
     const p = panels[i];
     if (!p) { slot.light.intensity = 0; return; }
     slot.light.color.setHex(new THREE.Color(p.color).getHex());
-    slot.light.intensity = (wsum > 0 ? budget * (envPanelWeight(p) / wsum) : 0) * gain;
+    /* The mode's key factor lands HERE and not on the preview rig below:
+       a thumbnail in the shelf is a picture of a material, and it should
+       look the same whatever you are editing. */
+    slot.light.intensity = (wsum > 0 ? budget * (envPanelWeight(p) / wsum) : 0) * gain * mv.key;
     /* The shadow caster's elevation is floored. A sunset key sits at 6
        degrees, and a shadow cast from the horizon runs off the end of the
        shadow camera and turns into a smear. Azimuth and colour still
@@ -1767,7 +1773,13 @@ function applyEnvRig() {
 // re-bake, no prefilter, no recompile. They are free; treat them as free.
 function applyEnvLive() {
   scene.environmentRotation.y = (App.env.rotation || 0) * Math.PI / 180;
-  scene.environmentIntensity = App.env.intensity;
+  /* THE IMAGE-BASED LIGHT IS A LIGHT (a2.62a). Multiplying only the four
+     analytic lights left a metal - lit almost entirely by the environment
+     reflection - barely dimmed in Vertex and Edge, and impossible to
+     flatten in Face: the reflection kept the gradient the flat hemisphere
+     exists to remove. Even the default Solid finish carries an
+     envMapIntensity of 0.5, so it was never only about metals. */
+  scene.environmentIntensity = App.env.intensity * modeView().env;
   applyEnvRig();   // the analytic lights turn with the reflections
   if (_matPreviewRig) {
     _matPreviewRig.sc.environmentRotation.y = scene.environmentRotation.y;
@@ -2557,7 +2569,82 @@ let gizmoTarget = null;
    the pixel ratio or dots come out three times too small on a phone. */
 const VERTEX_DOT_PX = 2;
 function vertexDotSize() {
-  return VERTEX_DOT_PX * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1);
+  return VERTEX_DOT_PX * modeView().dot * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1);
+}
+
+/* ---------------- MODE, ALL THE WAY DOWN (a2.62) ----------------
+
+   a2.58 put the mode's colour on the chrome and a2.59 on the selection.
+   This is the rest of the thought: the VIEWPORT knows what mode you are in
+   too, so let it show you the thing you can act on. Before this, every mode
+   rendered the model identically and you found out which one you were in by
+   tapping something and seeing what got selected.
+
+   FOUR NUMBERS, and not one of them touches a material. That is the whole
+   trick. The helpers - dots and wireframe - use unlit materials, and the
+   model does not, so turning the LIGHTS down steps the surface back while
+   leaving the components exactly as bright as they were. Nothing is saved
+   and restored, no user colour is mutated, and the undo history never sees
+   it. `hemi` and `key` are separate because Face needs them to move in
+   opposite directions: ambient up and directional down is what flattens a
+   surface into panels.
+
+   - Object: the model as it is. Nothing changes; this is the reference.
+   - Vertex: the surface steps back so the points can step forward. Half
+     light, dots at double size.
+   - Edge: the wireframe becomes the subject. Dimmest surface, and the
+     frame multiplier drives the edge colour well past its own value -
+     which the ACES tone mapping rolls off rather than clipping, so it
+     reads brighter without going chalky. (Genuinely THICKER lines would
+     mean Line2 for every object's wireframe; brightness buys the same read
+     at 1px and costs nothing.)
+   - Face: flat panels with dark seams. Ambient up, key down, and the frame
+     multiplier below 1 turns the wireframe into a seam rather than a
+     highlight.
+
+   THE MATERIAL TRAY SUSPENDS ALL OF IT. With the tray open you are looking
+   at surfaces, not at components, and a mode that dims the surface hides
+   the thing you just applied. Zeghreit's call, and it needs no setting: the
+   viewport goes plain while the tray is open and comes back when it closes.
+
+   THE ESCAPE IS OBJECT MODE, which renders plain by definition and is one
+   tap away in the corner. It costs you the component selection, which is
+   the honest price of stepping back to look at the whole thing. */
+const MODE_VIEW = {
+  object: { hemi: 1.00, key: 1.00, env: 1.00, frame: 2.00, dot: 1.0 },
+  vertex: { hemi: 0.55, key: 0.45, env: 0.50, frame: 1.10, dot: 1.6 },
+  edge:   { hemi: 0.50, key: 0.40, env: 0.45, frame: 3.40, dot: 1.0 },
+  /* `flat` makes the hemisphere UNIFORM by giving it its own sky colour on
+     the ground side. Raising the ambient alone was not enough: a
+     HemisphereLight still shades by normal.y, so the top face stayed
+     brighter than the sides and the model went on reading as a lit solid
+     rather than as panels.
+
+     What actually does the flattening is taking the KEY and the ENVIRONMENT
+     away - they are what models a surface - and the hemisphere is only
+     putting back a base level so the panels are not black. Measured, it
+     contributes little either way: 1.30 and 1.95 look nearly the same,
+     because the theme's sky colour is dim by design. Face mode ends up a
+     shade darker than Object as a result, which is the honest trade for
+     panels that read as regions rather than as a lit solid. The wireframe
+     below 1 draws the seams between them. */
+  face:   { hemi: 1.95, key: 0.28, env: 0.40, frame: 0.35, dot: 1.0, flat: true }
+};
+let modeViewSuspended = false;
+function modeView() {
+  return MODE_VIEW[modeViewSuspended ? 'object' : App.mode] || MODE_VIEW.object;
+}
+/* Called when the mode changes and when the tray opens or closes. The dots
+   and the wireframe are updated by updateFrameVisibility, which every
+   refresh runs anyway; only the lights need saying here. */
+function refreshModeView() {
+  /* applyEnvLive, not applyEnvRig: the environment intensity is the fourth
+     light and it lives there, and applyEnvLive calls the rig itself.
+     Rotation and intensity are live scene properties in this three - no
+     re-bake, no prefilter, no recompile - so this is as cheap as setting
+     the four analytic intensities on their own. */
+  if (App.env) applyEnvLive();
+  invalidate();
 }
 
 /* PointsMaterial draws an untextured point as a SQUARE. At 4px nobody could
@@ -11385,6 +11472,15 @@ function splitSelection() {
    ColorManagement converts sRGB to the linear working space on the way in, so
    hex>>16 over 255 is a DIFFERENT colour, not the same one faster. */
 const _setColScratch = new THREE.Color();
+/* Like setCol, but scaled - and deliberately NOT clamped. Values above 1
+   run the colour hot, which the ACES tone mapping rolls off rather than
+   clipping, so a wireframe can read brighter without going chalky. */
+function setColScaled(arr, i, hex, k) {
+  arr[i * 3] = (hex >> 16 & 255) / 255 * k;
+  arr[i * 3 + 1] = (hex >> 8 & 255) / 255 * k;
+  arr[i * 3 + 2] = (hex & 255) / 255 * k;
+}
+
 function setCol(arr, i, hex) {
   _setColScratch.setHex(hex);
   arr[i * 3] = _setColScratch.r;
@@ -11480,8 +11576,19 @@ function refreshElementColors(obj) {
     const hasCreases = Object.keys(creases).length > 0;
     const hasShade = Object.keys(shade).length > 0;
     const showSel = App.mode === 'edge';
+    /* THE MODE'S MULTIPLIER BELONGS TO THE PLAIN WIREFRAME ALONE (a2.62a).
+       It used to be a scalar on the whole material, and this one buffer
+       carries four different things: the plain edge, the crease mark, the
+       sharp mark and the selected edge. Face mode's 0.35 dimmed the crease
+       and sharp marks to a third - in the mode you set creases in - while
+       brightening the surface behind them; Edge mode's 3.4 drove both of
+       them up the tone-mapping roll-off toward the same white, when the
+       whole point of those two colours is that they never read as the same
+       thing on one mesh. Only the plain edge is scaled now, and the
+       material multiplier stays at 1. */
+    const wire = modeView().frame;
     topo.edges.forEach((e, i) => {
-      let c = UNSELECT_EDGE_COLOR;
+      let c = UNSELECT_EDGE_COLOR, k = wire;
       /* Both marks read at a glance: the crease colour says what a smooth
          Subdivide will hold, the sharp colour says where the shading breaks.
          Sharp is checked last of the two so that an edge carrying both shows
@@ -11489,10 +11596,10 @@ function refreshElementColors(obj) {
          you are most likely to be hunting for. */
       const key = (hasCreases || hasShade)
         ? creaseKeyFor(logicalPos(obj, e[0]), logicalPos(obj, e[1])) : null;
-      if (hasCreases && creases[key]) c = CREASE_COLOR;
-      if (hasShade && shade[key] === 'sharp') c = SHARP_COLOR;
-      if (showSel && App.selectedElements.has(i)) c = SELECT_COLOR;
-      setCol(col, i * 2, c); setCol(col, i * 2 + 1, c);
+      if (hasCreases && creases[key]) { c = CREASE_COLOR; k = 1; }
+      if (hasShade && shade[key] === 'sharp') { c = SHARP_COLOR; k = 1; }
+      if (showSel && App.selectedElements.has(i)) { c = SELECT_COLOR; k = 1; }
+      setColScaled(col, i * 2, c, k); setColScaled(col, i * 2 + 1, c, k);
     });
     lines.geometry.attributes.color.needsUpdate = true;
   }
@@ -11578,7 +11685,9 @@ function syncSelectionOverlay(obj) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
       const mat = new THREE.PointsMaterial({
-        size: SEL_DOT_PX * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1),
+        /* Scaled with the base dots, so the 3.5:1 ratio between selected
+           and unselected holds in the mode that grows them. */
+        size: SEL_DOT_PX * modeView().dot * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1),
         sizeAttenuation: false, map: vertexDotTexture(), alphaTest: 0.4,
         transparent: true, depthWrite: false, depthTest: false, fog: false
       });
@@ -11798,7 +11907,7 @@ function syncSoftOverlay(obj) {
     geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 4));
     const mat = new THREE.PointsMaterial({
-      size: SOFT_DOT_PX * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1),
+      size: SOFT_DOT_PX * modeView().dot * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1),
       sizeAttenuation: false, map: vertexDotTexture(),
       vertexColors: true, transparent: true, depthWrite: false, depthTest: false, fog: false
     });
@@ -12029,10 +12138,10 @@ function setActiveObjectHelpersVisible(obj, mode) {
   if (ov) ov.visible = false;
 }
 
-/* A plain multiplier on the theme's own edge colour. The framed object's
-   wireframe runs HOT - above 1 - which the ACES tone mapping rolls off
-   rather than clipping, so it reads brighter without going chalky. */
-const FRAME_ACTIVE = 2.0;
+/* The multiplier on the theme's own edge colour now comes from the MODE
+   (a2.62) - see MODE_VIEW. Above 1 the wireframe runs hot, which the ACES
+   tone mapping rolls off rather than clipping, so it reads brighter without
+   going chalky; below 1 it darkens into a seam. */
 
 /* THE FRAME MARKS WHAT A TAP CAN REACH, and nothing else (a2.57).
 
@@ -12056,14 +12165,23 @@ function updateFrameVisibility() {
   App.objects.forEach(o => {
     const on = framed(o);
     if (on) ensureHelpers(o);
+    /* The dots BEFORE the early return: they are a separate object, and
+       gating their size refresh on the wireframe existing meant a mode
+       change could leave them at the last mode's size. */
+    const pts = o.mesh.userData.vertexPoints;
+    if (pts) {
+      // Dots keep the object-mode weight whatever the mode is: a seam
+      // colour on a 2px dot is an invisible dot. Size carries the mode.
+      pts.material.color.setScalar(MODE_VIEW.object.frame);
+      pts.material.size = vertexDotSize();
+    }
     const lines = o.mesh.userData.edgeLines;
     if (!lines) return;
     lines.visible = on;
-    lines.material.color.setScalar(FRAME_ACTIVE);
-    // Dots only ever show on the active object, and at 2px they need to
-    // keep up with a wireframe that runs twice as bright.
-    const pts = o.mesh.userData.vertexPoints;
-    if (pts) pts.material.color.setScalar(FRAME_ACTIVE);
+    /* ONE, always. The mode's weight is baked per edge by
+       refreshElementColors so it lands on the plain wireframe and not on
+       the crease, sharp and selection marks that share this buffer. */
+    lines.material.color.setScalar(1);
   });
 }
 
@@ -14030,7 +14148,10 @@ function knifeWorldPoints() {
 function refreshKnifePreview() {
   // Same pixel-ratio rule the vertex dots use, and read fresh in case the
   // window moved to a screen with a different one.
-  knifeDotMat.size = vertexDotSize() * 3;
+  /* The knife's own size, not the mode's. vertexDotSize carries the mode
+     cue now, and knife placement dots have nothing to do with which
+     component type you are picking. */
+  knifeDotMat.size = VERTEX_DOT_PX * 3 * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1);
   const w = knifeWorldPoints();
   if (!w.length) { knifeDots.visible = false; knifeLine.visible = false; return; }
   const flat = [];
@@ -19336,6 +19457,13 @@ function setMatTrayOpen(open) {
   matFlyEl.classList.toggle('open', open);
   matTabEl.innerHTML = open ? '&#8250;' : '&#8249;';
   if (open) refreshMatTray();
+  /* THE TRAY SUSPENDS THE MODE'S LOOK (a2.62). A mode that dims the surface
+     hides the material you are in the middle of choosing, so while the tray
+     is open the viewport renders plain. refreshUI, not just refreshModeView,
+     because the dots and the wireframe are updated by updateFrameVisibility. */
+  modeViewSuspended = open;
+  refreshModeView();
+  refreshUI();
 }
 matTabEl.addEventListener('click', () => setMatTrayOpen(!matFlyEl.classList.contains('open')));
 
@@ -19841,6 +19969,7 @@ const HELP_SECTIONS = [
       [null, 'Pan', 'Two fingers together.'],
       [null, 'View cube', 'Top-right. Tap a face for a square-on, flat view. Panning and zooming stay flat; turning the view brings perspective back.'],
       [null, 'Perspective / Orthographic', 'The pill under the cube says which one you are in, and switches it.'],
+      [null, 'The view follows the mode', 'Vertex dims the surface and grows the dots, Edge lights the wireframe, Face flattens into panels with dark seams. Object mode shows the model plain, and opening the material tray does too.'],
       [null, 'Double tap', 'On empty space, frames your work. Inside a tool, cancels it.'],
       [null, 'Isolate', 'Three-finger pinch, Object mode. Squeeze and everything else goes; spread brings it back. A chip says how many are hidden.'],
       ['eye', 'See-through', 'Lets the selection show through the surface. From the ring on empty space.']
@@ -20266,6 +20395,8 @@ function refreshUI() {
        and the selection colour stuck on the previous mode for the whole
        session, with no way to retry it. */
     applyModeSelectColor();
+    // ...and the way the whole viewport is lit (a2.62).
+    refreshModeView();
     document.documentElement.dataset.mode = App.mode;
   }
   /* A SELECTION CAN OUTLIVE ITS OBJECT. The six "that collapsed the whole
@@ -20895,6 +21026,8 @@ if (PICK_DEBUG) {
        that wants to LOOK at it has no way to make it paint on demand. */
     engageOrtho, disengageOrtho, viewCube, cubeRenderer, cubeScene, cubeCam,
     get orthoOn() { return !!orthoView; },
+    MODE_VIEW, modeView, refreshModeView, setMatTrayOpen,
+    get modeViewSuspended() { return modeViewSuspended; },
     MATERIALS, getMaterialDef, updateMaterialEverywhere, saveMaterialLibrary,
     harvestLegacyMaterials, applyFinishToSelection,
     applyMaskPatch, ensureMaskPatches, rebakeMaskTexture,

@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~20,200 lines)
-- Version at time of writing: **a2.61a**
+- Version at time of writing: **a2.62a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -1812,6 +1812,94 @@ otherwise the inspector reports the position the object was reflected FROM.
   mirrored pair. `each` (the default for a pair) is unaffected.
 - The symmetry plane is captured, not live — see The symmetry plane below. If
   a model stops mirroring after a big change, re-tap Symmetry on.
+
+## Mode, all the way down (a2.62)
+
+The last idea from the design canvas, and the one Zeghreit picked: the
+**viewport** answers to the mode, not just the chrome. Before this, every
+mode rendered the model identically and you found out which one you were in
+by tapping something and seeing what got selected.
+
+| mode | hemi | key | env | wireframe | dots |
+|---|---|---|---|---|---|
+| Object | 1.00 | 1.00 | 1.00 | ×2.00 | ×1.0 |
+| Vertex | 0.55 | 0.45 | 0.50 | ×1.10 | ×1.6 |
+| Edge | 0.50 | 0.40 | 0.45 | ×3.40 | ×1.0 |
+| Face | 1.95 | 0.28 | 0.40 | ×0.35 | ×1.0, hemisphere **flat** |
+
+**Not one of those numbers touches a material.** That is the whole trick:
+the helpers — dots and wireframe — use UNLIT materials and the model does
+not, so turning the LIGHTS down steps the surface back while leaving the
+components exactly as bright as they were. Nothing is saved and restored, no
+user colour is mutated, and the undo history never sees it.
+
+- **Vertex** — the surface steps back so the points can step forward.
+- **Edge** — the wireframe becomes the subject. Genuinely thicker lines
+  would mean a `Line2` for every object's wireframe; driving the colour past
+  1.0 buys the same read at 1px and costs nothing, because the ACES tone
+  mapping rolls it off rather than clipping.
+- **Face** — flat panels with dark seams. `flat` makes the hemisphere
+  UNIFORM by giving it its own sky colour on the ground side: raising the
+  ambient alone was not enough, because a HemisphereLight still shades by
+  `normal.y`, so the top face stayed brighter and the model went on reading
+  as a lit solid. What actually flattens it is taking the KEY and the
+  ENVIRONMENT away — they are what models a surface. Face ends up a shade
+  darker than Object as a result, which is the honest trade.
+
+**The material tray suspends all of it.** A mode that dims the surface hides
+the material you are in the middle of choosing, so while the tray is open
+the viewport renders plain and snaps back when it closes. Zeghreit's call,
+and it needs no setting.
+
+**The escape is Object mode**, which renders plain by definition and is one
+tap away in the corner. It costs you the component selection, which is the
+honest price of stepping back to look at the whole thing. Nothing new was
+added for it.
+
+### What the review found (a2.62a)
+
+- **The image-based light is a light.** Only the four analytic lights were
+  multiplied, so a METAL — lit almost entirely by the environment
+  reflection — was barely dimmed in Vertex and Edge and impossible to
+  flatten in Face: the reflection kept the gradient the flat hemisphere
+  exists to remove. Even the default Solid finish carries an
+  `envMapIntensity` of 0.5, so it was never only about metals. The mode's
+  `env` factor now lands in `applyEnvLive`, which is where
+  `scene.environmentIntensity` lives — and which is documented as free: no
+  re-bake, no prefilter, no recompile.
+- **THE MARKS ARE NOT THE WIREFRAME.** The mode's weight started life as a
+  scalar on the `edgeLines` MATERIAL, and that one colour buffer carries
+  four different things: the plain edge, the crease mark, the sharp mark and
+  the selected edge. Face's 0.35 dimmed the crease and sharp marks to a
+  third — in the mode you set creases in, right before a Subdivide — while
+  brightening the surface behind them. Edge's 3.4 drove crease `#ff7a45` and
+  sharp `#ff8a3d` up the roll-off toward the same white, when the whole
+  point of those two colours is that they never read as the same thing on
+  one mesh. The weight is baked per edge now, on the plain wireframe alone,
+  and the material multiplier stays at 1. `setColScaled` writes it
+  deliberately unclamped, which is what lets a wireframe run hot.
+- The dot hierarchy scales together: selected (7px) and soft-falloff (5px)
+  dots take the mode's factor alongside the base 2px, so the 3.5:1 ratio
+  that makes a selected vertex obvious survives the one mode that grows
+  them. The Vertex factor came down from 2.0 to 1.6 to keep the top of that
+  range sane.
+- The knife's placement dots read `vertexDotSize()` and so were silently
+  doubling in Vertex mode. They use their own size now — knife dots have
+  nothing to do with which component type you are picking.
+- The dot-size refresh sat below `if (!lines) return;`, so it was gated on
+  the wireframe existing.
+
+`_theme_probe` section 10 measures all of it per mode, including that the
+crease mark is the same colour in every mode, and that the tray suspension
+goes 0.50 → 0.90 → 0.50 and clears its flag.
+
+**Section 5 of that suite was rewritten here.** It used to assert that
+NOTHING in the viewport moved with the mode — the a2.58 rule. a2.59 gave the
+selection the mode's colour and a2.62 gave the wireframe the mode's weight,
+both deliberately. What it asserts now is the part that was ever really at
+stake: no mode may change the scene's own colours — the background, and the
+colour of an unselected vertex dot, whose SIZE carries the mode rather than
+its hue.
 
 ## Perspective and orthographic (a2.61)
 
