@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~21,250 lines)
-- Version at time of writing: **a2.66**
+- Version at time of writing: **a2.66a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -70,6 +70,24 @@ The help card was not wrong either. `HELP_QUICKSTART` already opens with
 *"Hold on empty space, slide to Add geo, lift, then pick a shape"*, and Quick
 start is the one section that opens by default. It needed nothing. What was
 missing was any reason to open the card at all.
+
+### And one the review missed too (a2.66a)
+
+Shipped, then looked at on a phone: the chip had wrapped to THREE lines and
+come out as a fat little block - the exact bulk this stretch of work exists
+to remove. **`position: absolute` with `left: 50%` makes shrink-to-fit
+measure against the half of the viewport to the RIGHT of the 50% mark**, so
+the chip built itself at about 187px on a 375 screen, wrapped, and then
+`translateX(-50%)` centred the result so it looked deliberate. `width:
+max-content` sizes it to the sentence; the `max-width` cap still wraps it on
+a genuinely narrow screen, which is what the original `nowrap` clipped
+instead.
+
+The suite had `on_screen` and `clear_of_the_corners` and both passed - a
+narrow box is trivially on screen. Nothing measured the SHAPE. Section 13 now
+reports the chip's box and line count and refuses more than two lines. **Any
+centred, auto-width, absolutely positioned element in this file has the same
+trap waiting.**
 
 ### Four things the review caught, and one the probe should have
 

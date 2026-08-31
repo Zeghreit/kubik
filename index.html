@@ -241,9 +241,15 @@
     padding: 9px 8px 9px 14px; border-radius: var(--r-md);
     background: var(--panel2); border: 1px solid var(--line);
     color: var(--text-dim); font-size: 12.5px;
-    /* Wraps. At 12.5px this sentence is ~300px, and a 320px phone with
-       nowrap clipped BOTH ends - losing the verb and its object. */
-    max-width: calc(100vw - 32px); text-align: center; line-height: 1.35;
+    /* WIDTH FIRST, THEN THE CAP (a2.66a). `left: 50%` makes shrink-to-fit
+       measure against the half of the viewport to the RIGHT of the 50% mark,
+       so without max-content the chip is built to ~187px on a 375 phone,
+       wraps this sentence onto three lines, and translateX(-50%) then
+       centres the fat little block so it looks like a choice. max-content
+       sizes it to the sentence; the cap still wraps it on a genuinely narrow
+       screen, which is what nowrap used to clip instead. */
+    width: max-content; max-width: calc(100vw - 32px);
+    text-align: center; line-height: 1.35;
     -webkit-user-select: none; user-select: none;
     box-shadow: 0 8px 22px rgb(var(--shadow) / .20);
     animation: firstHintIn 320ms cubic-bezier(.16, .84, .44, 1) both;
@@ -1391,7 +1397,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.66</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.66a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
