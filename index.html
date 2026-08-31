@@ -1443,7 +1443,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.68</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.69</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -18381,7 +18381,16 @@ function restoreDoc(doc, opts = {}) {
          the old format and every future signature change would have to know
          about this one as well. */
       if (v.srcSig) v.srcSig = migrateSig(v.srcSig);
-      bySig.set(v.srcSig || materialDefSig(v), id);
+      /* BOTH KEYS, not one (a2.69). `srcSig || materialDefSig(v)` left a
+         renamed import findable ONLY by the signature of the file it came
+         from - so its own current look matched nothing, and re-opening a
+         file that held it minted "Gold (imported) (imported)", then one
+         level deeper on the next open, repointing every face that wore it
+         each time. First writer wins, so an entry's own signature can
+         never clobber another entry's srcSig. */
+      const own = materialDefSig(v);
+      if (!bySig.has(own)) bySig.set(own, id);
+      if (v.srcSig && !bySig.has(v.srcSig)) bySig.set(v.srcSig, id);
     });
     doc.materialLib.forEach(d => {
       if (!d || !d.id) return;
@@ -19095,7 +19104,7 @@ function mergeCoplanarTriangles(positions, tris, matOf) {
      reach the failure above. A triangle with no clean partner stays its own
      face - its diagonal becomes a visible edge, which is honest about what
      the file actually contains. */
-  function emitPairs(region, out) {
+  function emitPairs(region, out, matKey) {
     const inRegion = new Set(region);
     const paired = new Set();
     region.forEach(ti => {
@@ -19112,8 +19121,8 @@ function mergeCoplanarTriangles(positions, tris, matOf) {
         return true;
       });
       paired.add(ti);
-      if (mate >= 0) { paired.add(mate); out.push({ triangles: [tris[ti], tris[mate]] }); }
-      else out.push({ triangles: [tris[ti]] });
+      if (mate >= 0) { paired.add(mate); out.push({ triangles: [tris[ti], tris[mate]], mat: matKey }); }
+      else out.push({ triangles: [tris[ti]], mat: matKey });
     });
   }
 
@@ -19140,10 +19149,16 @@ function mergeCoplanarTriangles(positions, tris, matOf) {
         });
       });
     }
+    /* THE SOURCE MATERIAL RIDES ALONG (a2.69). The flood fill already
+       refuses to cross a material boundary, so every triangle in a region
+       shares the seed's key and one key per group is the whole truth.
+       separateGroupVertices rebuilds groups as plain {triangles} on the way
+       into geometry, so this key exists only between here and the importer
+       that reads it - nothing downstream can come to depend on it. */
     if (region.length === 1 || boundaryIsOneSimpleLoop(region)) {
-      groups.push({ triangles: region.map(ti => tris[ti]) });
+      groups.push({ triangles: region.map(ti => tris[ti]), mat: seedMat });
     } else {
-      emitPairs(region, groups);
+      emitPairs(region, groups, seedMat);
     }
   }
   return groups;
@@ -19185,6 +19200,10 @@ function editableFromImportedMeshes(meshes) {
   const positions = [];
   const tris = [];
   const matOfTri = [];
+  /* material key -> the THREE material it came from (a2.69). The key is the
+     same (mesh, sub-group) pair the merge refuses to cross, so looking a
+     group's key up here is exactly "which glTF material painted this face". */
+  const matSrc = new Map();
   let triCount = 0;
   meshes.forEach((m, mi) => {
     const geo = m.geometry.clone();
@@ -19220,6 +19239,17 @@ function editableFromImportedMeshes(meshes) {
       const from = g.start / 3, to = from + g.count / 3;
       for (let t = from; t < to && t < n; t++) sub[t] = gi;
     });
+    /* Resolved through materialIndex, not through the group's position: a
+       merged multi-material mesh can point two groups at one material, and
+       three does not promise groups[i] and material[i] line up. */
+    const msrc = Array.isArray(m.material) ? m.material : [m.material];
+    for (let gi = 0; gi < (gsrc ? gsrc.length : 1); gi++) {
+      const mi2 = gsrc ? gsrc[gi].materialIndex : 0;
+      /* null, not a neighbour. A group whose materialIndex is out of range
+         is a group three itself draws with nothing; guessing a different
+         material would paint a face a colour that is in no file. */
+      matSrc.set(mi * 4096 + gi, msrc[mi2] || null);
+    }
     for (let t = 0; t < n; t++) {
       const tri = geo.index
         ? [base + geo.index.getX(t * 3), base + geo.index.getX(t * 3 + 1), base + geo.index.getX(t * 3 + 2)]
@@ -19240,7 +19270,7 @@ function editableFromImportedMeshes(meshes) {
     if (!Number.isFinite(positions[i])) return null;
   }
   const groups = mergeCoplanarTriangles(positions, tris, ti => matOfTri[ti]);
-  return { positions, groups, triCount };
+  return { positions, groups, triCount, matSrc };
 }
 
 /* Meshes, gathered into the OBJECTS they belong to.
@@ -19269,6 +19299,169 @@ function collectImportableMeshes(root) {
   return Array.from(byOwner.entries()).map(([owner, meshes]) => ({
     name: (owner.name || meshes[0].name || '').trim(), meshes
   }));
+}
+
+/* IMPORTED SURFACES BECOME LIBRARY MATERIALS (a2.69).
+
+   Until now every imported face landed on `standard`: one flat theme grey
+   for the whole model, so a thing that was red and gold in Blender arrived
+   as a grey blob and the only way back was repainting it face by face.
+
+   The mapping is direct because glTF's core PBR numbers are the three this
+   app already stores - baseColorFactor -> colour, metallicFactor ->
+   metalness, roughnessFactor -> roughness. Nothing is invented: what is not
+   in that list is not mapped.
+
+   WHAT IS DELIBERATELY DROPPED. Textures (Kubik has no UVs at all - the
+   masks are triplanar and procedural), emissive, opacity, normal and AO
+   maps, and every KHR extension. A textured material lands on its base
+   colour, which is the tint the exporter already multiplied the map by and
+   the closest honest answer available without UVs. It is not a silent loss:
+   a lost texture reads as "flat colour", which is what this app is.
+
+   COLOUR IS READ WITH getHexString(), which converts three's linear working
+   colour to sRGB. That is the same call harvestLegacyMaterials makes and the
+   same space the colour picker writes, so an imported red and a hand-picked
+   red of the same look are ONE library entry rather than two that look
+   identical and cannot be told apart in the tray.
+
+   DEDUPED BY materialDefSig against the whole library, exactly like the
+   .json path - importing the same .glb twice must not double the tray - and
+   the minted entry carries `srcSig` for the same reason restoreDoc's does:
+   it may have been renamed, and its own signature would then no longer match
+   the file it came from. */
+
+/* A CAP, because the tray is a scrolling list of live-rendered spheres and
+   the library is persisted. Distinct materials are bounded by primitives,
+   and a file with hundreds of them would leave the picker unusable long
+   after the import is undone. Past the cap faces land on Solid, which is
+   exactly where they landed before this release. */
+const IMPORT_MATERIAL_BUDGET = 64;
+
+// The theme's current default grey, as the '#rrggbb' the library speaks.
+function themedGreyHex() {
+  return '#' + new THREE.Color(DEFAULT_MATERIAL_COLOR).getHexString();
+}
+
+// Equal within one 8-bit step per channel. See the note at the caller.
+function nearHex(a, b) {
+  if (!a || !b) return false;
+  const x = parseInt(a.slice(1), 16), y = parseInt(b.slice(1), 16);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+  return Math.abs((x >> 16 & 255) - (y >> 16 & 255)) <= 1 &&
+         Math.abs((x >> 8 & 255) - (y >> 8 & 255)) <= 1 &&
+         Math.abs((x & 255) - (y & 255)) <= 1;
+}
+
+function importMaterialContext() {
+  let healed = false;
+  /* Seeded from the WHOLE library, so an imported look also matches a
+     custom the person mixed by hand and a material a previous import
+     already minted. Same shape as restoreDoc's index, migrateSig included,
+     healed in place so old strings stop being written back out. */
+  const bySig = new Map();
+  const byName = new Set();
+  MATERIALS.forEach((v, id) => {
+    if (v.srcSig) { v.srcSig = migrateSig(v.srcSig); healed = true; }
+    // Both keys - see the note on the same index in restoreDoc. Reached
+    // here whenever a name collides, which is far more ordinary than the
+    // id collision that used to be the only way to mint a renamed entry.
+    const own = materialDefSig(v);
+    if (!bySig.has(own)) bySig.set(own, id);
+    if (v.srcSig && !bySig.has(v.srcSig)) bySig.set(v.srcSig, id);
+    byName.add((v.name || '').toLowerCase());
+  });
+  /* Per source material, not per face: a 400-face model painted with three
+     glTF materials must ask three times, not four hundred. */
+  const cache = new Map();
+  let minted = 0;
+  return {
+    get minted() { return minted; },
+    // Migrated strings were healed on the objects above; they only stop
+    // being written back out if the library is saved, and an import that
+    // minted nothing would otherwise not save.
+    get healed() { return healed; },
+    idFor(src) {
+      if (!src || !src.color) return 'standard';
+      if (cache.has(src)) return cache.get(src);
+      /* QUANTISED TO THREE DECIMALS. glTF stores these as float32 while the
+         library stores what a person typed, so Plastic's 0.4 comes back as
+         0.4000000059604645 - and a signature built from that matches
+         nothing, so a Kubik file opened again minted a copy of every
+         material in it, and one more on every open after that. Three
+         decimals is finer than the slider's step and far coarser than the
+         float error. */
+      const q = x => Math.round(Math.min(1, Math.max(0, x)) * 1000) / 1000;
+      const rough = q(Number.isFinite(src.roughness) ? src.roughness : 1);
+      const metal = q(Number.isFinite(src.metalness) ? src.metalness : 0);
+      /* String(), because a glTF name is whatever the JSON chunk says.
+         GLTFLoader assigns materialDef.name with no coercion, so
+         `"name": 123` gave a number here and `.trim is not a function`
+         threw INSIDE the object loop - after createCubeObject had already
+         put a half-built object in the scene, and before rebuildFromEditable
+         could give it a matching geometry. The catch upstairs then toasted
+         "Could not read that file" over a broken scene with no history
+         entry, which the autosave then wrote out. */
+      const raw = String(src.name == null ? '' : src.name).trim().slice(0, 32) || 'Imported';
+      const hex = '#' + src.color.getHexString();
+      /* A baseColorFactor of ["a","b","c"] makes a Color with NaN channels,
+         and getHexString() returns "000NaN" - which would go into the
+         library, into localStorage and into every saved file. Nothing
+         crashes on it; it is simply garbage in a format that outlives the
+         session, so it never gets in. */
+      if (!/^#[0-9a-f]{6}$/.test(hex)) { cache.set(src, 'standard'); return 'standard'; }
+      const sig = materialDefSig({ name: raw, color: hex, roughness: rough, metalness: metal });
+      /* THE LIBRARY IS ASKED FIRST. This used to sit below the themed-preset
+         shortcut, which meant a material a person had mixed by hand to be
+         exactly the theme grey - named, exported, re-imported - was answered
+         with "that is Solid" and lost its name, while its exact signature
+         was sitting in the index one line further down. The whole point of
+         putting the name in the signature is that two identical-looking
+         materials with different names are two materials. */
+      const known = bySig.get(sig);
+      if (known) { cache.set(src, known); return known; }
+      /* THE PRESETS FOLLOW THE THEME, and a file cannot say so. Solid,
+         Plastic and Metal carry `color: null`, which means "whatever the
+         theme's default grey is right now"; a .glb has no such idea and
+         records the grey that was on screen. Without this, exporting a plain
+         cube and opening it again minted an explicit grey called "Imported",
+         and that cube stopped following the theme for ever after.
+
+         So: an incoming colour that IS the current default grey, with a
+         preset's roughness and metalness, is that preset. Tolerances because
+         glTF stores these as float32 and 0.4 is not representable - Plastic
+         came back as 0.4000000059604645 - and because a colour that goes
+         sRGB -> linear -> sRGB can land one 8-bit step out. */
+      const themed = themedGreyHex();
+      if (nearHex(hex, themed)) {
+        let hit = null;
+        MATERIALS.forEach((v, id) => {
+          if (hit || !v.preset) return;
+          if (v.color !== null && v.color !== undefined) return;
+          if (Math.abs((+v.roughness || 0) - rough) > 2e-3) return;
+          if (Math.abs((+v.metalness || 0) - metal) > 2e-3) return;
+          if (maskList(v).length || (+v.bevel || 0)) return;
+          hit = id;
+        });
+        if (hit) { cache.set(src, hit); return hit; }
+      }
+      if (minted >= IMPORT_MATERIAL_BUDGET) { cache.set(src, 'standard'); return 'standard'; }
+      /* A file's "Metal" that is not OUR Metal gets a name that says so,
+         rather than two entries called Metal in the tray. */
+      let name = raw, k = 1;
+      while (byName.has(name.toLowerCase())) {
+        name = raw + ' (imported' + (k > 1 ? ' ' + k : '') + ')'; k++;
+      }
+      const nid = freshMaterialId(raw.replace(/[^a-z0-9]/gi, '').toLowerCase() || 'imp');
+      MATERIALS.set(nid, { id: nid, preset: false, name: name, color: hex,
+        roughness: rough, metalness: metal, srcSig: sig });
+      byName.add(name.toLowerCase());
+      bySig.set(sig, nid);
+      minted++;
+      cache.set(src, nid);
+      return nid;
+    }
+  };
 }
 
 async function importGltfBuffer(buf, label) {
@@ -19306,6 +19499,9 @@ async function importGltfBuffer(buf, label) {
   }
 
   const made = [];
+  /* ONE context for the whole file, so two objects that share a material
+     share the library entry too. */
+  const matCtx = importMaterialContext();
   built.forEach(({ part, ed }, i) => {
 
     /* CENTRED ON ITS OWN ORIGIN, and positioned by the mesh - the way every
@@ -19335,11 +19531,31 @@ async function importGltfBuffer(buf, label) {
       new THREE.Vector3(ox, oy, oz));
     obj.mesh.material.forEach(mm => mm.dispose());
     obj.mesh.material = makeMaterialSet(ed.groups.length, DEFAULT_MATERIAL_COLOR);
+    /* Stamped BEFORE the rebuild, because reconcileFinishes derives
+       userData.finishes from the stamp on each material - which is the one
+       thing every op already carries correctly. Writing finishes directly
+       would be the bookkeeping that a2.24 stopped doing by hand. A group the
+       file left unpainted keeps the themed default it was born with. */
+    ed.groups.forEach((g, gi) => {
+      const id = matCtx.idFor(ed.matSrc && ed.matSrc.get(g.mat));
+      if (id !== 'standard') applyFinish(obj.mesh.material[gi], id);
+    });
     rebuildFromEditable(obj, { positions: ed.positions, groups: ed.groups });
     made.push({ obj: obj, tris: ed.triCount, faces: ed.groups.length });
   });
 
   if (!made.length) { toast('Nothing importable in that file'); return; }
+  /* Persisted and re-previewed once, after the whole file - not per object.
+     Both are cheap, but saveMaterialLibrary serialises the entire library
+     and _matPreviews re-renders a sphere per entry. */
+  if (matCtx.minted || matCtx.healed) saveMaterialLibrary();
+  if (matCtx.minted) {
+    _matPreviews = null;
+    // The tray can be open across an import. Every other path that changes
+    // the library repaints it; without this the new materials only appear
+    // after it is closed and opened again.
+    if (typeof refreshMatTrayIfOpen === 'function') refreshMatTrayIfOpen();
+  }
   App.selectedObjectIds = new Set(made.map(x => x.obj.id));
   App.activeObjectId = made[made.length - 1].obj.id;
   setMode('object');
@@ -19351,7 +19567,9 @@ async function importGltfBuffer(buf, label) {
   const tris = made.reduce((a, x) => a + x.tris, 0);
   const faces = made.reduce((a, x) => a + x.faces, 0);
   toast('Imported ' + made.length + (made.length === 1 ? ' object' : ' objects') +
-    ' - ' + faces + ' faces from ' + tris + ' triangles');
+    ' - ' + faces + ' faces from ' + tris + ' triangles' +
+    (matCtx.minted ? ', ' + matCtx.minted + ' new material' +
+      (matCtx.minted === 1 ? '' : 's') : ''));
 }
 
 function wireImport() {
@@ -19385,7 +19603,18 @@ function buildExportGroup() {
        list as a 12000-key object plus the whole distance atlas as an array
        of 600000 numbers, per object. */
     eg.userData = {};
-    const m = new THREE.Mesh(eg, mats.map(mm => mm.clone()));
+    /* NAMED ON THE WAY OUT (a2.69). A glTF material has a name field and
+       we were writing "" into it, so a .glb opened in Blender showed
+       Material.001 x6 - and, since a2.69 reads the name back as part of what
+       a material IS, a Kubik file re-imported into Kubik minted a nameless
+       copy of every material it already had. The stamp is the source of
+       truth; a material with no stamp exports nameless as before. */
+    const m = new THREE.Mesh(eg, mats.map(mm => {
+      const c = mm.clone();
+      const d = MATERIALS.get(mm.userData && mm.userData.kubikDef);
+      if (d && d.name) c.name = d.name;
+      return c;
+    }));
     m.position.copy(o.mesh.position);
     m.quaternion.copy(o.mesh.quaternion);
     m.scale.copy(o.mesh.scale);
@@ -21843,6 +22072,8 @@ if (PICK_DEBUG) {
     // GLTFExporter, which is how a bug that did not exist got reported once.
     importGltfBuffer, mergeCoplanarTriangles, editableFromImportedMeshes,
     collectImportableMeshes, buildExportGroup,
+    // a2.69: the glTF-PBR -> library mapping, askable of one material.
+    importMaterialContext,
     // Winding: __kubik.windingAudit() for every object, or (id) for one.
     auditWinding, windingAudit,
     // The captured plane: __kubik.symmetryPlane(obj, axis).

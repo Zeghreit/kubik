@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~21,250 lines)
-- Version at time of writing: **a2.68**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~20,700 lines)
+- Version at time of writing: **a2.69**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -30,7 +30,7 @@ still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
 
-## Import (a2.68) - READ BEFORE OLDER SECTIONS
+## Import (a2.68 geometry, a2.69 materials) - READ BEFORE OLDER SECTIONS
 
 The pipeline is one line long, because the app already owns both ends of it:
 
@@ -130,11 +130,89 @@ scaled, single-loop output. It now carries foreign fixtures: a square annulus
 with a hole, a negative-scale node, and a hand-built interleaved buffer with
 a poison value in the spare channels.
 
+### Materials (a2.69)
+
+glTF's core PBR numbers are the three this app already stores, so the mapping
+is direct and nothing is invented: `baseColorFactor` -> colour,
+`metallicFactor` -> metalness, `roughnessFactor` -> roughness. Everything else
+is dropped **on purpose**: textures (this app has no UVs at all - the masks
+are triplanar and procedural), emissive, opacity, normal and AO maps, and
+every KHR extension. A textured material lands on its base colour, which is
+the tint the exporter already multiplied the map by. A lost texture reads as
+"flat colour", which is what this app is.
+
+Each merged face group carries the key of the source material it came from
+(the flood fill already refuses to cross a material boundary, so one key per
+group is the whole truth), and `importMaterialContext()` turns each source
+material into a library id. `applyFinish` stamps the group's material BEFORE
+`rebuildFromEditable`, because `reconcileFinishes` derives
+`userData.finishes` from that stamp - writing the map by hand is the
+bookkeeping a2.24 stopped doing.
+
+**Colour is read with `getHexString()`**, which converts three's linear
+working colour to sRGB - the same call `harvestLegacyMaterials` makes and the
+same space the picker writes, so an imported red and a hand-picked red of the
+same look are ONE entry rather than two nobody can tell apart in the tray.
+
+**Roughness and metalness are quantised to three decimals.** glTF stores them
+as float32 and the library stores what a person typed, so Plastic's 0.4 comes
+back as 0.4000000059604645 and a signature built from that matches nothing.
+
+`IMPORT_MATERIAL_BUDGET` is 64 minted entries per import. The tray renders a
+real sphere per entry and the library is persisted, so a file with hundreds of
+materials would own the picker long after the import was undone. Past the cap
+faces land on Solid, which is exactly where they all landed before a2.69.
+
+### The presets follow the theme, and a file cannot say so
+
+Solid, Plastic and Metal carry `color: null`, meaning "the theme's default
+grey, whatever it is now". A .glb has no such idea and records the grey that
+was on screen. So an incoming colour that IS the current default grey, with a
+preset's roughness and metalness, is taken to be that preset - otherwise
+exporting a plain cube and opening it again minted an explicit grey called
+"Imported", and that cube stopped following the theme for ever after.
+
+**That test runs AFTER the library is asked, not before.** The first cut had
+it first, which meant a material somebody mixed by hand to be exactly the
+theme grey - named, exported, re-imported - was answered with "that is Solid"
+and lost its name, while its exact signature sat in the index one line below.
+The whole point of putting the name in `materialDefSig` is that two
+identical-looking materials with different names are two materials.
+
+### The one-key index, which was wrong everywhere it appeared
+
+A material minted by an import is RENAMED when its name collides ("Metal
+(imported)"), and stores `srcSig` - the signature of what it came FROM - so
+the next open of the same file recognises it. Both `restoreDoc` and the
+importer built their lookup as:
+
+```js
+bySig.set(v.srcSig || materialDefSig(v), id);     // WRONG
+```
+
+One key. A renamed entry was therefore findable only by the file it came
+from, never by what it now IS - so opening a .json that carried it minted
+"Metal (imported) (imported)", one level deeper on every open for ever, and
+repointed every face that wore it each time. Both sites now index **both**
+keys, first writer wins. This was live from a2.65a; a2.69 is what made it
+routine, because a plain **name** collision now mints a renamed entry where
+only an **id** collision used to.
+
+### Exports carry the material's name (a2.69)
+
+`buildExportGroup` writes `d.name` onto each cloned material. A .glb opened in
+Blender used to show `Material.001` six times. `OBJExporter` only emits
+`usemtl` for a material with a `.name` and always receives an array here, so
+"Exported .obj (geometry only)" stays honest; STL ignores materials.
+
 ### Still to do, and known
 
 Deliberately out of this increment, recorded so they are not discovered as
-surprises: materials are not mapped (everything lands on `standard`); OBJ and
-STL are not read yet; `InstancedMesh` loses every instance but the first and
+surprises: OBJ and STL are not read yet; an imported material's texture,
+emissive and opacity are dropped (see Materials above); the material budget is
+per-import, not per-library, so ten imports can leave 640 entries in a tray
+that renders a sphere for each, and undo does not remove a minted entry - it
+is in localStorage before the history step exists; `InstancedMesh` loses every instance but the first and
 `SkinnedMesh` imports its bind pose, both silently; Draco and meshopt files
 reject with the generic error because no decoder is set; `.gltf` is
 advertised but external `.bin` and textures resolve against the page URL and
