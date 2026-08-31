@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~21,250 lines)
-- Version at time of writing: **a2.66a**
+- Version at time of writing: **a2.67**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -29,6 +29,68 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## The a2.67 accent rule - READ BEFORE OLDER SECTIONS
+
+**a2.58's rule is reversed here.** That section says the accent means "you
+are in a component mode and a tap does something specific". It now means
+**something is selected**. Wherever an older section says the chrome takes
+the mode's colour, this is the qualifier.
+
+Reported from use: switching from Object into a component mode is already red
+before anything is picked. `App.lastComponentMode` defaults to `'face'`, so
+the FIRST press of the mode button runs `setMode('face')` and the stripe, the
+mode button, both toggles and the op-bar primary all go salmon at once, with
+an empty selection. With nothing selected a tap does not do something
+specific - it selects - so the hue was promising an armed state the app was
+not in.
+
+**Two variables now, and the rule for choosing between them is one question:
+does this control answer "what have I got?" or "where am I / what is the app
+doing?"**
+
+- `--accent` (and `-dim`, `-rgb`) is gated on `[data-armed]`, written by
+  `refreshUI` when a component mode has a non-empty selection, a pending op,
+  or a knife running. About forty controls read it. Unarmed, they are Object
+  mode's neutral.
+- `--accent-mode` (and `-dim`, `-rgb`) is always the mode's hue, ungated. The
+  tool ring and its label, the isolation chip, `#selectBox` and `#lassoPath`
+  take this one.
+
+What a2.58 bought and this gives up: the mode is no longer readable from any
+corner of the screen with nothing selected. The mode button's own glyph is
+what says it.
+
+### What the review caught, and the rule it produced
+
+The first cut gated every accent consumer, and three of them were wrong for
+reasons worth keeping:
+
+- **`.hub-item.on` is the only accent consumer in the file with no border cue
+  in reserve** - the ring item already wears an accent border, so `.on`
+  differed from off by tint and glyph alone. At the neutral that is a 1.4:1
+  tint and a glyph DIMMER than an off item's text: an "on" toggle read as
+  less than an off one. One gesture away, too - `setMode` clears the
+  selection, so a press-and-hold straight after any mode switch showed Xray,
+  Grid and Snap exactly like that. It now takes `--accent-mode` AND a 2px
+  border. **A toggle must not depend on hue alone to say it is on.**
+- **The knife clears the selection on purpose** (`startKnife`) and then runs
+  a modal session with the op bar up, so the commit button for a destructive
+  topology edit was painted the same neutral as an idle hub. `armed` covers
+  `App.pendingOp` and `App.knife` for exactly this.
+- **The isolation chip drained on deselect** though isolation had not
+  changed, and the **marquees took their colour from the PREVIOUS
+  selection** - the same drag hued when additive and grey when fresh.
+
+### Probe
+
+Sections 4 and 6 measured the accent and the per-mode tints with an empty
+selection, which is now the neutral - they would have reported the object
+neutral four times and called it four passes. Both arm the modes they
+measure. New **4b** asserts the rule both ways (neutral unarmed, arrives on
+select, drains on clear); new **5b** asserts what must NOT go neutral: the
+ring keeps `--accent-mode`, its on-state is heavier as well as tinted, and a
+pending op keeps the chrome armed with an empty selection.
 
 ## The a2.66 first run - READ BEFORE OLDER SECTIONS
 

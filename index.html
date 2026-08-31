@@ -106,9 +106,42 @@
      because forcing it down to their luminance turns it to mud. The dim
      tints are the same hue at ~1.3:1 against the panel, so an "on" control
      reads as tinted rather than as another button. */
-  :root[data-mode="vertex"] { --accent: #DDB863; --accent-dim: #4d422a; --accent-rgb: 221 184 99; }
-  :root[data-mode="edge"]   { --accent: #6EA6D8; --accent-dim: #2f4a63; --accent-rgb: 110 166 216; }
-  :root[data-mode="face"]   { --accent: #E8836C; --accent-dim: #573429; --accent-rgb: 232 131 108; }
+  /* ARMED, not merely PRESENT (a2.67). Each of these now needs
+     [data-armed] as well as the mode - the attribute refreshUI writes when
+     the component selection is non-empty. Being in Face mode with nothing
+     picked is Object mode's neutral; picking a face is what turns the app
+     salmon, and clearing it turns it back.
+
+     This is a2.58's rule reversed, deliberately. a2.58 read the hue as "you
+     are in a component mode and a tap does something specific". Reported
+     from use: the first press of the mode button lands in Face - the
+     lastComponentMode default - and floods the chrome red before anything
+     exists to act on. With an empty selection a tap does not do something
+     specific, it selects; the hue was promising an armed state the app was
+     not in. What a2.58 bought and this gives up is the mode being readable
+     from any corner with nothing selected - the mode button's own glyph is
+     what says it now. */
+  :root[data-mode="vertex"][data-armed] { --accent: #DDB863; --accent-dim: #4d422a; --accent-rgb: 221 184 99; }
+  :root[data-mode="edge"][data-armed]   { --accent: #6EA6D8; --accent-dim: #2f4a63; --accent-rgb: 110 166 216; }
+  :root[data-mode="face"][data-armed]   { --accent: #E8836C; --accent-dim: #573429; --accent-rgb: 232 131 108; }
+
+  /* --accent-mode: ALWAYS the mode's hue, never gated on a selection.
+     a2.67 first gated everything, and some things wear the accent because
+     they describe the MODE or a state the app is IN rather than because
+     something is picked. The ring is the one that broke outright:
+     `.hub-item` already carries an accent BORDER, so `.on` differs from off
+     by tint and glyph alone - and at the neutral that is 1.4:1 tint with a
+     glyph dimmer than an off item's. An "on" toggle read as less than an
+     off one. setMode clears the selection, so a hold straight after any
+     mode switch showed Xray, Grid and Snap exactly that way.
+
+     The rule for which variable a control takes: does it answer "what have
+     I got?" (--accent) or "where am I / what is the app doing?"
+     (--accent-mode). */
+  :root { --accent-mode: #a8afbd; --accent-mode-dim: #363c48; --accent-mode-rgb: 168 175 189; }
+  :root[data-mode="vertex"] { --accent-mode: #DDB863; --accent-mode-dim: #4d422a; --accent-mode-rgb: 221 184 99; }
+  :root[data-mode="edge"]   { --accent-mode: #6EA6D8; --accent-mode-dim: #2f4a63; --accent-mode-rgb: 110 166 216; }
+  :root[data-mode="face"]   { --accent-mode: #E8836C; --accent-mode-dim: #573429; --accent-mode-rgb: 232 131 108; }
 
   /* THE ONE NEW PIECE OF CHROME: a 3px rule along the top edge in the
      mode's colour. The mode button already wears the hue, but it is in the
@@ -137,9 +170,12 @@
      Listed positively rather than as :not([data-mode="object"]) - which is
      TRUE when the attribute is missing, and so re-created the very flash it
      was written to remove. The probe caught it; the reasoning did not. */
-  :root[data-mode="vertex"] #modeBar,
-  :root[data-mode="edge"] #modeBar,
-  :root[data-mode="face"] #modeBar { opacity: 1; }
+  /* The stripe goes with the rest (a2.67): it IS the accent, full width, so
+     leaving it lit while everything else went neutral would have been the
+     loudest thing on screen saying the opposite of the other nine. */
+  :root[data-mode="vertex"][data-armed] #modeBar,
+  :root[data-mode="edge"][data-armed] #modeBar,
+  :root[data-mode="face"][data-armed] #modeBar { opacity: 1; }
 
   * { box-sizing: border-box; }
   html {
@@ -297,7 +333,7 @@
      any more. */
   .hub-item {
     position: absolute; width: 52px; height: 52px; margin-left: -26px; margin-bottom: -26px;
-    border-radius: 50%; background: var(--panel2); border: 1px solid var(--accent);
+    border-radius: 50%; background: var(--panel2); border: 1px solid var(--accent-mode);
     color: var(--text); display: none; flex-direction: column; align-items: center;
     justify-content: center; gap: 1px; cursor: pointer; user-select: none;
     box-shadow: 0 4px 14px rgb(var(--shadow) / .14);
@@ -360,8 +396,13 @@
   /* Two different things, deliberately different looks: .on means the
      toggle is currently switched on, .active means your finger is over it
      right now and lifting would run it. */
-  .hub-item.on { background: var(--accent-dim); color: var(--accent); }
-  .hub-item.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  /* THE TINT IS NOT ENOUGH ON ITS OWN (a2.67). These two are the only
+     accent consumers in the file with no border cue in reserve - the item
+     already has an accent border - so they take --accent-mode, and `.on`
+     gains a second, non-colour cue: a heavier ring. A toggle must not
+     depend on hue alone to say it is switched on. */
+  .hub-item.on { background: var(--accent-mode-dim); color: var(--accent-mode); border-width: 2px; }
+  .hub-item.active { background: var(--accent-mode); color: var(--on-accent); border-color: var(--accent-mode); }
   .hub-item.active .tx { color: var(--on-accent); opacity: .85; }
 
   /* ONE label, for the highlighted item only.
@@ -380,7 +421,7 @@
   #ringLabel {
     position: absolute; transform: translate(-50%, 50%);
     padding: 5px 11px; border-radius: var(--r-pill);
-    background: var(--accent); color: var(--on-accent);
+    background: var(--accent-mode); color: var(--on-accent);
     font-size: 12px; font-weight: 600; letter-spacing: .01em;
     white-space: nowrap; pointer-events: none; display: none;
     box-shadow: 0 4px 14px rgb(var(--shadow) / .18);
@@ -767,14 +808,17 @@
     position: absolute; left: 50%; transform: translateX(-50%);
     top: calc(var(--edge) + 52px); z-index: 19; display: none;
     align-items: center; gap: 10px;
-    background: var(--panel2); border: 1px solid var(--accent);
+    /* --accent-mode: isolation outlives any selection, and its own note
+       above calls it "a state the app is IN, not a thing you can ignore" -
+       so it must not drain to neutral just because you deselected. */
+    background: var(--panel2); border: 1px solid var(--accent-mode);
     border-radius: var(--r-md); padding: 6px 8px 6px 12px;
     box-shadow: 0 8px 24px rgb(var(--shadow) / .18); white-space: nowrap;
   }
   #isoChip.show { display: flex; }
   #toolChip .mode.piv { color: #ffc857; }
   #toolChip .mode.snp { color: #5ad1a5; }
-  #isoChip .ic-k { font-size: 11px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: .06em; }
+  #isoChip .ic-k { font-size: 11px; font-weight: 600; color: var(--accent-mode); text-transform: uppercase; letter-spacing: .06em; }
   #isoChip .ic-n { font-size: 11px; color: var(--text-dim); }
   #isoChip button { min-height: 28px; padding: 2px 10px; font-size: 12px; }
 
@@ -924,9 +968,11 @@
   }
   #viewCube canvas { display: block; width: 100%; height: 100%; }
 
+  /* --accent-mode, or the same drag is two colours: additive over an
+     existing selection would be hued and a fresh one grey. */
   #selectBox {
-    position: absolute; border: 1.5px solid var(--accent);
-    background: rgb(var(--accent-rgb) / .13); pointer-events: none; display: none; z-index: 14;
+    position: absolute; border: 1.5px solid var(--accent-mode);
+    background: rgb(var(--accent-mode-rgb) / .13); pointer-events: none; display: none; z-index: 14;
   }
 
   /* A touch of falloff at the corners. Barely visible on its own, but it
@@ -942,7 +988,7 @@
     pointer-events: none; display: none; z-index: 14;
   }
   #lassoPath {
-    fill: rgb(var(--accent-rgb) / .13); stroke: var(--accent); stroke-width: 1.5;
+    fill: rgb(var(--accent-mode-rgb) / .13); stroke: var(--accent-mode); stroke-width: 1.5;
     stroke-linejoin: round; stroke-linecap: round;
   }
 
@@ -1397,7 +1443,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.66a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.67</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -20741,6 +20787,28 @@ function refreshUI() {
     // ...and the way the whole viewport is lit (a2.62).
     refreshModeView();
     document.documentElement.dataset.mode = App.mode;
+  }
+  /* ARMED (a2.67): a component mode with something actually picked. The
+     hue hangs off this as well as the mode - see the [data-armed] rules in
+     the stylesheet. Object mode is never armed; its accent is the neutral
+     one either way, and saying so here would only invite a reader to think
+     the two states differ.
+
+     Written only when it CHANGES, for the same reason data-mode is: an
+     attribute on the root element invalidates style for the whole document,
+     and this one is reached on every selection change. */
+  /* A LIVE OP COUNTS (a2.67). The knife CLEARS the selection on purpose
+     when it starts, and then runs a modal session with the op bar up - so
+     gating on the selection alone painted the commit button for a
+     destructive topology edit in the same neutral as an idle hub. The op
+     bar's OK is the one place the accent is spent to mean "THIS COMMITS",
+     and it has to keep meaning it. Same for any pending op that empties the
+     selection while its bar is still open. */
+  const armed = App.mode !== 'object' &&
+    (App.selectedElements.size > 0 || !!App.pendingOp || !!App.knife);
+  if (document.documentElement.hasAttribute('data-armed') !== armed) {
+    if (armed) document.documentElement.setAttribute('data-armed', '');
+    else document.documentElement.removeAttribute('data-armed');
   }
   /* A SELECTION CAN OUTLIVE ITS OBJECT. The six "that collapsed the whole
      mesh - removed the object" paths drop the object without touching the id
