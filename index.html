@@ -1541,7 +1541,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.75</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.76</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -15844,7 +15844,37 @@ const _fnTri = new THREE.Vector3(), _fnCen = new THREE.Vector3();
    user can plainly see they should have got. */
 const FACE_SILHOUETTE_EPS = 0.02;   // ~1.1 degrees
 
+/* ONE ANSWER PER FACE, NOT PER VERTEX (a2.76).
+
+   groupFacesCamera walks every triangle of a face and localToWorlds each of
+   its corners. Asking it per VERTEX - which is what vertexVisible does, once
+   per adjacent face - is fine for a tap, where there are a handful of
+   candidates inside 28px. A box select asks it for every vertex of the mesh,
+   and a vertex is adjacent to three or four faces, so a 4000-face model
+   would do around 100,000 matrix multiplies for 4000 distinct answers.
+
+   The memo is opened around one sweep and closed after, so nothing outside
+   a region select can hold a stale answer across a camera move - which is
+   the only way this could ever be wrong, and it is exactly the mistake the
+   `BEFORE localToWorld` note below records someone making once already. It
+   is keyed on the object as well, so a sweep that somehow reached a second
+   object cannot read the first one's answers. */
+let _facingMemo = null;
+function beginFacingMemo(obj) { _facingMemo = { obj: obj, map: new Map() }; }
+function endFacingMemo() { _facingMemo = null; }
+
 function groupFacesCamera(obj, gi) {
+  if (_facingMemo && _facingMemo.obj === obj) {
+    const cached = _facingMemo.map.get(gi);
+    if (cached !== undefined) return cached;
+    const fresh = groupFacesCameraUncached(obj, gi);
+    _facingMemo.map.set(gi, fresh);
+    return fresh;
+  }
+  return groupFacesCameraUncached(obj, gi);
+}
+
+function groupFacesCameraUncached(obj, gi) {
   const topo = obj.mesh.userData.topo;
   const fg = topo.faceGroups[gi] && topo.faceGroups[gi].groupIndex === gi
     ? topo.faceGroups[gi]
@@ -16040,9 +16070,11 @@ function pickVisibleWinner(obj, cands, tiePx, isSelected) {
   }
   /* YOU CAN ALWAYS LET GO OF WHAT YOU ARE HOLDING.
 
-     Box select, a grown selection and a loop select all reach components
-     that occlusion would refuse - none of them consults visibility - and
-     the vertex dots for a selected element are drawn. So without this,
+     A grown selection and a loop select reach components that occlusion
+     would refuse - both are topological and neither consults visibility -
+     and the vertex dots for a selected element are drawn. (Box select did
+     too until a2.76, which added the facing test to it; it still passes
+     anything occlusion alone would have caught.) So without this,
      dragging a box over a whole cube and then tapping one of the back
      vertices to drop it from the selection was answered with "that is
      behind the surface", and there was no way to deselect it but to clear
@@ -16541,22 +16573,86 @@ function performRegionSelect(region) {
   const toWorld = (localVec) => obj.mesh.localToWorld(localVec.clone());
   const hit = [];
 
+  /* A BOX CANNOT REACH THROUGH THE MODEL EITHER (a2.76).
+
+     a2.72 made "you cannot select what you cannot see" true of TAP. It was
+     never true of a box, which swept up the back of every object it crossed
+     - so dragging a box over the front face of a cube selected all eight
+     corners, and the four you could not see came with it silently.
+
+     THE FACING TEST, NOT OCCLUSION. A tap has a handful of candidates and
+     can afford a raycast each; a box has every vertex of the mesh and
+     cannot.
+
+     WHAT THAT DOES AND DOES NOT BUY, stated plainly because the first
+     version of this note overclaimed both halves. It answers a CUBE: the far
+     side faces away and is dropped. It does NOT answer a CYLINDER, because
+     vertexVisible passes a vertex if ANY face touching it faces the camera -
+     and every rim vertex of a cylinder touches the cap, so a box takes the
+     back rim too and reports nothing skipped. Tap survives that because it
+     runs a raycast after the facing test; a box has no second stage. It also
+     does not catch anything hidden behind a nearer part of the same model.
+     Both want a depth pre-pass, which is a real piece of work and is written
+     down rather than guessed at.
+
+     And it does NOT simply match what is drawn. The dots are depth-tested,
+     not back-face culled - so on a single-sided surface seen from behind,
+     which the renderer culls and which therefore writes no depth, the dots
+     are drawn and this refuses them. That is consistent with what a TAP does
+     since a2.72, and the note in pickVertexOnActive describes the same case.
+
+     Grow, shrink, loop select and symmetry expansion are deliberately NOT
+     filtered. They are topological, not screen-space: growing a selection
+     means "and its neighbours", and a neighbour that happens to face away
+     is still the neighbour you asked for. Every 3D app behaves this way,
+     and the one that does not would be the surprising one. */
+  const skipHidden = !App.xraySelection;
+  let hiddenSkipped = 0;
+  /* try/finally, for the blast radius rather than a known throw. A memo left
+     open answers every later vertexVisible and edgeVisible from the camera
+     position this sweep ran at - so one exception here would make the front
+     half of the model unpickable after the next orbit, silently, for the
+     rest of the session, with no recovery but a reload. Nothing in the sweep
+     throws today; nothing has to, for this to be worth three lines. */
+  if (skipHidden) beginFacingMemo(obj);
+  try {
+
   if (App.mode === 'vertex') {
     for (let l = 0; l < topo.logicalCount; l++) {
-      if (anyInside([toWorld(logicalPos(obj, l))])) hit.push(l);
+      if (!anyInside([toWorld(logicalPos(obj, l))])) continue;
+      if (skipHidden && !vertexVisible(obj, l)) { hiddenSkipped++; continue; }
+      hit.push(l);
     }
   } else if (App.mode === 'edge') {
     topo.edges.forEach((e, i) => {
       const a = logicalPos(obj, e[0]), b = logicalPos(obj, e[1]);
       const mid = a.clone().add(b).multiplyScalar(0.5);
-      if (anyInside([toWorld(a), toWorld(b), toWorld(mid)])) hit.push(i);
+      if (!anyInside([toWorld(a), toWorld(b), toWorld(mid)])) return;
+      if (skipHidden && !edgeVisible(obj, e)) { hiddenSkipped++; return; }
+      hit.push(i);
     });
   } else if (App.mode === 'face') {
     topo.faceGroups.forEach(fg => {
-      const pts = fg.logicalVerts.map(l => toWorld(logicalPos(obj, l)));
-      pts.push(toWorld(faceCentroidLocal(obj, fg.groupIndex)));
-      if (anyInside(pts)) hit.push(fg.groupIndex);
+      /* CORNERS FIRST, CENTROID ONLY IF THEY ALL MISS. faceCentroidLocal
+         calls groupLogicalLoop, which builds a Map and three string keys per
+         triangle - so computing it for every face before the region test
+         meant ~12,000 throwaway strings and 4,000 Maps on a 4,000-face model,
+         at the instant the finger lifts. It is only needed for the case the
+         corners cannot answer: a face large enough that the region falls
+         entirely inside it. Predates a2.76; found reviewing it. */
+      const corners = fg.logicalVerts.map(l => toWorld(logicalPos(obj, l)));
+      if (!anyInside(corners) &&
+          !anyInside([toWorld(faceCentroidLocal(obj, fg.groupIndex))])) return;
+      if (skipHidden && !groupFacesCamera(obj, fg.groupIndex)) { hiddenSkipped++; return; }
+      hit.push(fg.groupIndex);
     });
+  }
+
+  } finally {
+    /* CLOSED BEFORE ANYTHING ELSE RUNS. The memo is only sound for one sweep
+       at one camera position, and refreshUI below can reach the facing test
+       through other paths. */
+    endFacingMemo();
   }
 
   if (!additive) App.selectedElements.clear();
@@ -16564,7 +16660,22 @@ function performRegionSelect(region) {
   refreshElementColors(obj);
   refreshUI();
   refreshGizmoAttachment();
-  toast(hit.length ? hit.length + ' selected' : 'Nothing in that region');
+  /* SAID, not silent. Sweeping a box over a cube and getting three faces
+     when six were inside the rectangle is right, but only if you know why -
+     otherwise it reads as the box having missed. The message also names the
+     way to get the others, which is the same escape hatch a tap offers. */
+  toast(hit.length
+    ? hit.length + ' selected' +
+      /* Short, because this is the routine message here and #toast is
+         capped at half the viewport by its own centring - the long form
+         wrapped to three lines on a 390px phone. */
+      (hiddenSkipped ? ' \u00b7 ' + hiddenSkipped + ' hidden' : '')
+    : (hiddenSkipped
+      /* Not "back faces": in Vertex and Edge mode the user swept dots and
+         lines, and on a single-sided surface seen from behind there is no
+         face on screen at all. */
+      ? 'That side faces away \u2014 See-through to select it'
+      : 'Nothing in that region'));
 }
 
 /* ---------------- Grow / Shrink selection ----------------
@@ -23242,6 +23353,9 @@ if (PICK_DEBUG) {
     // occlusion test they arbitrate with.
     pickVertexOnActive, pickEdgeOnActive, pickFaceOnActive, pickComponentOnActive,
     pointOccluded, groupFacesCamera, createCubeObject, makeMaterialSet,
+    // a2.76: the memo the region sweep opens around itself.
+    // (performRegionSelect is already exported further down.)
+    beginFacingMemo, endFacingMemo,
     get occTestCount() { return occTestCount; },
     resetOccCount: () => { occTestCount = 0; },
     OCC_TEST_BUDGET,

@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~21,780 lines)
-- Version at time of writing: **a2.75**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,560 lines)
+- Version at time of writing: **a2.76**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -384,6 +384,53 @@ own computed `display` into an inline style, which outranks the now-absent
   backdrop AND the element is a read-back of the live canvas plus a second
   blur on the result, and WebKit has been inconsistent about the pair.
 
+## Box select respects visibility (a2.76)
+
+a2.72 made "you cannot select what you cannot see" true of TAP only, and said
+in its own Deliberately-not-done that box select was the obvious next
+increment. This is it. Box and lasso now skip components that face away,
+unless **See-through** is on - in which case nothing is filtered, which is
+what See-through means.
+
+### It is the facing test, not occlusion
+
+`performRegionSelect` calls `vertexVisible` / `edgeVisible` /
+`groupFacesCamera` - the same back-face tests the free tap uses first - and
+does **not** raycast. That is deliberate: a box can enclose thousands of
+components, and `pointOccluded` is one raycast each. The facing test is O(1)
+per component off a cached normal.
+
+**The limitation this buys, stated plainly:** `vertexVisible` passes a vertex
+if ANY face touching it faces the camera. On a capped shape every rim vertex
+also touches the cap, and the cap faces you, so a full-screen box over a
+cylinder takes the **back rim too** - and reports nothing skipped, because
+nothing was. Probe section 18 pins this: 18 of 24 vertices on a 44-triangle
+cylinder, which is exactly what the facing test says and more than you can
+see. The toast never claims otherwise; it counts what the filter actually
+dropped.
+
+### The facing memo
+
+Before a2.76 the face path called `groupFacesCamera(obj, gi)` per face and
+that walks the group's triangles. A box over a dense mesh made it
+O(faces x triangles). `beginFacingMemo(obj)` installs a one-shot
+`Map` keyed by group index for the duration of one region select;
+`groupFacesCamera` reads it if it is live and for the same object, and
+`groupFacesCameraUncached` is the old body. `endFacingMemo()` runs in a
+**`finally`** - a memo left live across a mesh edit would answer with stale
+facing forever, so it must be released even if the select throws.
+
+The face path also tests its corners **before** computing the centroid, which
+was a pre-existing cost paid on every face whether or not it was in the box.
+
+### Deliberately still unfiltered
+
+**Grow / shrink, loop select, ring select and symmetry expansion are
+topological.** They answer "what is connected to this", not "what is on
+screen", and filtering them would make grow stop at the silhouette - which
+would be a bug, not a feature. Probe 16 asserts grow still reaches round the
+model (5 from 1) with the filter on.
+
 ## Picking: you cannot select what you cannot see (a2.72)
 
 **This reverses the rule written into `pointOccluded`'s old comment.** That
@@ -459,13 +506,12 @@ is the only thing refusing those.
 
 ### Deliberately not done
 
-- **Box select, lasso, grow/shrink, loop select and symmetry expansion do not
-  consult visibility.** So "you cannot select what you cannot see" is
-  currently true of TAP only. Most 3D apps do restrict box select to visible
-  components outside x-ray, and it is the obvious next increment; it is a
-  behaviour change of its own and did not belong in the same release. The
-  dead end it used to create - select hidden, then be unable to deselect - is
-  closed by the fallback above.
+- **Box select and lasso did not consult visibility.** So at a2.72 "you
+  cannot select what you cannot see" was true of TAP only. **a2.76 fixed
+  that** - see the section above it. Grow/shrink, loop select and symmetry
+  expansion are still unfiltered on purpose, because they are topological.
+  The dead end box select used to create - select hidden, then be unable to
+  deselect - is closed by the fallback above, and still is.
 - **Occlusion is within one object.** `pointOccluded` raycasts `obj.mesh`
   only, so with cube B in front of cube A, tapping A's vertex through B still
   selects it.
