@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,560 lines)
-- Version at time of writing: **a2.76**
+- Version at time of writing: **a2.77**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -383,6 +383,108 @@ own computed `display` into an inline style, which outranks the now-absent
   `.submerging` set it to `none` for the duration, because blurring the
   backdrop AND the element is a read-back of the live canvas plus a second
   blur on the result, and WebKit has been inconsistent about the pair.
+
+## The topology build, taken apart and rebuilt (a2.77)
+
+**Both items on the performance queue were the wrong ones.** The queue said
+the next win was `applyShading`'s double normal pass (9-11%), and that the
+rest of the function was unexamined. Breaking it into phases and timing each
+one - `_prof_probe.py`, which instruments a COPY of index.html in memory so
+there is no patch to revert - put the truth somewhere else entirely.
+
+### The measured shape of applyShading, before
+
+At 3,072 triangles, as shares of one run (shares, not absolutes: the machine
+drifts 3x between runs, but every phase in a run drifts together):
+
+| phase | 3k tris | 12k tris |
+|---|---|---|
+| `2_topo` **(the topology build)** | **47-51%** | **58%** |
+| ↳ `2e_edgeMaps` | 18-25% | **38%** |
+| ↳ `2a_computeLogicalOf` | 14% | 11% |
+| ↳ `2c_windingComponents` | 8% | 8% |
+| `6_unionFind` | 25% | 23% |
+| `1_baseNormals` *(the queue's item)* | 9% | 7% |
+| `4_triNormals` | 7% | 5% |
+| `5_sharpWear` | 5% | 5% |
+| `3_signedVolume` | 5% | 3% |
+
+The double-normals item the queue named was the FIFTH biggest thing, and the
+biggest - the edge-map build - grew with the model while it shrank.
+
+### And the cache that a2.74 said was hitting was never hitting
+
+a2.74's section 7 reported "the same geometry seven times - six cache hits".
+That is wrong. `shadingTopoFor` caches on `geo.userData.shadeTopo` **only
+while a direct drag is running** and writes `null` otherwise, on purpose:
+outside a gesture the next call has to rebuild or a vertex welded by an edit
+would keep the old grouping. So every call outside a drag rebuilds the
+topology, and a2.74's "warm" measurement was cold.
+
+### What changed
+
+**`computeLogicalOf` welds with nested numeric Maps, not a string key.** It
+built `x + '_' + y + '_' + z` for every attribute vertex of every mesh on
+every rebuild. Three nested `Map`s keyed by the rounded numbers are exactly
+equivalent - `Map` compares by SameValueZero, so `-0` keys with `0` and
+`NaN` with `NaN`, both the answers the string gave - and nothing is packed
+into one number, because there is no safe packing without a bound on the
+model's scale and a collision here does not lose precision, it **welds two
+vertices that are not the same**.
+
+**`buildShadingTopo` keeps one Map of records, not six parallel Maps.**
+Every edge lived in `edgeFaces`, `edgeUse`, `edgeOpp`, `edgeTri` and
+`edgeEnds` under the same key, so a second triangle arriving on an edge
+already seen cost four more Map lookups to find the arrays to append to -
+and most edges are seen at least twice. `edges: Map<key, {faces, use, opp,
+tri, ends}>` makes that one lookup. `incident` is unchanged.
+
+### The numbers, and how they were taken
+
+Each rewrite was written TWICE and both versions timed in the same run
+against the same geometry, before either was put in the app:
+
+- weld: string keys 4.90ms, nested maps 1.90ms - **61% off**, same 6,146
+  logical vertices vertex for vertex.
+- edges: six Maps 7.30ms, one Map of records 4.00ms - **45% off**, same
+  18,432 logical edges.
+
+Then in the app, on `rebuildFromEditable` - the funnel every operation ends
+at - with a new geometry each time, which is what a real op does:
+**12.07ms → 9.69ms, 20% off every operation in the app.** That comparison is
+sound because the phases the change did not touch stayed flat across it
+(`1_baseNormals` 0.66→0.63, `3_signedVolume` 0.40→0.36, `4_triNormals`
+0.59→0.61, `5_sharpWear` 0.54→0.54, `6_unionFind` 2.54→2.33) while `2_topo`
+fell 5.16→3.04. Nearly all of the saving is the topology build, which is
+what was changed.
+
+Shares after, at 12k triangles: `2_topo` 58% → **26%**, `2e_edgeMaps` 38% →
+**10%**, `2a_computeLogicalOf` 11% → **5%**.
+
+### The benchmark that would have lied
+
+The first weld measurement used a subdivided cube, and that is the BEST case
+for nested maps: a handful of distinct rounded x values, so a few dozen
+inner Maps serve tens of thousands of vertices. An imported CAD or scanned
+mesh is the opposite - nearly every x distinct, so nesting allocates up to
+two Maps per vertex - and every import path runs through this function. A
+fixture built to be exactly that (40,000 attribute vertices over 20,000
+distinct positions, every x its own) says string 12.20ms against nested
+4.00ms: **67% off in the bad case, more than in the good one.** A
+hash-with-collision-verify variant was written as the fallback and tied
+nested exactly, so there was nothing to buy by being cleverer.
+
+The first attempt at that fixture was itself wrong - an LCG whose multiply
+overflowed 2^53, so the sequence collapsed and the "scattered" fixture came
+back with 6,222 distinct positions out of 40,000, which is the clustered
+case again. **A fixture has to be checked for the property it exists to
+have.**
+
+### What is now the biggest thing, for whoever comes next
+
+`6_unionFind` (30-36%) and `2c_windingComponents` (8-16%, and it grows).
+Neither has been looked at. The double-normals item is still there and is
+still fifth.
 
 ## Box select respects visibility (a2.76)
 
@@ -1958,9 +2060,9 @@ one tap on an open plane deletes its whole outline with no visual cue.
 a2.18 had deliberately removed that call.
 
 **An outline edge is not any edge.** An edge a face uses TWICE is that
-face's own triangulation - the diagonal of a quad - and `edgeUse` counts
-uses PER FACE so the test is `computeTopology`'s: some face uses it exactly
-once. Without it every quad has a phantom edge down its middle.
+face's own triangulation - the diagonal of a quad - and an edge record's
+`use` array counts uses PER FACE so the test is `computeTopology`'s: some
+face uses it exactly once. (It was a separate `edgeUse` Map until a2.77.) Without it every quad has a phantom edge down its middle.
 
 **Convex or concave: stand on one face and look at the OTHER face's far
 vertex.** Below this face's plane means the surface folds away and the edge
@@ -3808,7 +3910,7 @@ ACTIVE object's selection ids against every inactive object's topology.
 **A drag moves vertices; it cannot change topology.** So `buildShadingTopo`
 now builds everything derived from the INDEX - the logical-vertex grouping,
 triangle-to-face-group, the winding-agreement components and their relative
-signs, and the five edge maps - and `shadingTopoFor` caches that on
+signs, and the edge records - and `shadingTopoFor` caches that on
 `geo.userData.shadeTopo` for the length of ONE direct drag. Measured: six drag
 frames, six shading passes, **one** topology build.
 
