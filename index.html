@@ -1541,7 +1541,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.73</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.74</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -5257,13 +5257,22 @@ function applyShading(obj) {
     // Triangle normals, and each FACE's own normal (area-weighted, which is
     // what makes a triangulated n-gon answer as one flat face).
     const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3();
+    /* TWO SCRATCH EDGES, HOISTED. The line below used to read
+       `new Vector3().subVectors(vB, vA).cross(new Vector3().subVectors(vC, vA))`,
+       which allocates THREE Vector3 per triangle where only one - the
+       normal, which is kept in triNormal - outlives the iteration. On a
+       12k-triangle mesh that is 24,000 objects per call that exist for one
+       line each, and applyShading runs on every frame of an op-bar drag.
+       Identical arithmetic; two thirds fewer allocations. */
+    const eU = new THREE.Vector3(), eV = new THREE.Vector3();
     const triNormal = new Array(triCount);
     const groupNormal = [];
     for (let gi = 0; gi < groupsSrc.length; gi++) groupNormal.push(new THREE.Vector3());
     for (let t = 0; t < triCount; t++) {
       const ia = index.getX(t * 3), ib = index.getX(t * 3 + 1), ic = index.getX(t * 3 + 2);
       vA.fromBufferAttribute(posAttr, ia); vB.fromBufferAttribute(posAttr, ib); vC.fromBufferAttribute(posAttr, ic);
-      const nrm = new THREE.Vector3().subVectors(vB, vA).cross(new THREE.Vector3().subVectors(vC, vA));
+      const nrm = new THREE.Vector3().crossVectors(
+        eU.subVectors(vB, vA), eV.subVectors(vC, vA));
       groupNormal[triGroup[t]].add(nrm);
       triNormal[t] = nrm.lengthSq() > 1e-12 ? nrm.normalize() : nrm;
     }

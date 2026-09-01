@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~21,680 lines)
-- Version at time of writing: **a2.73**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~21,690 lines)
+- Version at time of writing: **a2.74**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -130,7 +130,117 @@ scaled, single-loop output. It now carries foreign fixtures: a square annulus
 with a hole, a negative-scale node, and a hand-built interleaved buffer with
 a poison value in the spare channels.
 
-## Surfacing (a2.73) - READ BEFORE OLDER SECTIONS
+## Performance, measured (a2.74) - READ BEFORE OLDER SECTIONS
+
+**Both standing performance notes were wrong.** Neither had been re-measured
+since it was written, and one of them could not have been measured at all
+with the tools that existed.
+
+### First, the tools could not measure time
+
+Every probe suite runs under `--virtual-time-budget`, where Chrome advances
+the clock only while the page is idle - so synchronous JavaScript takes
+**zero virtual time** and `performance.now()` reads 0.0ms across any amount
+of work. That is why `_perf_probe` counts operations instead of timing them,
+and it is why two timing assertions written this week passed while measuring
+nothing at all.
+
+`_time_probe.py` is the answer: no virtual time, a real clock, and the
+results come back by **POST** rather than by scraping the DOM (without
+virtual time, `--dump-dom` fires long before a probe has finished). Numbers
+from it are headless-SwiftShader-on-a-desktop, not an iPhone - but the work
+is CPU-side JavaScript, so the SHAPE of a curve and the RELATIVE cost of
+phases carry over. An absolute millisecond from this harness means little.
+
+### "Subdivide is superlinear (L5 = 1454ms)" - NOT AS STATED
+
+Measured, one level at a time from a cube:
+
+```
+L1     48 tris   16ms
+L2    192 tris   11ms  (x0.7)
+L3    768 tris   24ms  (x2.2)
+L4   3072 tris   64ms  (x2.7)
+L5  12288 tris  220ms  (x3.3)
+```
+
+Each level multiplies triangles by four, so **4x per level is linear in
+output size and is the floor**. Subdivide runs at 2.2-3.3x. It is
+*sub*-linear per triangle, and L5 is 220ms rather than 1454ms.
+
+### "The op-bar drag rebuilds the face overlay every frame" - MIS-STATED
+
+Measured: **0 overlay index rebuilds across 12 slider frames.** a2.54 made
+the overlay one mesh borrowing the mesh's own position attribute, and
+a2.64a's comment already said this claim was mis-stated. It is now measured
+as well as argued.
+
+### Where the time actually is: `applyShading`
+
+```
+rebuildFromEditable   2.6ms   at 768 triangles
+  of which applyShading 2.5ms
+```
+
+**`applyShading` is ~95% of `rebuildFromEditable`, and every op in the app
+funnels through `rebuildFromEditable`** - so it is the floor under
+everything. And it is the thing that is superlinear:
+
+```
+applyShading:  48 tri 0.2ms | 192 0.5ms | 768 2.1ms | 3072 8.2ms | 12288 45ms
+```
+
+The last step is 5.9x the time for 4x the triangles.
+
+**One op-bar slider frame on a 3072-triangle model costs ~10ms here against a
+16.7ms frame budget, and a phone is slower.** Imports made a model that size
+one tap away, which is what moves this from theory to the main risk.
+
+### What was ruled out, so nobody re-checks it
+
+- **The topology cache is not the story.** `shadingTopoFor(geo)` is cached
+  per geometry, and `rebuildFromEditable` installs a NEW geometry on every
+  op - so the cache can never hit during real work. Measured anyway: 7.7ms
+  warm vs 9.9ms cold. The topology rebuild is ~2ms of it; the per-call work
+  is the rest.
+- **The normal arithmetic is not the story.** The same triangle-normal maths
+  with no allocation is 0.4ms against applyShading's 9.7ms.
+- **The redundant `computeVertexNormals()` is real but load-bearing.**
+  applyShading calls it as a safety baseline and then computes its own
+  normals, so normals are built twice - 9-11% of the call. It cannot simply
+  be moved into the `catch` that already calls it, because the per-vertex
+  loop deliberately falls back to that baseline for a degenerate fan
+  (`// degenerate fan: keep the baseline`). Removing it means writing a
+  cheaper degenerate handler, which is a change to shading CORRECTNESS, not
+  a performance tweak. Worth doing; not worth doing carelessly.
+
+### The next candidate, with a reason
+
+The **wear-edge pass** at the end of applyShading walks every edge and
+builds the convex/concave edge list for the Cavity and Edges masks. Its own
+comment says the distance field it feeds is baked "lazily and throttled, and
+only for an object that is actually wearing a shape mask" - but **the list
+itself is built on every shade, for every object, whether anything uses it
+or not**, which is the common case.
+
+Guarding it needs care: `ensureEdgeField` bakes from
+`geo.userData.kubikEdges`, so an object that gains a mask later must fill
+the list lazily rather than find it missing. That is the same shape as
+`ensureEdgeField`'s own laziness, so there is a pattern to follow.
+
+### a2.74's own change, honestly
+
+The triangle-normal loop allocated **three** `THREE.Vector3` per triangle
+where only one - the normal, kept in `triNormal` - outlives the iteration.
+Two are now hoisted scratch vectors. Identical arithmetic, 24,000 fewer
+objects per call on a 12k mesh.
+
+**It did not move the number here** (9.7ms vs 9.8ms, against run-to-run
+variance of +/-0.5ms). It is kept because it cannot be worse and a phone is
+more allocation-sensitive than a desktop V8 - but that is a reason, not a
+measurement, and it has not been verified on the target.
+
+## Surfacing (a2.73)
 
 Things in this app do not switch on. They come up through a layer of
 something and settle, and go back down into it. `blur(10px) -> 0` with
