@@ -1541,7 +1541,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.78</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.79</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -9854,6 +9854,23 @@ const OP_SPECS = {
       { key: 'ring', label: 'Ring', min: 15, max: 360, step: 1, start: 360 }
     ]
   },
+  /* SOLIDIFY (a2.79). The amount is a thickness as a FRACTION OF THE MODEL'S
+     OWN SIZE, for the reason Circularize gives for its blend and Array for
+     its spacing: one range then means the same thing on a business card and
+     on a barn door, where a distance would need re-dialling for every
+     object. 0.05 is about the thickness of card.
+
+     The three options are WHERE THE THICKNESS GOES relative to the surface
+     you can already see. Behind is the default because it is the only one
+     that leaves that surface exactly where you put it. */
+  solidify: {
+    label: 'Solidify', min: 0.005, max: 0.5, step: 0.005, start: 0.05,
+    options: [
+      { key: 'in', label: 'Behind' },
+      { key: 'both', label: 'Centred' },
+      { key: 'out', label: 'In front' }
+    ]
+  },
   bevel: {
     label: 'Bevel', min: 0.005, max: 4, step: 0.005, start: 0.06, segments: true,
     options: [
@@ -10333,6 +10350,17 @@ function applyPendingOp() {
     }
     ensureHelpers(obj);
 
+  } else if (op.kind === 'solidify') {
+    const okS = solidifyOp(obj, op.amount, op.groupMode || 'in');
+    // Same reason as Array: refuseOp only records it, and the commonest way
+    // in - a closed solid - would otherwise sit there doing nothing.
+    if (!okS && opRefusal) {
+      if (op.saidWhy !== opRefusal) { op.saidWhy = opRefusal; toast(opRefusal); }
+    } else if (okS) {
+      op.saidWhy = null;
+    }
+    ensureHelpers(obj);
+
   } else if (op.kind === 'subdivide') {
     /* Re-run from the snapshot at the current count, exactly like every
        other live op - which is what makes the stepper a PREVIEW of the
@@ -10475,7 +10503,10 @@ function refreshOpGrouping() {
     flat: 'Straight chamfer across the edge',
     round: 'Arc that meets both faces smoothly',
     line: 'Copies in a row along the symmetry axis',
-    ring: 'Copies turned around the pivot, or the world centre'
+    ring: 'Copies turned around the pivot, or the world centre',
+    in: 'Thickness goes behind - the surface you see stays put',
+    both: 'Half the thickness each side of the surface',
+    out: 'Thickness goes in front of the surface'
   };
 
   options.forEach(o => {
@@ -10774,7 +10805,13 @@ function confirmPendingOp() {
      one and then abandoned would otherwise add a step that changes nothing
      - and an Undo press that appears dead. */
   if (!op.inHistory) pushHistory();
-  if (op.kind === 'array') {
+  if (op.kind === 'solidify') {
+    /* The percentage, because the slider is a FRACTION of the model rather
+       than a distance, and "0.05" on its own reads like millimetres. */
+    toast('Solidified ' + (op.amount * 100).toFixed(1) + '% thick' +
+      (op.groupMode === 'both' ? ', centred'
+        : op.groupMode === 'out' ? ', in front' : ', behind'));
+  } else if (op.kind === 'array') {
     /* The COUNT and the AXIS, because both are set somewhere other than this
        bar - the count on the stepper, the axis in the drawer - and a ring of
        twelve that came out as a row of three is exactly the mistake a toast
@@ -18975,6 +19012,292 @@ function arraySelection() {
   });
 }
 
+
+/* ---------------- Solidify (a2.79) --------------------------------------
+
+   Gives an OPEN surface a thickness: a plane becomes a slab, an imported
+   single-sided shell becomes something you could print.
+
+   The shape of it is deliberately uniform across the three options. Whatever
+   you pick, the answer is TWO copies of the surface at two offsets, `d0` in
+   front and `d1` behind, plus a wall round the rim joining them:
+
+       Behind    d0 =  0     d1 = -t      (the surface stays put)
+       Centred   d0 = +t/2   d1 = -t/2
+       In front  d0 = +t     d1 =  0
+
+   The copy at d0 keeps the original winding and is the outside; the copy at
+   d1 has every triangle reversed, so it faces the other way and the result
+   is closed and consistently wound. Writing the three options as two numbers
+   rather than three code paths is what keeps them from drifting apart.
+
+   THE OFFSET DIRECTION AND ITS LEAN CORRECTION are taken from
+   extrudeRegionOp, which solved the same problem for its side walls: a
+   vertex normal is the sum of the normals of every face touching it, and on
+   a bend that sum leans away from each face and would thin the wall out, so
+   it is divided by the lean. Same clamp, same reason. */
+
+/* WHAT IT NEEDS TO KNOW BEFORE IT CAN MOVE ANYTHING, and the only part
+   solidifySelection needs in order to refuse BEFORE opening a bar that could
+   never work. Returns a string - the reason - when it cannot proceed.
+
+   Array keeps its bar open on a refusal because its refusal is
+   option-dependent: switching Ring to Line makes it succeed. "This is already
+   closed" is true of all three of Solidify's options across the whole slider,
+   so a bar opened over a closed solid is dead on arrival and this checks
+   first. */
+function solidifySurvey(obj) {
+  const mesh = obj.mesh;
+  const ed = toEditable(mesh);
+  if (!ed.groups.length) return 'there is nothing here to solidify';
+
+  /* UNEVEN SCALE IS REFUSED, for the reason Array refuses a Ring on one: the
+     thickness is measured in the object's LOCAL space and applied along a
+     local normal, so under a scale of 1,1,10 the same number comes out thin
+     at the sides and thick at the top and the toast's percentage means
+     nothing you can see. */
+  const sc = mesh.scale;
+  const smax = Math.max(Math.abs(sc.x), Math.abs(sc.y), Math.abs(sc.z));
+  const smin = Math.min(Math.abs(sc.x), Math.abs(sc.y), Math.abs(sc.z));
+  if (smax - smin > Math.max(smax, 1e-6) * 1e-3) {
+    return 'this object is scaled unevenly (' + sc.x.toFixed(2) + ', ' + sc.y.toFixed(2) +
+      ', ' + sc.z.toFixed(2) + '), so a thickness along its normals would come out uneven';
+  }
+
+  const L = edLogical(ed);
+  const loops = new Map(), faceNormals = new Map();
+  for (let gi = 0; gi < ed.groups.length; gi++) {
+    const lp = getGroupBoundaryLoopAttr(ed, gi);
+    if (!lp || lp.length < 3) continue;
+    /* A FACE WITH NO AREA IS LEFT OUT OF BOTH ANSWERS. loopNormal returns a
+       normalised vector, so zero length means the outline encloses nothing -
+       a sliver, which imported .stl files are full of. Left in, it did two
+       kinds of damage: its zero normal made the lean factor below come out
+       at 0, which clamps to 0.35 and made every vertex it touched 2.9x too
+       thick; and its two coincident outline edges landed on the same
+       undirected key twice, pushing a genuinely open edge's count to 3 so it
+       was read as interior and got no wall - a hole in a "closed" result.
+       Its triangles still travel; it just gets no say. */
+    const n = loopNormal(ed, lp);
+    if (n.lengthSq() < 0.5) continue;
+    loops.set(gi, lp);
+    faceNormals.set(gi, n);
+  }
+  if (!loops.size) return 'these faces have no area to give a thickness to';
+
+  /* THE MESH'S OWN RIM: a logical edge that exactly one face outline uses.
+     Same count-the-directed-edges test extrudeRegionOp uses for a selection,
+     run over every face instead of a chosen few. The owning face travels with
+     the edge so its wall can inherit the right material. */
+  const kOf = (a, b) => (a < b ? a + '_' + b : b + '_' + a);
+  const count = new Map(), directed = new Map();
+  loops.forEach((lp, gi) => {
+    for (let i = 0; i < lp.length; i++) {
+      const a = L.logicalOf[lp[i]], b = L.logicalOf[lp[(i + 1) % lp.length]];
+      if (a === b) continue;
+      const k = kOf(a, b);
+      count.set(k, (count.get(k) || 0) + 1);
+      if (!directed.has(k)) directed.set(k, [a, b, gi]);
+    }
+  });
+  const rim = [];
+  count.forEach((c, k) => { if (c === 1) rim.push(directed.get(k)); });
+  /* NO RIM MEANS NO OPEN SIDE. Two nested closed shells would be a legal
+     mesh - a hollow solid - but on a fidget it is an invisible result that
+     doubles the face count, so it is refused rather than done quietly.
+     Hollowing is a different tool if it is ever wanted. */
+  if (!rim.length) {
+    return 'this is already closed - Solidify gives an OPEN surface a thickness';
+  }
+  return { ed, L, loops, faceNormals, rim };
+}
+
+function solidifyOp(obj, thickness, mode) {
+  const mesh = obj.mesh;
+  const survey = solidifySurvey(obj);
+  if (typeof survey === 'string') return refuseOp(survey);
+  const { ed, L, loops, faceNormals, rim } = survey;
+  const srcMats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  const srcSmooth = mesh.userData.smoothGroups || {};
+  const srcFinish = mesh.userData.finishes || {};
+
+  // Which faces meet at each vertex - that is what its offset direction is.
+  const facesAtVert = new Map();
+  loops.forEach((lp, gi) => {
+    const seen = new Set();
+    ed.groups[gi].triangles.forEach(t => t.forEach(v => seen.add(L.logicalOf[v])));
+    seen.forEach(l => {
+      if (!facesAtVert.has(l)) facesAtVert.set(l, []);
+      facesAtVert.get(l).push(gi);
+    });
+  });
+  const dirAt = (l) => {
+    const n = new THREE.Vector3();
+    (facesAtVert.get(l) || []).forEach(gi => n.add(faceNormals.get(gi)));
+    if (n.lengthSq() < 1e-12) return null;
+    n.normalize();
+    /* On a bend the vertex normal leans away from each face, which would thin
+       the wall out; dividing by that lean keeps the thickness even. Straight
+       from extrudeRegionOp, clamp included - past a dihedral of about 41
+       degrees the surface simply thins rather than exploding, which is the
+       failure worth having. */
+    let lean = 1;
+    (facesAtVert.get(l) || []).forEach(gi => { lean = Math.min(lean, n.dot(faceNormals.get(gi))); });
+    return n.multiplyScalar(1 / THREE.MathUtils.clamp(lean, 0.35, 1));
+  };
+
+  // The thickness, as a fraction of the model's own size.
+  const box = new THREE.Box3();
+  const q = new THREE.Vector3();
+  for (let i = 0; i < ed.positions.length; i += 3) {
+    box.expandByPoint(q.set(ed.positions[i], ed.positions[i + 1], ed.positions[i + 2]));
+  }
+  const size = box.getSize(new THREE.Vector3());
+  const t = thickness * Math.max(size.x, size.y, size.z, 1e-4);
+  const d0 = mode === 'out' ? t : mode === 'both' ? t / 2 : 0;
+  const d1 = mode === 'out' ? 0 : mode === 'both' ? -t / 2 : -t;
+
+  /* Both copies are APPENDED; the originals are left where they are and
+     simply stop being referenced, which separateGroupVertices drops on the
+     rebuild. Overwriting them in place would have meant reading a position
+     that had already moved while computing the next one. */
+  /* ONLY THE VERTICES A REAL FACE USES. A zero-area face is dropped outright
+     below rather than merely left out of the normals, and the difference
+     matters here: a sliver's middle vertex belongs to no face with an area,
+     so it has no direction to grow in, and asking for one refused the whole
+     op over a stray triangle in an imported file. You cannot give a face
+     with no area a thickness; leaving it out of the result is the honest
+     answer, and it is what `removeTriangles` does with empty groups too. */
+  const usedLogical = new Set();
+  loops.forEach((lp, gi) =>
+    ed.groups[gi].triangles.forEach(tr => tr.forEach(v => usedLogical.add(L.logicalOf[v]))));
+
+  const front = new Map(), back = new Map();
+  const pointMap = new Map();       // original posKey -> where the FRONT copy went
+  usedLogical.forEach(l => {
+    const p = vecAt(ed, L.logicalGroups[l][0]);
+    const d = dirAt(l);
+    if (!d) return;
+    const f = p.clone().addScaledVector(d, d0);
+    const b = p.clone().addScaledVector(d, d1);
+    pointMap.set(posKey(p), f);
+    front.set(l, ed.positions.length / 3); ed.positions.push(f.x, f.y, f.z);
+    back.set(l, ed.positions.length / 3); ed.positions.push(b.x, b.y, b.z);
+  });
+  if (!front.size) return refuseOp('the faces round every vertex here cancel out - there is no direction to grow in');
+
+  const groups = [], mats = [], smoothGroups = {}, finishes = {};
+  const addGroup = (triangles, srcGi) => {
+    const gi = groups.length;
+    groups.push({ triangles });
+    mats.push(cloneMat(srcMats[srcGi] || srcMats[0]));
+    if (srcSmooth[srcGi]) smoothGroups[gi] = true;
+    if (srcFinish[srcGi]) finishes[gi] = srcFinish[srcGi];
+    return gi;
+  };
+
+  /* `loops` holds exactly the faces that survived the survey, so iterating it
+     rather than ed.groups is what drops the zero-area ones. */
+  const ok = (tr) => tr.every(v => front.has(L.logicalOf[v]));
+  // The face you can see, unchanged in winding.
+  loops.forEach((lp, gi) =>
+    addGroup(ed.groups[gi].triangles.filter(ok)
+      .map(tr => tr.map(v => front.get(L.logicalOf[v]))), gi));
+  // And its back, every triangle reversed so it faces the other way.
+  loops.forEach((lp, gi) =>
+    addGroup(ed.groups[gi].triangles.filter(ok).map(tr => {
+      const m = tr.map(v => back.get(L.logicalOf[v]));
+      return [m[0], m[2], m[1]];
+    }), gi));
+
+  /* ONE WALL PER RIM EDGE, STRAIGHT OFF THE RIM LIST - no loop walking.
+
+     The first cut walked the rim into ordered loops the way extrudeRegionOp
+     does, and that is where the one real bug in this op lived. A `next` map
+     holds ONE outgoing edge per vertex and a `walked` set blocks any later
+     chain from crossing a vertex an earlier one claimed, so two rim loops
+     meeting at a single shared vertex - which is every checkerboard of
+     deleted faces - lost the walls on both edges at that vertex AND grew a
+     wall across an edge that does not exist, closing the chain that had been
+     cut short. It returned true and the toast said "solidified".
+
+     Every wall depends only on its own two ends, so the loops bought nothing.
+     Iterating the rim directly gives exactly the same walls on clean input,
+     one per rim edge, with no ordering assumption anywhere.
+
+     THE QUAD RUNS THE OTHER WAY ROUND THAN EXTRUDE'S, and that is not a
+     typo. Extrude keeps the original rim where it is and puts the moved copy
+     IN FRONT, so its wall climbs from old to new. Here the copy that keeps
+     the original winding is the FRONT face and the new surface is BEHIND it,
+     which is the mirror arrangement - so a wall wound extrude's way faces
+     inward. Measured rather than reasoned: with extrude's order the four
+     walls each came out at -0.0167 of signed volume against the back cap's
+     correct +0.0333, and auditWinding reported 8 conflicting edges. */
+  rim.forEach(([la, lb, gi]) => {
+    addGroup(fanTriangles([front.get(lb), front.get(la), back.get(la), back.get(lb)]), gi);
+  });
+
+  /* The position-keyed marks follow the FRONT surface. Array moves them by a
+     matrix; here every vertex goes its own way, so the map is point to point
+     instead. The back copy and the walls get none - a crease is a statement
+     about an edge of the shape you drew, and the back is new surface nobody
+     has said anything about yet.
+
+     A mark on a RIM edge is dropped rather than carried: that edge is now the
+     joint between the face and its new wall, and an explicit "smooth" there
+     beats the angle rule and smears the one edge of a solidified card that
+     should be crisp. */
+  const rimKeys = new Set();
+  rim.forEach(([la, lb]) => {
+    rimKeys.add(creaseKeyFor(vecAt(ed, L.logicalGroups[la][0]), vecAt(ed, L.logicalGroups[lb][0])));
+  });
+  const creases = {}, edgeShade = {};
+  remapMarksByPoint(mesh.userData.creases || {}, creases, pointMap, rimKeys);
+  remapMarksByPoint(mesh.userData.edgeShade || {}, edgeShade, pointMap, rimKeys);
+
+  const outgoing = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  mesh.material = mats.length > 1 ? mats : mats[0];
+  if (App.pendingOp) binMaterials(outgoing);
+  else outgoing.forEach(mm => mm && mm.dispose());
+  mesh.userData.smoothGroups = smoothGroups;
+  mesh.userData.finishes = finishes;
+  mesh.userData.creases = creases;
+  mesh.userData.edgeShade = edgeShade;
+  rebuildFromEditable(obj, { positions: ed.positions, groups });
+  return true;
+}
+
+/* The point-to-point cousin of moveMarkKeys. A mark key is two posKeys with
+   a bar between them, so a map from the OLD posKey string to the new point
+   re-keys it exactly, whatever moved each end. A key whose ends are not both
+   in the map is dropped rather than guessed at, and so is one named in
+   `skip`. */
+function remapMarksByPoint(src, dst, pointMap, skip) {
+  Object.keys(src).forEach(key => {
+    if (skip && skip.has(key)) return;
+    const parts = key.split('|');
+    if (parts.length !== 2) return;
+    const a = pointMap.get(parts[0]), b = pointMap.get(parts[1]);
+    if (!a || !b) return;
+    dst[creaseKeyFor(a, b)] = src[key];
+  });
+}
+
+function solidifySelection() {
+  if (App.mode !== 'object') { toast('Solidify works in Object mode'); return; }
+  if (App.selectedObjectIds.size !== 1) {
+    toast(App.selectedObjectIds.size ? 'Solidify works on one object at a time' : 'Select an object to solidify');
+    return;
+  }
+  const ids = Array.from(App.selectedObjectIds);
+  const obj = findObject(ids[0]) || findObject(App.activeObjectId);
+  if (!obj) return;
+  // Refuse BEFORE opening the bar - see solidifySurvey's note.
+  const why = solidifySurvey(obj);
+  if (typeof why === 'string') { toast(why); return; }
+  beginPendingOp('solidify', obj, {}, { groupMode: 'in' });
+}
+
 function joinSelection() {
   if (App.mode !== 'object') { toast('Join works in Object mode'); return; }
   const ids = Array.from(App.selectedObjectIds);
@@ -21418,6 +21741,10 @@ const ICON = {
      than "three of them": at the 26px the ring actually uses, three equal
      squares read as a row of three objects, which is the wrong idea. */
   array:   '<rect x="2" y="9" width="6" height="6"/><rect x="9.5" y="9" width="6" height="6" opacity=".6"/><rect x="17" y="9" width="6" height="6" opacity=".3"/>',
+  /* A sheet seen edge-on, with a slab under it. The top face is the surface
+     you started with and the faded body is what Solidify puts behind it -
+     which is exactly what the default option does. */
+  solidify: '<path d="M3 8.5l9-4 9 4-9 4z"/><path d="M3 8.5v3.5l9 4 9-4V8.5" opacity=".5"/>',
   join:    '<circle cx="9" cy="12" r="5.5"/><circle cx="15" cy="12" r="5.5"/>',
   split:   '<path d="M12 3v18"/><path d="M8 8L4 12l4 4M16 8l4 4-4 4"/>',
   /* SHARP keeps the old crease glyph, because a hard peak is what it always
@@ -21602,6 +21929,11 @@ const HUB_TOOLS_OBJECT_BASE = [
   { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 0, run: deleteSelection },
   { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 8, ring: 1, run: toggleShading },
   { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 9, ring: 1, run: flipNormalsSelection },
+  /* INBOARD OF FLIP NORMALS, and that is the pairing. Both ops are about a
+     surface having only one side: Flip normals answers "it is facing the
+     wrong way", Solidify answers "it has no back at all". Seat 9 is the
+     one-sidedness bearing in this ring, so they share it. */
+  { key: 'solidify', icon: 'solidify', label: 'Solidify', seat: 9, ring: 0, run: solidifySelection },
   { key: 'subdivide', icon: 'subdiv', label: 'Subdivide', seat: 10, ring: 1, run: subdivideSelection },
   /* Seat 11 is Crease's bearing in the Edge ring, and that is the right
      company: 11 is where the FINER shading control lives, one step past the
@@ -23828,6 +24160,10 @@ if (PICK_DEBUG) {
     axisTooFlat, beginExtrudeDrag, updateExtrudeDrag, endExtrudeDrag,
     restoreDoc, serializeDoc, refuseOp, pushHistory, toast,
     showMirrorChooser, hideOpBar, arraySelection, arrayOp,
+    solidifySelection, solidifyOp, solidifySurvey, createObjectFromEditable,
+    // The editable-side weld, so a probe can count open edges itself
+    // rather than trust the op's own answer about whether it closed.
+    edLogical, getGroupBoundaryLoopAttr, loopNormal, fanTriangles,
     /* a2.78. The op BAR, not just the worker underneath it - the first
        pass of the Array probe drove arrayOp directly and passed twelve
        sections while the tool itself was broken in six places, all of

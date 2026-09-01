@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,560 lines)
-- Version at time of writing: **a2.78**
+- Version at time of writing: **a2.79**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -383,6 +383,125 @@ own computed `display` into an inline style, which outranks the now-absent
   `.submerging` set it to `none` for the duration, because blurring the
   backdrop AND the element is a read-back of the live canvas plus a second
   blur on the result, and WebKit has been inconsistent about the pair.
+
+## Solidify (a2.79)
+
+Gives an **open** surface a thickness: a plane becomes a slab, an imported
+single-sided shell becomes something you could print. Seat 9 of ring 0 in the
+Object ring, **inboard of Flip normals** - both ops are about a surface having
+only one side. Flip normals answers "it is facing the wrong way"; Solidify
+answers "it has no back at all".
+
+### Three options, two numbers
+
+Whatever you pick, the answer is two copies of the surface at `d0` (front,
+keeping the winding) and `d1` (back, every triangle reversed), plus one wall
+per rim edge joining them:
+
+| option | d0 | d1 |
+|---|---|---|
+| **Behind** (default) | 0 | −t | the surface you see stays exactly put |
+| **Centred** | +t/2 | −t/2 | |
+| **In front** | +t | 0 | the surface becomes the back |
+
+Writing them as two numbers rather than three code paths is what stops them
+drifting apart. The thickness is a **fraction of the model's own size**, for
+the reason Circularize gives for its blend and Array for its spacing: one
+range then means the same thing on a business card and on a barn door.
+
+### The wall winding runs the other way to extrude's
+
+Not a typo, and worth the note because the next person will reach for
+`extrudeRegionOp` as the model. Extrude keeps the original rim where it is and
+puts its moved copy **in front**, so its wall climbs from old to new. Here the
+copy that keeps the original winding is the **front** face and the new surface
+is **behind** it - the mirror arrangement - so a wall wound extrude's way
+faces inward.
+
+**Measured, not reasoned.** With extrude's order the four walls of a
+solidified plane each came out at −0.0167 of signed volume against the back
+cap's correct +0.0333, and `auditWinding` reported 8 conflicting edges. The
+per-group volume breakdown is what localised it; the total alone said only
+"inside out or degenerate" and would have sent the next guess to the caps.
+
+### No rim walk - and that is the fix, not a shortcut
+
+The first cut walked the rim into ordered loops the way `extrudeRegionOp`
+does. That is wrong here. A `next` map holds ONE outgoing edge per vertex and
+a `walked` set blocks any later chain from crossing a vertex an earlier one
+claimed, so **two rim loops meeting at a single shared vertex** - which is
+every checkerboard of deleted faces - lost the walls on both edges at that
+vertex *and* grew a wall across an edge that does not exist, closing the chain
+that had been cut short. It returned true and the toast said "solidified".
+
+Every wall depends only on its own two ends, so the loops bought nothing.
+Iterating the rim list directly gives exactly the same walls on clean input,
+one per rim edge, with no ordering assumption anywhere. Probe section 15 pins
+the pinch case: two quads touching at one corner come back watertight with
+exactly 4 caps and 8 walls.
+
+Extrude still walks loops, and is still right to: it only ever walks a handful
+of user-selected faces, where the failure needs a selection shaped like a
+checkerboard. Solidify walks the whole mesh.
+
+### What it refuses, before the bar opens
+
+Array keeps its bar open on a refusal because its refusal is
+option-dependent - switching Ring to Line makes it succeed. Solidify's are
+true of every option across the whole slider, so a bar opened over one is dead
+on arrival. `solidifySurvey` runs the cheap half and `solidifySelection`
+refuses without opening:
+
+- **already closed** - two nested shells would be legal, but hollowing is an
+  invisible result that doubles the face count. A different tool if ever
+  wanted.
+- **uneven scale** - the thickness is measured in local space and applied
+  along a local normal, so under 1,1,10 it comes out thin at the sides and the
+  toast's percentage means nothing you can see. Same reasoning as Array's Ring
+  refusal.
+- **no area to thicken.**
+
+### A zero-area face is dropped, not just ignored
+
+`loopNormal` returns a normalised vector, so zero length means the outline
+encloses nothing - a sliver, which imported `.stl` files are full of. Left in,
+it did two kinds of damage: its zero normal made the lean factor come out at
+0, which clamps to 0.35 and made every vertex it touched **2.9x too thick**;
+and its two coincident outline edges landed on the same undirected key twice,
+pushing a genuinely open edge's count to 3 so it read as interior and got no
+wall - a hole in a "closed" result.
+
+Merely leaving it out of the normals was not enough either: its middle vertex
+then belonged to no face with an area and had no direction to grow in, which
+refused the whole op over one stray triangle. So the face is dropped from the
+result. You cannot give a face with no area a thickness.
+
+### Marks, materials, and what a wall inherits
+
+Each wall inherits the material, smooth flag and finish of **the face it grew
+from** - the owning group travels with the rim edge. Face 0 for all of them
+was the first cut and made a multi-coloured shell come back with one arbitrary
+colour round its whole edge.
+
+The position-keyed `creases` and `edgeShade` follow the **front** surface
+through `remapMarksByPoint` - a point-to-point map, where Array's
+`moveMarkKeys` is a matrix, because here every vertex goes its own way. A mark
+on a **rim** edge is deliberately dropped: that edge is now the joint between
+the face and its new wall, and an explicit "smooth" there beats the angle rule
+and smears the one edge of a solidified card that should be crisp.
+
+### Known limits, stated rather than hidden
+
+- **A T-junction produces overlapping walls.** Three collinear rim edges each
+  have a count of 1, so all three get walls and two of them pass through
+  solid material. The op returns true. Detecting collinear overlap is real
+  work and no other op in the app does it either.
+- **The vertex normal is unweighted.** A vertex with six small triangles on
+  one side and one large quad on the other leans toward the small side;
+  Blender weights by corner angle.
+- **Past a dihedral of about 41 degrees the surface thins** rather than
+  exploding - the lean clamp of 0.35 - and there is no self-intersection
+  check, so a sharp valley crease with a large thickness will cross itself.
 
 ## Array (a2.78)
 
