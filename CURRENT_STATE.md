@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~21,690 lines)
-- Version at time of writing: **a2.74**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~21,780 lines)
+- Version at time of writing: **a2.75**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -227,6 +227,61 @@ Guarding it needs care: `ensureEdgeField` bakes from
 `geo.userData.kubikEdges`, so an object that gains a mask later must fill
 the list lazily rather than find it missing. That is the same shape as
 `ensureEdgeField`'s own laziness, so there is a pattern to follow.
+
+### The wear-edge pass runs for the objects that use it (a2.75)
+
+The convex/concave edge list that feeds the Cavity and Edges masks was built
+on **every shade, for every object**, whether anything used it or not. The
+distance field baked from it was already lazy, throttled and masked-objects-
+only; the list itself was not.
+
+**Measured against itself** - same object, same run, flag flipped: **1.2ms of
+8.5ms, 14% of applyShading**. Cross-run comparison would have been worthless;
+the machine drifted 3x on untouched code between two runs an hour apart.
+
+`mesh.userData.wantsWear` is written by `ensureMaskPatches`, which already
+walks every material of every object, so the answer costs nothing extra.
+`defWantsField` is the predicate that used to be inline in `applyMaskPatch`.
+
+### An absent list is not neutral
+
+`ensureEdgeField` returns null, the caller substitutes a **1x1 black
+texture**, and black means "distance zero, everywhere is an edge" - so the
+object renders **fully worn**. That is on record from the duplicate path,
+which is why `ensureWearLists` exists rather than a comment saying it cannot
+happen: it refills for an object that gains a mask later.
+
+The guard is `wantsWear === false`, not falsy. **`undefined` means nobody has
+asked yet and the list is built** - so every path that has not been thought
+about lands on the safe side. Duplicate, separate, join, import, load, undo
+and redo all create meshes with no flag, and all build.
+
+**"Tried and failed" must not look like "never asked."** `ensureWearLists`
+retries until `kubikEdges` exists, and applyShading has two exits that used
+to leave it absent - an indexless geometry, and the outer catch. For a model
+whose shading throws, that turned a once-per-op failure into a full failed
+shade on every `refreshUI`. Both exits now stamp an empty list.
+
+### Where the refill hangs, and where it must not
+
+On `refreshUI` and on the two **structural** funnels - `mkStructural` and the
+bevel-crossing branch of `meApplyLive`. NOT on `updateMaterialEverywhere`,
+which is wired to `input` and therefore runs per pointermove: the live
+sliders cannot change the answer anyway, since `defWantsField` reads `bevel`,
+`on`, the curvature mode, `colorOn` and `roughOn`, and none of them is what a
+live slider writes.
+
+And not from `ensureMaskPatches`, though that is where the flag is set:
+`ensureMaskPatches` is reached from `reconcileFinishes` inside
+`rebuildFromEditable`, which calls `applyShading` itself a moment later, so a
+refill there would shade every masked object twice on every op.
+
+### The cost that moved
+
+Enabling a mask on a material worn by N objects now costs N full shades in
+that tap, where before every object always had a list. Net still a win -
+1.2ms on every op against N x 8.5ms once - but that is where a2.75's cost
+now sits.
 
 ### a2.74's own change, honestly
 

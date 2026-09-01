@@ -1541,7 +1541,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.74</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.75</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -3882,6 +3882,18 @@ function bumpMaskGen(d) {
   if (d) d.maskGen = _maskGen++;
 }
 
+/* DOES ANYTHING ON THIS DEFINITION NEED THE DISTANCE FIELD? (named a2.75)
+
+   It was written inline in applyMaskPatch, where it decides whether to hang
+   an onBeforeRender that bakes the field. a2.75 asks the same question one
+   step earlier - whether to build the EDGE LIST the field is baked from at
+   all - so it needs a name and exactly one definition. A material wearing
+   nothing but Clouds has no use for either. */
+function defWantsField(d) {
+  return !!d && ((d.bevel > 0) ||
+    maskList(d).some(m => m && m.on && maskCurvMode(m) && (m.colorOn || m.roughOn)));
+}
+
 /* Whether a definition needs the shader patch at all. This existed in two
    places - applyMaskPatch's early-out and ensureMaskPatches' repair test -
    and when the bevel arrived only one of them learned about it. A bevel-only
@@ -4033,8 +4045,7 @@ function applyMaskPatch(mat, d) {
      ONLY when a shape mask is actually live. A material wearing nothing but
      Clouds has no use for a distance field, and baking one for it costs a
      megabyte and a stall on every geometry change. */
-  const wantsField = (d.bevel > 0) ||
-    maskList(d).some(m => m && m.on && maskCurvMode(m) && (m.colorOn || m.roughOn));
+  const wantsField = defWantsField(d);
   if (!wantsField) delete mat.onBeforeRender;
   else mat.onBeforeRender = function (renderer, scene, camera, geometry, object) {
     const f = ensureEdgeField(object);
@@ -4367,10 +4378,43 @@ function ensureMaskPatches() {
   App.objects.forEach(o => {
     const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
     const fin = o.mesh.userData.finishes || {};
+    /* ANSWERED HERE BECAUSE THE WALK IS ALREADY HAPPENING (a2.75). Whether
+       an object needs a wear-edge list is a question about every material on
+       it, and this is the one pass that already visits every material of
+       every object. Asking it again in applyShading would mean a second
+       walk of 1536 materials on a subdivided model, on every frame of a
+       drag - which is the cost this whole change exists to remove. */
+    let wants = false;
     mats.forEach((m, gi) => {
       const d = getMaterialDef(fin[gi] || 'standard');
+      if (defWantsField(d)) wants = true;
       if (maskWantsPatch(d) !== _maskedMats.has(m)) applyMaskPatch(m, d);
     });
+    o.mesh.userData.wantsWear = wants;
+  });
+}
+
+/* A MASK TURNED ON AFTER THE LAST SHADE HAS NO LIST TO BAKE FROM (a2.75).
+
+   Since the wear pass is skipped for objects that do not use it, an object
+   that gains a shape mask later finds `kubikEdges` absent - and an absent
+   list is not neutral: ensureEdgeField returns null, the caller substitutes
+   a 1x1 BLACK texture, and black means "distance zero, everywhere is an
+   edge", so the object renders FULLY WORN. That exact failure is on record
+   from the duplicate path, which is why this refill exists rather than a
+   comment saying it cannot happen.
+
+   NOT called from ensureMaskPatches, though that is where the flag is set:
+   ensureMaskPatches is reached from reconcileFinishes, which is inside
+   rebuildFromEditable, which calls applyShading itself a moment later - so
+   a refill there would shade every masked object twice on every op. It
+   hangs off refreshUI instead, which is what runs after a material changes
+   and is never called from inside a rebuild. */
+function ensureWearLists() {
+  App.objects.forEach(o => {
+    if (!o.mesh.userData.wantsWear) return;
+    if (o.mesh.geometry.userData.kubikEdges) return;
+    applyShading(o);
   });
 }
 
@@ -5213,7 +5257,14 @@ function applyShading(obj) {
   // Safe baseline: if anything below throws, the mesh is still shaded.
   geo.computeVertexNormals();
   const index = geo.index;
-  if (!index) return;
+  /* STAMPED EVEN WHEN THERE IS NOTHING TO SAY. ensureWearLists retries
+     until this key exists, so an exit that leaves it absent is not "no
+     list", it is "ask me again on every refreshUI and every slider frame".
+     An empty list is the same shape the inner catch already writes. */
+  if (!index) {
+    geo.userData.kubikEdges = { pos: new Float32Array(0), kind: new Uint8Array(0), gen: ++_wearGen };
+    return;
+  }
 
   try {
     const posAttr = geo.attributes.position;
@@ -5407,6 +5458,26 @@ function applyShading(obj) {
        frame of a drag. The distance field is baked from it in
        ensureEdgeField, lazily and throttled, and only for an object that is
        actually wearing a shape mask. */
+    /* SKIPPED WHEN NOTHING ON THIS OBJECT USES IT (a2.75). Measured: the
+       list is O(E) but it is built on every shade, for every object, and
+       applyShading is ~95% of rebuildFromEditable, which every op in the app
+       funnels through. Most objects wear no shape mask at all, and for those
+       every edge of this was thrown away.
+
+       The flag is set by ensureMaskPatches, which already walks every
+       material of every object. `undefined` means nobody has asked yet -
+       treated as YES, so a first shade before any UI pass still builds the
+       list and nothing regresses on a path that has not been thought about.
+       ensureWearLists is the refill for a mask switched on later. */
+    if (obj.mesh.userData.wantsWear === false) {
+      geo.userData.kubikEdges = null;
+      /* And the texture baked from the list it no longer has - up to a
+         megabyte of DataTexture on a geometry that has stopped reading it.
+         Turning a mask off already orphaned one until the next rebuild;
+         this is the natural place to stop doing that, and it is free when
+         there is nothing there. */
+      if (typeof disposeEdgeField === 'function') disposeEdgeField(geo);
+    } else {
     try {
     /* An edge a face uses TWICE is that face's own triangulation - the
        diagonal of a quad - and is not part of its outline. Same test
@@ -5465,10 +5536,14 @@ function applyShading(obj) {
       console.error('wear-edge pass failed, shape masks will find nothing', cerr);
       warnOnce('wear', 'Shape masks are off on this model — the edge pass failed');
     }
+    }
   } catch (err) {
     console.error('applyShading failed, using flat normals', err);
     warnOnce('shade', 'Smooth shading failed on this model — showing flat faces');
     geo.computeVertexNormals();
+    // Same reason as the indexless exit above: a failure has to be
+    // recorded, or ensureWearLists calls this again for ever.
+    if (!geo.userData.kubikEdges) geo.userData.kubikEdges = { pos: new Float32Array(0), kind: new Uint8Array(0), gen: ++_wearGen };
   }
 }
 
@@ -21657,7 +21732,11 @@ function meApplyLive() {
   /* Turning the bevel on or off is the one thing here that changes whether
      the material needs a distance field at all, and that is decided inside
      applyMaskPatch. Everything else is a uniform. */
-  if (hadBevel !== !!d.bevel) { bumpMaskGen(d); ensureMaskPatches(); }
+  /* Crossing zero on the bevel is the one thing in THIS editor that
+     changes whether the material needs a distance field, so it is also the
+     one place here that can leave an object needing a wear list it has
+     not got. */
+  if (hadBevel !== !!d.bevel) { bumpMaskGen(d); ensureMaskPatches(); ensureWearLists(); }
   updateMaterialEverywhere(matEditingId);
 }
 
@@ -21744,6 +21823,13 @@ function mkCurrent() {
 function mkStructural(d) {
   rebakeMaskTexture(d);
   updateMaterialEverywhere(d.id);
+  /* Adding a mask, removing one, or switching its type to or from a
+     curvature mode is what flips defWantsField - so the flag is recomputed
+     and any object that now needs an edge list gets one. This is the
+     structural funnel; the live sliders next door cannot change the answer,
+     which is why they do not pay for this. */
+  ensureMaskPatches();
+  ensureWearLists();
   saveMaterialLibrary();
   refreshMaskControls(d);
   meCommit();
@@ -22582,6 +22668,11 @@ function refreshUI() {
   // The colour picker this used to dim retired with a2.14 - colour lives
   // in the material now.
   ensureMaskPatches();
+  /* IMMEDIATELY AFTER, because ensureMaskPatches is what writes the
+     wantsWear flag this reads. It only ever does work for an object that
+     has just gained a shape mask and has no edge list yet - which is once,
+     on the tap that turns the mask on. */
+  ensureWearLists();
   refreshInspector();
   updateFrameVisibility();
   App.objects.forEach(o => { o.mesh.castShadow = true; o.mesh.receiveShadow = true; });
@@ -23158,6 +23249,8 @@ if (PICK_DEBUG) {
     refreshXrayMode,
     // a2.73: the surfacing transition, driveable without a real animation.
     surfaceIn, submergeOut, surfaceToggle, SUBMERGE_MS, SURFACE_MS,
+    // a2.75: the wear-edge guard and its refill.
+    defWantsField, ensureWearLists,
     get pickDistPx() { return pickDistPx; },
     // What this browser has already been told, and the chip that tells it
     // (a2.66) - a harness has to be able to put it back to test it.
