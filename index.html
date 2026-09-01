@@ -288,7 +288,9 @@
     text-align: center; line-height: 1.35;
     -webkit-user-select: none; user-select: none;
     box-shadow: 0 8px 22px rgb(var(--shadow) / .20);
-    animation: firstHintIn 320ms cubic-bezier(.16, .84, .44, 1) both;
+    /* `backwards` for the same reason as .surfacing below - `both` held
+       filter: blur(0) on the chip for as long as it was on screen. */
+    animation: firstHintIn 320ms cubic-bezier(.16, .84, .44, 1) backwards;
     /* THE CHIP MUST NOT EAT THE GESTURE IT DESCRIBES. It is a child of
        #viewport, but press-and-hold lives on renderer.domElement - a
        SIBLING - so a pointerdown that lands here never arms the ring timer.
@@ -805,7 +807,8 @@
   #pivotDone { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
 
   #isoChip {
-    position: absolute; left: 50%; transform: translateX(-50%);
+    /* translate, not transform - see the Surfacing note. */
+    position: absolute; left: 50%; translate: -50%;
     top: calc(var(--edge) + 52px); z-index: 19; display: none;
     align-items: center; gap: 10px;
     /* --accent-mode: isolation outlives any selection, and its own note
@@ -880,7 +883,11 @@
      background so it stays legible over whatever part of the model happens
      to be behind it. */
   #toast {
-    position: absolute; left: 50%; top: calc(var(--edge) + 44px + 6px); transform: translateX(-50%);
+    /* `translate`, not `transform` - see the Surfacing note. With
+       `transform: translateX(-50%)` the shared scale would be applied about
+       the pre-centring origin and the toast would slide sideways as it
+       grew. */
+    position: absolute; left: 50%; top: calc(var(--edge) + 44px + 6px); translate: -50%;
     /* ABOVE THE DRAWER (a2.66). It had no z-index at all, so every toast
        raised by a drawer action - and the object list raises one - was
        painted behind a 340px opaque panel on a 390px phone. Harmless while
@@ -890,15 +897,106 @@
     color: var(--text); font-size: 12px; font-weight: 600;
     text-shadow: 0 1px 4px rgb(var(--shadow) / .8), 0 1px 2px rgb(var(--shadow) / .6);
     opacity: 0; pointer-events: none;
-    transition: opacity .2s ease, transform .2s ease;
+    transition: opacity .2s ease, translate .2s ease;
   }
-  #toast.show { opacity: 1; transform: translateX(-50%) translateY(4px); }
+  /* `translate` here too, or the base rule's `translate: -50%` and this
+     rule's transform would BOTH apply and centre the toast twice over.
+     The toast keeps its own quiet fade rather than taking the surfacing
+     animation: it is by far the most frequent thing on screen, it fires
+     during drags, and blurred text is the least forgiving thing to blur. */
+  #toast.show { opacity: 1; translate: -50% 4px; }
   /* The isolate chip is PERSISTENT and sits at --edge + 52 with an opaque
      background, two pixels below where the toast lives - so for the whole
      time you were isolated, every message the app tried to give you was
      behind it. Stepped down past the chip and past the lowered HUD row, the
      same way those two already step down past each other. */
   body.isolating #toast { top: calc(var(--edge) + 140px); }
+
+  /* ---------------- Surfacing (a2.73) ----------------
+
+     Things in this app do not switch on. They come up through a layer of
+     something and settle, and go back down into it - which is what the
+     #firstHint chip has been doing alone since a2.66. This generalises it.
+
+     blur(10px) -> 0 with scale .94 -> 1: 260ms rising on a curve that
+     decelerates hard (cubic-bezier(.16,.84,.44,1)), 180ms sinking on one
+     that accelerates (cubic-bezier(.55,.06,.68,.19)). Rising is slower than
+     sinking on purpose - arriving is an event and wants to be seen, leaving
+     is bookkeeping and wants to be out of the way.
+
+     THE `scale` PROPERTY, NOT `transform: scale()`. Half the things this is
+     applied to already carry a transform to centre themselves, and a
+     keyframe animating `transform` would overwrite it - which is why the
+     prototype had to bake `translateX(-50%)` into both of its keyframes and
+     could never be shared. The independent properties compose: the
+     transform chain is translate * rotate * scale * transform, so an
+     element's own `transform` is untouched. The centred ones move to
+     `translate: -50%` for the same reason - with `transform` the scale
+     would be applied about the pre-centring origin and the element would
+     visibly drift sideways as it grew.
+
+     `filter` IS REMOVED, NOT LEFT AT ZERO. A blur - even blur(0) - forces
+     the element onto its own composited layer and keeps it there, over a
+     live WebGL viewport, for the rest of the session. `animation: both`
+     would hold the end state, so surfaceIn/submergeOut strip the class when
+     the animation ends and nothing is left wearing a filter.
+
+     NOT APPLIED to the drawer or the material tray: both already have a
+     considered movement of their own - the drawer slides in from its edge,
+     the tray rolls out - and that IS their character. And not applied to
+     anything that appears MID-GESTURE (the tool ring, the ring label),
+     because a blur over the live viewport during a drag is the one case
+     that has to be measured on a real phone first, and this release does
+     not measure it. */
+  @keyframes surfacing {
+    from { opacity: 0; filter: blur(10px); scale: .94; }
+    to   { opacity: 1; filter: blur(0px);  scale: 1; }
+  }
+  @keyframes submerging {
+    from { opacity: 1; filter: blur(0px);  scale: 1; }
+    to   { opacity: 0; filter: blur(10px); scale: .94; }
+  }
+  /* `backwards`, NOT `both`, and this is the whole reason nothing is left
+     on a composited layer.
+
+     `both` holds the animation's END state after it finishes - which here
+     is `filter: blur(0px)`, and a filter of zero is still a filter: the
+     element stays on its own layer, over a live WebGL viewport, for the
+     rest of the session. The first cut relied on an animationend listener
+     to strip the class, and an animationend is not guaranteed to arrive -
+     a background tab, a display:none ancestor, or reduced motion (where the
+     rule is `animation: none`) and it never fires at all. So the element
+     kept the blur for ever, which is exactly the cost this was written to
+     avoid.
+
+     `backwards` fills only BEFORE the animation. When it ends the element
+     reverts to its own styles, which have no filter - and since the `to`
+     state IS those styles, there is nothing to see. The cleanup stops being
+     load-bearing.
+
+     The sinking half still needs `both`: its end state is opacity 0, and it
+     has to hold that until the JS drops `.show`. That class IS stripped by
+     the JS, which has a timeout behind the listener for the same reason. */
+  /* THE GHOST IS NOT A TARGET. `.show` is already gone by the time this
+     class is on, so the element is logically closed - but it is still
+     painted, and without this it would still be hit-testable. Tapping ✕ on
+     the inspector and then the object underneath it would hit the fading
+     panel and do nothing. */
+  .submerging { pointer-events: none; }
+  /* #inspector carries backdrop-filter: blur(6px). Blurring the backdrop
+     AND the element is a read-back of the live WebGL canvas plus a second
+     blur on the result, per frame, and WebKit has been inconsistent about
+     the combination. The backdrop blur is worth nothing during a 260ms
+     transition, so it stands down for the duration. */
+  .surfacing, .submerging { backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .surfacing  { animation: surfacing 260ms cubic-bezier(.16, .84, .44, 1) backwards; }
+  .submerging { animation: submerging 180ms cubic-bezier(.55, .06, .68, .19) both; }
+  /* Persistent chrome dims in place; only things that come and go surface.
+     Reduced motion takes the plain state at both ends. */
+  @media (prefers-reduced-motion: reduce) {
+    .surfacing, .submerging { animation: none; }
+    .submerging { opacity: 0; }
+  }
 
   /* Still used by .hub-item's pop-in when the arc rebuilds - the radial menu
      that originally defined it is gone, but the animation earned its keep. */
@@ -1443,7 +1541,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.72</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.73</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -1591,6 +1689,131 @@ import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js
 const viewportEl = document.getElementById('viewport');
 const statusEl = document.getElementById('status');
 const toastEl = document.getElementById('toast');
+
+/* ---------------- Surfacing (a2.73) ----------------
+
+   Coming UP is easy: display it, add a class. Going DOWN is the whole
+   problem, because the thing that hides an element - dropping `.show`,
+   which sets `display: none` - stops the animation dead.
+
+   THE FIRST CUT DEFERRED `.show` UNTIL THE ANIMATION ENDED, and that was
+   wrong in a way no amount of care inside the helper could fix: for 180ms
+   after you closed a panel, `classList.contains('show')` still said it was
+   open. Seven probe suites failed on it - "cancel the op, is the bar gone?"
+   - and they were right to. Anything in the app that asks the same question
+   would have got the same wrong answer, and the panel stayed hit-testable
+   the whole time, eating the next tap.
+
+   So `.show` is dropped IMMEDIATELY and the element is kept painted for the
+   180ms by freezing its own computed `display` into an inline style, which
+   outranks the now-absent `.show` rule. Hidden means hidden, at the moment
+   you asked; the pixels just take a beat to leave. `.submerging` also sets
+   `pointer-events: none`, so the ghost cannot take a tap that was meant for
+   what is behind it.
+
+   THE LISTENER IS TRACKED, NOT JUST THE TIMER. Removing `.submerging`
+   cancels its animation, which fires animationCANCEL, not animationEND - so
+   a submerge listener left attached survives, and then fires on the
+   animationend of the RISE that replaced it, hiding a panel 260ms after the
+   user reopened it. Reachable in one tap: refreshInspector calls
+   surfaceToggle(false) and then surfaceIn on the same element when the
+   selection empties. Both directions now clear each other's listener and
+   timer through one WeakMap.
+
+   ALREADY UP IS A NO-OP, and that has to include "already on the way up".
+   Otherwise a repeated surfaceIn restarts the animation, the restart resets
+   its own cleanup timer, and it never finishes - the element sits pinned at
+   the first frame, invisible and blurred, holding a composited layer over
+   the live viewport. refreshInspector runs on every pointermove of a drag,
+   so that is a whole gesture with the inspector missing.
+
+   THE TIMER IS NOT OPTIONAL. animationend does not arrive from a background
+   tab, from a display:none ancestor, or under reduced motion where the rule
+   is `animation: none` - and without a fallback the class never comes off.
+
+   NOT APPLIED to the drawer or the material tray: both already have a
+   considered movement of their own, and that IS their character. And not
+   applied to anything that appears MID-GESTURE (the tool ring, the ring
+   label), because a blur over the live viewport during a drag has to be
+   measured on a real phone first, and this release does not measure it. */
+const SURFACE_MS = 260;
+const SUBMERGE_MS = 180;
+const _fxState = new WeakMap();
+const _lessMotion = window.matchMedia
+  ? window.matchMedia('(prefers-reduced-motion: reduce)')
+  : { matches: false };
+
+function _fxClear(el) {
+  const st = _fxState.get(el);
+  if (!st) return;
+  clearTimeout(st.timer);
+  el.removeEventListener('animationend', st.fn);
+  _fxState.delete(el);
+}
+
+function _fxArm(el, ms, finish) {
+  const fn = (ev) => { if (ev && ev.target !== el) return; finish(); };
+  _fxState.set(el, { fn: fn, timer: setTimeout(finish, ms) });
+  el.addEventListener('animationend', fn);
+}
+
+function surfaceIn(el) {
+  if (!el) return;
+  // Up, or already on the way up. Not a reason to do anything.
+  if (el.classList.contains('show')) return;
+  _fxClear(el);
+  el.classList.remove('submerging');
+  el.style.display = '';
+  el.classList.add('show');
+  if (_lessMotion.matches) return;
+  // Restarted, not continued: re-adding a class already present does not
+  // replay its animation.
+  el.classList.remove('surfacing');
+  void el.offsetWidth;
+  el.classList.add('surfacing');
+  _fxArm(el, SURFACE_MS + 120, () => {
+    _fxClear(el);
+    el.classList.remove('surfacing');
+  });
+}
+
+function submergeOut(el) {
+  if (!el) return;
+  if (!el.classList.contains('show')) {
+    /* Already closed - but possibly still SINKING, and clearing the state
+       here would cancel the pending cleanup of an exit that is halfway
+       through, leaving the frozen inline `display` and `.submerging` on the
+       element for ever. Closing something twice must let the first close
+       finish its job. */
+    if (!el.classList.contains('submerging')) _fxClear(el);
+    return;
+  }
+  _fxClear(el);
+  el.classList.remove('surfacing');
+  const gone = () => {
+    _fxClear(el);
+    el.classList.remove('submerging');
+    el.style.display = '';
+  };
+  /* Reduced motion goes straight out - the animation is `none` there, so
+     there is nothing to wait for and a 300ms ghost would be pure cost to
+     the one person who asked for less of exactly this. Same for an element
+     that is not laid out: nothing to animate away. */
+  if (_lessMotion.matches || !el.isConnected || !el.getClientRects().length) {
+    el.classList.remove('show');
+    gone();
+    return;
+  }
+  // Frozen BEFORE .show goes, or the computed value is already `none`.
+  el.style.display = getComputedStyle(el).display;
+  el.classList.remove('show');
+  el.classList.add('submerging');
+  _fxArm(el, SUBMERGE_MS + 120, gone);
+}
+
+// The `classList.toggle('show', cond)` these all used to call.
+function surfaceToggle(el, on) { if (on) surfaceIn(el); else submergeOut(el); }
+
 
 let toastTimer = null;
 function toast(msg) {
@@ -10004,7 +10227,7 @@ function showOpBar() {
     document.getElementById('opLabel').textContent =
       spec.label + (op.sections > 1 ? ' ×' + op.sections : '') + tool;
   }
-  opBarEl.classList.add('show');
+  surfaceIn(opBarEl);
 }
 
 // Options that only make sense with several faces selected are filtered out,
@@ -10111,7 +10334,7 @@ let mirrorChooser = null;
 
 function hideOpBar() {
   mirrorChooser = null;
-  opBarEl.classList.remove('show');
+  submergeOut(opBarEl);
   // The chooser bars (Mirror, Extrude grouping) drive this bar by hand and
   // know nothing about the toggle, so it goes away with the bar itself.
   document.getElementById('opToggleWrap').style.display = 'none';
@@ -12742,9 +12965,16 @@ function refreshIsoChip() {
   const el = document.getElementById('isoChip');
   if (!el) return;
   const on = isolationOn();
-  el.classList.toggle('show', on);
+  /* WRITTEN BEFORE IT IS SHOWN. The chip now animates in, so the first
+     painted frame is a real frame - setting the text after surfaceToggle
+     showed the PREVIOUS count for that frame. And it is not blanked on the
+     way out: the chip is on screen for another 180ms while it sinks, and
+     emptying it there reads as the chip breaking rather than leaving. The
+     stale value is never seen, because the next entry rewrites it here
+     before the chip is displayed again. */
+  if (on) el.querySelector('#isoChipN').textContent = App.hidden.size + ' hidden';
+  surfaceToggle(el, on);
   document.body.classList.toggle('isolating', on);
-  el.querySelector('#isoChipN').textContent = on ? App.hidden.size + ' hidden' : '';
 }
 
 function clearObjectSelection() { App.selectedObjectIds.clear(); }
@@ -13054,7 +13284,7 @@ function endPivotPlacing() {
 
 function refreshPivotBar() {
   const el = document.getElementById('pivotBar');
-  if (el) el.classList.toggle('show', !!App.pivotPlacing);
+  if (el) surfaceToggle(el, !!App.pivotPlacing);
 }
 
 function refreshGizmoAttachment() {
@@ -14354,7 +14584,7 @@ function showKnifeBar() {
   el.appendChild(back);
   ['opSlider', 'opValue', 'opSegments'].forEach(id => { document.getElementById(id).style.display = 'none'; });
   document.getElementById('opOk').style.display = '';
-  opBarEl.classList.add('show');
+  surfaceIn(opBarEl);
   refreshKnifeBar();
 }
 
@@ -17753,11 +17983,11 @@ function inspectorTarget() {
 function refreshInspector() {
   const obj = inspectorTarget();
   const visible = App.showInspector && !!obj;
-  inspectorEl.classList.toggle('show', visible);
+  surfaceToggle(inspectorEl, visible);
   if (!visible || inspEditing) {
     if (App.showInspector && !obj) {
       document.getElementById('inspTitle').textContent = 'Select one object';
-      inspectorEl.classList.add('show');
+      surfaceIn(inspectorEl);
       Object.values(inspFields).flat().forEach(f => { f.value = ''; f.disabled = true; });
     }
     return;
@@ -18072,7 +18302,7 @@ function showMirrorChooser(axis) {
   ['opSlider', 'opValue', 'opSegments', 'opToggleWrap', 'opOk'].forEach(id => {
     document.getElementById(id).style.display = 'none';
   });
-  opBarEl.classList.add('show');
+  surfaceIn(opBarEl);
 }
 
 /* Puts the selection back where new objects appear: centred on X and Z,
@@ -22917,6 +23147,8 @@ if (PICK_DEBUG) {
     OCC_TEST_BUDGET,
     get pickBlockedBy() { return pickBlockedBy; },
     refreshXrayMode,
+    // a2.73: the surfacing transition, driveable without a real animation.
+    surfaceIn, submergeOut, surfaceToggle, SUBMERGE_MS, SURFACE_MS,
     get pickDistPx() { return pickDistPx; },
     // What this browser has already been told, and the chip that tells it
     // (a2.66) - a harness has to be able to put it back to test it.

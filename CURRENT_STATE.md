@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~21,550 lines)
-- Version at time of writing: **a2.72**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~21,680 lines)
+- Version at time of writing: **a2.73**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -130,7 +130,96 @@ scaled, single-loop output. It now carries foreign fixtures: a square annulus
 with a hole, a negative-scale node, and a hand-built interleaved buffer with
 a poison value in the spare channels.
 
-## Picking: you cannot select what you cannot see (a2.72) - READ BEFORE OLDER SECTIONS
+## Surfacing (a2.73) - READ BEFORE OLDER SECTIONS
+
+Things in this app do not switch on. They come up through a layer of
+something and settle, and go back down into it. `blur(10px) -> 0` with
+`scale .94 -> 1`: **260ms rising** on a curve that decelerates hard, **180ms
+sinking** on one that accelerates. Rising is slower on purpose - arriving is
+an event and wants to be seen, leaving is bookkeeping and wants to be out of
+the way.
+
+Applied to the op bar, the pivot bar, the inspector and the isolate chip -
+the things that appear out of nowhere. `#firstHint` had been doing it alone
+since a2.66; this generalises that prototype.
+
+### `scale`, not `transform: scale()`
+
+Half of these already carry a transform to centre themselves, and a keyframe
+animating `transform` overwrites it - which is why the prototype had to bake
+`translateX(-50%)` into both of its keyframes and could never be shared. The
+independent properties compose: the chain is `translate * rotate * scale *
+transform`, so an element's own `transform` is untouched.
+
+The centred ones (`#toast`, `#isoChip`) moved to `translate: -50%` for the
+same reason: with `transform` the scale is applied about the pre-centring
+origin and the element visibly drifts sideways as it grows. **`#toast.show`
+sets a transform of its own, so it had to move too** - otherwise the base
+rule and that rule both applied and the toast was centred twice over.
+
+### `backwards`, not `both`
+
+`both` holds the animation's END state, which here is `filter: blur(0px)` -
+and a filter of zero is still a filter: the element stays on its own
+composited layer, over a live WebGL viewport, for the rest of the session.
+The first cut relied on an animationend listener to strip the class, and
+**an animationend is not guaranteed to arrive** - a background tab, a
+`display: none` ancestor, or reduced motion (where the rule is `animation:
+none`) and it never fires. `backwards` fills only BEFORE the animation; when
+it ends the element reverts to its own styles, which have no filter.
+
+### HIDDEN MEANS HIDDEN, immediately
+
+The first cut deferred dropping `.show` until the exit animation finished,
+and that was wrong in a way no care inside the helper could fix: for 180ms
+after closing a panel, `classList.contains('show')` still said it was open.
+**Seven probe suites failed on it** - "cancel the op, is the bar gone?" - and
+they were right to. Anything in the app asking the same question would have
+got the same wrong answer, and the panel stayed hit-testable the whole time,
+eating the next tap.
+
+So `.show` is dropped at once and the element is kept painted by freezing its
+own computed `display` into an inline style, which outranks the now-absent
+`.show` rule. `.submerging` also sets `pointer-events: none`.
+
+### The three states that have to be handled
+
+- **Re-opened while sinking.** Removing `.submerging` cancels its animation,
+  which fires animation**cancel**, not animation**end** - so a listener left
+  attached survives and then fires on the animationend of the RISE that
+  replaced it, hiding a panel 260ms after the user reopened it. Reachable in
+  one tap: `refreshInspector` calls `surfaceToggle(false)` then `surfaceIn`
+  on the same element when the selection empties. Both directions clear each
+  other's listener AND timer through one WeakMap.
+- **Already up, including already on the way up.** A repeated `surfaceIn`
+  that restarts the animation also resets its own cleanup timer, so it never
+  finishes: the element sits pinned at the first frame, invisible and
+  blurred. `refreshInspector` runs on every pointermove of a drag, so that
+  was a whole gesture with the inspector missing.
+- **Closed twice.** The second call must NOT clear the first one's pending
+  cleanup, or the frozen inline `display` and `.submerging` stay for ever.
+
+### What it is deliberately not on
+
+- **The drawer and the material tray.** Both already have a considered
+  movement - the drawer slides from its edge, the tray rolls out - and that
+  IS their character.
+- **The toast.** By far the most frequent thing on screen, it fires during
+  drags, and blurred text is the least forgiving thing to blur. It keeps its
+  own quiet fade.
+- **Anything mid-gesture** - the tool ring, the ring label. A blur over the
+  live viewport during a drag is the one case that has to be measured on a
+  real phone, and **this release does not measure it**: headless Chrome
+  freezes `performance.now()` under a virtual time budget, so no timing
+  assertion in this harness means anything. The frame cost of the four
+  elements it IS on is bounded - the largest is ~746x260 device px for 260ms
+  - but the ring is a per-frame question and stays out until someone looks.
+- `#inspector` carries `backdrop-filter: blur(6px)`; `.surfacing` and
+  `.submerging` set it to `none` for the duration, because blurring the
+  backdrop AND the element is a read-back of the live canvas plus a second
+  blur on the result, and WebKit has been inconsistent about the pair.
+
+## Picking: you cannot select what you cannot see (a2.72)
 
 **This reverses the rule written into `pointOccluded`'s old comment.** That
 note said occlusion is "used ONLY to break ties, never to refuse the last
