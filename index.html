@@ -1443,7 +1443,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.71</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.72</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -15604,12 +15604,24 @@ function edgeVisible(obj, e) {
    behind a fold, a nub or the far wall of an L-shape, and it stays a
    candidate the whole time.
 
-   Used ONLY to break ties, never to refuse the last candidate standing -
-   see the callers. A picker that can come back empty is the exact failure
-   mode this whole strand of work exists to remove, and an occlusion test is
-   the easiest way to reintroduce it. */
+   SINCE a2.72 THIS REFUSES, it does not merely break ties - the note that
+   used to sit here said the opposite and was the spec everyone would have
+   trusted. The old rule ("never refuse the last candidate standing") was
+   written to stop the picker coming back empty, which is a real failure
+   mode; the answer turned out to be FALL THROUGH rather than accept a
+   hidden candidate. A free tap tries vertex, then edge, then face, and the
+   face pick is a raycast that always hits when you are on the model. */
 const _occDir = new THREE.Vector3();
+/* Counted, because the cost of this is the one thing a2.72 could plausibly
+   have got wrong and it cannot be measured any other way in the harness:
+   headless Chrome under --virtual-time-budget freezes performance.now(), so
+   a timing assertion there reads 0.0ms and passes without testing anything.
+   The number of raycasts per pick is deterministic, is exactly what
+   OCC_TEST_BUDGET bounds, and is what a timing test would have been a proxy
+   for. */
+let occTestCount = 0;
 function pointOccluded(obj, p) {
+  occTestCount++;
   _occDir.subVectors(p, camera.position);
   const dist = _occDir.length();
   if (dist < 1e-6) return false;
@@ -15623,16 +15635,113 @@ function pointOccluded(obj, p) {
   const geo = obj.mesh.geometry;
   if (!geo.boundingSphere) geo.computeBoundingSphere();
   const r = geo.boundingSphere ? geo.boundingSphere.radius : 1;
-  return hits[0].distance < dist - Math.max(r * 1e-3, 1e-4);
+  /* SCALED. `dist` is a world distance and the bounding sphere is in LOCAL
+     space, so on an object the user has scaled the tolerance meant something
+     different from what it says: at scale 0.01 it was 4% of the object's
+     world size and occlusion quietly stopped refusing anything shallow, and
+     at scale 100 any near-coincident surface read as an occluder. An import
+     bakes its transform into the geometry, so only mesh.scale breaks it -
+     which the Object-mode scale drag and the Inspector both set. */
+  const sc = obj.mesh.scale;
+  const ws = Math.max(Math.abs(sc.x), Math.abs(sc.y), Math.abs(sc.z)) || 1;
+  return hits[0].distance < dist - Math.max(r * ws * 1e-3, 1e-4);
 }
 
-/* Drops candidates you cannot actually see - but only while at least one
-   survives. See-through is exempt by definition: there, seeing through the
-   model is the point, so everything visible on screen stays selectable. */
-function preferUnoccluded(obj, cands) {
-  if (cands.length < 2 || App.xraySelection) return cands;
-  const seen = cands.filter(c => !pointOccluded(obj, c.p));
-  return seen.length ? seen : cands;
+/* OCCLUSION DECIDES, AND IT DECIDES LAST (a2.72).
+
+   What this replaces, and why. `preferUnoccluded` only ran with TWO or more
+   candidates and handed back the whole list when every one of them was
+   hidden - so a LONE hidden candidate was never refused. Together with the
+   facing test being a facing test rather than an occlusion test, that is the
+   whole of "selection picks something that should be culled": on anything
+   with an inner wall - which is every model that is not a cube - a vertex
+   behind the surface sits on a camera-facing face, passes vertexVisible, is
+   the only thing within 28px of your thumb, and gets selected. Measured on a
+   two-quad fixture: tapping a corner of the wall BEHIND the front face
+   selected that corner, and a free tap returned it instead of the face
+   plainly under the finger.
+
+   THE OBJECTION THIS HAS TO ANSWER is the one written into pointOccluded:
+   "a picker that can come back empty is the exact failure mode this whole
+   strand of work exists to remove". It still holds - but the answer was
+   never "accept a hidden candidate", it was "fall through". The free tap
+   tries vertex, then edge, then face, and the face pick is a raycast that
+   always hits if you are on the model, so a tap on the model still always
+   lands on something. What changes is that it lands on the thing you can
+   see.
+
+   BANDED, so a hidden candidate cannot block a visible one behind it in the
+   ordering. Candidates are sorted by pixel distance and taken a tie-band at
+   a time; the first band with anything visible in it decides, and depth
+   settles that band exactly as before. A band that is entirely hidden is
+   dropped and the next one gets its turn - which is what makes "the near
+   corner is hidden, so the one 20px away wins" work.
+
+   BUDGETED, because each test is a raycast against the whole mesh and a
+   dense model can put thirty candidates inside 28px. Twelve is far more
+   than the tie-break has ever needed and bounds the worst case at a tap.
+
+   See-through is exempt by definition: there, seeing through the model is
+   the point. */
+const OCC_TEST_BUDGET = 12;
+
+/* Set when a pick was refused ONLY because everything near the thumb was
+   behind the surface. Read by the type-locked branch, which would otherwise
+   report the tap as landing on nothing at all. */
+let pickHiddenOnly = false;
+
+function pickVisibleWinner(obj, cands, tiePx, isSelected) {
+  if (!cands.length) return null;
+  const xray = !!App.xraySelection;
+  const sorted = cands.slice().sort((a, b) => a.d - b.d);
+  let i = 0, tested = 0, sawHidden = false;
+  while (i < sorted.length) {
+    const dMin = sorted[i].d;
+    const band = [];
+    while (i < sorted.length && sorted[i].d <= dMin + tiePx) band.push(sorted[i++]);
+    /* NEAREST TO THE CAMERA FIRST, then take the first one you can actually
+       see. That is the same answer as "test the whole band and keep the
+       nearest visible" - the minimum-z member that passes IS the first
+       passing member of a z-sorted list - but it stops at the first success
+       instead of testing all of them.
+
+       Two things follow, and the second is a bug fix rather than a saving.
+       A pick now costs ONE raycast in the ordinary case instead of one per
+       candidate, which matters because the knife runs both pickers on every
+       pointermove and three's raycast is a brute-force triangle loop. And
+       the budget stops being reachable in the case that mattered: testing
+       the whole band first meant twelve hidden candidates could exhaust it
+       and abandon a VISIBLE candidate sitting in the same band, so a plain
+       tap on a vertex you could see returned nothing and fell through into
+       Face mode. */
+    band.sort((a, b) => a.z - b.z);
+    for (const c of band) {
+      if (xray) return c;
+      if (tested >= OCC_TEST_BUDGET) break;
+      tested++;
+      if (!pointOccluded(obj, c.p)) return c;
+      sawHidden = true;
+    }
+    if (tested >= OCC_TEST_BUDGET) break;
+  }
+  /* YOU CAN ALWAYS LET GO OF WHAT YOU ARE HOLDING.
+
+     Box select, a grown selection and a loop select all reach components
+     that occlusion would refuse - none of them consults visibility - and
+     the vertex dots for a selected element are drawn. So without this,
+     dragging a box over a whole cube and then tapping one of the back
+     vertices to drop it from the selection was answered with "that is
+     behind the surface", and there was no way to deselect it but to clear
+     everything. Selecting something you cannot see is a question; letting
+     go of something you have already got is not.
+
+     A FALLBACK, run only after every band has failed, so it can never take
+     a tap away from a visible candidate. */
+  if (!xray && isSelected) {
+    for (const c of sorted) if (isSelected(c)) return c;
+  }
+  if (sawHidden) pickHiddenOnly = true;
+  return null;
 }
 
 /* Two vertices that land within this many pixels of each other are, as far
@@ -15676,6 +15785,7 @@ function pickVertexOnActive(ev, bias = 1) {
      jittered taps resolved to the wrong vertex, which is the "something
      near it got selected" half of the selection complaint. */
   let cands = [];
+  let facingDropped = 0;
   for (let l = 0; l < topo.logicalCount; l++) {
     const ai = topo.logicalGroups[l][0];
     const p = new THREE.Vector3(pa.getX(ai), pa.getY(ai), pa.getZ(ai));
@@ -15684,23 +15794,32 @@ function pickVertexOnActive(ev, bias = 1) {
     if (!s) continue;
     const d = s.distanceTo(tap);
     if (d > limit) continue;                 // outside the catch radius
-    if (!vertexVisible(obj, l)) continue;
+    /* The FACING test drops a candidate before the occlusion stage ever
+       sees it, so a tap refused here used to say nothing at all. It is the
+       same refusal to the person holding the phone - and See-through lifts
+       it, exactly as it lifts occlusion - so it gets the same sentence. It
+       matters most on a single-sided surface seen from behind: nothing
+       occludes those dots, they are drawn, and only the facing test is
+       refusing them. */
+    if (!vertexVisible(obj, l)) { facingDropped++; continue; }
     cands.push({ l: l, d: d, z: p.distanceTo(camera.position), p: p });
   }
-  if (!cands.length) return -1;
-  cands = preferUnoccluded(obj, cands);
-
-  let dMin = Infinity;
-  cands.forEach(c => { if (c.d < dMin) dMin = c.d; });
-  // Everything within the tie band of the closest is the same spot as far
-  // as a thumb is concerned; of those, the nearest to the camera is meant.
-  let best = -1, bestZ = Infinity;
-  cands.forEach(c => {
-    if (c.d > dMin + VERT_TIE_PX) return;
-    if (c.z < bestZ) { bestZ = c.z; best = c.l; }
-  });
-  pickDistPx = best >= 0 ? dMin : Infinity;
-  return best;
+  if (!cands.length) {
+    if (facingDropped) pickHiddenOnly = true;
+    pickDistPx = Infinity;
+    return -1;
+  }
+  /* The tie band and the depth rule now live inside pickVisibleWinner, so
+     that a band with nothing visible in it can be dropped and the NEXT band
+     get its turn - which is not something a single dMin could express. */
+  const win = pickVisibleWinner(obj, cands, VERT_TIE_PX,
+    c => App.mode === 'vertex' && App.selectedElements.has(c.l));
+  /* The WINNER's distance, not the closest candidate's. They used to be the
+     same thing; now the winner can come from a later band because everything
+     nearer was hidden, and reporting the hidden one's distance would let a
+     vertex you cannot see beat an edge you can in the free tap. */
+  pickDistPx = win ? win.d : Infinity;
+  return win ? win.l : -1;
 }
 
 function pickEdgeOnActive(ev, bias = 1) {
@@ -15715,6 +15834,7 @@ function pickEdgeOnActive(ev, bias = 1) {
      time it projected a hair closer to the thumb. "Nearest to the camera
      wins" is supposed to hold everywhere, not just for vertices. */
   let cands = [];
+  let facingDropped = 0;
   topo.edges.forEach((e, i) => {
     const a = topo.logicalGroups[e[0]][0], b = topo.logicalGroups[e[1]][0];
     const pA = new THREE.Vector3(pa.getX(a), pa.getY(a), pa.getZ(a)); obj.mesh.localToWorld(pA);
@@ -15723,7 +15843,7 @@ function pickEdgeOnActive(ev, bias = 1) {
     if (!sA || !sB) return;
     const near = closestOnSegmentPx(tap, sA, sB);
     if (near.d > limit) return;
-    if (!edgeVisible(obj, e)) return;
+    if (!edgeVisible(obj, e)) { facingDropped++; return; }
     /* Depth where you actually aimed, not at the midpoint: an edge running
        away from the camera is far nearer at one end than the other, and the
        midpoint would misreport both. */
@@ -15733,18 +15853,15 @@ function pickEdgeOnActive(ev, bias = 1) {
     cands.push({ i: i, d: near.d, z: zA + (zB - zA) * near.t,
                  p: pA.clone().lerp(pB, near.t) });
   });
-  if (!cands.length) return -1;
-  cands = preferUnoccluded(obj, cands);
-
-  let dMin = Infinity;
-  cands.forEach(c => { if (c.d < dMin) dMin = c.d; });
-  let best = -1, bestZ = Infinity;
-  cands.forEach(c => {
-    if (c.d > dMin + VERT_TIE_PX) return;
-    if (c.z < bestZ) { bestZ = c.z; best = c.i; }
-  });
-  pickDistPx = best >= 0 ? dMin : Infinity;
-  return best;
+  if (!cands.length) {
+    if (facingDropped) pickHiddenOnly = true;
+    pickDistPx = Infinity;
+    return -1;
+  }
+  const win = pickVisibleWinner(obj, cands, VERT_TIE_PX,
+    c => App.mode === 'edge' && App.selectedElements.has(c.i));
+  pickDistPx = win ? win.d : Infinity;
+  return win ? win.i : -1;
 }
 
 /* Pixel distance from a point to a projected segment, AND how far along it
@@ -15866,6 +15983,7 @@ let pickBlockedBy = null;
 
 function pickComponentOnActiveInner(ev) {
   pickBlockedBy = null;
+  pickHiddenOnly = false;
   /* Two rules, and the order matters.
 
      WITH A SELECTION the type is LOCKED: only that same type can be picked
@@ -15904,9 +16022,19 @@ function pickComponentOnActiveInner(ev) {
        handleTap below: the object under the finger IS the active object, so
        there's no object to switch to, and it isn't empty space, so there's
        no selection to clear. The tap simply evaporated. */
+    /* CAPTURED, then used LAST. The first cut checked this before the
+       other-type probes on the theory that they would reset the flag - they
+       cannot, since nothing ever sets it back to false - and checking first
+       cost the message its accuracy: in Edge mode, tapping the middle of a
+       face while any hidden edge happened to sit within 28px reported "that
+       is behind the surface" and pointed at See-through, when the honest
+       answer was "that is a face, and edge is locked". Wrong type is the
+       more specific finding, so it wins; hidden is the fallback. */
+    const hiddenOnly = pickHiddenOnly;
     if (App.mode !== 'vertex' && pickVertexOnActive(ev, OFF_MODE_PICK_BIAS) >= 0) pickBlockedBy = 'vertex';
     else if (App.mode !== 'edge' && pickEdgeOnActive(ev, OFF_MODE_PICK_BIAS) >= 0) pickBlockedBy = 'edge';
     else if (App.mode !== 'face' && pickFaceOnActive(ev) >= 0) pickBlockedBy = 'face';
+    else if (hiddenOnly) pickBlockedBy = 'hidden';
     return null;
   }
 
@@ -17096,8 +17224,10 @@ function handleTap(ev) {
      indistinguishable from the app being broken - and that is exactly how
      it was reported. */
   if (!pick && pickBlockedBy) {
-    toast('That\u2019s ' + (pickBlockedBy === 'edge' ? 'an ' : 'a ') + pickBlockedBy +
-          ' \u2014 ' + App.mode + ' is locked. Tap empty space first.');
+    toast(pickBlockedBy === 'hidden'
+      ? 'That\u2019s behind the surface \u2014 turn on See-through to reach it.'
+      : 'That\u2019s ' + (pickBlockedBy === 'edge' ? 'an ' : 'a ') + pickBlockedBy +
+        ' \u2014 ' + App.mode + ' is locked. Tap empty space first.');
     return;
   }
 
@@ -22777,7 +22907,17 @@ if (PICK_DEBUG) {
     // a harness needs to see that it was SET even when the tab is hidden
     // and requestAnimationFrame never runs to apply it.
     get camAnim() { return camAnim; },
-    findObject, worldToScreenPx, vertexVisible, ensureHelpers,
+    findObject, worldToScreenPx, vertexVisible, edgeVisible, ensureHelpers,
+    // a2.72: the pickers, driveable with a plain {clientX, clientY}, and the
+    // occlusion test they arbitrate with.
+    pickVertexOnActive, pickEdgeOnActive, pickFaceOnActive, pickComponentOnActive,
+    pointOccluded, groupFacesCamera, createCubeObject, makeMaterialSet,
+    get occTestCount() { return occTestCount; },
+    resetOccCount: () => { occTestCount = 0; },
+    OCC_TEST_BUDGET,
+    get pickBlockedBy() { return pickBlockedBy; },
+    refreshXrayMode,
+    get pickDistPx() { return pickDistPx; },
     // What this browser has already been told, and the chip that tells it
     // (a2.66) - a harness has to be able to put it back to test it.
     hasLearned, noteLearned, forgetLearned, maybeShowFirstHint, dismissFirstHint,

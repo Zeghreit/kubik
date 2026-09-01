@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~21,400 lines)
-- Version at time of writing: **a2.71**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~21,550 lines)
+- Version at time of writing: **a2.72**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -129,6 +129,96 @@ because the suite only ever fed it Kubik's own tightly packed, positively
 scaled, single-loop output. It now carries foreign fixtures: a square annulus
 with a hole, a negative-scale node, and a hand-built interleaved buffer with
 a poison value in the spare channels.
+
+## Picking: you cannot select what you cannot see (a2.72) - READ BEFORE OLDER SECTIONS
+
+**This reverses the rule written into `pointOccluded`'s old comment.** That
+note said occlusion is "used ONLY to break ties, never to refuse the last
+candidate standing", because a picker that comes back empty was the failure
+this whole strand of work existed to remove. The concern was right; the
+answer was wrong. It is not "accept a hidden candidate", it is **fall
+through** - the free tap tries vertex, then edge, then face, and the face
+pick is a raycast that always hits when you are on the model.
+
+### What was actually broken
+
+`vertexVisible` / `edgeVisible` are FACING tests - "is any face touching this
+turned toward the camera". On a convex cube that is exactly back-face culling
+and it is correct. On anything with an inner wall - which is every model that
+is not a cube - a component behind the surface sits on a camera-facing face
+and passes. `preferUnoccluded` was a real occlusion test but only ran with TWO
+or more candidates and returned the whole list when every one was hidden, so a
+**lone** hidden candidate was never refused.
+
+Measured on a two-quad fixture (a big front quad, a smaller one behind it, one
+object): tapping a corner of the back wall selected that corner, and a free
+tap returned it instead of the face plainly under the finger.
+
+### The shape of the fix
+
+`pickVisibleWinner` takes the candidates a tie-band at a time, **nearest in
+pixels first**, and inside each band sorts by depth and returns the first one
+that is not occluded. Three consequences, and the last two are why it is
+written this way rather than as a filter:
+
+- A band with nothing visible in it is dropped and the **next band gets its
+  turn**, so "the near corner is hidden, therefore the one 18px away wins" is
+  expressible. A single `dMin` could not say that.
+- Returning the first visible member of a z-sorted band is the same answer as
+  "test them all, keep the nearest visible" and costs **one** raycast instead
+  of one per candidate. Measured: 1 raycast on a 576-face mesh, budget 12.
+- The budget therefore stops being reachable in the case that mattered.
+  Testing a whole band first meant twelve hidden candidates could exhaust
+  `OCC_TEST_BUDGET` and abandon a **visible** candidate in that same band -
+  a plain tap on a vertex you could see returning nothing.
+
+### You can always let go of what you are holding
+
+Box select, grow and loop select all reach components occlusion would refuse -
+**none of them consults visibility** - and a selected element's dot is drawn.
+So a hidden-but-selected candidate is accepted, as a fallback pass that runs
+only after every band has failed, so it can never take a tap from something
+visible. Without it, dragging a box over a cube and then tapping a back vertex
+to drop it was answered with "that is behind the surface", and the only way to
+deselect it was to clear everything.
+
+### The refusal messages, and which one wins
+
+**Wrong type beats hidden**, because it is more specific. A hidden vertex has
+surface in front of it by definition, so there is always a face under the
+thumb, and "that is a face - vertex is locked" is both true and the thing to
+act on. Checking `hidden` first (the first cut did) reported "behind the
+surface" for a plain tap on a face and pointed at the wrong tool.
+
+So `hidden` fires exactly where nothing else is there: **a single-sided
+surface seen from behind**. The renderer culls it, so nothing is drawn and
+nothing occludes - but the vertex dots are depth-tested rather than back-face
+culled, so you can see dots floating on an invisible surface. Only the facing
+test refuses those, and it used to refuse them in silence.
+
+### The facing test is still needed
+
+It is not redundant with occlusion. On a single-sided open surface seen from
+behind, the raycast finds no front face along the ray, reports "not occluded",
+and would hand back vertices on a surface that is not drawn. `groupFacesCamera`
+is the only thing refusing those.
+
+### Deliberately not done
+
+- **Box select, lasso, grow/shrink, loop select and symmetry expansion do not
+  consult visibility.** So "you cannot select what you cannot see" is
+  currently true of TAP only. Most 3D apps do restrict box select to visible
+  components outside x-ray, and it is the obvious next increment; it is a
+  behaviour change of its own and did not belong in the same release. The
+  dead end it used to create - select hidden, then be unable to deselect - is
+  closed by the fallback above.
+- **Occlusion is within one object.** `pointOccluded` raycasts `obj.mesh`
+  only, so with cube B in front of cube A, tapping A's vertex through B still
+  selects it.
+- **`PICK_RADIUS_PX` is untouched at 28.** The diagnosed defect was
+  visibility, not radius, and the history above this section is emphatic that
+  a constant pixel threshold is right and that scaling it was removed on
+  purpose.
 
 ## STL, and the depth band (a2.71)
 
