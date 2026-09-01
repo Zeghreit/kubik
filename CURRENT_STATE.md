@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,560 lines)
-- Version at time of writing: **a2.77**
+- Version at time of writing: **a2.78**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -383,6 +383,129 @@ own computed `display` into an inline style, which outranks the now-absent
   `.submerging` set it to `none` for the duration, because blurring the
   backdrop AND the element is a read-back of the live canvas plus a second
   blur on the result, and WebKit has been inconsistent about the pair.
+
+## Array (a2.78)
+
+**One object, not N.** Twelve bolts come back as one thing you can bevel,
+subdivide, shade or drag as a unit; **Separate** breaks it into twelve if you
+want them loose. The app already owns both directions, and a modifier stack
+is on the do-not-build list - Kubik is destructive with a strong undo, which
+is the right trade for a fidget.
+
+Seat 0 of ring 1 in the Object ring: **Duplicate's bearing, one ring out**,
+which is the pairing seat 1 is reserved for (Fillet beside Bevel). Array is
+what Duplicate is when you want more than one. It also lands beside Mirror
+and Flip, which is the right company - those three are the ops that read
+`App.symmetryAxis`.
+
+### The three controls
+
+| control | Line | Ring |
+|---|---|---|
+| stepper | **count**, the total including the original - a ring of 12 is the 12 you would say out loud | same |
+| slider | **spacing as a multiple of the shape's own extent** along the axis: 1 is touching, 2 leaves a whole shape's gap | **sweep in degrees**, opening at a full 360 |
+| axis | `App.symmetryAxis` | the axis the ring turns about |
+
+The spacing is scale-free for the reason Circularize gives for its blend: one
+range then means the same thing on a screw thread and on a hundred-unit wall,
+where a distance would need re-scaling for every selection.
+
+**A full turn divides the sweep by n; an arc divides by n-1.** At 360 the
+first and last copy would be in the same place, so n steps of 360/n is what
+closes a ring evenly; over a quarter turn you want the first copy at one end
+and the last at the other, which is n-1 gaps. Getting this wrong is the
+classic array bug - a ring of twelve with two bolts on top of each other.
+
+### What a Ring turns around
+
+The **pivot** when one has been placed - that is what the pivot is for, and
+why this op waited for a2.39 - and otherwise the **world origin**, which is
+the one point in this app you can always aim at (see where primitives land,
+a2.36a). Never the shape's own centre: every copy would land on the last one.
+
+### An option can carry its own slider range
+
+New machinery, and Array is why. Line's amount runs 0.5 to 4 and Ring's runs
+15 to 360; one range cannot mean both, and two ops would put one idea on two
+ring seats. The spec declares `min`/`max`/`step`/`start` **on the option**,
+`activeRange(op)` returns the live one, and `applyOptionRange` applies it.
+
+Three things that all had to be true, each of which was wrong first:
+
+- **Every clamp asks `activeRange`, not the spec.** `setPendingAmount` used
+  the spec's max, so the first touch of the slider clamped Ring's 360-degree
+  sweep to Line's 4 and the ring collapsed to a fan.
+- **The amount is remembered per option**, so Line to Ring and back lands
+  where Line was rather than inheriting 360 as a spacing - which arrays the
+  shape 360 of its own widths apart.
+- **It is idempotent, via `op.rangeFor`.** It is reached from
+  `refreshOpAmountVisibility`, which the COUNT STEPPER also goes through, so
+  without the guard every +/- press re-read the option's `start` and threw
+  away the sweep. Array's count is its primary control, so that fired
+  constantly.
+
+It engages only for a spec that really declares a per-option range; the other
+chip ops (Extrude, Inset, Bevel, Bridge, Subdivide) mean the same thing by
+`amount` whichever chip is lit.
+
+### What travels to the copies
+
+Built on `combineObjectsInto`'s shape - the function Join already uses to
+concatenate two objects. Every copy gets its **own face groups**, its **own
+cloned materials**, and its own `smoothGroups` / `finishes` entries, pushed in
+lockstep so the group count and the material array can never disagree (a
+geometry with more groups than materials crashes three's raycast).
+
+Sharing one set of groups would have been cheaper and much worse: twelve
+bolts would read as one six-faced object, where tapping a face selects it on
+all twelve and painting one paints them all.
+
+**The position-keyed marks travel too.** `creases` and `edgeShade` are keyed
+by coordinates, not by group, so a copy that lands somewhere else simply had
+no entries and fell back to the smoothing angle - a cube with one hand-marked
+sharp edge arrayed into one marked cube and eleven unmarked ones.
+`moveMarkKeys` reads each key back and re-keys it through the same matrix the
+vertices went through.
+
+**The outgoing materials go in the bin.** This op REPLACES the whole material
+array rather than appending to it, and re-runs on every stepper press and
+slider frame, so without `binMaterials` each frame abandoned one material per
+face group and the WebGLProgram refcount was never released.
+
+### The axis is captured, not read live
+
+`op.axis`, set when the bar opens. The axis chip lives in the drawer, which
+stays reachable with the bar open and only calls `refreshUI` - so reading
+`App.symmetryAxis` live meant tapping Y mid-op changed nothing on screen
+while the confirm toast read the NEW axis and announced a Y array over X
+geometry. Captured, like the symmetry plane is.
+
+### What it refuses, and when it says so
+
+- a count of 1 - "just the shape you already have"
+- a Ring whose centre is inside the shape - the copies would interleave into
+  a knot. This is the common case, because every primitive is born at the
+  world origin.
+- a Ring on an object with **uneven scale across the axis it turns about**.
+  Each copy is placed by rotating in local space, so its world transform is
+  `M R M-inverse`, which is a rotation only while M scales both perpendicular
+  axes alike. Under 2,1,1 the copies come out sheared. Line is unaffected - a
+  translation commutes with any scale. Mirror and Flip never meet this
+  despite also working locally, because a reflection in an axis plane stays
+  axis-aligned: **"local space, exactly as symmetry works" does not carry
+  over to a rotation.**
+
+The reason is toasted **while the bar is open**, once per reason.
+`refuseOp` only records it, so the first cut did nothing at all when you
+tapped Ring, with no explanation, until you pressed the tick.
+
+### Deliberately not done
+
+- **No `multi`.** Arraying several objects at once needs a rule for what each
+  one's spacing means, and the honest one - each along its own size - makes a
+  mixed selection drift apart at different rates. Join first.
+- **Symmetry needs no opt-out.** `App.symmetry` drives `mirrorOfSelection`
+  and `symExpand`, which are component-mode only; Array is Object mode.
 
 ## The topology build, taken apart and rebuilt (a2.77)
 

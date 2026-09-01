@@ -1541,7 +1541,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.77</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.78</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -9823,6 +9823,37 @@ const OP_SPECS = {
       { key: 'keep', label: 'Keep shape' }
     ]
   },
+  /* ARRAY (a2.78). The stepper is the COUNT - how many there are when you
+     are done, the original included, so a ring of twelve bolts is the
+     twelve you would say out loud rather than eleven plus one.
+
+     The two options mean different things by `amount`, which is why the
+     option carries its own range (see applyOptionRange):
+
+     LINE's amount is a SPACING AS A MULTIPLE OF THE SHAPE'S OWN SIZE along
+     the axis. 1 puts the copies exactly touching, 2 leaves a whole shape's
+     worth of gap. Scale-free on purpose, for the reason Circularize gives
+     for its blend: one range then means the same thing on a screw thread
+     and on a hundred-unit wall, where a distance would need re-scaling for
+     every selection.
+
+     RING's amount is the SWEEP IN DEGREES. It opens at a full 360 because
+     "go all the way round" is the request; pulling it back gives an arc -
+     a fan of steps, a row of spokes over a quarter turn.
+
+     No `multi`. Arraying several objects at once would need a rule for what
+     each one's spacing means, and the honest one - each along its own size -
+     makes a mixed selection drift apart at different rates. One object is
+     the case that is actually wanted; Join first if you want them treated
+     as one shape. */
+  array: {
+    label: 'Array', min: 0.5, max: 4, step: 0.01, start: 1.25,
+    segments: true, maxSegments: 32,
+    options: [
+      { key: 'line', label: 'Line' },
+      { key: 'ring', label: 'Ring', min: 15, max: 360, step: 1, start: 360 }
+    ]
+  },
   bevel: {
     label: 'Bevel', min: 0.005, max: 4, step: 0.005, start: 0.06, segments: true,
     options: [
@@ -10278,6 +10309,30 @@ function applyPendingOp() {
     });
     op.clearedMarks = cleared;
 
+  } else if (op.kind === 'array') {
+    /* One object, so it re-runs from op.state like every non-multi op. The
+       snapshot is the ORIGINAL single shape, which is what makes dragging
+       the count up and down a preview rather than an accumulation - without
+       the restore, 3 then 4 would leave twelve. */
+    /* op.axis, NOT App.symmetryAxis. The axis is set in the drawer, which
+       stays reachable with this bar open, and the chip there only calls
+       refreshUI - so reading it live meant tapping Y mid-op changed nothing
+       on screen while the confirm toast went on to read the NEW axis and
+       announce a Y array over X geometry. Captured when the op opens, like
+       the symmetry plane is. */
+    const okA = arrayOp(obj, op.segments || 1, op.groupMode || 'line', op.amount, op.axis || 'x');
+    /* AND THE REASON IS SAID WHILE THE BAR IS OPEN. refuseOp only records it,
+       and the common way in is a shape still sitting on the world origin
+       where every primitive is born - so tapping Ring did nothing at all,
+       with no explanation, until you pressed the tick. Once per reason, not
+       once per frame. */
+    if (!okA && opRefusal) {
+      if (op.saidWhy !== opRefusal) { op.saidWhy = opRefusal; toast(opRefusal); }
+    } else if (okA) {
+      op.saidWhy = null;
+    }
+    ensureHelpers(obj);
+
   } else if (op.kind === 'subdivide') {
     /* Re-run from the snapshot at the current count, exactly like every
        other live op - which is what makes the stepper a PREVIEW of the
@@ -10418,7 +10473,9 @@ function refreshOpGrouping() {
     organic: 'Even border width, follows the surface',
     keep: 'Inner outline keeps the original shape',
     flat: 'Straight chamfer across the edge',
-    round: 'Arc that meets both faces smoothly'
+    round: 'Arc that meets both faces smoothly',
+    line: 'Copies in a row along the symmetry axis',
+    ring: 'Copies turned around the pivot, or the world centre'
   };
 
   options.forEach(o => {
@@ -10428,6 +10485,9 @@ function refreshOpGrouping() {
     b.classList.toggle('active', op.groupMode === o.key);
     b.addEventListener('click', () => {
       if (!App.pendingOp) return;
+      // applyOptionRange records the outgoing option's amount itself, off
+      // op.rangeFor - doing it here as well wrote it twice and got it wrong
+      // once, because this runs before groupMode changes and that runs after.
       App.pendingOp.groupMode = o.key;
       refreshOpGrouping();
       applyPendingOp();
@@ -10440,12 +10500,68 @@ function refreshOpGrouping() {
   refreshOpAmountVisibility();
 }
 
+/* AN OPTION MAY CARRY ITS OWN SLIDER RANGE (a2.78), and Array is why: Line's
+   amount is a spacing as a multiple of the shape's own size (0.5 to 4) and
+   Ring's is a sweep in degrees (15 to 360). One range cannot mean both, and
+   splitting them into two ops would put one idea on two ring seats.
+
+   The amount is remembered PER OPTION. Without that, a 360-degree sweep
+   survives the switch to Line and is clamped to a spacing of 4 - the slider
+   pinned at its top, the copies flung apart - and switching back gives you 4
+   degrees rather than the full turn you left. `amountFor` is written by the
+   chip that is being switched AWAY from, so going Line, Ring, Line lands
+   back exactly where Line was.
+
+   The spec declares it on the option and this applies it, so the next op
+   that needs one costs a line. */
+/* THE RANGE THE AMOUNT IS ACTUALLY IN. The option's own when it declares
+   one, the spec's otherwise - and every clamp has to ask this rather than
+   the spec, or Ring's 360-degree sweep is clamped to Line's spacing of 4 the
+   first time the slider is touched. */
+function activeRange(op) {
+  const spec = OP_SPECS[op.kind] || {};
+  const o = (spec.options || []).find(x => x.key === op.groupMode);
+  return (o && o.min !== undefined) ? o : spec;
+}
+
+function applyOptionRange(op) {
+  const spec = op && OP_SPECS[op.kind];
+  if (!spec || !spec.options) return;
+  /* ONLY for a spec that really declares a per-option range. Every other op
+     with chips - Extrude, Inset, Bevel, Bridge, Subdivide - means the same
+     thing by `amount` whichever chip is lit, and running the rest of this on
+     them would reset the slider to its default on every chip press. */
+  if (!spec.options.some(o => o.min !== undefined)) return;
+  /* IDEMPOTENT, and that is the whole reason for `rangeFor`. This is reached
+     from refreshOpAmountVisibility, which the COUNT STEPPER also goes
+     through - so without the guard every +/- press re-read the option's
+     `start` and threw away the sweep you had dialled in. Array's count is
+     its primary control, so that fired constantly. */
+  if (op.rangeFor === op.groupMode) return;
+  // Where the option being left had the slider, so coming back lands there.
+  if (op.rangeFor) (op.amountFor || (op.amountFor = {}))[op.rangeFor] = op.amount;
+  op.rangeFor = op.groupMode;
+  const r = activeRange(op);
+  const want = (op.amountFor && op.amountFor[op.groupMode] !== undefined)
+    ? op.amountFor[op.groupMode]
+    : (r.start !== undefined ? r.start : op.amount);
+  op.amount = Math.min(r.max, Math.max(r.min, want));
+  opSliderEl.min = r.min; opSliderEl.max = r.max; opSliderEl.step = r.step;
+  opSliderEl.value = op.amount;
+  opValueEl.value = Number(op.amount.toFixed(3));
+}
+
 // The loop cut's slider only means something in Slide mode - in Even mode the
 // spacing is fixed by the count, so the control is hidden rather than left
 // sitting there doing nothing.
 function refreshOpAmountVisibility() {
   const op = App.pendingOp;
   if (!op) return;
+  /* Here rather than in showOpBar, because this is the one function BOTH
+     paths reach: showOpBar calls it directly, and refreshOpGrouping calls it
+     after rebuilding the chips - which is exactly when the range has to
+     follow the chip that was just pressed. */
+  applyOptionRange(op);
   const spec = OP_SPECS[op.kind];
   const dead = op.live || (spec && spec.noAmount) || (op.kind === 'loopcut' && op.groupMode !== 'slide');
   ['opSlider', 'opValue'].forEach(id => {
@@ -10501,9 +10617,13 @@ function setPendingAmount(v, defer) {
      its range - it stops where your finger stops. The rail left here is a
      guard against a degenerate projection producing a nonsense number, not
      a design limit: at 1e5 the section is long past anything you could see. */
+  /* The ACTIVE option's range, not the spec's. Array's Ring sweep runs to
+     360 where its Line spacing stops at 4, and clamping to the spec turned
+     the first touch of the slider into a 4-degree fan. */
+  const r = activeRange(op);
   const clamped = op.live
     ? Math.max(-1e5, Math.min(1e5, v))
-    : Math.min(spec.max, Math.max(spec.min, v));
+    : Math.min(r.max, Math.max(r.min, v));
   if (!Number.isFinite(clamped)) return;
   // Somebody asked for a DIFFERENT height on purpose - a drag that actually
   // travelled, or an arrow key. measureExtrudeAxis moves op.amount directly
@@ -10654,7 +10774,17 @@ function confirmPendingOp() {
      one and then abandoned would otherwise add a step that changes nothing
      - and an Undo press that appears dead. */
   if (!op.inHistory) pushHistory();
-  if (op.kind === 'subdivide') {
+  if (op.kind === 'array') {
+    /* The COUNT and the AXIS, because both are set somewhere other than this
+       bar - the count on the stepper, the axis in the drawer - and a ring of
+       twelve that came out as a row of three is exactly the mistake a toast
+       should catch. */
+    const ax = (op.axis || 'x').toUpperCase();
+    toast(op.groupMode === 'ring'
+      ? 'Array \u00d7' + (op.segments || 1) + ' around ' + ax +
+        (op.amount >= 359.5 ? '' : ', ' + Math.round(op.amount) + '\u00b0 arc')
+      : 'Array \u00d7' + (op.segments || 1) + ' along ' + ax);
+  } else if (op.kind === 'subdivide') {
     toast('Subdivided \u00d7' + (op.segments || 1) +
       (op.groupMode === 'keep' ? ', shape kept' : ', smoothed'));
   } else if (op.kind === 'autosmooth') {
@@ -18608,6 +18738,243 @@ function separateSelection() {
   toast('Separated into ' + created.length + ' objects');
 }
 
+
+/* ---------------- Array (a2.78) ----------------------------------------
+
+   Repeats the shape and bakes the copies into the SAME object, so what you
+   get back is one thing you can bevel, subdivide, shade or drag as a unit.
+   Separate breaks it into pieces again if you want them loose - the app
+   already owns both directions, and a modifier stack is on the
+   deliberately-not-doing list.
+
+   BUILT ON combineObjectsInto's SHAPE, because that function already
+   answered this question for Join: every copy gets its OWN face groups, its
+   own CLONED materials, and its own smooth/finish entries carried across in
+   parallel. Sharing one set of groups between the copies would have been
+   cheaper and much worse - twelve bolts would read as one six-faced object,
+   where tapping a face selects that face on all twelve at once and painting
+   one paints them all.
+
+   THE AXIS IS App.symmetryAxis - the same one Mirror and Flip read, and they
+   sit either side of Array in the ring. There is no second axis picker to
+   keep in sync, and the axis chip in the drawer already says which one is
+   live. Local space throughout, exactly as symmetry works: a rotated object
+   arrays along its own axis, not the world's. */
+
+const ARRAY_MAX = 32;
+
+// The two axes perpendicular to the one being used - what a ring sweeps in.
+const ARRAY_PERP = { x: ['y', 'z'], y: ['x', 'z'], z: ['x', 'y'] };
+
+function arrayOp(obj, count, mode, amount, axis) {
+  const n = Math.max(1, Math.min(ARRAY_MAX, count | 0));
+  const ed = toEditable(obj.mesh);
+  const srcMats = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
+  const srcSmooth = obj.mesh.userData.smoothGroups || {};
+  const srcFinish = obj.mesh.userData.finishes || {};
+  /* BOTH OF THESE ARE REFUSALS, not quiet returns. A bare `return false`
+     leaves op.lastWhy null, and confirm then toasts "Array x3 along X" over
+     a mesh nothing happened to and pushes a history step that undoes to
+     nothing - which this file's own note calls the worst failure mode in
+     the app. */
+  if (!ed.groups.length) return refuseOp('there is nothing here to array');
+  if (n < 2) return refuseOp('a count of 1 is just the shape you already have - step the count up');
+
+  /* The shape's own size, which is what makes Line's spacing scale-free. */
+  const box = new THREE.Box3();
+  const q = new THREE.Vector3();
+  for (let i = 0; i < ed.positions.length; i += 3) {
+    box.expandByPoint(q.set(ed.positions[i], ed.positions[i + 1], ed.positions[i + 2]));
+  }
+  const size = box.getSize(new THREE.Vector3());
+  const big = Math.max(size.x, size.y, size.z, 1e-4);
+  /* A FLAT SHAPE ARRAYED ALONG ITS FLAT AXIS has zero extent that way, and a
+     spacing of "1 x zero" stacks every copy in the same place with the
+     slider doing nothing at all. Falling back to a QUARTER of the largest
+     dimension keeps the control meaningful there: a plane arrayed along its
+     own flat axis comes out as a stack of shelves a readable distance
+     apart. A twentieth was tried first and is too fine to see. */
+  const extent = Math.max(size[axis], big * 0.25);
+
+  /* WHAT A RING TURNS AROUND. The pivot when one has been placed - that is
+     the whole reason the pivot exists and why this op waited for a2.39 - and
+     otherwise the world origin, which is the one point in this app you can
+     always aim at (see where primitives land, a2.36a). Never the shape's own
+     centre: every copy would land on top of the last one. */
+  let centre = null;
+  if (mode === 'ring') {
+    /* A RING NEEDS UNIFORM SCALE IN THE PLANE IT SWEEPS. Every copy is
+       placed by rotating in LOCAL space, so its world transform is
+       M.R.M-inverse - which is a rotation only while M scales both
+       perpendicular axes alike. Under 2,1,1 the copies come out sheared and
+       not congruent with the original, which looks like a bug in the op
+       rather than a consequence of the object's own scale.
+
+       Line is unaffected: a translation commutes with any scale. And Mirror
+       and Flip never meet this even though they also work in local space,
+       because a reflection in an axis plane stays axis-aligned - so "local
+       space, exactly as symmetry works" does NOT carry over to a rotation.
+       Scale it evenly, or Centre it first. */
+    const [ua, ub] = ARRAY_PERP[axis];
+    const sa = Math.abs(obj.mesh.scale[ua]), sb = Math.abs(obj.mesh.scale[ub]);
+    if (Math.abs(sa - sb) > Math.max(sa, sb, 1e-6) * 1e-3) {
+      return refuseOp('a ring needs even scale across the axis it turns about - this object is ' +
+        sa.toFixed(2) + ' by ' + sb.toFixed(2) + ', so the copies would come out skewed');
+    }
+    const w = (App.pivotMode === 'custom' && App.pivotPoint)
+      ? App.pivotPoint.clone() : new THREE.Vector3(0, 0, 0);
+    obj.mesh.updateMatrixWorld();
+    centre = obj.mesh.worldToLocal(w);
+    /* AND IT HAS TO BE OUTSIDE THE SHAPE, or the copies interleave into a
+       knot instead of a ring. Measured in the plane the ring sweeps, against
+       the shape's own width in that plane - so it is the same judgement at
+       any scale. Refusing is better than drawing the knot: the fix is one
+       drag, and the message says which. */
+    const [pa, pb] = ARRAY_PERP[axis];
+    const c = box.getCenter(new THREE.Vector3());
+    const r = Math.hypot(c[pa] - centre[pa], c[pb] - centre[pb]);
+    const width = Math.max(size[pa], size[pb], 1e-4);
+    if (r < width * 0.25) {
+      return refuseOp('a ring needs the shape away from what it turns around - drag it out, or put the pivot where the centre should be');
+    }
+  }
+
+  /* A FULL TURN DIVIDES BY n, AN ARC BY n-1. At 360 the first and last copy
+     are the same place, so n steps of 360/n is what closes the ring evenly;
+     over a quarter turn you want the first copy at one end and the last at
+     the other, which is n-1 gaps. Getting this wrong is the classic array
+     bug - a ring of twelve with two bolts on top of each other. */
+  const sweep = (amount * Math.PI) / 180;
+  const stepAng = n > 1 ? (amount >= 359.5 ? sweep / n : sweep / (n - 1)) : 0;
+
+  const positions = ed.positions.slice();
+  const groups = ed.groups.map(g => ({ triangles: g.triangles.map(t => t.slice()) }));
+  const mats = [];
+  const smoothGroups = {};
+  const finishes = {};
+  ed.groups.forEach((g, gi) => {
+    mats.push(cloneMat(srcMats[gi] || srcMats[0]));
+    if (srcSmooth[gi]) smoothGroups[gi] = true;
+    if (srcFinish[gi]) finishes[gi] = srcFinish[gi];
+  });
+  /* AND THE TWO POSITION-KEYED MARKS. smoothGroups and finishes are keyed by
+     FACE GROUP and are replicated above; creases and edgeShade are keyed by
+     coordinates, so a copy that lands somewhere else simply has no entries
+     and falls back to the smoothing angle. A cube with one hand-marked sharp
+     edge arrayed into one marked cube and eleven unmarked ones - visible at
+     a glance, and not what "each copy gets its own" is supposed to mean.
+     Copy 0 does not move, so its keys are carried across untouched. */
+  const srcCreases = obj.mesh.userData.creases || {};
+  const srcShade = obj.mesh.userData.edgeShade || {};
+  const creases = { ...srcCreases };
+  const edgeShade = { ...srcShade };
+  const hasMarks = Object.keys(srcCreases).length || Object.keys(srcShade).length;
+
+  const m = new THREE.Matrix4();
+  const p = new THREE.Vector3();
+  const ax = new THREE.Vector3();
+  ax[axis] = 1;
+  for (let k = 1; k < n; k++) {
+    if (mode === 'ring') {
+      const rot = new THREE.Matrix4().makeRotationAxis(ax, stepAng * k);
+      m.identity()
+        .multiply(new THREE.Matrix4().makeTranslation(centre.x, centre.y, centre.z))
+        .multiply(rot)
+        .multiply(new THREE.Matrix4().makeTranslation(-centre.x, -centre.y, -centre.z));
+    } else {
+      const d = new THREE.Vector3();
+      d[axis] = extent * amount * k;
+      m.makeTranslation(d.x, d.y, d.z);
+    }
+    const base = positions.length / 3;
+    for (let i = 0; i < ed.positions.length; i += 3) {
+      p.set(ed.positions[i], ed.positions[i + 1], ed.positions[i + 2]).applyMatrix4(m);
+      positions.push(p.x, p.y, p.z);
+    }
+    /* NO WINDING FLIP, and that is a statement rather than an omission.
+       combineObjectsInto has to check the determinant because a mirrored
+       object arrives with a negative one; every transform here is a
+       translation or a rotation, so the determinant is +1 and the triangles
+       keep the order they were authored in. A negative spacing would not
+       change that either - it slides the copies the other way, it does not
+       reflect them. */
+    ed.groups.forEach((g, gi) => {
+      const newGi = groups.length;
+      groups.push({ triangles: g.triangles.map(t => [t[0] + base, t[1] + base, t[2] + base]) });
+      mats.push(cloneMat(srcMats[gi] || srcMats[0]));
+      if (srcSmooth[gi]) smoothGroups[newGi] = true;
+      if (srcFinish[gi]) finishes[newGi] = srcFinish[gi];
+    });
+    if (hasMarks) {
+      moveMarkKeys(srcCreases, creases, m);
+      moveMarkKeys(srcShade, edgeShade, m);
+    }
+  }
+
+  /* THE OUTGOING MATERIALS GO IN THE BIN, they are not just dropped. This op
+     REPLACES the whole array rather than appending to it, and it re-runs on
+     every stepper press and every slider frame - so without this each frame
+     abandoned one material per face group, never firing dispose, and the
+     WebGLProgram refcount was never released. Same handling as
+     restoreObjectState: deferred while an op is running, immediate
+     otherwise, because that is the moment the program can go unnoticed. */
+  const outgoing = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
+  obj.mesh.material = mats.length > 1 ? mats : mats[0];
+  if (App.pendingOp) binMaterials(outgoing);
+  else outgoing.forEach(mm => mm && mm.dispose());
+  obj.mesh.userData.smoothGroups = smoothGroups;
+  obj.mesh.userData.finishes = finishes;
+  obj.mesh.userData.creases = creases;
+  obj.mesh.userData.edgeShade = edgeShade;
+  rebuildFromEditable(obj, { positions, groups });
+  return true;
+}
+
+// Counted, so the headless harness can see Array's clone cost the same way
+// it sees every other op's.
+function cloneMat(m) { PERF.matClone++; return m.clone(); }
+
+/* Carries the position-keyed marks onto one copy. A key is two posKeys with
+   a bar between them, and posKey is the coordinates rounded to 1e4 - so
+   reading one back and re-keying it after the transform is exact to the same
+   tolerance the app welds at everywhere else. A key that does not parse is
+   skipped rather than guessed at. */
+function moveMarkKeys(src, dst, m) {
+  const rd = (t) => {
+    const c = t.split('_');
+    if (c.length !== 3) return null;
+    const x = +c[0], y = +c[1], z = +c[2];
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+    return new THREE.Vector3(x / 1e4, y / 1e4, z / 1e4);
+  };
+  Object.keys(src).forEach(key => {
+    const parts = key.split('|');
+    if (parts.length !== 2) return;
+    const a = rd(parts[0]), b = rd(parts[1]);
+    if (!a || !b) return;
+    dst[creaseKeyFor(a.applyMatrix4(m), b.applyMatrix4(m))] = src[key];
+  });
+}
+
+function arraySelection() {
+  if (App.mode !== 'object') { toast('Array works in Object mode'); return; }
+  if (App.selectedObjectIds.size !== 1) {
+    toast(App.selectedObjectIds.size ? 'Array works on one object - Join them first' : 'Select an object to array');
+    return;
+  }
+  /* The SELECTED one. activeObjectId can still be pointing at whatever was
+     last edited in a component mode, and the guard above has already proved
+     there is exactly one selection - so preferring active could array an
+     object the user cannot see selected. Subdivide and Smooth by angle take
+     ids[0] for the same reason. */
+  const ids = Array.from(App.selectedObjectIds);
+  const obj = findObject(ids[0]) || findObject(App.activeObjectId);
+  if (!obj) return;
+  beginPendingOp('array', obj, {}, {
+    groupMode: 'line', segments: 3, axis: App.symmetryAxis || 'x'
+  });
+}
+
 function joinSelection() {
   if (App.mode !== 'object') { toast('Join works in Object mode'); return; }
   const ids = Array.from(App.selectedObjectIds);
@@ -21046,6 +21413,11 @@ const ICON = {
   color:   '<path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.7-.9 1.4-1.8-.4-1.1.4-2.2 1.6-2.2H17a4 4 0 0 0 4-4c0-5.5-4-10-9-10z"/><circle cx="8" cy="11" r="1.1"/><circle cx="12" cy="8" r="1.1"/><circle cx="16" cy="11" r="1.1"/>',
   focus:   '<circle cx="12" cy="12" r="3"/><path d="M4 8V4h4M20 8V4h-4M4 16v4h4M20 16v4h-4"/>',
   dupe:    '<path d="M9 3h12v12"/><path d="M3 9h12v12H3z"/>',
+  /* Duplicate is two overlapping frames - ONE more of this. Array is the
+     same shape marching off, and the fade is what says "and so on" rather
+     than "three of them": at the 26px the ring actually uses, three equal
+     squares read as a row of three objects, which is the wrong idea. */
+  array:   '<rect x="2" y="9" width="6" height="6"/><rect x="9.5" y="9" width="6" height="6" opacity=".6"/><rect x="17" y="9" width="6" height="6" opacity=".3"/>',
   join:    '<circle cx="9" cy="12" r="5.5"/><circle cx="15" cy="12" r="5.5"/>',
   split:   '<path d="M12 3v18"/><path d="M8 8L4 12l4 4M16 8l4 4-4 4"/>',
   /* SHARP keeps the old crease glyph, because a hard peak is what it always
@@ -21215,6 +21587,13 @@ const HUB_TOOLS_OBJECT_BASE = [
      (7), Shade (8) and Flip normals (9) keep their compass seats from the
      component rings. */
   { key: 'duplicate', icon: 'dupe', label: 'Duplicate', seat: 0, ring: 0, run: duplicateSelection },
+  /* DUPLICATE'S BEARING, ONE RING OUT - the same pairing the note above
+     reserves seat 1 for (Fillet beside Bevel). Array is what Duplicate is
+     when you want more than one, so it belongs on the same compass point
+     and one step further from the middle, not on a bearing of its own. It
+     also lands next to Mirror and Flip, which is the right company: those
+     three are the ops that read App.symmetryAxis. */
+  { key: 'array', icon: 'array', label: 'Array', seat: 0, ring: 1, run: arraySelection },
   { key: 'mirror', icon: 'mirroraction', label: 'Mirror', seat: 2, ring: 0, run: () => showMirrorChooser(App.symmetryAxis) },
   { key: 'flip', icon: 'flip', label: 'Flip', seat: 3, ring: 0, run: () => flipSelectedObjects(App.symmetryAxis) },
   { key: 'separate', icon: 'separate', label: 'Separate', seat: 4, ring: 1, run: separateSelection },
@@ -23448,7 +23827,13 @@ if (PICK_DEBUG) {
     // The drag itself, driveable with a plain {clientX, clientY}.
     axisTooFlat, beginExtrudeDrag, updateExtrudeDrag, endExtrudeDrag,
     restoreDoc, serializeDoc, refuseOp, pushHistory, toast,
-    showMirrorChooser, hideOpBar,
+    showMirrorChooser, hideOpBar, arraySelection, arrayOp,
+    /* a2.78. The op BAR, not just the worker underneath it - the first
+       pass of the Array probe drove arrayOp directly and passed twelve
+       sections while the tool itself was broken in six places, all of
+       them in the controls. */
+    stepSegments, refreshOpGrouping, refreshOpAmountVisibility,
+    activeRange, logicalPos, creaseKeyFor,
     get mirrorChooser() { return mirrorChooser; },
     get activePointers() { return activePointers; },
     get directDrag() { return directDrag; },
