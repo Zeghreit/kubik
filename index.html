@@ -1541,7 +1541,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.79</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.80</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -9854,6 +9854,23 @@ const OP_SPECS = {
       { key: 'ring', label: 'Ring', min: 15, max: 360, step: 1, start: 360 }
     ]
   },
+  /* SLIDE (a2.80). The amount is a FRACTION OF THE WAY to the neighbouring
+     loop, signed: +1 would land the loop exactly on the ring one side, -1 on
+     the other, and it opens at 0 because a slide starts from where the loop
+     already is.
+
+     It stops at 0.95 rather than 1. Landing exactly on the neighbour makes
+     every edge between them zero-length, which is a weld the user did not
+     ask for and cannot see coming - Merge and Collapse are the tools that do
+     that on purpose. The last twentieth is the visible warning that the loop
+     is about to arrive.
+
+     No options. Blender offers an "even" mode that keeps the loop's shape
+     rather than following each edge; that is a second idea and it can have
+     its own chip when somebody wants it. */
+  slide: {
+    label: 'Slide', min: -0.95, max: 0.95, step: 0.01, start: 0
+  },
   /* SOLIDIFY (a2.79). The amount is a thickness as a FRACTION OF THE MODEL'S
      OWN SIZE, for the reason Circularize gives for its blend and Array for
      its spacing: one range then means the same thing on a business card and
@@ -10350,6 +10367,20 @@ function applyPendingOp() {
     }
     ensureHelpers(obj);
 
+  } else if (op.kind === 'slide') {
+    ensureHelpers(obj);
+    const moved = slideApply(obj, op.payload.items, op.amount);
+    /* AT 0 THE SLIDE IS THE IDENTITY, so "nothing moved" is the slider
+       sitting in the middle rather than a loop that cannot move - refusing
+       there would put a false explanation on screen the moment the bar
+       opens. Circularize carries the same note for the same reason. */
+    if (!moved && Math.abs(op.amount) > 1e-6) {
+      refuseOp('that loop has nowhere to slide to');
+    }
+    ensureHelpers(obj);
+    // Nothing here changes topology, so what was selected still is.
+    resultSelection = new Set(op.payload.selection);
+
   } else if (op.kind === 'solidify') {
     const okS = solidifyOp(obj, op.amount, op.groupMode || 'in');
     // Same reason as Array: refuseOp only records it, and the commonest way
@@ -10805,7 +10836,11 @@ function confirmPendingOp() {
      one and then abandoned would otherwise add a step that changes nothing
      - and an Undo press that appears dead. */
   if (!op.inHistory) pushHistory();
-  if (op.kind === 'solidify') {
+  if (op.kind === 'slide') {
+    // The SIGN matters and the slider is small on a phone, so say it.
+    toast('Slid ' + (op.amount >= 0 ? '+' : '−') +
+      Math.abs(Math.round(op.amount * 100)) + '% toward the next loop');
+  } else if (op.kind === 'solidify') {
     /* The percentage, because the slider is a FRACTION of the model rather
        than a distance, and "0.05" on its own reads like millimetres. */
     toast('Solidified ' + (op.amount * 100).toFixed(1) + '% thick' +
@@ -11490,6 +11525,284 @@ function circularizeSelection() {
     verts: Array.from(verts), keys: Array.from(loopKeys), scatterOk,
     selection: Array.from(App.selectedElements)
   });
+}
+
+
+/* ---------------- Edge / vertex slide (a2.80) ---------------------------
+
+   Moves an existing loop along its ring without changing its shape or the
+   topology round it. Loop cut places a loop and lets you slide it before you
+   commit; until now a loop already in the mesh could only be deleted and
+   re-cut to move it.
+
+   THE SELECTION READING IS ALREADY DONE. flowSelectionItems answers "which
+   vertices are the loop, and what are the two vertices ACROSS it from each
+   one" for vertex, edge and face mode alike, and flowItemsForLoop already
+   refuses the cases where "across" means nothing - a pole, a boundary, and
+   the corner where the loop turns and its two non-loop neighbours sit at
+   right angles on the SAME side rather than opposite one another. Set flow
+   needed exactly that and paid for it in three review rounds; this gets it
+   for free.
+
+   WHAT IS NOT FREE IS WHICH SIDE IS WHICH. */
+
+const SLIDE_LIMIT = 0.95;
+/* Comfortably above computeLogicalOf's 1e-4 rounding, so the loop and the one
+   it is sliding toward can never round to the same key. */
+const SLIDE_MIN_GAP = 5e-4;
+
+/* `a` and `b` come out of the neighbour map in whatever order it happened to
+   build them, and nothing makes that order agree from one loop vertex to the
+   next. Sliding on the raw pair sends half the loop one way and half the
+   other, which tears the ring apart and reads as a bug in the drag rather
+   than in the data.
+
+   So the side is PROPAGATED along the loop rather than chosen per vertex:
+   two neighbouring loop vertices are on the same side when the across-
+   vertices they chose are themselves joined by an edge - the far side of the
+   quad they both belong to, which is the same "step across the quad"
+   edgeLoopOp walks a ring with. One vertex is seeded arbitrarily and the
+   rest follow it.
+
+   A junction where neither pairing is joined cannot be settled, so it starts
+   an island of its own with its own arbitrary seed. That is a visible seam
+   rather than a silent wrong answer, and it only happens on topology where
+   "the other side" genuinely has two meanings. */
+/* WHICH EDGES RUN ALONG THE LOOP, by the same reading flowSelectionItems
+   uses. It computes exactly this and then throws it away, and the difference
+   matters: "a selected neighbour that is not my own across-pair" is only a
+   PROXY for "along the loop", and it is wrong wherever a diagonal is a real
+   edge - a cap-hole fan, a knife cut, imported triangle soup - where a
+   diagonal neighbour can propagate the side across the wrong quad and flip a
+   stretch of the loop with nothing on screen to say so. */
+function slideLoopKeys(obj) {
+  const topo = obj.mesh.userData.topo;
+  const keys = new Set();
+  if (App.mode === 'vertex') {
+    const verts = new Set();
+    App.selectedElements.forEach(l => { if (l < topo.logicalCount) verts.add(l); });
+    topo.edges.forEach(e => {
+      if (verts.has(e[0]) && verts.has(e[1])) keys.add(edgeKey(e[0], e[1]));
+    });
+  } else {
+    App.selectedElements.forEach(ei => {
+      const e = topo.edges[ei];
+      if (e) keys.add(edgeKey(e[0], e[1]));
+    });
+  }
+  return keys;
+}
+
+function orientedSlideItems(obj) {
+  const items = flowSelectionItems(obj);
+  if (!items.length) return [];
+  const topo = obj.mesh.userData.topo;
+  const nbr = neighbourMap(topo);
+  const loopKeys = slideLoopKeys(obj);
+
+  const byV = new Map();
+  items.forEach(it => byV.set(it.v, { v: it.v, a: it.a, b: it.b, flip: false, island: -1 }));
+  const joined = (x, y) => x === y || (nbr.get(x) || []).indexOf(y) >= 0;
+  // ALONG the loop, by the loop's own edge set - not by "not across".
+  const alongFrom = (v) => (nbr.get(v) || []).filter(n => byV.has(n) && loopKeys.has(edgeKey(v, n)));
+
+  const done = new Set();
+  let islands = 0;
+  let torn = false;
+  byV.forEach((seed, v) => {
+    if (done.has(v)) return;
+    const island = islands++;
+    seed.island = island;
+    done.add(v);
+    const queue = [v];
+    while (queue.length) {
+      const c = queue.shift();
+      const ci = byV.get(c);
+      const chosen = ci.flip ? ci.b : ci.a;
+      alongFrom(c).forEach(n => {
+        const ni = byV.get(n);
+        const wants = joined(chosen, ni.a) ? false : joined(chosen, ni.b) ? true : null;
+        if (done.has(n)) {
+          /* THE SECOND PATH TO A VERTEX HAS TO AGREE WITH THE FIRST. A loop
+             that closes with a twist - or a branch whose arms are genuinely
+             on opposite sides - disagrees here, and dropping the second path
+             silently tears the loop at exactly one edge. */
+          if (wants !== null && wants !== ni.flip) torn = true;
+          return;
+        }
+        if (wants === null) return;      // ambiguous - leave it for its own seed
+        ni.flip = wants;
+        ni.island = island;
+        done.add(n);
+        queue.push(n);
+      });
+    }
+  });
+  if (torn) return refuseOp('that loop has no consistent side - it closes back on itself the other way up', []);
+
+  const dirOf = (it) => logicalPos(obj, it.flip ? it.b : it.a).sub(logicalPos(obj, it.v));
+
+  /* SEPARATE ISLANDS ARE ALIGNED TO THE FIRST ONE. The BFS removes the
+     arbitrariness INSIDE an island and leaves it BETWEEN islands: two loops
+     picked at once, or the arms either side of a crossing, each get their
+     own seed off whichever neighbour the map happened to list first - so one
+     drag could send one loop up and the other down, and which way round
+     changed with every edit. Comparing each island's mean direction with the
+     first island's is not a proof, but it is right whenever the loops are
+     roughly parallel, which is the only time picking several at once means
+     anything. */
+  if (islands > 1) {
+    const mean = [];
+    for (let i = 0; i < islands; i++) mean.push(new THREE.Vector3());
+    byV.forEach(it => { if (it.island >= 0) mean[it.island].add(dirOf(it)); });
+    const ref = mean[0];
+    if (ref.lengthSq() > 1e-18) {
+      for (let i = 1; i < islands; i++) {
+        if (mean[i].lengthSq() > 1e-18 && mean[i].dot(ref) < 0) {
+          byV.forEach(it => { if (it.island === i) it.flip = !it.flip; });
+        }
+      }
+    }
+  }
+
+  /* AND SYMMETRY OVERRIDES ALL OF IT. This is the one the reasoning got
+     wrong first. "Per-element, like Set flow" carries for Set flow because
+     Set flow is DIRECTION-FREE - each vertex goes where its own
+     neighbourhood says, which mirrors correctly on its own. A slide has a
+     global SIGN, and the mirror of "toward +X" is "toward -X", so the
+     mirrored half was just a second island with its own arbitrary seed.
+     Measured on a tube along X with X symmetry: both loops slid the same way
+     through the model and the object came out lopsided.
+
+     So for every mirrored pair, the partner's side is set to the MIRROR of
+     the original's - the same question decideLoopCutFlip already asks of a
+     loop being placed. Lowest logical id wins, so the answer does not depend
+     on map order. */
+  if (App.symmetry) {
+    let map = null;
+    try { map = buildSymmetryMap(obj, App.symmetryAxis); } catch (e) { map = null; }
+    if (map) {
+      const ax = App.symmetryAxis;
+      const settled = new Set();
+      Array.from(byV.keys()).sort((x, y) => x - y).forEach(v => {
+        const q = map.get(v);
+        if (q === undefined || q === v || !byV.has(q)) return;
+        if (settled.has(v) || settled.has(q)) return;
+        settled.add(v); settled.add(q);
+        const want = dirOf(byV.get(v));
+        want[ax] = -want[ax];
+        const qi = byV.get(q);
+        const pv = logicalPos(obj, qi.v);
+        const da = logicalPos(obj, qi.a).sub(pv);
+        const db = logicalPos(obj, qi.b).sub(pv);
+        qi.flip = db.dot(want) > da.dot(want);
+      });
+    }
+  }
+
+  const out = [];
+  byV.forEach(it => out.push({ v: it.v, a: it.flip ? it.b : it.a, b: it.flip ? it.a : it.b }));
+  return out;
+}
+
+/* Positive slides toward `a`, negative toward `b`, as a fraction of the way
+   there - so the loop follows its own edges and keeps its shape, and every
+   vertex arrives at its neighbour together however unevenly the ring is
+   spaced. Writing the moves into an editable and rebuilding is the same
+   shape setFlowApply uses; nothing here changes topology. */
+function slideApply(obj, items, amount) {
+  if (!items || !items.length) return 0;
+  const topo = obj.mesh.userData.topo;
+  /* THE 0.95 STOP IS RELATIVE AND THE WELD IS ABSOLUTE, which is why the
+     stop alone does not keep the promise it makes. computeLogicalOf welds
+     two points that round to the same ten-thousandth, so on a model small
+     enough - and Kubik has no unit, so an imported part can be any size -
+     a twentieth of the gap is under the weld tolerance and the loop merges
+     into its neighbour anyway. Measured: at a scale of 0.002 a cylinder went
+     from 60 logical vertices to 48 at amount 0.95.
+
+     So the per-frame limit is whichever is tighter: the fixed 0.95, or
+     leaving SLIDE_MIN_GAP of the SHORTEST gap in the selection. */
+  let tCap = SLIDE_LIMIT;
+  items.forEach(it => {
+    if (it.v >= topo.logicalCount) return;
+    const toward = amount >= 0 ? it.a : it.b;
+    if (toward >= topo.logicalCount) return;
+    const gap = logicalPos(obj, it.v).distanceTo(logicalPos(obj, toward));
+    if (gap < 1e-12) { tCap = 0; return; }
+    tCap = Math.min(tCap, Math.max(0, 1 - SLIDE_MIN_GAP / gap));
+  });
+  const t = THREE.MathUtils.clamp(amount, -tCap, tCap);
+  const moves = [];
+  items.forEach(it => {
+    if (it.v >= topo.logicalCount) return;
+    const p = logicalPos(obj, it.v);
+    const toward = t >= 0 ? it.a : it.b;
+    if (toward >= topo.logicalCount) return;
+    const target = p.clone().lerp(logicalPos(obj, toward), Math.abs(t));
+    if (target.distanceToSquared(p) < 1e-14) return;
+    moves.push({ l: it.v, p: target });
+  });
+  if (!moves.length) return 0;
+  const ed = toEditable(obj.mesh);
+  moves.forEach(m => {
+    (topo.logicalGroups[m.l] || []).forEach(ai => {
+      ed.positions[ai * 3] = m.p.x;
+      ed.positions[ai * 3 + 1] = m.p.y;
+      ed.positions[ai * 3 + 2] = m.p.z;
+    });
+  });
+  rebuildFromEditable(obj, ed);
+  return moves.length;
+}
+
+function slideSelection() {
+  if (App.knife) { toast('Finish the cut first'); return; }
+  if (App.pendingOp) {
+    toast('Finish the ' + ((OP_SPECS[App.pendingOp.kind] || {}).label || 'operation') + ' first');
+    return;
+  }
+  if (App.mode === 'object') { toast('Slide works on vertices or edges'); return; }
+  /* FACE MODE IS LEFT OUT, though flowSelectionItems would answer for it.
+     Sliding the RIM of a face patch along the surface is what Inset already
+     does, and better - it keeps the patch's shape rather than dragging each
+     rim vertex down its own edge. A second tool doing a worse version of an
+     existing one is not worth a ring seat. */
+  if (App.mode === 'face') { toast('Slide works on vertices or edges - Inset moves a face patch rim'); return; }
+  const obj = findObject(App.activeObjectId);
+  if (!obj || !App.selectedElements.size) { toast('Select a loop to slide'); return; }
+  ensureHelpers(obj);
+  // Per-element, like Set flow, so the union with the mirror is the right
+  // way to be symmetric about it.
+  symExpand(obj);
+  const items = orientedSlideItems(obj);
+  if (!items.length) {
+    toast(opRefusal || 'Nothing to slide — a loop needs mesh on both sides of it');
+    return;
+  }
+  /* ALL OF THE LOOP OR NONE OF IT. A vertex with no across-pair - where the
+     loop is crossed by another one, or runs into a pole - simply stays put
+     while its neighbours move up to a whole quad, and the result is a spike
+     in the mesh from one drag of the slider, with nothing said about it.
+     Set flow can live with a few vertices sitting still because its
+     corrections are small; a slide's are not. */
+  const topo = obj.mesh.userData.topo;
+  const wanted = new Set();
+  if (App.mode === 'vertex') {
+    App.selectedElements.forEach(l => { if (l < topo.logicalCount) wanted.add(l); });
+  } else {
+    App.selectedElements.forEach(ei => {
+      const e = topo.edges[ei];
+      if (e) { wanted.add(e[0]); wanted.add(e[1]); }
+    });
+  }
+  const short = wanted.size - items.length;
+  if (short > 0) {
+    toast(short + ' of ' + wanted.size + ' points on that loop have no clear way across — ' +
+      'sliding the rest would spike the mesh');
+    return;
+  }
+  beginPendingOp('slide', obj, { items, selection: Array.from(App.selectedElements) });
 }
 
 function setFlowSelection() {
@@ -21745,6 +22058,10 @@ const ICON = {
      you started with and the faded body is what Solidify puts behind it -
      which is exactly what the default option does. */
   solidify: '<path d="M3 8.5l9-4 9 4-9 4z"/><path d="M3 8.5v3.5l9 4 9-4V8.5" opacity=".5"/>',
+  /* The loop, upright and solid, with the two rails it can run along faded
+     either side. The arrows say which way; the faded rails say what it
+     stops against, which is the half of Slide that surprises people. */
+  slide:   '<path d="M12 3v18"/><path d="M5 3v18M19 3v18" opacity=".35"/><path d="M8.5 9.5L6 12l2.5 2.5M15.5 9.5L18 12l-2.5 2.5"/>',
   join:    '<circle cx="9" cy="12" r="5.5"/><circle cx="15" cy="12" r="5.5"/>',
   split:   '<path d="M12 3v18"/><path d="M8 8L4 12l4 4M16 8l4 4-4 4"/>',
   /* SHARP keeps the old crease glyph, because a hard peak is what it always
@@ -21850,6 +22167,22 @@ const HUB_TOOLS_VERTEX = [
      anything. The Edge ring was FULL at 14 seats; without the fraction
      something would have had to be evicted to make room. */
   { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 8.5, ring: 1, run: circularizeSelection },
+  /* SEAT 9 in both component rings that have Slide. In the Edge ring that is
+     LOOP'S OWN SEAT, which is the pairing worth having: Loop cut makes a
+     loop, Slide moves one, and they sit side by side. It also lands in the
+     same arc as Set flow (8) and Circularize (8.5), and those three are one
+     family - reshaping a loop rather than adding to it.
+
+     `ring` is carried for consistency with every other entry but nothing
+     reads it: toolRingAngles lays every tool on ONE circle sorted by seat,
+     so two tools sharing a seat come out as neighbours in declaration order
+     rather than one behind the other. An earlier draft of this note said
+     "outboard of Loop", which is a layout the code does not produce.
+
+     Seat 9 is Flip normals in the Face ring, which is no loss - Slide is not
+     offered there anyway, because sliding a face patch's rim is what Inset
+     already does better. See slideSelection. */
+  { key: 'slide', icon: 'slide', label: 'Slide', seat: 9, ring: 1, run: slideSelection },
   { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 0, run: deleteSelection },
 ];
 
@@ -21883,6 +22216,22 @@ const HUB_TOOLS_EDGE = [
      the glyph always had; Crease moves one along. */
   { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 8, ring: 1, run: setFlowSelection },
   { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 8.5, ring: 1, run: circularizeSelection },
+  /* SEAT 9 in both component rings that have Slide. In the Edge ring that is
+     LOOP'S OWN SEAT, which is the pairing worth having: Loop cut makes a
+     loop, Slide moves one, and they sit side by side. It also lands in the
+     same arc as Set flow (8) and Circularize (8.5), and those three are one
+     family - reshaping a loop rather than adding to it.
+
+     `ring` is carried for consistency with every other entry but nothing
+     reads it: toolRingAngles lays every tool on ONE circle sorted by seat,
+     so two tools sharing a seat come out as neighbours in declaration order
+     rather than one behind the other. An earlier draft of this note said
+     "outboard of Loop", which is a layout the code does not produce.
+
+     Seat 9 is Flip normals in the Face ring, which is no loss - Slide is not
+     offered there anyway, because sliding a face patch's rim is what Inset
+     already does better. See slideSelection. */
+  { key: 'slide', icon: 'slide', label: 'Slide', seat: 9, ring: 1, run: slideSelection },
   { key: 'sharp', icon: 'sharp', label: 'Mark Sharp', seat: 10, ring: 1, run: markSharpSelection },
   { key: 'crease', icon: 'crease', label: 'Crease', seat: 11, ring: 1, run: () => creaseSelection() }
 ];
@@ -24161,6 +24510,7 @@ if (PICK_DEBUG) {
     restoreDoc, serializeDoc, refuseOp, pushHistory, toast,
     showMirrorChooser, hideOpBar, arraySelection, arrayOp,
     solidifySelection, solidifyOp, solidifySurvey, createObjectFromEditable,
+    slideSelection, slideApply, orientedSlideItems, flowSelectionItems,
     // The editable-side weld, so a probe can count open edges itself
     // rather than trust the op's own answer about whether it closed.
     edLogical, getGroupBoundaryLoopAttr, loopNormal, fanTriangles,

@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,560 lines)
-- Version at time of writing: **a2.79**
+- Version at time of writing: **a2.80**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -383,6 +383,110 @@ own computed `display` into an inline style, which outranks the now-absent
   `.submerging` set it to `none` for the duration, because blurring the
   backdrop AND the element is a read-back of the live canvas plus a second
   blur on the result, and WebKit has been inconsistent about the pair.
+
+## Edge / vertex slide (a2.80)
+
+Moves an existing loop along its ring without changing its shape or the
+topology round it. Loop cut lets you slide a loop **while placing it**; until
+now a loop already in the mesh could only be deleted and re-cut to move it.
+
+Seat 9 in the Vertex and Edge rings — **Loop's own seat** in the Edge ring,
+because Loop cut makes a loop and Slide moves one, and they sit side by side.
+The amount is a signed fraction of the way to the neighbouring loop, opening
+at 0. Face mode is left out on purpose: sliding a face patch's rim is what
+Inset already does, and better, because Inset keeps the patch's shape instead
+of dragging each rim vertex down its own edge.
+
+### The selection reading was already paid for
+
+`flowSelectionItems` answers "which vertices are the loop, and what are the
+two vertices ACROSS it from each one", and `flowItemsForLoop` already refuses
+where "across" means nothing — a pole, a boundary, and the corner where the
+loop turns and its two non-loop neighbours sit at right angles on the *same*
+side rather than opposite one another. Set flow needed exactly that and paid
+for it in three review rounds. Slide inherits all of it.
+
+### What is not free: which side is which
+
+`a` and `b` come out of the neighbour map in whatever order it built them, and
+nothing makes that order agree from one loop vertex to the next. Sliding on
+the raw pair sends half the loop one way and half the other.
+
+**The side is propagated along the loop, not chosen per vertex.** Two
+neighbouring loop vertices are on the same side when the across-vertices they
+chose are themselves joined by an edge — the far side of the quad they share,
+the same "step across the quad" `edgeLoopOp` walks a ring with. One vertex is
+seeded arbitrarily and the rest follow.
+
+Everything below this line is a defect the review found in that one layer.
+
+### Symmetry has a SIGN, and a sign does not mirror
+
+The first cut called `symExpand` and reasoned "per-element, like Set flow, so
+the union with the mirror is the right way to be symmetric". **That does not
+carry.** Set flow is per-element *and direction-free* — each vertex goes where
+its own neighbourhood says, which is mirror-covariant on its own. A slide has
+a global sign, and the mirror of "toward +X" is "toward −X". The mirrored half
+was simply a second island with its own arbitrary seed.
+
+Measured on a tube along X with X symmetry: both loops slid the **same way
+through the model** and the object came out lopsided. It was right only by
+accident, when the ring happened to run perpendicular to the mirror plane.
+
+Now every mirrored pair takes the **mirror of its partner's** side, lowest
+logical id winning so the answer does not depend on map order. It is the same
+question `decideLoopCutFlip` already asks of a loop being placed.
+
+### Islands, and the seam between them
+
+The BFS removes the arbitrariness *inside* an island and leaves it *between*
+islands: two loops picked at once, or the arms either side of a crossing, each
+got their own seed off whichever neighbour the map listed first — so one drag
+could send one loop up and the other down, and which way round changed with
+every edit. Islands are now aligned to the first one's mean direction. Not a
+proof, but right whenever the loops are roughly parallel, which is the only
+time picking several at once means anything.
+
+A junction where neither pairing is joined still starts its own island. A
+**second path that disagrees** with the first, though — a loop that closes
+with a twist — is now detected and refused, where before it tore the loop at
+exactly one edge in silence.
+
+### All of the loop or none of it
+
+A vertex with no across-pair simply stayed put while its neighbours moved up
+to a whole quad: a spike in the mesh from one drag of the slider, with nothing
+said about it. Set flow tolerates that because its corrections are small;
+a slide's are not. Slide now refuses and says how many points are short.
+
+### "Along the loop" is the loop's own edges
+
+`alongFrom` used "a selected neighbour that is not my own across-pair", which
+is only a **proxy**. It is wrong wherever a diagonal is a genuine edge — a
+cap-hole fan, a knife cut, imported triangle soup — where a diagonal neighbour
+can propagate the side across the wrong quad and flip a stretch of the loop
+with nothing on screen to say so. `slideLoopKeys` rebuilds the loop's actual
+edge set, the same reading `flowSelectionItems` does internally and discards.
+
+### The stop is relative; the weld is absolute
+
+`SLIDE_LIMIT` of 0.95 exists so the loop never lands exactly on its neighbour
+and welds. It does not keep that promise on its own: `computeLogicalOf` welds
+two points that round to the same ten-thousandth, and Kubik has no unit, so on
+a small enough model a twentieth of the gap is *inside* the weld tolerance.
+Measured: a cylinder 0.01 tall went from 60 logical vertices to 48 at 0.95.
+
+`SLIDE_MIN_GAP` (5e-4) is an absolute floor, and the per-frame limit is
+whichever is tighter. On the small fixture the cap comes out at 0.80 instead
+of 0.95 and the vertex count holds.
+
+### Note for the next person
+
+`ring: 0|1` in the tool tables is carried for consistency but **nothing reads
+it** — `toolRingAngles` lays every tool on one circle sorted by `seat` alone,
+so two tools sharing a seat come out as neighbours in declaration order rather
+than one behind the other. An earlier draft of Slide's own comment said
+"outboard of Loop", which is a layout the code does not produce.
 
 ## Solidify (a2.79)
 
