@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,560 lines)
-- Version at time of writing: **a2.80**
+- Version at time of writing: **a2.81**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -383,6 +383,125 @@ own computed `display` into an inline style, which outranks the now-absent
   `.submerging` set it to `none` for the duration, because blurring the
   backdrop AND the element is a read-back of the live canvas plus a second
   blur on the result, and WebKit has been inconsistent about the pair.
+
+## Clean up (a2.81)
+
+Seat 10 ring 0 in the Object ring, **inboard of Subdivide** — the two ops
+that change how much mesh there is without changing what shape it is. Two
+chips, each carrying its own slider range (the a2.78 machinery).
+
+### Triangulate is not here, and that is a finding
+
+`op-gap-analysis.md` listed it on the general modelling rule that n-gons are
+not acceptable in exported geometry. **That rule does not apply to this app.**
+Kubik's n-gon is a FACE GROUP — a way of talking about a run of triangles —
+and it exists nowhere outside the editor. `buildExportGroup` clones the
+`BufferGeometry` as it stands, which is indexed triangles, and all three
+exporters are three's own. **No `.glb`, `.obj` or `.stl` this app has ever
+written contained an n-gon.** There was nothing to triangulate.
+
+A note is not a measurement, again — and this one was three versions old and
+had been repeated in the ranked list every time.
+
+### Tris to quads is a REGROUPING
+
+Not one vertex moves and not one triangle is made or destroyed. Two
+single-triangle faces sharing an edge become one two-triangle face, and the
+shared edge stops being an outline and becomes that face's own diagonal — a
+distinction `getGroupBoundaryLoopAttr` and `edgeUse` already draw.
+
+**Why it is worth having:** `edgeLoopOp`'s ring walk steps only through faces
+whose outline has four sides ("a ring can only cross four-sided faces"), so an
+imported all-triangle mesh **cannot be loop cut at all**. Pairing is what
+turns an import from something you can look at into something you can edit.
+Probe section 4 asserts exactly that: the same mesh refuses a loop cut before
+and takes one after.
+
+The import path already pairs triangles this way — `emitPairs` inside
+`mergeCoplanarTriangles` — but at the fixed `IMPORT_COPLANAR_DOT` of 0.9998,
+about 1.15°, which is why a **curved** import arrives as one triangle per face.
+This is that idea with the tolerance in your hand.
+
+### The corners have to be the same ATTRIBUTE vertex
+
+The subtlest part, and it was wrong first. `separateGroupVertices` gives every
+face group its own private copies of its corners — that is what lets
+neighbouring faces hold different normals and be hard-edged — so two faces
+meeting at an edge share **positions but not attribute indices**. Dropping
+their triangles into one group unchanged leaves six corners at four places,
+and `getGroupBoundaryLoopAttr`, which walks attribute indices, then reports a
+six-sided outline. The paired mesh still could not be loop cut, so the op
+achieved nothing it was built for while reporting success.
+
+### And then it proves the quad rather than assuming it
+
+The op's whole purpose is to produce four-sided faces, so it builds the
+candidate and runs `getGroupBoundaryLoopAttr` on it, requiring exactly four
+distinct corners. That one call closes two real holes the review found:
+
+- **Two coincident triangles** share all three logical edges, so all three
+  candidates score a perfect 1.0 and sort to the *front* of the greedy. The
+  remap resolves every corner of the mate into the first triangle's, and the
+  "quad" is two triangles over three vertices with no outline at all.
+- **A folded pair wound inconsistently** still has agreeing normals, so the
+  angle test passes, but both triangles emit the shared edge the same way and
+  the outline walk returns a three-entry loop over a four-corner face — not
+  loop-cuttable, and it tears the next time `extrudeFaceGroup` or
+  `insetRegionOp` builds a rim from it.
+
+### What it refuses to pair
+
+- **Different `finishes`** — the app's own answer to "same material", derived
+  by `reconcileFinishes` from the stamp. Pairing across it would silently
+  repaint half a face.
+- **Different smooth flags.** `smoothGroups` is a separate per-group map the
+  finishes guard says nothing about, and the merge keeps only the lower
+  group's flag — so group ORDER decided which shading survived.
+- **An edge that is not used by exactly two faces**, counted over **every**
+  face rather than only the single triangles. Counting the candidates alone
+  cannot tell a manifold edge from a triangle meeting a quad, so it bonded
+  across T-junctions while a comment claimed it was checking for a clean pair.
+- **An already multi-triangle face.** A quad or an n-gon is a statement
+  somebody made, and pairing it would undo that.
+
+Greedy on the **flattest first** rather than first-come: a triangle usually
+has two or three willing partners, and taking whichever came up first leaves
+the better pairing with nobody — which is how a curved surface ends up half
+quads and half stripes.
+
+### Merge by distance
+
+Clusters vertices within a fraction of the model's size through a spatial hash
+(cells the merge distance wide, so the 27 neighbouring cells are the complete
+search) and a union-find, moves each cluster onto its centroid, and lets the
+**ordinary weld** finish the job — `computeLogicalOf` already treats two
+vertices at the same rounded position as one. Deliberately the same mechanism
+the rest of the app welds with, rather than a second one that could disagree.
+
+Merge and Weld already existed, but both want Vertex mode, a hand-made
+selection and the fixed `MERGE_EPS`, so "clean up whatever this import left
+behind" was not a thing you could ask for.
+
+Triangles whose corners land on each other are dropped, and a face left with
+no triangles goes with them. That is what closing a crack means. **It says how
+many**, because the app's standard is that throwing something away is said out
+loud — Smooth by angle reports the marks it cleared for the same reason.
+
+**And the position-keyed marks move with it.** `creases` and `edgeShade` are
+keyed by coordinates, and this op both moves vertices *and* collapses edges —
+the exact pair of things Collapse's own note warns about: a mark on a
+collapsed edge becomes a key whose two halves are the same point, which is a
+crease on nothing and, worse, aliases onto whatever later lands there.
+`remapMarksByPoint` now drops those and carries the rest.
+
+### The readout learned to count
+
+`opValueEl` was hardcoded to three decimals, which was enough while the
+coarsest step was 0.005. Merge steps by **0.0002**, so its first two stops
+both displayed as "0" and about a fifth of its range read as 0 or 0.001 —
+including anything typed into the box, because the blur handler writes the
+same rounded value back. `amountDecimals` takes them from the active option's
+step.
 
 ## Edge / vertex slide (a2.80)
 
