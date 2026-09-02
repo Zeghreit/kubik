@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,697 lines)
-- Version at time of writing: **a2.84**
+- Version at time of writing: **a2.85**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -36,6 +36,116 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## The flat view is a real camera (a2.85)
+
+From a2.61 to a2.84 "orthographic" was EMULATED: the one PerspectiveCamera
+narrowed to fov 2 and backed away by the factor that keeps the framing -
+about 27x. One camera, so every raycast, drag and unproject in the file kept
+working without being taught anything. That was the whole argument for it,
+and it is a good one.
+
+Measured, against a2.84, with two rails that are parallel in the world:
+
+| | convergence | camera distance | fog band |
+|---|---|---|---|
+| perspective | 15.6127 deg | 8.276 | 15.00 / 42.00 |
+| emulated flat | **0.5076 deg** | **221.104** | **227.83 / 254.83** |
+| real flat (a2.85) | **0.00000 deg** | 8.276 | 15.00 / 42.00 |
+
+Half a degree is small. It is not zero, and it grows with the depth of the
+model - which is the one thing a drafting view cannot do.
+
+### The lens was never the expensive part. The 27x was.
+
+Everything a2.61a had to fix came from moving the camera, not from bending
+it. Fog is banded by CAMERA DISTANCE, so the band had to be shifted out to
+227.83 / 254.83 and **re-shifted on every camera move**, because a band
+frozen at engage is only correct at the distance it was frozen at - three
+wheel notches out and the scene was solid background colour. The 0.01 near
+plane threw away its precision from 27x out. Past ~37 units of orbit the
+tele position landed beyond the 1000 far plane and the scene clipped to
+nothing. `frameBox` read `camera.fov` and framed the object as a dot.
+
+A second camera at the SAME position needs none of that. `syncOrthoDepth`,
+`orthoFactor` and `ORTHO_FOV` are gone, and so is the fog save/shift/restore
+and the ortho branch in the theme code. The band now reads 15.00 / 42.00 in
+both projections and across the round trip, because nothing moved.
+
+### How the swap works
+
+`camera` is a `let`, and `perspCam` / `orthoCam` are the two handles. Engage
+sizes the ortho frustum to the lens's visible height AT THE ORBIT TARGET -
+`d * tan(fov/2)` - so the picture at that plane is identical and only the
+convergence goes out of it. Measured: target-plane points move **0.000px**,
+off-plane points move 45.9px.
+
+Leaving is the same arithmetic backwards, with one wrinkle. An ortho camera
+zooms by SHRINKING ITS FRUSTUM, not by moving, so the height to match on the
+way out is the current one - `top / zoom` - not the one engage recorded.
+Restoring the engage distance instead sprang a zoomed-in flat view back out
+the moment you turned it.
+
+The named handles exist for the code that needs a SPECIFIC lens rather than
+the live one: `frameBox` measures its flight with `perspCam.fov` because
+`animateCameraTo` disengages on the way out, and the theme's far plane is
+set on both so a swap cannot bring in a stale one.
+
+### THE BUG THIS ALMOST SHIPPED WITH
+
+**Neither camera is in the scene graph.** Three refreshes a camera's
+`matrixWorld` on the way into a frame, and `matrixWorldInverse` only inside
+`renderer.render`. A camera swapped in mid-tick therefore carries whatever
+it had last - for the ortho one, the identity it was constructed with. Every
+`project` and every `Raycaster` between the swap and the next frame read
+that.
+
+One stale matrix, three symptoms: the picture appeared to jump 65px, a
+centre raycast at a cube in front of the camera returned **zero hits**, and
+the round trip out looked like it had sprung back 150px. Engage and
+disengage now settle `matrixWorld` and `matrixWorldInverse` themselves.
+
+### The trap in MEASURING this
+
+The first cut of `_lens_probe.js` reported the emulated flat view as no more
+parallel than the lens - the same 15.6127 deg to four decimals. It was
+measuring synchronously after the tap, so `project` was combining a STALE
+view matrix with the NEW projection matrix. That combination is a uniform
+scale, and **a uniform scale preserves angles exactly**. The probe was
+reading a picture that had not been drawn yet, and the wrongness was
+invisible because it was perfectly self-consistent.
+
+Anything measured through `project` or a `Raycaster` after a camera change
+has to wait a frame.
+
+### Known, and not defects
+
+- **The screen-space code that does not go through `worldPerPixel`** was not
+  audited for the flat view. `worldPerPixel` got the branch it needed - it
+  has no distance term in parallel projection, and the probe checks a near
+  and a far point agree to 1e-9 - but any other place that scales by camera
+  distance is unexamined. This is the first thing to look at if handles or
+  hit radii feel wrong while flat.
+- **Focusing while flat leaves you in perspective**, because
+  `animateCameraTo` disengages first. Unchanged from a2.61, not revisited.
+- **Serialization does not record the projection**, so a document saved
+  while flat reloads in perspective. Unchanged from a2.61.
+- No fresh reviewer pass ran on this version.
+
+### Probe
+
+`_proj_probe.js` / `_proj_probe.py`, twelve sections: the fixture really is
+a converging lens before anything is claimed about parallelism; the swap
+holds the target plane and moves everything else; the rails; the picking
+rays; `worldPerPixel` has no distance term and matches the frustum; the
+frustum survives a resize; a zoomed round trip; the fog band there and back;
+the export is a live binding and `orbit.object` follows it; framing while
+flat leaves the object filling a sensible part of the frame; and a
+twenty-degree turn still drops back to perspective.
+
+`_lens_probe.js` / `_lens_run.py <wip|head>` is the comparison harness - it
+injects the same probe into `git show HEAD:index.html` or the working copy,
+which is how the 0.5076 deg above was got.
 
 ## Extrude's floor, and the backwards drag it uncovered (a2.84)
 
@@ -4008,6 +4118,12 @@ colour of an unselected vertex dot, whose SIZE carries the mode rather than
 its hue.
 
 ## Perspective and orthographic (a2.61)
+
+> **SUPERSEDED IN PART BY a2.85.** The long-lens emulation this section
+> describes is gone - the flat view is a real `OrthographicCamera` now,
+> and with it `syncOrthoDepth`, `orthoFactor` and the fog shifting went
+> too. What still holds: the switch, where it sits, and the rule that
+> only TURNING leaves the flat view. Read the a2.85 section first.
 
 Zeghreit: *"add perspective/orthogonal switch near axis cube, and after going
 into orthographic via tapping the cube, only turning the view (or the switch)

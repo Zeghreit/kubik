@@ -1541,7 +1541,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.84</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.85</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -1872,7 +1872,17 @@ renderer.domElement.addEventListener('webglcontextlost', (e) => {
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x101216); // replaced by applyTheme at startup
 
-const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 1000);
+/* TWO CAMERAS, ONE BINDING (a2.85). `camera` is what the whole file
+   reads - every raycast, unproject and render - and engageOrtho points
+   it at the other one. `let`, not `const`, for exactly that; the two
+   named handles below are for the code that has to reach a SPECIFIC
+   lens (the fov the flat view will return to, the far plane both must
+   carry) rather than whichever is live. */
+let camera = new THREE.PerspectiveCamera(50, 1, 0.01, 1000);
+const perspCam = camera;
+// Frustum sized by engageOrtho from the lens's own framing; these
+// numbers only have to be legal until then.
+const orthoCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 1000);
 camera.position.set(4.5, 3.5, 6);
 
 /* The rig's OPENING VALUES ONLY - applyTheme overwrites all three in init()
@@ -2477,92 +2487,101 @@ const viewCube = {
   handleClick: cubeHandleClick
 };
 
-/* ---------------- Tap-to-align + orthographic snap ----------------
-   The cube was display-only for its whole life. Now a tap on one of its
-   face swings the camera to look down that axis, and when the swing
-   lands the projection snaps to an
-   orthographic look. "Orthographic" is emulated with a LONG LENS: the same
-   PerspectiveCamera narrows to ORTHO_FOV while backing away by the exact
-   factor that keeps the framing identical. True enough to draft against -
-   and every raycast, drag and unproject in the file keeps working, where a
-   real second camera would need all of them taught about it. Any manual
-   orbit gesture puts the normal lens back. */
-const ORTHO_FOV = 2;
-let orthoView = null;    // { fov, near } while the flat view is engaged
+/* ---------------- Tap-to-align + real orthographic ----------------
+   A tap on one of the cube's faces swings the camera to look down that
+   axis, and when the swing lands the projection goes flat.
+
+   FLAT IS A REAL CAMERA NOW (a2.85). From a2.61 to a2.84 it was emulated
+   with a long lens: the same PerspectiveCamera narrowed to fov 2 and pulled
+   ~27x further out, which keeps the framing and leaves every raycast and
+   unproject in the file working on one camera. It looked right. It was
+   never parallel, and the pull-back cost more than the trick saved - the
+   fog band, the near plane and the far plane all had to be shifted to match
+   the new distance and RE-shifted on every camera move, because a band
+   frozen at engage is only correct at the distance it was frozen at. Two
+   blockers came out of that alone: zooming out erased the scene, and
+   double-tap focus framed the object as a dot.
+
+   A second camera at the SAME position needs none of it. Fog is banded by
+   camera distance and the distance did not change, so the band is simply
+   left alone; `syncOrthoDepth` and `orthoFactor` are gone with it. What a
+   real camera does need is the handful of places that read `camera.fov`
+   to convert world size to screen size - see `worldPerPixel` and
+   `frameBox`. Three's own Raycaster, OrbitControls and `project` all branch
+   on the camera type themselves, so the eleven raycasts did not have to be
+   taught anything.
+
+   Any manual TURN still puts the lens back. */
+let orthoView = null;    // { } while the flat view is engaged - a flag with a home
 let cubeAligning = false;
 
-function orthoFactor(fromFov) {
-  return Math.tan(THREE.MathUtils.degToRad(fromFov / 2)) /
-         Math.tan(THREE.MathUtils.degToRad(ORTHO_FOV / 2));
+/* The frustum is sized in engageOrtho; this only re-derives left and right
+   when the viewport's shape changes. `top` is the UN-zoomed half-height -
+   the wheel scales the picture through `zoom`, which is left alone here. */
+function setOrthoFrustum(half) {
+  const w = viewportEl.clientWidth || 1, h = viewportEl.clientHeight || 1;
+  const a = w / h;
+  orthoCam.top = half;
+  orthoCam.bottom = -half;
+  orthoCam.left = -half * a;
+  orthoCam.right = half * a;
+  orthoCam.updateProjectionMatrix();
 }
 
 function engageOrtho() {
   if (orthoView) return;
-  orthoView = { fov: camera.fov, near: camera.near, far: camera.far };
-  const f = orthoFactor(camera.fov);
-  const dir = camera.position.clone().sub(orbit.target);
-  /* Fog is banded by CAMERA distance (15..42, in the background colour),
-     so from ~27x further out the whole scene was 100% fogged - invisible,
-     while the fog-free helper lines still drew. Shift the band out by the
-     same amount the camera moved; every depth in the scene shifts by
-     exactly that, so the fade looks identical to the perspective view.
-     Restored below, and only onto the SAME fog object - a theme switch
-     mid-flat replaces the fog, and stale numbers must not land on it. */
-  if (scene.fog) {
-    orthoView.fog = scene.fog;
-    orthoView.fogNear = scene.fog.near;
-    orthoView.fogFar = scene.fog.far;
-  }
-  camera.position.copy(orbit.target).addScaledVector(dir, f);
-  camera.fov = ORTHO_FOV;
+  /* THE FRUSTUM THAT SHOWS WHAT THE LENS WAS SHOWING: the perspective
+     camera's visible height at the TARGET plane. Same pose, same framing,
+     so the swap is invisible - only the convergence goes out of it. */
+  const d = camera.position.distanceTo(orbit.target);
+  orthoCam.position.copy(camera.position);
+  orthoCam.quaternion.copy(camera.quaternion);
+  orthoCam.up.copy(camera.up);
+  orthoCam.near = perspCam.near;
+  orthoCam.far = perspCam.far;
+  orthoCam.zoom = 1;
+  setOrthoFrustum(d * Math.tan(THREE.MathUtils.degToRad(perspCam.fov / 2)));
+  /* SETTLE THE NEW LENS BEFORE ANYONE LOOKS THROUGH IT. Three refreshes a
+     camera's world matrix on the way INTO a frame, so a camera swapped in
+     mid-tick still carries whatever it had last - identity, the first time.
+     Measured: every projection and every raycast between the swap and the
+     next frame was wrong. The picture appeared to jump 65px, a centre
+     raycast found nothing at all because the ray started at the origin
+     inside the cube, and the round trip out looked like it had sprung back
+     150px. One stale matrix, three symptoms. */
+  orthoCam.updateMatrixWorld(true);
+  orthoCam.matrixWorldInverse.copy(orthoCam.matrixWorld).invert();
+  camera = orthoCam;
+  orbit.object = orthoCam;
+  orthoView = {};
   watchingTurn = false;   // a fresh flat view owes nothing to the last gesture
-  syncOrthoDepth();
   refreshProjPill();
   toast('Orthographic view');
-}
-
-/* THE DEPTH BAND TRAVELS WITH THE LENS, AND KEEPS TRAVELLING (a2.61a).
-
-   Near: a 0.01 plane from ~27x out wastes all the depth precision. Far:
-   from any orbit distance past ~37 units the tele position lands beyond the
-   stock 1000 far plane and the whole scene clips to nothing - measured,
-   dist 40 parked at 1069. Fog is banded by CAMERA distance in the
-   background colour, so from 27x further out the whole scene reads as 100%
-   fogged - invisible, while the fog-free helper lines still draw.
-
-   All three were computed ONCE, at engage, which was fine while any gesture
-   at all dropped you back to perspective. a2.61 let you zoom in the flat
-   view, and a frozen band is only correct at the distance it was frozen at:
-   3% out and the model starts fogging, 16% - three wheel notches - and it
-   is solid background colour. So the shift is recomputed from the CURRENT
-   distance whenever the camera moves while flat. It is the same arithmetic,
-   just not done once and forgotten. */
-function syncOrthoDepth() {
-  if (!orthoView) return;
-  const d = camera.position.distanceTo(orbit.target);
-  const shift = d - d / orthoFactor(orthoView.fov);
-  if (orthoView.fog && scene.fog === orthoView.fog) {
-    scene.fog.near = orthoView.fogNear + shift;
-    scene.fog.far = orthoView.fogFar + shift;
-  }
-  camera.near = d * 0.05;
-  camera.far = Math.max(orthoView.far, d * 2);
-  camera.updateProjectionMatrix();
+  invalidate();
 }
 
 function disengageOrtho(silent) {
   if (!orthoView) return;
-  const f = orthoFactor(orthoView.fov);
-  const dir = camera.position.clone().sub(orbit.target);
-  camera.position.copy(orbit.target).addScaledVector(dir, 1 / f);
-  camera.fov = orthoView.fov;
-  camera.near = orthoView.near;
-  camera.far = orthoView.far;
-  if (orthoView.fog && scene.fog === orthoView.fog) {
-    scene.fog.near = orthoView.fogNear;
-    scene.fog.far = orthoView.fogFar;
-  }
-  camera.updateProjectionMatrix();
+  /* PUT THE LENS BACK WHERE IT SHOWS THE SAME PICTURE. An ortho camera
+     zooms by shrinking its frustum, not by moving, so after a wheel the
+     height to match is the CURRENT one - top over zoom - and the distance
+     that shows that height through the fov is where the perspective camera
+     belongs. Restoring the engage distance instead would spring a zoomed-in
+     flat view back out the moment you turned it. */
+  const half = orthoCam.top / (orthoCam.zoom || 1);
+  const dist = half / Math.tan(THREE.MathUtils.degToRad(perspCam.fov / 2));
+  const dir = orthoCam.position.clone().sub(orbit.target);
+  if (dir.lengthSq() < 1e-12) dir.set(0, 0, 1);
+  perspCam.position.copy(orbit.target)
+    .addScaledVector(dir.normalize(), Math.max(dist, 0.02));
+  perspCam.quaternion.copy(orthoCam.quaternion);
+  perspCam.up.copy(orthoCam.up);
+  perspCam.updateProjectionMatrix();
+  // Same reason as engageOrtho - see the note there.
+  perspCam.updateMatrixWorld(true);
+  perspCam.matrixWorldInverse.copy(perspCam.matrixWorld).invert();
+  camera = perspCam;
+  orbit.object = perspCam;
   orthoView = null;
   /* Otherwise the watch keeps the direction it was armed with under the
      LAST gesture, and the next engage inherits it - so a pan, a programmatic
@@ -2571,6 +2590,7 @@ function disengageOrtho(silent) {
   watchingTurn = false;
   refreshProjPill();
   if (!silent) toast('Perspective view');
+  invalidate();
 }
 
 const projPillEl = document.getElementById('projPill');
@@ -2648,8 +2668,11 @@ orbit.addEventListener('change', () => {
 
      A cube swing is excluded because it is not a gesture: it is on its way
      to the flat view by design, and cubeAlignTo re-arms when it lands. */
-  // Zooming stays flat, so the depth band has to follow it.
-  syncOrthoDepth();
+  /* The depth band used to be re-shifted here on every camera move, and
+     had to be: the emulated flat view sat 27x further out than the fog was
+     banded for, and a band frozen at engage went solid background colour
+     three wheel notches later. The real camera sits where the lens did, so
+     there is nothing to follow. */
   if (!watchingTurn || !orthoView || viewCube.animating) return;
   _turnNow.copy(camera.position).sub(orbit.target).normalize();
   if (_turnNow.dot(_turnFrom) < ORTHO_TURN_COS) {
@@ -2943,19 +2966,14 @@ function refreshDepthRange() {
     scene.fog.near = THEME.fog.near * t;
     scene.fog.far = THEME.fog.far * t;
   }
-  /* The flat view saved the band it engaged with and shifts from those
-     saved numbers, so they have to move too or leaving ortho would put the
-     old band back. */
-  if (orthoView) {
-    orthoView.fogNear = THEME.fog.near * t;
-    orthoView.fogFar = THEME.fog.far * t;
-    orthoView.far = Math.max(orthoView.far, THEME.fog.far * t * 4);
-    syncOrthoDepth();
-  } else {
-    // And the far plane, or a big model is clipped instead of fogged.
-    camera.far = Math.max(1000, THEME.fog.far * t * 4);
-    camera.updateProjectionMatrix();
-  }
+  /* And the far plane, or a big model is clipped instead of fogged. BOTH
+     lenses: the flat view is a real camera now, and one left behind here
+     would swap in a stale far plane the next time you tapped the pill.
+     Nothing shifts the fog band any more - the flat camera sits exactly
+     where the lens did, so the band it was banded for is still right. */
+  const farPlane = Math.max(1000, THEME.fog.far * t * 4);
+  perspCam.far = farPlane; perspCam.updateProjectionMatrix();
+  orthoCam.far = farPlane; orthoCam.updateProjectionMatrix();
   invalidate();
 }
 
@@ -12820,6 +12838,15 @@ function axisTooFlat(dir) {
 // World units per screen pixel at a point.
 function worldPerPixel(at) {
   const h = viewportEl.getBoundingClientRect().height || 1;
+  /* PARALLEL PROJECTION HAS NO DISTANCE TERM. One pixel is the same world
+     length at the near plane as at the far one - which is the whole reason
+     to draft in it - so the frustum height alone answers this, and `at` is
+     not consulted. Under the old long-lens emulation this branch did not
+     exist and the answer was still right, because a fov-2 camera 27x out
+     measures the same width; a real ortho camera has no fov to read. */
+  if (camera.isOrthographicCamera) {
+    return (camera.top - camera.bottom) / (camera.zoom || 1) / h;
+  }
   const dist = camera.position.distanceTo(at);
   return 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) * dist / h;
 }
@@ -24844,12 +24871,13 @@ function frameBox(box) {
   const size = box.getSize(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z, 0.6);
   /* THE LENS YOU WILL BE LOOKING THROUGH, not the one you are looking
-     through now. animateCameraTo leaves the flat view on the way out, so in
-     the flat view camera.fov is 2 and this over-fits by tan(25)/tan(1) -
-     about 27x. Double-tapping to focus while flat framed the object as a
-     dot. It was reachable before a2.61 only through the outliner's
-     double-tap, because a tap in the viewport disengaged first. */
-  const fov = orthoView ? orthoView.fov : camera.fov;
+     through now. animateCameraTo leaves the flat view on the way out, so
+     the flight must be measured with the perspective fov even when the
+     picture on screen is parallel. Reading the live camera here framed the
+     object as a dot under the old emulation (fov 2, over-fitting by
+     tan(25)/tan(1)) and would read `undefined` under a real ortho camera,
+     which is worse - NaN, and the flight goes nowhere. */
+  const fov = perspCam.fov;
   const fitDist = (maxDim / (2 * Math.tan(THREE.MathUtils.degToRad(fov) / 2))) * 1.7;
   let dir = new THREE.Vector3().subVectors(camera.position, orbit.target);
   if (dir.lengthSq() < 1e-6) dir.set(0.6, 0.5, 0.6);
@@ -24887,8 +24915,10 @@ function focusOnAll() {
 
 function onResize() {
   const w = viewportEl.clientWidth, h = viewportEl.clientHeight;
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
+  perspCam.aspect = w / h;
+  perspCam.updateProjectionMatrix();
+  // The flat view keeps its vertical extent and re-derives the horizontal.
+  if (orthoView) setOrthoFrustum(orthoCam.top);
   renderer.setSize(w, h);
   updateStrokeResolution();
   refreshToolIndicator();
@@ -25250,7 +25280,18 @@ init();
    the REAL tool the ring runs instead of reimplementing it. */
 if (PICK_DEBUG) {
   window.__kubik = {
-    App, camera, orbit, scene,
+    App, orbit, scene,
+    /* A GETTER, because `camera` is a binding that moves. Exporting the
+       value froze whichever lens was live at init, and a probe that
+       raycast through it after tapping the pill would have been asking
+       the wrong camera and believing the answer. */
+    get camera() { return camera; },
+    perspCam, orthoCam, setOrthoFrustum,
+    /* The world-to-screen conversion a2.85 had to teach about
+       parallel projection, and the framing that reads a fov - both
+       exported so a probe can measure them rather than infer them
+       from what the picture looks like. */
+    worldPerPixel, frameBox, viewportEl,
     // A getter, not a value - camAnim is replaced rather than mutated, and
     // a harness needs to see that it was SET even when the tab is hidden
     // and requestAnimationFrame never runs to apply it.
