@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,611 lines)
-- Version at time of writing: **a2.82**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,697 lines)
+- Version at time of writing: **a2.83**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -384,6 +384,88 @@ own computed `display` into an inline style, which outranks the now-absent
   backdrop AND the element is a read-back of the live canvas plus a second
   blur on the result, and WebKit has been inconsistent about the pair.
 
+## The baseline shade, and what was still reading it (a2.83)
+
+`applyShading` opened with `geo.computeVertexNormals()`, commented "safe
+baseline: if anything below throws, the mesh is still shaded". The per-vertex
+pass then overwrote it. It cost **15% of every shade**, and `applyShading` is
+~95% of `rebuildFromEditable`, which every operation funnels through.
+
+Three versions of the performance queue called this "the double normals item"
+and put it fifth, worth 7-9%. Both numbers were stale: a2.77 and a2.82 shrank
+the phases around it, so by the time it came up it was the second biggest
+thing in the function.
+
+### What it was still doing, counted rather than assumed
+
+An instrumented copy counted, per attribute vertex, every way out of the
+write loop - over every primitive, a subdivided cube, an open plane, a
+deliberately broken fixture, and after extrude, inset, bevel, subdivide,
+solidify, array, cleanup, crease and slide:
+
+- **32,265 of 32,277** index-referenced attribute vertices were written by the
+  union-find. The baseline's answer for them was thrown away.
+- The other **12** were all one branch, the `degenerate fan`, and all on the
+  fixture built to cause it. `g < 0`, `ufStamp[g] !== stamp` and
+  `accStamp[r] !== stamp` never fired once - and the review then showed they
+  **cannot**: `g` came from a triangle at this vertex, so `enrol` ran on it in
+  the same iteration, and that triangle is in `tris`, so its root was
+  accumulated. The measurement of zero is what the code guarantees.
+- On those 12 the baseline gave **(0,0,0)**. A fan whose island cancels
+  usually cancels for the baseline too, so the fallback rendered them black -
+  it did not work in the only case it existed for.
+- **104 of 147 calls** arrived with **no normal attribute at all**, because
+  `rebuildFromEditable` hands over a brand new `BufferGeometry`. Allocating
+  the attribute was the baseline's real remaining job.
+- Where it WAS overwritten, the baseline differed from the shading answer by
+  up to 0.359 between unit vectors - **21 degrees**. It was never an
+  approximation of the answer; it was a different answer that happened to be
+  replaced.
+
+### What changed
+
+The shading pass goes; the allocation stays, and only when the attribute is
+missing, the wrong length, interleaved, or not a packed `Float32Array` - the
+write loop pokes `.array` directly, so nothing else is safe to keep. The two
+paths that genuinely need a cheap full shade, the unindexed exit and the
+`catch`, each ask for one themselves, and the exit asks **before** the
+allocation: three.js creates and fills the attribute in one pass when there
+is none and falls back to a JS loop re-zeroing an existing one when there is,
+so allocating first would have made those paths slower than before.
+
+**And the degenerate fan gets a real answer.** The fallback is the vertex's
+own face group normal - the flat-shaded answer, area-weighted, already
+computed, and inside the same shading model instead of borrowed from a
+different one. Where even that cancels, because the face group is folded back
+on itself and no normal is right, any triangle of the group at this vertex is
+a unit vector along one of the two sheets, which beats nothing.
+
+That fallback leans on an invariant nothing else in the file has depended on:
+**a face group is exactly one face.** True of everything the app builds, but
+`buildShadingTopo` synthesises a single group spanning the whole mesh when
+`geo.groups` is empty, and a closed shell's every-triangle sum is zero. It is
+written down at the line that would have to change.
+
+### The numbers
+
+With the deleted call injected back into an instrumented copy so both are
+measured in ONE run at 3,072 triangles: **`1_baseNormals` is 15% of a warm
+shade and 10% of a whole operation.** After: 0%.
+
+The answer was checked as an answer, not as a timing. The same battery of 20
+models built under the committed file and under the working copy, comparing
+every normal of every model: **18 of 20 digests identical**, and the two that
+differ are the folded-fin fixtures, where three zero-length normals became
+three unit ones.
+
+### One free thing next door
+
+`createPrimitiveObject` shaded three times. `createCubeObject` shades,
+`setPrimitiveGeometry` ends at `rebuildFromEditable` which shades, and then
+there was a third `applyShading(obj)` on geometry that had just been shaded
+and had not changed since. The first two are unavoidable - the cube has to
+exist before its geometry can be replaced. The third is gone.
+
 ## Shading's union-find, and a stamp instead of a clear (a2.82)
 
 a2.77 finished by naming the biggest remaining phase of `applyShading`:
@@ -470,8 +552,8 @@ added while chasing the phantom and is kept because it is right anyway.
 ### What is now the biggest thing
 
 `2c_windingComponents` - 8-16%, and its share grows with the model. The
-double-normals item is still unclaimed, and it is now understood to be a
-shading-CORRECTNESS change (the degenerate-fan handler), not just a saving.
+double-normals item was taken at a2.83, and it WAS a shading-correctness
+change - see that section, above this one.
 
 ## Clean up (a2.81)
 

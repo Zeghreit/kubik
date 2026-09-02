@@ -1541,7 +1541,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.82</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.83</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -4612,8 +4612,12 @@ function setPrimitiveGeometry(obj, kind, params) {
 
 function createPrimitiveObject(kind, params, name, position) {
   const obj = createCubeObject(name, position);
+  /* setPrimitiveGeometry ends at rebuildFromEditable, which shades. There
+     used to be an applyShading(obj) here as well, on geometry that had just
+     been shaded and had not changed since - a third full shade of every
+     primitive the app makes, the other two being unavoidable (the cube has
+     to exist before its geometry can be replaced). */
   setPrimitiveGeometry(obj, kind, params);
-  applyShading(obj);
   return obj;
 }
 
@@ -5339,16 +5343,57 @@ function ufScratch(n) {
 function applyShading(obj) {
   PERF.shade++;
   const geo = obj.mesh.geometry;
-  // Safe baseline: if anything below throws, the mesh is still shaded.
-  geo.computeVertexNormals();
+  /* THE ATTRIBUTE, NOT A WHOLE SHADING PASS (a2.83). This was
+     geo.computeVertexNormals(), called a safe baseline: shade the cheap way
+     first, then let the pass below overwrite it. It was 12-15% of every
+     shade, and applyShading is ~95% of every operation in the app.
+
+     Counted vertex by vertex - over every primitive, after every op, and on
+     a fixture built to break it - it was still doing exactly two things.
+     One: CREATING the attribute, because rebuildFromEditable hands over a
+     brand new BufferGeometry, so 104 of 147 measured calls arrived with no
+     normal attribute at all. Two: covering ONE branch of the write loop, the
+     degenerate fan, 12 times in 32,277 referenced vertices and never once on
+     a shape the app can make - and covering it with (0,0,0), because a fan
+     whose island cancels usually cancels for the baseline too. A black
+     vertex is not a fallback.
+
+     Nothing else read it. The write loop below reaches every attribute
+     vertex the index references; g < 0 means an attribute vertex in no face
+     group, which is one no triangle uses.
+
+     So the allocation stays, the shading pass goes, the degenerate fan gets
+     a real answer below, and the two paths that genuinely need a full cheap
+     shade - the unindexed exit and the catch - each ask for one themselves. */
   const index = geo.index;
   /* STAMPED EVEN WHEN THERE IS NOTHING TO SAY. ensureWearLists retries
      until this key exists, so an exit that leaves it absent is not "no
      list", it is "ask me again on every refreshUI and every slider frame".
      An empty list is the same shape the inner catch already writes. */
   if (!index) {
+    /* Nothing below runs, so this exit asks for the cheap shade the top of
+       the function used to do for it. It is ABOVE the allocation on purpose:
+       three.js computeVertexNormals creates and fills the attribute in one
+       pass when there is none, and falls back to a JS loop re-zeroing an
+       existing one when there is - so allocating first would make this exit,
+       and the catch, strictly slower than before. */
+    geo.computeVertexNormals();
     geo.userData.kubikEdges = { pos: new Float32Array(0), kind: new Uint8Array(0), gen: ++_wearGen };
     return;
+  }
+
+  /* THE ARRAY THE WRITE LOOP POKES, not merely an attribute of the right
+     length. Everything below writes `normals[ai * 3] = x` straight into
+     `.array`, which is only correct for a tightly packed Float32Array: an
+     INTERLEAVED attribute or an Int16 normalised one - both of which a glTF
+     file can carry - would take those writes into the wrong slots or
+     truncate a unit float to zero. The old code clobbered such an attribute
+     in exactly the same way; this is the one place it can be refused. */
+  const nAttr = geo.attributes.normal;
+  const pCount = geo.attributes.position ? geo.attributes.position.count : 0;
+  if (!nAttr || nAttr.count !== pCount || nAttr.isInterleavedBufferAttribute ||
+      !(nAttr.array instanceof Float32Array)) {
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(pCount * 3), 3));
   }
 
   try {
@@ -5595,14 +5640,55 @@ function applyShading(obj) {
           accX[r] *= inv; accY[r] *= inv; accZ[r] *= inv;
         }
       }
+      /* EVERY REFERENCED VERTEX LEAVES THIS LOOP WITH A NORMAL (a2.83).
+         It used to have three continues that fell through to whatever the
+         opening computeVertexNormals had left. That baseline is gone, so a
+         vertex this loop declines to write keeps a zero - which renders
+         black - and each way out has to answer for itself instead.
+
+         The fallback is the vertex's OWN face group normal: the flat-shaded
+         answer, area-weighted, already computed above, and inside the same
+         shading model rather than borrowed from a different one. Where even
+         that cancels - a face group folded back on itself, where no normal
+         is right - any triangle of the group at this vertex is a unit vector
+         pointing along one of the two sheets, which beats nothing.
+
+         THE INVARIANT THIS LEANS ON, which nothing else in the file has had
+         to depend on: a face group is exactly ONE face. That is true of
+         everything the app builds - rebuildFromEditable adds a group per
+         ed.groups entry - but buildShadingTopo synthesises a SINGLE group
+         spanning the whole mesh when geo.groups is empty, and a closed
+         shell's every-triangle sum is zero by the divergence theorem. Such a
+         geometry would fall past groupNormal to the triangle scan, whose
+         answer is then scan order rather than geometry. Nothing reaches
+         applyShading that way today; if something ever does, this is the
+         line that has to change.
+
+         `groupOfAttr[ai]` is likewise last-triangle-wins, and is only
+         unambiguous because separateGroupVertices gives every face group its
+         own attribute vertices. */
       const ais = logicalGroups[l];
       for (let i = 0; i < ais.length; i++) {
         const ai = ais[i], g = groupOfAttr[ai];
-        if (g < 0 || ufStamp[g] !== stamp) continue;
-        const r = find(g);
-        if (accStamp[r] !== stamp) continue;
-        const x = accX[r], y = accY[r], z = accZ[r];
-        if (x * x + y * y + z * z < 1e-12) continue;   // degenerate fan: keep the baseline
+        if (g < 0) continue;          // in no face group, so in no triangle
+        let x = 0, y = 0, z = 0;
+        if (ufStamp[g] === stamp) {
+          const r = find(g);
+          if (accStamp[r] === stamp) { x = accX[r]; y = accY[r]; z = accZ[r]; }
+        }
+        if (x * x + y * y + z * z < 1e-12) {
+          const gn = groupNormal[g];
+          if (gn.lengthSq() > 1e-12) { x = gn.x; y = gn.y; z = gn.z; }
+          else {
+            let got = false;
+            for (let q = 0; q < tris.length; q++) {
+              if (triGroup[tris[q]] !== g) continue;
+              const tn = triNormal[tris[q]];
+              if (tn.lengthSq() > 1e-12) { x = tn.x; y = tn.y; z = tn.z; got = true; break; }
+            }
+            if (!got) continue;       // nothing anywhere says which way it faces
+          }
+        }
         normals[ai * 3] = x; normals[ai * 3 + 1] = y; normals[ai * 3 + 2] = z;
       }
     });
