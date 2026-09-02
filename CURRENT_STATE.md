@@ -21,6 +21,13 @@ rewritten at v1.93 because it had accumulated per-version sediment and had
 begun contradicting itself — a handoff that argues with itself is worse
 than none. Prefer rewriting a section over appending to it.
 
+## Shipping
+
+**Push without asking.** When a version is verified - `_verify.py` passes,
+its own probe passes, the suite is clean apart from `_imp_probe`'s known CDN
+flake - commit and `git push`. The push IS the ship; the app is live at the
+URL above and a commit sitting unpushed helps nobody. Do not stop to ask.
+
 ## Versioning
 
 **Numbers for new work or reworks** (v1.85 → v1.86). **Letters for bug
