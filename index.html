@@ -1541,7 +1541,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.81</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.82</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -5193,7 +5193,11 @@ function buildShadingTopo(geo) {
      `use` counts how many triangle-edges each FACE lands on this edge, as
      opposed to how many faces touch it. See the note above. */
   const edges = new Map();       // key -> { faces, use, opp, tri, ends }
-  const incident = new Map();    // logical vertex -> its edge keys
+  /* THE RECORDS, not the keys (a2.82). The only thing that reads this is
+     applyShading's per-vertex union-find, which had the key and then had to
+     go back to `edges` for the record - one Map lookup per incident edge per
+     vertex, on the largest phase of the largest function in the app. */
+  const incident = new Map();    // logical vertex -> its edge RECORDS
   for (let t = 0; t < triCount; t++) {
     const l0 = logicalOf[index.getX(t * 3)], l1 = logicalOf[index.getX(t * 3 + 1)],
           l2 = logicalOf[index.getX(t * 3 + 2)];
@@ -5205,10 +5209,16 @@ function buildShadingTopo(geo) {
       const k = lo * nLog + hi;
       let rec = edges.get(k);
       if (rec === undefined) {
-        rec = { faces: [], use: [], opp: [], tri: [], ends: [lo, hi] };
+        /* `sharp` is declared here rather than added by the shading pass so
+           every record has one shape from birth. Bolting a sixth property on
+           later forces a hidden-class transition across every record on the
+           first shade after each topo rebuild, and leaves the read in the
+           union-find - the hot load this whole change was made for -
+           polymorphic until it settles. */
+        rec = { faces: [], use: [], opp: [], tri: [], ends: [lo, hi], sharp: false };
         edges.set(k, rec);
-        let ia = incident.get(lo); if (!ia) { ia = []; incident.set(lo, ia); } ia.push(k);
-        let ib = incident.get(hi); if (!ib) { ib = []; incident.set(hi, ib); } ib.push(k);
+        let ia = incident.get(lo); if (!ia) { ia = []; incident.set(lo, ia); } ia.push(rec);
+        let ib = incident.get(hi); if (!ib) { ib = []; incident.set(hi, ib); } ib.push(rec);
       }
       const fs = rec.faces, g = triGroup[t];
       /* An explicit scan rather than indexOf: a face list is one, two or
@@ -5288,6 +5298,42 @@ function shadingTopoFor(geo) {
   // rebuild, or a vertex welded by an edit would keep the old grouping.
   geo.userData.shadeTopo = live ? topo : null;
   return topo;
+}
+
+/* ONE SET OF SCRATCH ARRAYS FOR THE UNION-FIND, grown as needed and never
+   cleared (a2.82). Every entry carries the number of the vertex that last
+   wrote it, so "is this live?" is a comparison rather than a clear - which
+   is the whole reason the loop got faster.
+
+   The counter therefore has to keep RISING between calls as well as within
+   one: reset it to zero each shade and the first vertex of the next call
+   would read the last call's entries as its own. It is an Int32Array, so it
+   is rolled over well short of the limit and the arrays are re-blanked when
+   that happens - at a few thousand vertices a shade that is hundreds of
+   thousands of shades away, but a wrong normal once a week is worse than a
+   branch that never fires. */
+let _ufScratch = null;
+function ufScratch(n) {
+  if (!_ufScratch || _ufScratch.parent.length < n) {
+    const cap = Math.max(n, 64);
+    _ufScratch = {
+      parent: new Int32Array(cap),
+      stamp: new Int32Array(cap).fill(-1),
+      accX: new Float64Array(cap),
+      accY: new Float64Array(cap),
+      accZ: new Float64Array(cap),
+      accStamp: new Int32Array(cap).fill(-1),
+      touched: [],
+      stamp0: 0
+    };
+  }
+  const S = _ufScratch;
+  if (S.stamp0 > 2000000000) {
+    S.stamp.fill(-1);
+    S.accStamp.fill(-1);
+    S.stamp0 = 0;
+  }
+  return S;
 }
 
 function applyShading(obj) {
@@ -5377,7 +5423,7 @@ function applyShading(obj) {
     const pA = new THREE.Vector3(), pB = new THREE.Vector3();
     const creaseMap = obj.mesh.userData.creases || {};
     const hasCreases = Object.keys(creaseMap).length > 0;
-    const sharp = new Map();
+
     /* `wear` is what the Edges MASK treats as an edge, and it is not the
        same question as shading (a2.27). Two differences, both asked for:
 
@@ -5417,7 +5463,25 @@ function applyShading(obj) {
       else if (mark === 'sharp') sh = true;
       else if (mark === 'smooth') sh = false;
       else sh = groupNormal[fs[0]].dot(groupNormal[fs[1]]) < cosLimit - SHARP_EPS;
-      sharp.set(k, sh);
+      /* ON THE RECORD, and ONLY on the record (a2.82). The union-find reads
+         this once per incident edge per vertex, which was one of the two Map
+         lookups that loop was paying.
+
+         The `sharp` Map went with it. The first cut kept it and said in a
+         comment that the wear pass and callers outside this function still
+         read it by key - which was simply untrue: nothing in the file reads
+         it at all. The wear rule below uses the local `sh`, not a lookup.
+         Keeping it left one Map insertion per edge per shade - 18,432 of
+         them on a 12k-triangle mesh - doing nothing inside the very function
+         the change exists to speed up.
+
+         Writing frame-dependent data onto a CACHED record is worth a word.
+         `edges` lives on geo.userData.shadeTopo for the length of one direct
+         drag, so `rec.sharp` outlives a frame - but this pass rewrites every
+         record's flag before the union-find reads any of them, it has no
+         early return, and nothing between the two can run. A stale flag is
+         unreachable rather than merely unlikely. */
+      rec.sharp = sh;
       /* Crease and a hand 'sharp' mark come first - that is the whole
          point. But the FACE COUNT still outranks a 'smooth' mark, for the
          same reason shading gives it precedence: Object-mode Shade Smooth
@@ -5438,40 +5502,108 @@ function applyShading(obj) {
        within each island, and write that to the attribute vertices of that
        island. Nothing global is stored, so there is no per-(vertex, face)
        map to build and no string keys anywhere in the loop. */
+    /* STAMPED SCRATCH, NOT MAPS CLEARED PER VERTEX (a2.82). This loop was
+       30-36% of applyShading and its share GREW with the model, which made
+       it the largest single thing left in the app after a2.77.
+
+       Three costs, all of them bookkeeping rather than arithmetic:
+
+       - `parent` was a Map cleared once per LOGICAL VERTEX. On a 12k-triangle
+         mesh that is six thousand Map.clear calls and a set for every face
+         round every vertex. It is now an Int32Array indexed by face group,
+         with a second array holding the vertex number that last touched each
+         entry - the standard generation-stamp trick. Nothing is cleared;
+         a stale entry is simply one whose stamp is not this vertex's.
+       - `acc` was a Map of THREE.Vector3, so every island round every vertex
+         allocated a vector that lived for one iteration. It is three
+         Float64Arrays and a stamp, with the roots touched this vertex kept
+         in a small reused list so the normalise pass does not scan them all.
+       - the two Map lookups per incident edge are gone: `incident` now holds
+         the records themselves and `sharp` is on the record.
+
+       The arithmetic and every threshold are unchanged, deliberately - this
+       is the same answer computed with less bookkeeping, and the harness
+       proves it vertex for vertex before it ships. */
     const normals = geo.attributes.normal.array;
-    const parent = new Map();
-    const find = (g) => { while (parent.get(g) !== g) { parent.set(g, parent.get(parent.get(g))); g = parent.get(g); } return g; };
-    const acc = new Map();
+    const gCount = groupsSrc.length;
+    /* THE SCRATCH IS KEPT, not rebuilt per shade. Allocating six arrays the
+       size of the face list on every call is nothing on a big mesh and is
+       the WHOLE cost on a small one: raced against the old loop, the first
+       cut of this was 44% faster at 12k triangles and five times SLOWER at
+       48, because a cube's shade is a tenth of a millisecond and six
+       allocations are most of it. A drag on a simple object is exactly the
+       case a fidget cannot afford to make worse. */
+    const UF = ufScratch(gCount);
+    const ufParent = UF.parent, ufStamp = UF.stamp;
+    const accX = UF.accX, accY = UF.accY, accZ = UF.accZ, accStamp = UF.accStamp;
+    const touched = UF.touched;
+    /* THE COUNTER LIVES IN THE SCRATCH, and is advanced as it is SPENT.
+
+       Holding it in a local and writing it back after the loop looked
+       equivalent and was not: applyShading is wrapped in a try whose catch
+       deliberately lets the app carry on, so a throw part way through left
+       UF.stamp0 at the value the dead call STARTED from while that call had
+       already burned stamps into the shared arrays. The next shade re-issued
+       exactly those numbers, and for its first vertices `enrol` found its own
+       stamp already there and skipped the reset - so the union-find began on
+       the dead call's forest, islands were never zeroed or normalised, and
+       un-normalised normals from two different calls were written out with
+       no error on screen, because the catch had fired on the previous one.
+
+       Deterministic on a mesh that throws deterministically, which is the
+       only kind the catch exists for. */
+    let stamp = UF.stamp0;
+
+    const find = (g) => {
+      while (ufParent[g] !== g) { ufParent[g] = ufParent[ufParent[g]]; g = ufParent[g]; }
+      return g;
+    };
+    // "This group is in play for this vertex" - the stamped stand-in for
+    // parent.has(g), and the place its parent is seeded.
+    const enrol = (g) => { if (ufStamp[g] !== stamp) { ufStamp[g] = stamp; ufParent[g] = g; } };
+
     trisAt.forEach((tris, l) => {
-      parent.clear(); acc.clear();
-      for (let i = 0; i < tris.length; i++) { const g = triGroup[tris[i]]; if (!parent.has(g)) parent.set(g, g); }
+      stamp = ++UF.stamp0;
+      for (let i = 0; i < tris.length; i++) enrol(triGroup[tris[i]]);
       const inc = incident.get(l);
       if (inc) for (let i = 0; i < inc.length; i++) {
-        const k = inc[i];
-        if (sharp.get(k)) continue;
-        const rec = edges.get(k);
-        if (!rec) continue;
+        const rec = inc[i];
+        if (rec.sharp) continue;
         const fs = rec.faces;
-        for (let j = 0; j < fs.length; j++) if (!parent.has(fs[j])) parent.set(fs[j], fs[j]);
+        for (let j = 0; j < fs.length; j++) enrol(fs[j]);
         for (let j = 1; j < fs.length; j++) {
           const r1 = find(fs[0]), r2 = find(fs[j]);
-          if (r1 !== r2) parent.set(r1, r2);
+          if (r1 !== r2) ufParent[r1] = r2;
         }
       }
+      touched.length = 0;
       for (let i = 0; i < tris.length; i++) {
         const t = tris[i], r = find(triGroup[t]);
-        let v = acc.get(r);
-        if (!v) { v = new THREE.Vector3(); acc.set(r, v); }
-        v.add(triNormal[t]);
+        if (accStamp[r] !== stamp) {
+          accStamp[r] = stamp; accX[r] = 0; accY[r] = 0; accZ[r] = 0; touched.push(r);
+        }
+        const nv = triNormal[t];
+        accX[r] += nv.x; accY[r] += nv.y; accZ[r] += nv.z;
       }
-      acc.forEach(v => { if (v.lengthSq() > 1e-12) v.normalize(); });
+      for (let i = 0; i < touched.length; i++) {
+        const r = touched[i];
+        const lenSq = accX[r] * accX[r] + accY[r] * accY[r] + accZ[r] * accZ[r];
+        // Same threshold as before: above it the island normalises, below it
+        // it is left alone and the write below skips it.
+        if (lenSq > 1e-12) {
+          const inv = 1 / Math.sqrt(lenSq);
+          accX[r] *= inv; accY[r] *= inv; accZ[r] *= inv;
+        }
+      }
       const ais = logicalGroups[l];
       for (let i = 0; i < ais.length; i++) {
         const ai = ais[i], g = groupOfAttr[ai];
-        if (g < 0 || !parent.has(g)) continue;
-        const v = acc.get(find(g));
-        if (!v || v.lengthSq() < 1e-12) continue;   // degenerate fan: keep the baseline
-        normals[ai * 3] = v.x; normals[ai * 3 + 1] = v.y; normals[ai * 3 + 2] = v.z;
+        if (g < 0 || ufStamp[g] !== stamp) continue;
+        const r = find(g);
+        if (accStamp[r] !== stamp) continue;
+        const x = accX[r], y = accY[r], z = accZ[r];
+        if (x * x + y * y + z * z < 1e-12) continue;   // degenerate fan: keep the baseline
+        normals[ai * 3] = x; normals[ai * 3 + 1] = y; normals[ai * 3 + 2] = z;
       }
     });
     geo.attributes.normal.needsUpdate = true;

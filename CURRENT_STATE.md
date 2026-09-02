@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,560 lines)
-- Version at time of writing: **a2.81**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,611 lines)
+- Version at time of writing: **a2.82**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -383,6 +383,95 @@ own computed `display` into an inline style, which outranks the now-absent
   `.submerging` set it to `none` for the duration, because blurring the
   backdrop AND the element is a read-back of the live canvas plus a second
   blur on the result, and WebKit has been inconsistent about the pair.
+
+## Shading's union-find, and a stamp instead of a clear (a2.82)
+
+a2.77 finished by naming the biggest remaining phase of `applyShading`:
+`6_unionFind`, 30-36% of a warm shade. This is that phase.
+
+### What it was doing
+
+At each logical vertex, `applyShading` has to work out which of the
+attribute vertices sitting there belong to the same smooth island, then
+average their normals together. It did that with a union-find built out of
+`Map`s - a `parent` Map and an accumulator Map, allocated, filled and thrown
+away once **per logical vertex**, tens of thousands of times a shade. The
+work per vertex is a handful of pointers; the allocation and the hashing
+around it are not.
+
+### What it does now
+
+One module-level scratch, `ufScratch(n)`, of typed arrays that grow and
+never shrink, plus a **stamp** - an integer bumped once per logical vertex.
+A slot belongs to the vertex being processed only if its stamp matches;
+anything left behind by the previous vertex reads as absent. **So nothing is
+ever cleared.** `find` walks `Int32Array` slots instead of Map buckets, and
+a `touched` list records the few slots this vertex actually used, so the
+write-back visits those and no others.
+
+Past 2^31 the counter resets and the stamp arrays are re-filled with -1, so
+a session long enough to wrap cannot wrap into a collision.
+
+### The stamp is spent BEFORE the work, not after
+
+The first version wrote the counter back after the per-vertex loop
+finished. `applyShading` is wrapped in a try/catch that falls back to flat
+normals - a real path, not a hypothetical - so a throw part way through a
+shade left the counter where the last SUCCESSFUL shade had put it, and the
+next shade re-issued stamps this one had already written into the arrays.
+The damage is silent: normals averaged across islands that are not
+connected, and not unit length, with no error anywhere. `stamp =
+++UF.stamp0;` as the first line of the loop body makes every vertex's stamp
+permanently spent whether or not the shade it belongs to ever finishes.
+
+Probe section 4 pins this. A lever injected into the harness's own copy of
+index.html - never into the shipped file - makes a shade throw on its 20th
+vertex; the shade after it comes back bit-for-bit identical to the one
+before the failure, and every normal is still a unit vector, which is
+exactly what a stamp collision would have destroyed.
+
+### `sharp` moved onto the record, and the Map that held it is gone
+
+`buildShadingTopo` still kept a `sharp` Map beside the edge records a2.77
+introduced. Nothing read it - it had been write-only since a2.77 - so the
+Map is deleted and `sharp` is a field of the record, declared in the record
+literal rather than assigned afterwards, so every record keeps one hidden
+class.
+
+### The numbers
+
+`_race_probe.py` injects the OLD Map-based loop into a copy of index.html
+alongside the new one, so both run in the same page, in the same run,
+against the same geometry:
+
+| triangles | old | new | |
+|---|---|---|---|
+| 48 | 0.03ms | 0.03ms | - |
+| 192 | 0.15ms | 0.06ms | 58% |
+| 768 | 0.56ms | 0.25ms | 56% |
+| 3,072 | 1.89ms | 0.84ms | 56% |
+| 12,288 | 11.75ms | 7.30ms | 38% |
+
+Over 77 shades: 180.3ms old against 103.0ms new - **43% off the union-find**,
+and **all 1,325,952 normal components identical bit for bit**. As a share of
+the whole of `applyShading`, `6_unionFind` falls from 30% warm / 23% of the
+operation to **13% / 9%**.
+
+### The measurement that lied first
+
+The first race reported -500% at 48 triangles: the new loop five times
+SLOWER. That was cold JIT - the race ran each version once, while the
+project's own `timeIt` takes a median for exactly this reason. With four
+warm-up shades before timing, the small-mesh row went neutral, which is the
+honest answer: at 48 triangles there is nothing to win. **A benchmark with
+no warm-up measures the compiler, not the code.** The scratch buffer was
+added while chasing the phantom and is kept because it is right anyway.
+
+### What is now the biggest thing
+
+`2c_windingComponents` - 8-16%, and its share grows with the model. The
+double-normals item is still unclaimed, and it is now understood to be a
+shading-CORRECTNESS change (the degenerate-fan handler), not just a saving.
 
 ## Clean up (a2.81)
 
@@ -948,7 +1037,8 @@ have.**
 ### What is now the biggest thing, for whoever comes next
 
 `6_unionFind` (30-36%) and `2c_windingComponents` (8-16%, and it grows).
-Neither has been looked at. The double-normals item is still there and is
+`6_unionFind` was taken at a2.82 - see that section. `2c_windingComponents`
+still has not been looked at. The double-normals item is still there and is
 still fifth.
 
 ## Box select respects visibility (a2.76)
