@@ -1541,7 +1541,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.83</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.84</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -7946,7 +7946,7 @@ function refuseOp(why, value) {
 // Extrudes one face group outward along its normal. The cap keeps the same
 // group slot (so its color/material is unchanged); new side walls are
 // appended as a new group. Returns the (unchanged) group index of the cap.
-function extrudeFaceGroup(obj, groupIndex, offset = EXTRUDE_OFFSET) {
+function extrudeFaceGroup(obj, groupIndex, offset = EXTRUDE_OFFSET, allowFloor = false) {
   const mesh = obj.mesh;
   const ed = toEditable(mesh);
   const loop = getGroupBoundaryLoopAttr(ed, groupIndex);
@@ -7967,18 +7967,64 @@ function extrudeFaceGroup(obj, groupIndex, offset = EXTRUDE_OFFSET) {
     return ni;
   });
 
+  /* THE FLOOR, the same rule the region path uses (a2.84). Each and Joined
+     have to agree on the case a person will actually meet - extrude a Plane,
+     get a box with a bottom - and without this the answer depended on which
+     chip was lit.
+
+     `allowFloor` is off unless the caller is extruding ONE face, because the
+     scan below is O(triangles) and Each runs this function once per selected
+     face: on a big selection it would go quadratic. Nothing is lost by that
+     limit. Each over SEVERAL faces of a sheet already returns an open,
+     non-manifold shell - it did on a2.83 too - and a floor cannot rescue it;
+     that is Joined's job and Joined does it. */
+  let floorTris = null, flipAll = false;
+  if (allowFloor) {
+    const L = edLogical(ed);
+    const outlineUses = new Map();
+    ed.groups.forEach(g => {
+      if (!g || !g.triangles) return;
+      const per = new Map();
+      g.triangles.forEach(t => {
+        for (let i = 0; i < 3; i++) {
+          const a = L.logicalOf[t[i]], b = L.logicalOf[t[(i + 1) % 3]];
+          if (a === b) continue;
+          const kk = edgeKey(a, b);
+          per.set(kk, (per.get(kk) || 0) + 1);
+        }
+      });
+      per.forEach((c, kk) => { if (c === 1) outlineUses.set(kk, (outlineUses.get(kk) || 0) + 1); });
+    });
+    let open = true;
+    for (let i = 0; i < n && open; i++) {
+      const a = L.logicalOf[loop[i]], b = L.logicalOf[loop[(i + 1) % n]];
+      if ((outlineUses.get(edgeKey(a, b)) || 0) !== 1) open = false;
+    }
+    if (open) {
+      // Copied before the remap below rewrites the array in place.
+      floorTris = ed.groups[groupIndex].triangles.map(t => t.slice());
+      flipAll = offset < 0;
+    }
+  }
+  const rev = t => (flipAll ? [t[0], t[2], t[1]] : t);
+
   // Move the cap onto the new ring. Because `loop` holds this group's own
   // indices, every corner of the cap is guaranteed to be remapped.
   const remap = new Map();
   loop.forEach((ai, i) => remap.set(ai, newIdx[i]));
-  ed.groups[groupIndex].triangles = ed.groups[groupIndex].triangles.map(tri => tri.map(vi => remap.has(vi) ? remap.get(vi) : vi));
+  ed.groups[groupIndex].triangles = ed.groups[groupIndex].triangles.map(tri => rev(tri.map(vi => remap.has(vi) ? remap.get(vi) : vi)));
 
   // One side wall per boundary edge, each its own selectable face.
   for (let i = 0; i < n; i++) {
     const ai = loop[i], bi = loop[(i + 1) % n];
     const nai = newIdx[i], nbi = newIdx[(i + 1) % n];
     mats.push((mats[groupIndex] || mats[0]).clone());
-    ed.groups.push({ triangles: [[ai, bi, nbi], [ai, nbi, nai]] });
+    ed.groups.push({ triangles: [[ai, bi, nbi], [ai, nbi, nai]].map(rev) });
+  }
+
+  if (floorTris) {
+    mats.push((mats[groupIndex] || mats[0]).clone());
+    ed.groups.push({ triangles: floorTris.map(t => rev([t[0], t[2], t[1]])) });
   }
 
   rebuildFromEditable(obj, ed);
@@ -8964,6 +9010,63 @@ function extrudeRegionOp(obj, groupIndices, offset, useOwnNormals, sym) {
     return refuseOp('that selection has no border — every edge is shared with another selected face');
   }
 
+  /* THE FLOOR, when there is nothing under it (a2.84). Extrude does not
+     DELETE the faces it lifts - it remaps their triangles onto the new
+     vertices, so the face TRAVELS. On a closed shell that is right: the old
+     position had a neighbour on every side, and the walls meet those
+     neighbours. On an open shell - a Plane, or any imported sheet - it
+     leaves the mesh open where the face used to be, and an extruded Plane
+     came out as a box with no bottom.
+
+     The test is NOT flatness. A curved open sheet has exactly the same hole.
+     What matters is whether the mesh has anything on the other side of the
+     rim, so count - across the WHOLE mesh, not just the selection - the face
+     groups that use each edge on their OUTLINE. Once within a group is the
+     same rule computeTopology exposes an edge by; one user in total means
+     open.
+
+     Cap only when EVERY rim edge is open, so a face at the CORNER of a sheet
+     - half its rim shared with neighbours, half not - is left alone rather
+     than given a floor that stops halfway.
+
+     Stacking takes care of itself. After the first section the rim is shared
+     with the walls just built, so the second tap counts two users and adds
+     nothing. */
+  const outlineUses = new Map();
+  ed.groups.forEach(g => {
+    if (!g || !g.triangles) return;
+    const per = new Map();
+    g.triangles.forEach(t => {
+      for (let i = 0; i < 3; i++) {
+        const a = L.logicalOf[t[i]], b = L.logicalOf[t[(i + 1) % 3]];
+        if (a === b) continue;
+        const kk = edgeKey(a, b);
+        per.set(kk, (per.get(kk) || 0) + 1);
+      }
+    });
+    per.forEach((n, kk) => { if (n === 1) outlineUses.set(kk, (outlineUses.get(kk) || 0) + 1); });
+  });
+  const needsFloor = rim.every(([a, b]) => (outlineUses.get(edgeKey(a, b)) || 0) === 1);
+  /* Copied BEFORE the remap further down rewrites these arrays in place -
+     it maps over `triangles` and assigns the result back, so a reference
+     taken here and read after would be the LIFTED face, not the floor. */
+  const floorTris = needsFloor
+    ? groupIndices.map(gi => ed.groups[gi].triangles.map(t => t.slice()))
+    : null;
+
+  /* A BACKWARDS DRAG BUILDS THE SAME SOLID INSIDE OUT. The lifted face keeps
+     its winding while moving to the far side of where it started, so the
+     face that pointed up-and-out now points up-and-IN, and the walls follow
+     it. auditWinding still says ok - the shell agrees with itself - which is
+     why this went unnoticed until the floor closed the mesh and a signed
+     volume became a question worth asking. It came out at -0.5.
+
+     It is only safe to flip here because capping means the region IS the
+     whole open shell: there is no rest of the mesh for the flipped faces to
+     disagree with. An uncapped extrude is left exactly as it was. */
+  const flipAll = needsFloor && offset < 0;
+  const rev = t => (flipAll ? [t[0], t[2], t[1]] : t);
+
   /* A region can be SEVERAL disconnected patches - a face and its mirror are
      usually nowhere near each other - so walk every rim loop, not just the
      first. Walking only the first left the other patch with no side walls at
@@ -9079,7 +9182,7 @@ function extrudeRegionOp(obj, groupIndices, offset, useOwnNormals, sym) {
     ed.groups[gi].triangles = ed.groups[gi].triangles.map(t => t.map(v => {
       const l = L.logicalOf[v];
       return newIdx.has(l) ? newIdx.get(l) : v;
-    }));
+    })).map(rev);
   });
 
   rimLoops.forEach(lp => {
@@ -9087,9 +9190,28 @@ function extrudeRegionOp(obj, groupIndices, offset, useOwnNormals, sym) {
       const la = lp[i], lb = lp[(i + 1) % lp.length];
       const oa = L.logicalGroups[la][0], ob = L.logicalGroups[lb][0];
       mats.push((mats[groupIndices[0]] || mats[0]).clone());
-      ed.groups.push({ triangles: fanTriangles([oa, ob, newIdx.get(lb), newIdx.get(la)]) });
+      ed.groups.push({ triangles: fanTriangles([oa, ob, newIdx.get(lb), newIdx.get(la)]).map(rev) });
     }
   });
+
+  /* The floor faces AWAY from the extrusion, so it is wound the other way -
+     ALWAYS, whichever way the drag went. The first version of this branched
+     on the sign of `offset`, reasoning that a backwards pull puts the solid
+     below the old plane and makes this cap its top. Measured, that was
+     wrong: a backwards extrude flips the lifted face and its walls TOGETHER,
+     so the shell stays self-consistent and an unflipped floor is the one
+     face that disagrees with all of them - auditWinding read reversed=1 with
+     four conflict edges. The floor's job is to agree with the walls it
+     closes, not with the world.
+
+     One group per original face group, not one merged group: an n-gon stays
+     one face you can select, rather than becoming a fan of triangles. */
+  if (floorTris) {
+    floorTris.forEach((triList, i) => {
+      mats.push((mats[groupIndices[i]] || mats[0]).clone());
+      ed.groups.push({ triangles: triList.map(t => rev([t[0], t[2], t[1]])) });
+    });
+  }
 
   rebuildFromEditable(obj, ed);
   return true;
@@ -10380,7 +10502,7 @@ function applyPendingOp() {
     if (op.groupMode === 'each') {
       op.payload.groups.forEach(gi => {
         ensureHelpers(obj);
-        extrudeFaceGroup(obj, gi, op.amount);
+        extrudeFaceGroup(obj, gi, op.amount, op.payload.groups.length === 1);
       });
       // Per-face modes are not all-or-nothing: one awkward face refusing does
       // not make the op a no-op, and reporting it as one would be a lie.
