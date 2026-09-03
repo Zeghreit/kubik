@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~25,350 lines)
-- Version at time of writing: **a2.102**
+- Version at time of writing: **a2.103**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -36,6 +36,38 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## The rail, and the deck on the bottom row (a2.103)
+
+Zeghreit's direction (2026-09-03): the header keeps the mode; the LEFT edge
+is the rail that carries every shelf, so the right edge holds only the view
+cube; and the op deck sits on the bottom row.
+
+- **`--rail-top`** = `hdr-h + 40 + safe-top` (under the readout). Seat 1 is
+  the outliner tab (`#outFly`), seat 2 the material tab (`#matFly`) at
+  `--rail-top + 64`. Both tabs are 44x56, edge-tucked on the left.
+- **Both shelves open as ROWS beside their tab**, never under it - under it
+  would cover the other seat. `#outFly.open` is `flex-direction: row`
+  (z 26 over the material tab's 25); `#matFly.open` already was.
+- **The material fly-out is the mirror of a2.63**: tab welded as the tray's
+  LEFT shoulder, tray borderless on the left, `--mat-max` = 100vh - 234
+  (top 162, 72 of clearance above the bottom row). `#matEditor` opens inside
+  the tray, to the right, as before.
+- **The a2.65 rule about the left column is superseded** - the rail IS a
+  column, by decision. `_theme` 9.left_column_depth now accepts three deep
+  (header + two seats) under y 240. The long comment above the (now empty)
+  landscape block describes the pair-beside-the-cube layout that no longer
+  exists; the landscape overrides are gone because the header cells and the
+  rail are the same in either orientation.
+- **The inspector** moved right of the rail: `left: 60px` (44 of tab, 8 of
+  air, 8 of margin).
+- **The op deck, the geo bar and the pivot bar sit on the bottom row**:
+  `bottom: var(--edge-b) + 56px` (the hub's height), the pivot bar 10px
+  higher. The deck's lower rule meets the hub's top edge. `#firstHint`
+  (`edge-b + 62`) is covered while a deck is up - it is shown once, before
+  any op, and dismissed by the first ring.
+- Regression: 30/32 identical; `_theme` moves on the shelf's box (now x
+  0..128) and the column depth; `_imp` is the CDN flake.
 
 ## Drag anywhere sets the amount (a2.102)
 

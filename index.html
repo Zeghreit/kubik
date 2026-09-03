@@ -117,6 +117,11 @@
        one of those controls already uses means none of them needed changing,
        and none of them can pick it up TWICE, which is the mistake this file
        has recorded twice already. */
+    /* THE RAIL (a2.103): the left edge under the readout carries every
+       shelf - the outliner tab first, the material tab under it - so the
+       right edge holds only the view cube. --rail-top is where the first
+       tab sits; each tab is 56 tall with 8 between. */
+    --rail-top: calc(var(--hdr-h) + 40px + env(safe-area-inset-top, 0px));
     /* THE HEADER IS PART OF THE TOP INSET (a2.100). Everything keyed to
        --edge - the readout, the HUDs, the inspector, the toast - stacks
        under the bar without knowing it exists. --hdr-h is the bar's
@@ -658,9 +663,11 @@
        194 since a2.65, not 132: the cube is 128 tall from the inset. Since
        a2.100 the cube sits under the 58px header, so 194 clears it by 8px;
        the symmetry strip that used to sit below the cube is in the header. */
-    position: absolute; right: env(safe-area-inset-right, 0px);
-    top: calc(194px + env(safe-area-inset-top, 0px));
-    z-index: 25; display: flex; flex-direction: column; align-items: flex-end;
+    /* ON THE RAIL (a2.103): the second seat, under the outliner's tab, on
+       the LEFT. Everything below that said "right" is mirrored. */
+    position: absolute; left: env(safe-area-inset-left, 0px);
+    top: calc(var(--rail-top) + 64px);
+    z-index: 25; display: flex; flex-direction: column; align-items: flex-start;
     /* HOW TALL THE SHELF MAY GET. It used to be a flat 60vh, which on a
        laptop is about five cards - so the "+", the one control that makes a
        new material, sat below the fold and the panel ended in the middle of
@@ -676,7 +683,8 @@
        266 since a2.65, back up from 204: the tab moved down 62px to clear the
        symmetry/projection pair, and the shelf starts level with the tab, so
        it gives back exactly what the tab travelled. */
-    --mat-max: calc(100vh - 266px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
+    /* Its top is hdr-h + 104 = 162; 72 of clearance above the bottom row. */
+    --mat-max: calc(100vh - 234px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
   }
 
   /* SHORT VIEWPORTS: THE PAIR STEPS ASIDE (a2.65). The 44px strip under the
@@ -695,17 +703,10 @@
 
      500px is below every phone in landscape and above every window the probe
      suite runs in, so the suite keeps measuring the portrait layout. */
-  @media (max-height: 500px) {
-    /* Only the axes share this corner with the cube and the material shelf
-       now - the projection pill moved into the world ring at a2.90b. */
-    /* No `top` override since a2.100: the cube sits under the header now and
-       the portrait 194 clears it in landscape too. */
-    #matFly {
-      --mat-max: calc(100vh - 204px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
-    }
-  }
-  /* ---- THE OUTLINER (a2.91): a slim tab on the LEFT border, mirroring the
-     materials fly-out on the right. Tap rolls a list of the scene's objects
+  /* No landscape overrides remain (a2.103): the axes are header cells and
+     the shelves sit on the rail, whose geometry is the same either way. */
+  /* ---- THE OUTLINER (a2.91): a slim tab on the LEFT border - the rail's
+     first seat since a2.103, with the materials fly-out under it. Tap rolls a list of the scene's objects
      out; tap again rolls it back.
 
      It was a wrapped row of chips inside the drawer's Scene section, and its
@@ -722,9 +723,13 @@
      opening the drawer covers the shelf rather than fighting it. ---- */
   #outFly {
     position: absolute; left: env(safe-area-inset-left, 0px);
-    top: calc(var(--hdr-h) + 40px + env(safe-area-inset-top, 0px));   /* under the readout (a2.100) */
+    top: var(--rail-top);   /* the rail's first seat (a2.103) */
     z-index: 25; display: flex; flex-direction: column; align-items: flex-start;
   }
+  /* Open, the list sits BESIDE the tab (a2.103), not under it - under it
+     would cover the material tab, which is the next seat on the rail. */
+  #outFly.open { flex-direction: row; align-items: flex-start; z-index: 26; }
+  #outFly.open #outTab { border-right: none; background: var(--panel); }
   #outTab {
     /* The mirror of #matTab: 44 wide, edge-tucked, rounded on the side that
        faces the viewport and borderless against the screen edge. */
@@ -741,10 +746,9 @@
        than in the middle of nowhere. */
     max-height: calc(100vh - 200px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
     overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
-    margin-top: 8px; padding: 8px;
+    margin-top: 0; padding: 8px;
     background: var(--panel); border: var(--rule) solid var(--line); border-left: none;
     border-radius: 0 var(--r-md) var(--r-md) 0;
-    box-shadow: 0 8px 24px rgb(var(--shadow) / .18);
   }
   #outFly.open #outTray { display: flex; }
   /* Positioned, because the insertion line is drawn INTO it rather than
@@ -853,9 +857,9 @@
        the screen where a thumb is least accurate. The two margins below CENTRE
        the tab over the tray it opens, so both are derived from this width. */
     width: 44px; height: 56px; min-height: 0; padding: 0;
-    border-radius: var(--r-md) 0 0 var(--r-md); border-right: none;
+    border-radius: 0 var(--r-md) var(--r-md) 0; border-left: none;
     justify-content: center; font-size: 20px; color: var(--text-dim);
-    transition: margin-right .22s ease;
+    background: var(--panel2);
   }
   /* WELDED (a2.63). Open, the tab used to take a 26px margin and a full
      radius, which floated it clear of the panel it is the handle OF - two
@@ -869,20 +873,20 @@
      56 of height still clears what a thumb needs. */
   #matFly.open { flex-direction: row; align-items: flex-start; }
   #matFly.open #matTab {
-    width: 32px; margin-right: 0; font-size: 15px;
+    width: 32px; font-size: 15px;
     /* The width and the fill are part of the same movement as the tray, so
        they travel with it rather than snapping. */
     transition: width .22s ease, background-color .22s ease;
-    background: var(--panel); border-right: none;
-    border-radius: var(--r-md) 0 0 var(--r-md);
+    background: var(--panel); border-left: none; border-right: none;
+    border-radius: 0;
   }
   #matTray {
     width: 96px; max-height: 0; opacity: 0; overflow: hidden; margin-top: 6px;
     transition: max-height .22s ease, opacity .22s ease;
-    background: var(--panel); border: var(--rule) solid var(--line); border-right: none;
-    border-radius: var(--r-md) 0 0 var(--r-md);
+    background: var(--panel); border: var(--rule) solid var(--line); border-left: none;
+    border-radius: 0 var(--r-md) var(--r-md) 0;
   }
-  /* No left border and no left radius: the tab supplies both. */
+  /* No left border: the tab is the tray's left shoulder (a2.103 mirrors a2.63). */
   #matFly.open #matTray { margin-top: 0; border-left: none; border-radius: 0; }
   /* CLOSING KEEPS THE LAYOUT AND DROPS THE TRAY (a2.63a). Removing .open in
      one frame flipped the flyout back to a column instantly while the tray
@@ -1076,7 +1080,7 @@
      because it is a state the app is IN, not a thing you can ignore. */
   #pivotBar {
     position: absolute; left: calc(10px + env(safe-area-inset-left)); right: calc(10px + env(safe-area-inset-right));
-    bottom: calc(166px + env(safe-area-inset-bottom));
+    bottom: calc(var(--edge-b) + 66px);
     /* Above the op and geo bars, which share this slot. They cannot be open at
        the same time any more, but the one that carries the only way out of a
        mode should not be the one that loses a paint order argument. */
@@ -1390,7 +1394,8 @@
        menu button, so the only way out of the inspector was its own ✕.
        64 = the button's 44 plus a 20px breath, and on a desktop, where the
        inset is 0, it computes to the same 78 it always was. */
-    position: absolute; left: calc(10px + env(safe-area-inset-left));
+    /* Right of the rail (a2.103): 44 of tab plus 8 of air. */
+    position: absolute; left: calc(60px + env(safe-area-inset-left));
     top: calc(var(--edge) + 64px); z-index: 16; display: none;
     background: var(--panel2); border: var(--rule) solid var(--line); border-radius: var(--r-md);
     padding: 8px 10px 10px; min-width: 226px;
@@ -1409,7 +1414,9 @@
   #opBar {
     /* Sits just above the thumb controls so both stay usable at once. */
     position: absolute; left: 0; right: 0;
-    bottom: calc(166px + env(safe-area-inset-bottom)); /* clears the thumb rows below */
+    /* ON THE BOTTOM ROW (a2.103): its lower rule meets the hub's top edge,
+       so the deck and the row read as one instrument. */
+    bottom: calc(var(--edge-b) + 56px);
     z-index: 17; display: none; flex-direction: column; align-items: stretch;
     /* Tighter than it was (8px padding and gap), because the controls inside
        grew to 44 and the bar should not grow with them. The gap between rows
@@ -1569,7 +1576,7 @@
      that still reads when five of them share a phone's width. */
   #geoBar {
     position: absolute; left: 0; right: 0;
-    bottom: calc(166px + env(safe-area-inset-bottom));
+    bottom: calc(var(--edge-b) + 56px);
     z-index: 17; display: none; align-items: flex-end; justify-content: flex-start;
     flex-wrap: wrap; gap: 8px;
     background: var(--panel); border: var(--rule) solid var(--line); border-left: none; border-right: none;
@@ -1942,7 +1949,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.102</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.103</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
