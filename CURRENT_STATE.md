@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,697 lines)
-- Version at time of writing: **a2.90**
+- Version at time of writing: **a2.90a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -71,9 +71,9 @@ is all there is.
 
 ### And it sits with the cube
 
-The three switches are in the strip under the view cube, beside the
-projection pill: `[X][Y][Z]  [persp]`. Measured at 375px: the row spans
-x 161..309, the pill 317..361, both level at y 130..174.
+The three switches are in the strip under the view cube. a2.90 put them
+beside the projection pill; a2.90a moved that pill to the menu corner and
+gave them the strip alone, against the right edge - x 213..361 at 375px.
 
 The cube is the app's canonical **this is X, this is Y, this is Z** object,
 and axis switches are meaningless without knowing which axis is which. That
@@ -111,9 +111,36 @@ actually symmetric about what you asked for. Adding a second axis says
 nothing - the lit letter is the message, and a2.89a's mistake was a toast
 repeating the control it was covering.
 
+### The projection pill takes the menu corner (a2.90a)
+
+a2.90 emptied the top-left. A 44px toggle under a 44px button is what goes
+back into it: menu ends at y 58, the pill runs 66..110, and it stops there -
+two deep, not the three-deep column a2.65 removed for running to 211pt
+before the model got a look in.
+
+The strip under the cube is the axes' alone now, against the right edge.
+Measured at 375px: axes x 213..361, pill x 14..58. The two corners are
+independent and a long way apart.
+
+**What this costs, said out loud.** a2.61 put the pill under the cube BECAUSE
+the cube is the other way into the flat view, and a2.87 built the whole
+glance-versus-decision distinction on that pairing - tap a cube face for a
+look, tap the pill to work in it. Splitting them makes that relationship less
+discoverable. Two things hold it together: the pill still shows the
+projection you are IN, so wherever it sits you can read where you are; and
+the strip now carries only the axes, which are the one thing that genuinely
+needs the cube beside them to be legible at all.
+
+**The toast now shares a band with the pill** - both live around y 66..115,
+and only a 36px horizontal gap keeps them apart. That is the a2.89a bug one
+corner over: a transient thing crossing a control, invisible to any static
+measurement that did not think to ask. So `_symaxes_probe` asks, with the
+longest message the feature can produce, at the width where a centred toast
+is widest.
+
 ### Probe
 
-`_symaxes_probe.js`, fifteen sections. Beyond the mirror-group work a2.89
+`_symaxes_probe.js`, seventeen sections. Beyond the mirror-group work a2.89
 already covered: one tap arms it and none-lit is off; the row is level with
 the pill and strictly below the cube's faces; the top-left corner is free;
 the longest possible symmetry toast and the switches no longer share a band

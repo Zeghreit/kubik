@@ -272,7 +272,10 @@
      top-left corner was carrying a control that belongs with the axes. */
   #symAxes {
     position: absolute;
-    right: calc(var(--edge-r) + 52px);
+    /* The strip is theirs alone since a2.90a - the projection pill moved to
+       the menu corner, so the row sits against the right edge under the
+       cube rather than 52px in to clear it. */
+    right: var(--edge-r);
     top: calc(env(safe-area-inset-top, 0px) + 130px);
     z-index: 13; display: flex; align-items: center; gap: 8px;
   }
@@ -577,13 +580,12 @@
      500px is below every phone in landscape and above every window the probe
      suite runs in, so the suite keeps measuring the portrait layout. */
   @media (max-height: 500px) {
-    #projPill {
-      right: calc(env(safe-area-inset-right, 0px) + 142px);
-      top: calc(env(safe-area-inset-top, 0px) + 42px);
-    }
-    /* The axes step aside with the pill they sit beside (a2.90). */
+    /* The projection pill is in the menu corner since a2.90a and has
+       nothing to step aside from: two 44px items down the left edge fit a
+       short screen without argument. Only the axes still share this corner
+       with the cube and the material shelf. */
     #symAxes {
-      right: calc(env(safe-area-inset-right, 0px) + 194px);
+      right: calc(env(safe-area-inset-right, 0px) + 142px);
       top: calc(env(safe-area-inset-top, 0px) + 42px);
     }
     #matFly {
@@ -773,9 +775,23 @@
      you can see - and it had pushed the pill out from under the cube and
      off to its left, which is where your screenshot found it. #matFly moved
      down to 194 instead, which frees the whole strip under the cube. */
+  /* THE CORNER BESIDE THE MENU (a2.90a). a2.90 emptied the top-left, and a
+     44px toggle under a 44px button is the whole of what goes back there -
+     two items ending at 110px, not the three-deep column a2.65 removed,
+     which ran to 211pt before the model got a look in.
+
+     WHAT THIS COSTS, said out loud: a2.61 put the pill under the cube
+     BECAUSE the cube is the other way into the flat view, and a2.87 built
+     the whole glance-versus-decision distinction on that pairing - tap a
+     cube face for a look, tap the pill to work in it. Splitting them makes
+     that relationship less discoverable. What holds it together is that the
+     pill still shows the projection you are IN, so wherever it sits you can
+     always read where you are; and the strip under the cube now carries only
+     the axes, which is the one thing that genuinely needs the cube beside it
+     to be legible. */
   #projPill {
-    position: absolute; right: 14px;
-    top: calc(env(safe-area-inset-top, 0px) + 130px);
+    position: absolute; left: var(--edge-l);
+    top: calc(var(--edge) + 52px);
     z-index: 13; width: 44px; height: 44px; border-radius: var(--r-md);
     background: var(--panel2); border: 1px solid var(--line);
     display: flex; align-items: center; justify-content: center;
@@ -1577,7 +1593,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.90</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.90a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
