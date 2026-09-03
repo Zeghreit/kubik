@@ -579,6 +579,71 @@
       --mat-max: calc(100vh - 204px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
     }
   }
+  /* ---- THE OUTLINER (a2.91): a slim tab on the LEFT border, mirroring the
+     materials fly-out on the right. Tap rolls a list of the scene's objects
+     out; tap again rolls it back.
+
+     It was a wrapped row of chips inside the drawer's Scene section, and its
+     own note there admitted the position: "this list of objects is the one
+     thing here that isn't duplicated elsewhere". A settings drawer is where
+     you go to change how the app behaves; the list of what is IN your scene
+     is something you consult WHILE working, which is a shelf, not a page.
+     The materials tray settled that argument once already - "deliberately
+     NOT a second drawer - it's a palette, not a settings panel, and the
+     viewport stays the hero" - and this is the same shape on the other edge.
+
+     76px down: the menu button ends at 58, and this is the first position
+     that clears it with air to spare. Its z-index is under the drawer's, so
+     opening the drawer covers the shelf rather than fighting it. ---- */
+  #outFly {
+    position: absolute; left: env(safe-area-inset-left, 0px);
+    top: calc(76px + env(safe-area-inset-top, 0px));
+    z-index: 25; display: flex; flex-direction: column; align-items: flex-start;
+  }
+  #outTab {
+    /* The mirror of #matTab: 44 wide, edge-tucked, rounded on the side that
+       faces the viewport and borderless against the screen edge. */
+    width: 44px; height: 56px; min-height: 0; padding: 0;
+    border-radius: 0 var(--r-md) var(--r-md) 0; border-left: none;
+    justify-content: center; font-size: 20px; color: var(--text-dim);
+    background: var(--panel2);
+  }
+  #outTray {
+    display: none; flex-direction: column; gap: 4px;
+    width: min(232px, 66vw);
+    /* From just under the tab to clear of the bottom button row - the same
+       reasoning #matFly uses, so a long list ends where the list ends rather
+       than in the middle of nowhere. */
+    max-height: calc(100vh - 200px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
+    overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+    margin-top: 8px; padding: 8px;
+    background: var(--panel); border: 1px solid var(--line); border-left: none;
+    border-radius: 0 var(--r-md) var(--r-md) 0;
+    box-shadow: 0 8px 24px rgb(var(--shadow) / .18);
+  }
+  #outFly.open #outTray { display: flex; }
+  #outEmpty { font-size: 12px; color: var(--text-dim); padding: 8px 6px; }
+  /* 44 tall, like every other target in this file. A 36px row fits more
+     names on screen and is the wrong trade on a phone. */
+  .outRow {
+    display: flex; align-items: center; gap: 8px;
+    min-height: 44px; padding: 0 4px 0 8px;
+    border: 1px solid transparent; border-radius: var(--r-md);
+    cursor: pointer; font-size: 12px; color: var(--text-dim);
+  }
+  .outRow.selected { border-color: var(--accent); color: var(--text); background: var(--accent-dim); }
+  /* A hidden object stays LISTED - dimmed, struck through. The list is the
+     one place it can still be seen to exist. */
+  .outRow.is-hidden { opacity: .45; }
+  .outRow.is-hidden .outName { text-decoration: line-through; }
+  .outName { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .outEye {
+    width: 36px; height: 36px; min-height: 0; padding: 0; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: none; border: none; color: var(--text-dim); opacity: .7;
+  }
+  .outRow.is-hidden .outEye { opacity: 1; color: var(--accent-mode); }
+
   #matTab {
     /* 44 wide. It was 30 - the narrowest target in the app, on the edge of
        the screen where a thumb is least accurate. The two margins below CENTRE
@@ -1466,6 +1531,14 @@
     <!-- Lower-right is the one corner nothing else has claimed. -->
     <button id="btnHelp" title="Help">?</button>
 
+    <!-- The outliner: the mirror of the materials tab, on the left border.
+         What is IN the scene, consulted while working - so a shelf, not a
+         page in the settings drawer. -->
+    <div id="outFly">
+      <button id="outTab" title="Outliner - what is in the scene">&#8250;</button>
+      <div id="outTray"><div id="outList"></div></div>
+    </div>
+
     <!-- Materials: a slim tab centred on the right border. Tap rolls the
          tray of previews out, tap again rolls it back. -->
     <div id="matFly">
@@ -1563,7 +1636,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.90b</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.91</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -1573,13 +1646,11 @@
     <div id="status"></div>
     <div class="drawer-body">
 
-      <div class="drawer-sec">
-        <div class="drawer-title">Scene</div>
-        <!-- Add Cube / Duplicate / Delete removed - all three now sit in the
-             fan menu and call the exact same functions. This list of objects
-             is the one thing here that isn't duplicated elsewhere. -->
-        <div class="drawer-row" id="objList"></div>
-      </div>
+      <!-- The Scene section left at a2.91. Add Cube / Duplicate / Delete had
+           already gone to the fan menu, and the object list - the one thing
+           here that was not duplicated elsewhere - is the outliner now, on a
+           shelf you can consult without covering the model with a 340px
+           settings panel. -->
 
       <div class="drawer-sec">
         <div class="drawer-title">Appearance</div>
@@ -14564,6 +14635,26 @@ function unhideObject(id) {
   return true;
 }
 
+/* ONE OBJECT INTO HIDING, from the outliner's eye (a2.91). The counterpart
+   to unhideObject, and it REFUSES the last one still showing: reconcile
+   answers "everything is hidden" by un-hiding the lot, so without this the
+   tap that hid the final object would appear to undo itself and bring the
+   whole scene back. An empty viewport with no explanation is the failure
+   isolation exists to avoid - and a suddenly full one you did not ask for is
+   the same failure wearing the opposite face. */
+function hideObject(id) {
+  if (App.hidden.has(id)) return false;
+  if (!findObject(id)) return false;
+  if (App.hidden.size + 1 >= App.objects.length) {
+    toast('That is the last one still showing');
+    return false;
+  }
+  App.hidden.add(id);
+  // reconcile, not merely apply - the object being EDITED may be this one.
+  reconcileIsolation();
+  return true;
+}
+
 /* Run from refreshUI, so it happens after ANY change to the object list
    without a single op having to know isolation exists. That is the point: the
    first version hooked the two mutation sites it could see, and the review
@@ -18372,7 +18463,7 @@ document.addEventListener('touchmove', (ev) => {
 
      #hubBtn replaces #thumbZone, which no longer exists. */
   if (ev.target && ev.target.closest &&
-      ev.target.closest('#btnMenu, #drawer, #inspector, #opBar, #geoBar, #pivotBar, #hubBtn, #symAxes, #helpCard, #matFly')) return;
+      ev.target.closest('#btnMenu, #drawer, #inspector, #opBar, #geoBar, #pivotBar, #hubBtn, #symAxes, #helpCard, #matFly, #outFly')) return;
   if (ev.cancelable) ev.preventDefault();
 }, { passive: false });
 
@@ -23954,6 +24045,113 @@ function buildMatTray() {
   matTrayInnerEl.appendChild(add);
 }
 
+/* ---------------- The outliner shelf (a2.91) ----------------
+   The same open/close shape as the materials tray, minus the closing-delay
+   dance: that exists because the tray's card layout outlives its own
+   transition, and a list of rows has nothing to keep still. */
+const outFlyEl = document.getElementById('outFly');
+const outTabEl = document.getElementById('outTab');
+const outListEl = document.getElementById('outList');
+function outlinerIsOpen() { return outFlyEl.classList.contains('open'); }
+function setOutlinerOpen(open) {
+  outFlyEl.classList.toggle('open', !!open);
+  outTabEl.innerHTML = open ? '&#8249;' : '&#8250;';
+  if (open) refreshOutliner();
+}
+outTabEl.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+outTabEl.addEventListener('click', (ev) => {
+  ev.stopPropagation();
+  setOutlinerOpen(!outlinerIsOpen());
+});
+
+/* WHAT TAPPING A ROW MEANS. Moved wholesale from the drawer's Scene chips at
+   a2.91 - every guard below was earned there and none of them is about where
+   the list is drawn. */
+function outlinerActivate(o) {
+  /* A hidden row is the one place you can still see that an object exists,
+     so tapping it brings that one back rather than selecting something
+     invisible - which was the trap: the row selected a hidden object and
+     Delete or Ctrl+D then acted on a thing nobody could see. */
+  if (App.hidden.has(o.id)) {
+    unhideObject(o.id);
+    toast('Showing ' + o.name);
+    refreshUI();
+    return;
+  }
+  if (App.mode === 'object') {
+    selectObjectClick(o.id, App.multiSelect);
+  } else {
+    /* Same reasoning as setMode: this empties the selection the op is aimed
+       at. A live one is committed, any other cancelled - and the knife
+       counts, which this row alone forgot. Left open, its points still
+       belonged to the OLD object while the helpers showed the new one, so
+       pressing OK cut a mesh you were no longer looking at. */
+    if (App.knife) cancelKnife();
+    if (App.pendingOp && App.pendingOp.live) confirmPendingOp();
+    else if (App.pendingOp) cancelPendingOp();
+    App.activeObjectId = o.id;
+    /* AND the object selection with it (a2.57). Entering a component mode
+       hands the lock to whatever Object mode has selected, so a row that
+       moved the lock and left the selection behind would be silently undone
+       by the next trip out to Object mode and back. */
+    App.selectedObjectIds = new Set([o.id]);
+    App.selectedElements.clear();
+    hideAllHelpers();
+    setActiveObjectHelpersVisible(o, App.mode);
+    refreshUI();
+    refreshGizmoAttachment();
+    return;
+  }
+  refreshUI();
+}
+
+function refreshOutliner() {
+  if (!outListEl) return;
+  outListEl.innerHTML = '';
+  if (!App.objects.length) {
+    const empty = document.createElement('div');
+    empty.id = 'outEmpty';
+    empty.textContent = 'Nothing in the scene yet.';
+    outListEl.appendChild(empty);
+    return;
+  }
+  App.objects.forEach(o => {
+    const row = document.createElement('div');
+    row.className = 'outRow' +
+      (App.selectedObjectIds.has(o.id) || App.activeObjectId === o.id ? ' selected' : '') +
+      (App.hidden.has(o.id) ? ' is-hidden' : '');
+    row.dataset.objId = o.id;
+
+    const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
+    const sw = document.createElement('div');
+    sw.className = 'swatch';
+    sw.style.background = '#' + mats[0].color.getHexString();
+
+    const name = document.createElement('span');
+    name.className = 'outName';
+    name.textContent = o.name;
+
+    /* The eye is its own target, so the row's own tap keeps meaning
+       "work on this" and never has to guess which of the two you meant. */
+    const eye = document.createElement('button');
+    eye.className = 'outEye';
+    eye.title = App.hidden.has(o.id) ? 'Show' : 'Hide';
+    eye.innerHTML = icon('eye', 18);
+    eye.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+    eye.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (App.hidden.has(o.id)) unhideObject(o.id); else hideObject(o.id);
+      refreshUI();
+    });
+
+    row.appendChild(sw); row.appendChild(name); row.appendChild(eye);
+    row.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+    row.addEventListener('click', (ev) => { ev.stopPropagation(); outlinerActivate(o); });
+    row.addEventListener('dblclick', () => { focusOnObject(o); toast('Focused on ' + o.name); });
+    outListEl.appendChild(row);
+  });
+}
+
 let _matCloseTimer = null;
 function matTrayIsOpen() {
   return matFlyEl.classList.contains('open') && !matFlyEl.classList.contains('closing');
@@ -25033,60 +25231,11 @@ function refreshUI() {
   document.querySelectorAll('#symAxes button').forEach(b =>
     b.classList.toggle('active', App.symmetryAxes.indexOf(b.dataset.sym) >= 0));
 
-  // object list chips
-  const listEl = document.getElementById('objList');
-  listEl.innerHTML = '';
-  App.objects.forEach(o => {
-    const chip = document.createElement('div');
-    chip.className = 'objChip' + (App.selectedObjectIds.has(o.id) || App.activeObjectId === o.id ? ' selected' : '');
-    const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
-    const sw = document.createElement('div');
-    sw.className = 'swatch';
-    sw.style.background = '#' + mats[0].color.getHexString();
-    const label = document.createElement('span');
-    label.textContent = o.name;
-    chip.appendChild(sw); chip.appendChild(label);
-    if (App.hidden.has(o.id)) chip.classList.add('is-hidden');
-    chip.addEventListener('click', () => {
-      /* A hidden row is the one place you can still see that an object exists,
-         so tapping it brings that one back rather than selecting something
-         invisible - which was the trap: the row selected a hidden object and
-         Delete or Ctrl+D then acted on a thing nobody could see. */
-      if (App.hidden.has(o.id)) {
-        unhideObject(o.id);
-        toast('Showing ' + o.name);
-        refreshUI();
-        return;
-      }
-      if (App.mode === 'object') {
-        selectObjectClick(o.id, App.multiSelect);
-      } else {
-        /* Same reasoning as setMode: this empties the selection the op is
-           aimed at. A live one is committed, any other cancelled - and the
-           knife counts, which this row alone forgot. Left open, its points
-           still belonged to the OLD object while the helpers showed the new
-           one, so pressing OK cut a mesh you were no longer looking at. */
-        if (App.knife) cancelKnife();
-        if (App.pendingOp && App.pendingOp.live) confirmPendingOp();
-        else if (App.pendingOp) cancelPendingOp();
-        App.activeObjectId = o.id;
-        /* AND the object selection with it (a2.57). Entering a component
-           mode now hands the lock to whatever Object mode has selected, so
-           a chip that moved the lock and left the selection behind would be
-           silently undone by the next trip out to Object mode and back -
-           putting you on the model you deliberately walked away from.
-           handleTap's own re-target has always written both. */
-        App.selectedObjectIds = new Set([o.id]);
-        App.selectedElements.clear();
-        hideAllHelpers();
-        setActiveObjectHelpersVisible(o, App.mode);
-        refreshUI();
-        refreshGizmoAttachment();
-      }
-    });
-    chip.addEventListener('dblclick', () => { focusOnObject(o); toast('Focused on ' + o.name); });
-    listEl.appendChild(chip);
-  });
+  /* The object list is the outliner's now (a2.91). Built only while the
+     shelf is open - refreshUI runs on every selection change and every drag
+     frame that touches the UI, and rebuilding a list nobody is looking at is
+     work for nothing. */
+  if (outlinerIsOpen()) refreshOutliner();
 
   statusEl.textContent = App.objects.length + ' object' + (App.objects.length === 1 ? '' : 's') +
     (App.mode !== 'object' ? ' · editing: ' + (findObject(App.activeObjectId)?.name || 'none') : '');
@@ -25696,6 +25845,10 @@ if (PICK_DEBUG) {
        the thing a person can feel. */
     get orthoSticky() { return !!(orthoView && orthoView.sticky); },
     MODE_VIEW, modeView, refreshModeView, setMatTrayOpen,
+    /* The outliner, so a probe can open it and drive a row rather than
+       assert against the array it was built from. */
+    setOutlinerOpen, outlinerIsOpen, refreshOutliner, outlinerActivate,
+    hideObject,
     get modeViewSuspended() { return modeViewSuspended; },
     MATERIALS, getMaterialDef, updateMaterialEverywhere, saveMaterialLibrary,
     harvestLegacyMaterials, applyFinishToSelection,

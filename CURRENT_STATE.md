@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,697 lines)
-- Version at time of writing: **a2.90b**
+- Version at time of writing: **a2.91**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -36,6 +36,88 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## The outliner leaves the drawer (a2.91)
+
+Zeghreit: *"outliner - drawer shelf on the left with list of all objects and
+components in scene. It is now already sits in main drawer, but it's not
+right."*
+
+The object list was a wrapped row of chips in the drawer's **Scene** section,
+under a note that had already half-admitted the problem: *"this list of
+objects is the one thing here that isn't duplicated elsewhere."* A settings
+drawer is where you go to change how the app behaves. The list of what is IN
+your scene is something you consult WHILE working - and consulting it meant
+sliding a 340px panel over the model you were looking at.
+
+The materials tray settled this argument once already: *"deliberately NOT a
+second drawer - it's a palette, not a settings panel, and the viewport stays
+the hero."* The outliner is the same shape on the other edge. A 44px tab
+tucked to the left border at y 76 - the menu button ends at 58 - rolling out
+a 232px list. Under the drawer's z-index, so opening the drawer covers it
+rather than fighting it.
+
+### What came across, and why it matters
+
+Every guard the chips had earned moved with them, because none of them was
+about where the list is drawn:
+
+- **A hidden object stays listed**, dimmed and struck through - the list is
+  the one place it can still be seen to exist. Tapping that row **brings it
+  back** rather than selecting it. That was the trap the chips were fixed
+  for: the row selected a hidden object and Delete then acted on a thing
+  nobody could see.
+- **Switching object from a component mode settles what it is walking away
+  from** - a live op committed, any other cancelled, and the knife with them.
+  Left open, the knife's points still belonged to the OLD object while the
+  helpers showed the new one, so pressing OK cut a mesh you were no longer
+  looking at.
+- **The lock and the selection move together** (a2.57), or the next trip out
+  to Object mode and back silently undoes the row.
+
+### New here
+
+- **An eye per row.** Hiding was only reachable through the three-finger
+  isolate pinch; now it is a switch. `hideObject` is the counterpart to
+  `unhideObject` and it **refuses the last object still showing**: reconcile
+  answers "everything is hidden" by un-hiding the lot, so without the refusal
+  the tap that hid the final object would appear to undo itself and bring the
+  whole scene back. An empty viewport with no explanation is the failure
+  isolation exists to avoid, and a suddenly full one you did not ask for is
+  that same failure wearing the opposite face.
+- **It is built only while open.** `refreshUI` runs on every selection change
+  and every drag frame that touches the UI; a list nobody is looking at costs
+  nothing. The probe measures that rather than trusting it - a marker element
+  survives five `refreshUI` calls with the shelf closed and is gone the moment
+  it opens.
+- **An empty scene says so** instead of rolling out a blank panel.
+
+### Still to come
+
+Rename by double tap, delete by swipe left, duplicate by swipe right,
+reorder by drag, and group/ungroup by dragging one row onto another - with
+group/ungroup also in the object ring. Those are gestures on a row and a
+change to the object model respectively, and they are their own versions.
+
+### Probe
+
+`_out_probe.js`, twelve sections: the drawer really has lost it; the tab is
+edge-tucked below the menu and clear of the hub; it rolls both ways; the list
+is the scene in scene order; a row selects; the eye hides without losing the
+row; a hidden row unhides instead of selecting; the last one showing is
+refused; a row in a component mode settles the op; it is not rebuilt while
+closed; it fits at 375px; and an empty scene explains itself.
+
+**The CSS in this version was written twice.** The first patch script hit an
+anchor miss on a later substitution and exited before saving - so the
+stylesheet was never written, while the markup and the JS were. Everything
+still "worked": the shelf appeared, listed objects and toggled, because an
+unstyled div in normal flow does all of that. The probe caught it as three
+separate failures (a 30x40 tab at the top of the viewport, a tray that was
+never `display: none`, and a shelf 375px wide) and they had one cause.
+**A patch script that aborts mid-run is a patch script that half-applied**,
+and the only reason this was recoverable in one step is that the writes
+happen at the end rather than per substitution.
 
 ## Symmetry joins the view gizmo, and loses its switch (a2.90)
 
