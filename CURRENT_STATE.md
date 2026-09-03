@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~25,350 lines)
-- Version at time of writing: **a2.96**
+- Version at time of writing: **a2.97**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -36,6 +36,47 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## The design pass, step 1 - tokens (a2.97)
+
+The first of a planned series that brings the Claude Design canvas into the
+app. The plan, the token map, Zeghreit's decisions and the shipping order are
+in the project doc `design-pass-plan.md`; the canvas's own text is in
+`design-canvas-notes.md`. **Read the plan before touching any chrome.**
+
+- **Palette is the canvas's Turn 2**: `--bg #0b0c0b`, `--panel #141312`,
+  `--panel2 #201e1d`, `--line #4a4544`, `--text #f3f2f2`, `--text-dim
+  #9b9797` - warm near-blacks, not blue-greys. `THEME.bg`, the grid, the
+  unselected vertex/edge greys, the view cube's face and edge colours and the
+  hover/press greys moved with it, or the viewport would have stayed blue.
+- **`--rule: 2px`** - every border that read a token is `var(--rule)`. Where
+  a heavier ring was a state's second cue (`.hub-item.on`) it is now 4px,
+  because 2px over 2px was nothing.
+- **Zero radius**: `--r-sm / --r-md / --r-pill` are all 0. The names stay.
+  Explicit `border-radius: 50%` circles (hub items, dots, sliders, material
+  balls) are untouched and are a2.98-a2.100's business.
+- **Mode hues from Turn 3**: Vertex `#d6ff4a` acid, Edge `#4ee3ff` cyan,
+  Face `#ff6fc2` magenta; `MODE_SELECT` on the model uses the same hex.
+  Object stays neutral (`#bab6b6`). **All three take dark text** -
+  `--on-accent` is `#0b0c0b`; light text on the magenta is 2.3:1.
+- **`--signal #ff563c`** is the one red in the chrome and means THIS
+  COMMITS (`#opBar button.ok`). It is not a mode. On the model
+  `THEME.select` is the same red and means "chosen".
+- **`--danger #ff4d2e`** orange, with `--danger-dim #482018`; the outliner's
+  swipe-to-delete hint reads them too.
+- **Archivo is embedded** - one variable-weight latin woff2, base64 in the
+  `<style>`, ~46 KB. The Google Fonts links are gone, so the app makes ONE
+  network request (three.js) instead of three. The view cube's canvas labels
+  are re-baked after `document.fonts.load()` resolves, because canvas 2D
+  draws with whatever is loaded at the time and the cube is built at module
+  scope.
+- `--ok` is deleted: no consumer, and it equalled the vertex hue.
+- Screenshot harness for the pass: `py -3 _uishot97.py` ->
+  `_ui97_{idle,face,ring,world,opbar,drawer}.png` at 430x860 @2x. The older
+  `_uishot.py` drives an API that no longer exists and shows idle for
+  every state.
+- Regression: `_a297` against `_a296` - see `_cmp_out.txt`; `_theme`'s
+  `8.palette` line is expected to move.
 
 ## Cool running - the gesture-time render scale (a2.96)
 
