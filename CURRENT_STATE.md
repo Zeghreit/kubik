@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~25,350 lines)
-- Version at time of writing: **a2.101**
+- Version at time of writing: **a2.102**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -36,6 +36,45 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## Drag anywhere sets the amount (a2.102)
+
+The canvas's argument (design-pass-plan.md, decision E): while an op is
+being dialled in, the amount is set by dragging ANYWHERE on the viewport -
+the pivot marker's own rule - so the slider is a readout you can also grab.
+
+- **The gesture**: one finger on the viewport, NOT on the selection (that
+  press is `directCandidate`), while `App.pendingOp` is open, not live, and
+  has a range (`amountDragEligible`: slider visible, `activeRange` finite).
+  Decided on travel like every candidate: past `dragStartPx` it is
+  `amountDrag`, `orbit.enabled = false`, and pointer X sweeps the ACTIVE
+  range across the viewport's width, snapped to the op's step, through
+  `setPendingAmount(v, true)` - byte-identical to what the slider's `input`
+  does. `endAmountDrag()` re-enables orbit and flushes the deferred apply.
+- **A still tap is still a tap** (and `handleTap` already refuses to change
+  the selection under a pending op). **Two fingers are the camera**: the
+  second finger's pointerdown ends the drag beside the other teardowns.
+  **Mouse: primary button only** - a right-drag stays OrbitControls' pan.
+- **The world ring does not arm under an amount-bearing deck.** A slow start
+  on empty space is now a common way to begin setting the amount, and Add
+  Cube in the middle of a bevel is not what a pause should mean.
+- **Region select loses to the amount** while such an op is open. The
+  `boxDrag` record armed on the same press is dropped by `endAmountDrag`,
+  or it would block the next direct drag (pointermove gates on `!boxDrag`).
+- `endAmountDrag` runs from: lift, the second-finger branch, `pointercancel`
+  (NOT `pointerleave` - a mouse crossing the canvas edge is not an end), and
+  `hideOpBar` - so Escape, confirm, a mode switch mid-drag never leave orbit
+  off behind a finished op.
+- **The live extrude is untouched**: its height is pulled by dragging the
+  section itself.
+- The deck says so: `#opHint` "DRAG ANYWHERE TO SET" beside the name, mono,
+  hidden with the slider (`refreshOpAmountVisibility`, the Mirror chooser,
+  the Knife bar) and below 520px, where the head had no honest room for it.
+- **Probe: `_amt_probe`** (suite index 31), 20 assertions driving the
+  controls with synthetic pointer events: arm, threshold, engage, mapping,
+  clamping at both rails, tap survival, two fingers, no-op ineligibility.
+- `__kubik` exports `amountDragEligible`, `endAmountDrag`, and getters for
+  `amountDrag` / `amountCandidate`.
 
 ## The design pass, step 5 - the panels (a2.101)
 

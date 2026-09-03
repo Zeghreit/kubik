@@ -1459,6 +1459,16 @@
     text-transform: uppercase; color: var(--text);
   }
   #opLabel::after { content: '.'; color: var(--signal); }
+  /* The hint under the name (a2.102): the one line that tells you the
+     viewport is the slider. Mono, dim, and gone on a narrow screen where
+     the head has no room for it. */
+  #opHint {
+    font-family: var(--mono); font-size: 9px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--text-dim); white-space: nowrap; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* Below 520px the head has no honest room for it: 118 numeral + name +
+     hint + a 90px rail overran a 412px screen and pushed the slider off. */
+  @media (max-width: 520px) { #opHint { display: none; } }
   #drawer input[type=range] { flex: 1 1 120px; min-width: 110px; accent-color: var(--accent); height: 28px; }
   #opBar input[type=range] {
     /* 44 TALL, not 28. The track stays 4px and the thumb 24 - what grows is
@@ -1771,6 +1781,7 @@
       <div id="opHead">
       <input type="text" id="opValue" inputmode="decimal" />
       <span id="opLabel">Extrude</span>
+      <span id="opHint">drag anywhere to set</span>
       <input type="range" id="opSlider" />
       </div>
       <div id="opCells">
@@ -1931,7 +1942,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.101</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.102</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -11688,7 +11699,7 @@ function refreshOpAmountVisibility() {
   applyOptionRange(op);
   const spec = OP_SPECS[op.kind];
   const dead = op.live || (spec && spec.noAmount) || (op.kind === 'loopcut' && op.groupMode !== 'slide');
-  ['opSlider', 'opValue'].forEach(id => {
+  ['opSlider', 'opValue', 'opHint'].forEach(id => {
     document.getElementById(id).style.display = dead ? 'none' : '';
   });
 }
@@ -11699,6 +11710,7 @@ function refreshOpAmountVisibility() {
 let mirrorChooser = null;
 
 function hideOpBar() {
+  endAmountDrag();   // a2.102: never leave orbit off behind a finished op
   mirrorChooser = null;
   submergeOut(opBarEl);
   // The chooser bars (Mirror, Extrude grouping) drive this bar by hand and
@@ -16120,6 +16132,46 @@ let directDrag = null;
    sideways instead. */
 let extrudeCandidate = null;
 let extrudeDrag = null;
+/* DRAG ANYWHERE SETS THE AMOUNT (a2.102). While an op with a range is being
+   dialled in, a single finger on the viewport that is not on the selection
+   is a candidate; once it has travelled the drag threshold it owns the
+   amount until it lifts. Kept apart from directCandidate for the same
+   reason extrudeCandidate is: it must never become a geometry drag. */
+let amountCandidate = null;   // { x, y, start } - a press that might set the amount
+let amountDrag = null;        // the same, once it has travelled
+/* The whole viewport width sweeps the whole range, so the mapping is the
+   slider's own: a finger that crosses the screen crosses the rail. Snapped
+   to the op's step so the readout never shows a number the slider could
+   not. */
+function amountDragEligible() {
+  const op = App.pendingOp;
+  if (!op || op.live) return false;
+  if (opSliderEl.style.display === 'none') return false;   // an op with no amount
+  const r = activeRange(op);
+  return r && Number.isFinite(r.min) && Number.isFinite(r.max) && r.max > r.min;
+}
+function amountFromDrag(ev) {
+  const op = App.pendingOp;
+  if (!op || !amountDrag) return;
+  const r = activeRange(op);
+  const w = Math.max(120, viewportEl.clientWidth);
+  const raw = amountDrag.start + (ev.clientX - amountDrag.x) / w * (r.max - r.min);
+  const step = r.step || 0.01;
+  const v = Math.round(raw / step) * step;
+  setPendingAmount(v, true);
+}
+function endAmountDrag() {
+  if (!amountDrag && !amountCandidate) return;
+  const was = amountDrag;
+  amountDrag = null; amountCandidate = null;
+  if (was) {
+    orbit.enabled = true; flushPendingApply();
+    /* A region drag armed on the same press never ran; drop it, or its
+       stale record blocks the next direct drag (pointermove gates on
+       `!boxDrag`). */
+    if (boxDrag) { boxDrag = null; selectBoxEl.style.display = 'none'; lassoSvgEl.style.display = 'none'; }
+  }
+}
 
 /* ---------------- Active transform tool ----------------
    One gesture does all three transforms; which one it does depends on the
@@ -16873,7 +16925,7 @@ function showKnifeBar() {
     refreshKnifeBar();
   });
   el.appendChild(back);
-  ['opSlider', 'opValue', 'opSegments'].forEach(id => { document.getElementById(id).style.display = 'none'; });
+  ['opSlider', 'opValue', 'opHint', 'opSegments'].forEach(id => { document.getElementById(id).style.display = 'none'; });
   document.getElementById('opOk').style.display = '';
   surfaceIn(opBarEl);
   refreshKnifeBar();
@@ -19095,6 +19147,7 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     // The camera is taking over, so the half-placed point is not a point.
     if (App.knife) { App.knife.live = null; App.knife.pid = null; refreshKnifePreview(); }
     directCandidate = null;
+    endAmountDrag();   // a2.102: a second finger is the camera, not the amount
     orbit.enabled = true;
     return;
   }
@@ -19152,6 +19205,13 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     return;
   }
 
+  /* DRAG ANYWHERE SETS THE AMOUNT (a2.102). Not on the selection - that
+     press is a candidate for moving it, above - and only for an op that
+     has an amount. Decided on travel like every other candidate, so a
+     still tap is still a tap and a hold still blooms the world ring. */
+  amountCandidate = (!directCandidate && amountDragEligible() && ev.button === 0)
+    ? { x: ev.clientX, y: ev.clientY, start: App.pendingOp.amount } : null;
+
   /* Holding still blooms a ring at the finger. WHICH ring depends on what
      is under it: on the selection you get that selection's tools, on empty
      space you get the world ring - Add Cube and everything that used to be
@@ -19175,7 +19235,7 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
        Holding still does nothing useful in a region drag anyway: any real
        travel cancels the timer, so a genuine box or lasso is untouched, and
        a deliberate hold abandons the region and blooms the ring instead. */
-    toolRingTimer = setTimeout(() => {
+    if (!amountCandidate) toolRingTimer = setTimeout(() => {
       toolRingTimer = null;
       if (boxDrag) {
         boxDrag = null;
@@ -19218,7 +19278,18 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
       Math.hypot(ev.clientX - pointerDown.x, ev.clientY - pointerDown.y) > RING_MOVE_CANCEL_PX) {
     clearToolRingTimer();
   }
-  if (activePointers.size > 1) return;   // camera gesture - hands off
+  if (activePointers.size > 1) { endAmountDrag(); return; }   // camera gesture - hands off
+  if (amountDrag) { amountFromDrag(ev); return; }
+  if (amountCandidate && !App.knife && !toolRingActive &&
+      Math.hypot(ev.clientX - amountCandidate.x, ev.clientY - amountCandidate.y) > dragStartPx(ev)) {
+    clearToolRingTimer();
+    amountDrag = amountCandidate; amountCandidate = null;
+    /* The camera had this press until now; from here the finger is the
+       slider. Re-enabled when it lifts. */
+    orbit.enabled = false;
+    amountFromDrag(ev);
+    return;
+  }
   if (pivotDrag) { updatePivotDrag(ev); return; }
   if (App.knife) { knifePointerMove(ev); return; }
   if (toolRingActive) { updateToolRingHover(ev); return; }
@@ -19336,6 +19407,9 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
   // change the selection out from under the move that just happened.
   if (extrudeDrag) { endExtrudeDrag(); pointerDown = null; return; }
   extrudeCandidate = null;
+  // A drag that set the amount is not a tap: the selection and the op stay.
+  if (amountDrag) { endAmountDrag(); pointerDown = null; return; }
+  amountCandidate = null;
   if (directDrag) { endDirectDrag(); pointerDown = null; return; }
   directCandidate = null;
   if (boxDrag) {
@@ -20752,7 +20826,7 @@ function showMirrorChooser(axis) {
     el.appendChild(b);
   });
   document.getElementById('opLabel').textContent = 'Mirror';
-  ['opSlider', 'opValue', 'opSegments', 'opToggleWrap', 'opOk'].forEach(id => {
+  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opToggleWrap', 'opOk'].forEach(id => {
     document.getElementById(id).style.display = 'none';
   });
   surfaceIn(opBarEl);
@@ -26929,6 +27003,7 @@ window.addEventListener('resize', onResize);
        crosses the canvas edge, and committing there would end a drag that
        merely strayed over the top bar and came back. */
     if (ev.type === 'pointercancel') {
+      endAmountDrag();   // a2.102: the amount stays where the drag reached; a mere leave is not an end
       if (directDrag) endDirectDrag();
       if (extrudeDrag) endExtrudeDrag();
       if (boxDrag) {
@@ -27343,6 +27418,9 @@ if (PICK_DEBUG) {
     hemi, dir, rimLight, fill, applyEnvRig, applyEnvLive, cameraTurnDeg,
     // a2.96: the gesture-time render scale and the drag coalescer
     renderScaleWanted, setRenderScale, flushDirectDrag, LIVE_PIXEL_RATIO,
+    // a2.102: drag-anywhere amount
+    amountDragEligible, endAmountDrag,
+    get amountDrag() { return amountDrag; }, get amountCandidate() { return amountCandidate; },
     liveTouches, LIVE_TOUCH_PX,
     get renderScaleLive() { return renderScaleLive; },
     get pendingDragEv() { return pendingDragEv; },
