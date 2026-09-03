@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~25,350 lines)
-- Version at time of writing: **a2.97**
+- Version at time of writing: **a2.98**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -36,6 +36,44 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## The design pass, step 2 - the diamond ring (a2.98)
+
+The canvas's 2b ring. Geometry untouched - same seat angles, same radius
+rule, same pick-by-angle, same hold-aim-lift - only the picture, plus two
+feedback elements the canvas argued for.
+
+- **A seat is a diamond**: the 52px `.hub-item` box is `rotate(45deg)` and
+  `.ic` is turned back. Layout maths unchanged; the TIP now reaches
+  `TOOL_RING_TIP` = 37px from the centre instead of a disc's 26, and three
+  clearances read it: `fits` (edge), `margin` (the centre clamp, was R+30,
+  now R+41) and `RING_LABEL_GAP_PX` (16 -> 27). At 13 seats on a 360px
+  viewport neighbouring tips touch; the ring picks by direction, so that
+  costs nothing but looks.
+- **Delete wears hazard stripes**: `repeating-linear-gradient(135deg,
+  --danger-dim, --danger-band)` drawn in the box's frame, which the rotation
+  turns horizontal. `--danger-band #c4402a` is a third danger token because
+  the dim alone against the panel was a 1.5:1 texture nobody would see. The
+  glyph is `--text` on it, not `--danger`.
+- **The reticle is the dead zone made visible** - a 37px diamond whose tips
+  sit at `TOOL_RING_DEAD_ZONE_PX` (26), at 55% opacity. **It is drawn at the
+  AIM POINT, not the ring's centre**: near an edge the clamp moves the ring
+  but the bearing is still measured from the finger (`aimX/aimY`), and a
+  reticle at the centre would lie in exactly that case.
+- **The aim line** (`#ringAim`, `placeRingAim`) runs from the aim point to
+  the lit seat's near edge, worked out per bearing (tip on the axes, flat
+  side on the diagonals). Shown only while a seat is lit; `closeToolRing`'s
+  `innerHTML = ''` takes it with everything else.
+- `#ringLabel` is uppercase, 11px/700, .08em, and now clamps VERTICALLY as
+  well as horizontally - a seat straight up put the label's centre 53px
+  above a ring kept 41px from the edge.
+- `radial-pop` carries the rotation in both keyframes. Any future
+  reduced-motion rule for it must be `animation: none`, never
+  `transform: none`, or the seats un-rotate.
+- `.hub-item .tx` is dead (seats are built with `.ic` only) and would render
+  at 45 degrees if revived.
+- Screenshots: `_uishot97.py` gained `ringaim` (a synthetic pointermove on
+  `orbit.domElement` lights a seat).
 
 ## The design pass, step 1 - tokens (a2.97)
 
