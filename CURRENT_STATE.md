@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,697 lines)
-- Version at time of writing: **a2.93**
+- Version at time of writing: **a2.94**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -36,6 +36,114 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## Hold a row to pick it up (a2.94)
+
+Zeghreit: *"reorder by dragging, group by dragging one row onto another,
+ungroup by opening a group and dragging one of its components out."*
+
+### Why it has to be a hold
+
+a2.92 spent the row's **horizontal** axis on swipe and handed its **vertical**
+to the scroller. There is no third axis, so the third gesture has to start
+somewhere neither of those is listening: **a hold.** 340ms without moving
+lifts the row; after that the finger owns both axes until it lets go.
+
+The hold is dropped by the first 8px of movement, so a swipe and a scroll both
+still start instantly — nobody waits out a timer to flick the list.
+
+### Two answers, two pictures
+
+- The **middle band** of a row means *into it* — the row gets an accent
+  outline. Dropping a loose object onto another makes a group of the two;
+  dropping onto a group or one of its children adds to that group.
+- The **edges and the gaps** mean *between* — a thin accent line with a dot,
+  drawn at the boundary the drop would use.
+
+Confusing those two is the only real failure this gesture can have, so they
+never appear at once and the line is anchored to the edge of a whole **block**
+— a group's row plus every child under it — not to whichever child row the
+finger happens to be over.
+
+Dragging a child out of its group's span takes just that child out; the group
+of one it leaves behind dissolves itself, which `pruneGroups` already did.
+
+Escape or a pointercancel aborts: the row goes back, nothing changes, nothing
+is recorded.
+
+### The model is two lists and one flatten
+
+`entries` is the top-level order — objects and groups — and each group owns its
+`childIds`. A drop edits one or both, then `App.objects` is rebuilt from them.
+
+The alternative was arithmetic on `App.objects` indices, converting a visual
+drop position into an array index while groups occupy several slots and their
+members need not be contiguous. That is where the bugs live. Rebuilding is
+O(objects) over a scene of a few dozen, it cannot desync the two orderings,
+and every case is three lines. `flattenEntries` also sweeps anything the walk
+missed onto the end: **reordering a list must not be able to delete
+anything**, whatever else is wrong.
+
+### The drop names a row, not a number
+
+`resolveOutDrop` returns the row a drop is *relative to*, and the index is
+worked out after the dragged row has been detached. The first cut returned a
+number computed against the list that still contained it — see below.
+
+### What a fresh reviewer found before this shipped
+
+Five, and the first is the one to learn from:
+
+- **Every downward drop landed a slot too low.** The index was computed
+  against the list as it still was, and the detach then shifted everything
+  below the row's old place by one. Dragging *up* was correct throughout,
+  which is exactly how a bug like this survives being tried out by hand — and
+  the position that reads as "leave it where it is" quietly moved the row and
+  pushed a history step. The probe missed it too: section 39 dropped at the
+  very end of the list, where the clamp hides it. **A reorder test that only
+  moves things to the end is not a reorder test.**
+- **The 4px gap between rows meant "move to the end".** Any pointer that was
+  not inside a row's rect fell through to the terminal fallback, so the line
+  snapped to the bottom of the list every time the finger crossed a boundary,
+  and a release in that band committed it. On a 40px pitch, one release in ten.
+- **A hold whose row was rebuilt away never ended.** Its pointerup goes with
+  the element, so the timer fired onto a detached row for a finger already up,
+  and nothing would ever stop the frame loop or remove the four document
+  listeners — including the non-passive `touchmove` that `preventDefault`s
+  **every** touch on the page. On a phone there is no Escape, so that is the
+  app dead until reload.
+- **The line could be drawn inside a group the drop would step over**, because
+  a lifted group resolves against a child row to a boundary of that child's
+  whole parent.
+- **The click that ends a lift could select a row.** Marking the row the way
+  the swipe does does not survive here, because ending a lift rebuilds the
+  list — so the click lands on a fresh element with a clean flag. A short
+  window on the clock covers the gap the rebuild opens.
+
+### One that the probe found by being flaky
+
+Section 39 failed intermittently, and the cause was real: the drop was being
+read off the **last painted frame**. A finger that moves fast and lets go
+immediately would land wherever that stale frame said — a row or two out on a
+loaded phone. It is resolved at the lift now, from the pointer's own position,
+and the section moves and releases within a single tick so that no frame can
+run in between. **A flaky test is a bug report.**
+
+### The one line that carries the gesture on touch
+
+`touch-action` is read when the touch sequence BEGINS, so flipping it at lift
+time would not take the vertical axis back from the scroller until the *next*
+gesture — the row would follow the finger while the tray scrolled underneath
+it. A non-passive `touchmove` listener calling `preventDefault` is the only
+thing that stops a scroll already in flight.
+
+### Probe
+
+`_out_probe.js`, forty-seven sections. Six on the pick-up itself — a moving
+finger does not lift, a still one does, a drop between rows reorders, a drop
+onto a row groups and draws only the outline, a child dragged out ungroups,
+and Escape changes and records nothing. Five more came one per review finding,
+including the exact-landing test the original missed.
 
 ## Objects can be grouped (a2.93)
 
@@ -143,12 +251,9 @@ straight out of the review, one per finding — including a box-select fixture
 that **proves itself first**, because a box that happened to catch all three
 objects would have passed while measuring nothing.
 
-### Still to come
+### Then
 
-**a2.94 — long-press pick-up.** a2.92 spent the row's horizontal axis on swipe
-and its vertical on scroll, so reorder cannot be a plain drag: hold to lift a
-row, then drop it between two rows to reorder or onto a row to group, and drag
-a child out of its parent to ungroup that one.
+The pick-up arrived at a2.94, above.
 
 ## A row is a handle on an object (a2.92)
 

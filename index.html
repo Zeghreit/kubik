@@ -622,7 +622,36 @@
     box-shadow: 0 8px 24px rgb(var(--shadow) / .18);
   }
   #outFly.open #outTray { display: flex; }
-  #outList { display: flex; flex-direction: column; gap: 4px; }
+  /* Positioned, because the insertion line is drawn INTO it rather than
+     between the rows - moving real rows apart to open a gap would fight the
+     scroller for height on every frame of a drag. */
+  #outList { display: flex; flex-direction: column; gap: 4px; position: relative; }
+  /* A LIFTED ROW (a2.94). It leaves the flow visually but not structurally:
+     its slot keeps the space, so the list does not collapse under the finger
+     and the insertion line stays meaningful. */
+  .outRow.outLifted {
+    z-index: 3;
+    box-shadow: 0 10px 24px rgb(var(--shadow) / .35);
+    border-color: var(--accent);
+    opacity: .96;
+  }
+  .outSlot.outLiftedSlot { opacity: .999; }      /* own stacking context */
+  /* The row a drop would go INTO - grouping, not reordering. An outline
+     rather than a line, because the two answers must never be confused. */
+  .outRow.outDropInto {
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--accent);
+    background: linear-gradient(var(--accent-dim), var(--accent-dim)), var(--panel);
+  }
+  #outLine {
+    position: absolute; left: 0; right: 0; height: 2px;
+    background: var(--accent); border-radius: 2px;
+    pointer-events: none; display: none;
+  }
+  #outLine::before {
+    content: ''; position: absolute; left: -1px; top: -3px;
+    width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+  }
   #outEmpty { font-size: 12px; color: var(--text-dim); padding: 8px 6px; }
   /* 44 tall, like every other target in this file. A 36px row fits more
      names on screen and is the wrong trade on a phone. */
@@ -1686,7 +1715,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.93</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.94</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -24337,6 +24366,409 @@ function buildMatTray() {
   matTrayInnerEl.appendChild(add);
 }
 
+/* ---------------- The pick-up (a2.94) ----------------
+
+   REORDER CANNOT BE A PLAIN DRAG. a2.92 spent the row's horizontal axis on
+   swipe and handed its vertical to the scroller, so the third gesture has to
+   start somewhere neither of those is listening: a HOLD. Hold to lift, then
+   the finger owns both axes until it lifts.
+
+   The hold aborts the moment the finger moves more than a few pixels, so a
+   swipe and a scroll both still start instantly - nobody waits 340ms to
+   flick the list. */
+const OUT_HOLD_MS = 340;
+const OUT_HOLD_SLOP = 8;
+const OUT_EDGE = 44;        // the auto-scroll band at each end of the tray
+const OUT_EDGE_RATE = 12;   // px per frame at the very edge
+let _outLift = null;
+/* THE CLICK AFTER A LIFT BELONGS TO NOBODY. Marking the row itself - the way
+   the swipe does - does not survive here, because ending a lift REBUILDS the
+   list, so the click lands on a fresh element with a clean flag and selects
+   whatever the finger happened to let go over. A short window on the clock
+   covers the gap the rebuild opens. */
+let _outLiftEndedAt = 0;
+function outJustLifted() { return performance.now() - _outLiftEndedAt < 350; }
+
+function outLineEl() {
+  let el = document.getElementById('outLine');
+  if (!el && outListEl) {
+    el = document.createElement('div');
+    el.id = 'outLine';
+    outListEl.appendChild(el);
+  }
+  return el;
+}
+
+function outSlots() {
+  return outListEl ? Array.prototype.slice.call(outListEl.querySelectorAll('.outSlot')) : [];
+}
+
+/* WHAT THE ROW UNDER THE FINGER MEANS. The dataset is written when the slot
+   is built, so this never has to walk back up to the model to find out what
+   it is looking at. */
+function outSlotInfo(slot) {
+  return {
+    kind: slot.dataset.kind,
+    id: +slot.dataset.id,
+    isChild: slot.dataset.child === '1',
+    groupId: slot.dataset.group ? +slot.dataset.group : null
+  };
+}
+
+/* A group cannot go INTO anything - one level deep - so while a group is
+   lifted every row offers only the boundaries between rows. */
+function outCanDropInto(t) { return t.kind !== 'group'; }
+
+/* Reads the pointer against the rows and says what would happen. The middle
+   band of a row means "into", its edges mean "between" - and the two are
+   drawn differently, because confusing them is the one failure this gesture
+   can have. */
+/* AN ANCHOR, NEVER A NUMBER. The first cut returned an index computed against
+   the list as it still WAS - with the dragged row in it - and applyOutDrop
+   then removed that row before splicing, so everything below its old place
+   had shifted by one. Every downward drop landed a slot too low, and the
+   position that reads as "leave it where it is" quietly moved it and pushed a
+   history step. Dragging UP was fine, which is exactly how a bug like this
+   survives being tried out by hand.
+
+   So the drop names the row it is relative to, and the index is worked out
+   after the detach, where it cannot be stale. */
+function resolveOutDrop(y) {
+  const slots = outSlots().filter(sl => sl !== _outLift.slot);
+  if (!slots.length) return null;
+  const t = _outLift.t;
+
+  /* THE GAPS BETWEEN ROWS ARE PART OF THE LIST. #outList sets gap: 4px, and
+     skipping any slot that does not contain y sent every crossing of a row
+     boundary to the fallback - the line snapped to the bottom of the list,
+     and a release in that 4px band committed "move to the very end". On a
+     40px pitch that is one release in ten. The first slot that ENDS at or
+     below the pointer owns it; a pointer in the gap above a slot is simply
+     before it. */
+  let sl = null, r = null;
+  for (let i = 0; i < slots.length; i++) {
+    const rr = slots[i].getBoundingClientRect();
+    if (y <= rr.bottom) { sl = slots[i]; r = rr; break; }
+  }
+  if (!sl) {
+    const last = slots[slots.length - 1];
+    return { kind: 'top', anchor: outSlotInfo(last), after: true, before: last };
+  }
+  const info = outSlotInfo(sl);
+  const frac = y < r.top ? 0 : (y - r.top) / (r.height || 1);
+
+  if (frac > 0.3 && frac < 0.7 && outCanDropInto(t)) {
+    if (info.kind === 'group') {
+      const g = findGroup(info.id);
+      return g ? { kind: 'into', groupId: g.id, anchorId: null, after: true, slot: sl } : null;
+    }
+    if (info.isChild) {
+      const g = findGroup(info.groupId);
+      return g ? { kind: 'into', groupId: g.id, anchorId: info.id, after: true, slot: sl } : null;
+    }
+    // Two loose objects. Dropping one on the other makes a group of them.
+    if (info.id === t.id) return null;
+    return { kind: 'pair', objId: info.id, slot: sl };
+  }
+
+  /* An EDGE of a child row still means the group - you dragged into the
+     middle of a group's children, and putting the row out at top level there
+     would be the one place the list lied about what it was showing. */
+  if (info.isChild && outCanDropInto(t)) {
+    const g = findGroup(info.groupId);
+    if (g) return { kind: 'into', groupId: g.id, anchorId: info.id, after: frac >= 0.5, before: sl };
+  }
+  return { kind: 'top', anchor: info, after: frac >= 0.5, before: sl };
+}
+
+/* WHERE THE LINE GOES. For a top-level drop the boundary is the edge of a
+   whole BLOCK, and a group's block is its row plus every child under it - so
+   anchoring the line to the child row the finger happens to be over would
+   draw it inside a group the drop is going to step over entirely. That is the
+   one thing this gesture cannot afford: the indicator and the action
+   disagreeing. */
+function outLineAnchor(drop) {
+  if (!drop || drop.kind !== 'top' || !drop.before) return drop ? drop.before : null;
+  const info = drop.anchor;
+  if (!info || !info.isChild) return drop.before;
+  const slots = outSlots();
+  const gid = String(info.groupId);
+  if (!drop.after) {
+    return slots.filter(sl => sl.dataset.kind === 'group' && sl.dataset.id === gid)[0] || drop.before;
+  }
+  const kids = slots.filter(sl => sl.dataset.group === gid);
+  return kids[kids.length - 1] || drop.before;
+}
+
+function paintOutDrop(drop) {
+  const line = outLineEl();
+  outListEl.querySelectorAll('.outDropInto').forEach(el => el.classList.remove('outDropInto'));
+  if (!line) return;
+  if (!drop) { line.style.display = 'none'; return; }
+  if (drop.kind === 'into' && drop.slot) {
+    line.style.display = 'none';
+    drop.slot.querySelector('.outRow').classList.add('outDropInto');
+    return;
+  }
+  if (drop.kind === 'pair' && drop.slot) {
+    line.style.display = 'none';
+    drop.slot.querySelector('.outRow').classList.add('outDropInto');
+    return;
+  }
+  const anchor = outLineAnchor(drop);
+  if (!anchor) { line.style.display = 'none'; return; }
+  const lr = outListEl.getBoundingClientRect(), ar = anchor.getBoundingClientRect();
+  const y = (drop.after ? ar.bottom : ar.top) - lr.top;
+  line.style.top = (y - 1) + 'px';
+  line.style.display = 'block';
+}
+
+function beginOutlinerLift(slot, row, t, pointerId, y) {
+  if (_outLift) return;
+  /* THE ROW HAS TO STILL BE ON THE PAGE. If it was rebuilt away inside the
+     340ms hold, its pointerup goes with it - so the timer would fire onto a
+     detached element for a finger that is already up, and nothing would ever
+     end the lift: the frame loop and four document listeners would run for
+     ever, including the non-passive touchmove that preventDefaults EVERY
+     touch on the page. On a phone there is no Escape, so that is the app dead
+     until reload. */
+  if (!row.isConnected || !slot.isConnected) return;
+  _outLift = {
+    slot: slot, row: row, t: t, pointerId: pointerId,
+    y0: y, y: y, drop: null, raf: 0, moved: false
+  };
+  row.classList.add('outLifted');
+  slot.classList.add('outLiftedSlot');
+  try { row.setPointerCapture(pointerId); } catch (e) {}
+  document.addEventListener('pointermove', onOutLiftMove, true);
+  document.addEventListener('pointerup', onOutLiftUp, true);
+  document.addEventListener('pointercancel', onOutLiftCancel, true);
+  window.addEventListener('keydown', onOutLiftKey, true);
+  /* NON-PASSIVE, and this is the load-bearing line. `touch-action` is read
+     when the touch sequence BEGINS, so flipping it here would not take the
+     vertical axis back from the scroller until the NEXT gesture - the row
+     would follow the finger while the tray scrolled underneath it.
+     preventDefault on touchmove stops the scroll mid-gesture, which is the
+     only thing that does. */
+  document.addEventListener('touchmove', onOutLiftTouch, { passive: false });
+  _outLift.raf = requestAnimationFrame(outLiftFrame);
+  paintOutDrop(null);
+}
+
+function onOutLiftTouch(ev) { if (_outLift) ev.preventDefault(); }
+
+function onOutLiftMove(ev) {
+  if (!_outLift || ev.pointerId !== _outLift.pointerId) return;
+  ev.stopPropagation();
+  _outLift.y = ev.clientY;
+  if (Math.abs(ev.clientY - _outLift.y0) > 3) _outLift.moved = true;
+}
+
+/* One frame does three jobs: move the row, scroll the tray when the finger is
+   near an end of it, and re-read the drop - in that order, because the drop
+   has to be resolved against where the rows are AFTER the scroll. */
+function outLiftFrame() {
+  if (!_outLift) return;
+  // And if anything rebuilds the list underneath a live lift, let go rather
+  // than follow a row that is no longer in the page.
+  if (!_outLift.row.isConnected) { endOutlinerLift(false); return; }
+  const tray = document.getElementById('outTray');
+  if (tray) {
+    const r = tray.getBoundingClientRect();
+    let d = 0;
+    if (_outLift.y < r.top + OUT_EDGE) d = -OUT_EDGE_RATE * (1 - (_outLift.y - r.top) / OUT_EDGE);
+    else if (_outLift.y > r.bottom - OUT_EDGE) d = OUT_EDGE_RATE * (1 - (r.bottom - _outLift.y) / OUT_EDGE);
+    if (d) tray.scrollTop += d;
+  }
+  const sr = _outLift.slot.getBoundingClientRect();
+  _outLift.row.style.transform = 'translateY(' + (_outLift.y - (sr.top + sr.height / 2)) + 'px)';
+  _outLift.drop = resolveOutDrop(_outLift.y);
+  paintOutDrop(_outLift.drop);
+  _outLift.raf = requestAnimationFrame(outLiftFrame);
+}
+
+/* RESOLVED AT THE LIFT, not read off the last frame. The frame loop exists to
+   PAINT, and a frame can be late or skipped - a finger that moves fast and
+   lets go immediately would otherwise land wherever the stale frame said,
+   which on a loaded phone is a row or two out. The probe caught this as an
+   intermittent failure before it was ever a bug report. */
+function endOutlinerLift(commit, y) {
+  if (!_outLift) return;
+  if (commit && typeof y === 'number') _outLift.drop = resolveOutDrop(y);
+  const lift = _outLift;
+  _outLift = null;
+  cancelAnimationFrame(lift.raf);
+  document.removeEventListener('pointermove', onOutLiftMove, true);
+  document.removeEventListener('pointerup', onOutLiftUp, true);
+  document.removeEventListener('pointercancel', onOutLiftCancel, true);
+  window.removeEventListener('keydown', onOutLiftKey, true);
+  document.removeEventListener('touchmove', onOutLiftTouch, { passive: false });
+  try { lift.row.releasePointerCapture(lift.pointerId); } catch (e) {}
+  if (lift.row._outReset) lift.row._outReset();
+  lift.row.classList.remove('outLifted');
+  lift.slot.classList.remove('outLiftedSlot');
+  lift.row.style.transform = '';
+  paintOutDrop(null);
+  /* The click this lift ends with means nothing - without this it selects
+     whatever the finger happened to be over when it let go. */
+  lift.row._swiped = true;
+  _outLiftEndedAt = performance.now();
+
+  const said = commit ? applyOutDrop(lift.t, lift.drop) : null;
+  if (said) {
+    refreshUI();
+    refreshGizmoAttachment();
+    pushHistory();
+    toast(said);
+  } else {
+    // Nothing changed, so nothing is recorded and the row simply goes back.
+    refreshOutliner();
+  }
+}
+
+function onOutLiftUp(ev) {
+  if (!_outLift || ev.pointerId !== _outLift.pointerId) return;
+  ev.stopPropagation();
+  endOutlinerLift(true, ev.clientY);
+}
+function onOutLiftCancel(ev) {
+  if (!_outLift || ev.pointerId !== _outLift.pointerId) return;
+  ev.stopPropagation();
+  endOutlinerLift(false);
+}
+function onOutLiftKey(ev) {
+  if (!_outLift || ev.key !== 'Escape') return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  endOutlinerLift(false);
+}
+
+/* ---------------- Reorder and regroup by dragging (a2.94) ----------------
+
+   THE WHOLE MODEL IS TWO LISTS AND ONE FLATTEN. `entries` is the TOP-LEVEL
+   order - objects and groups - and each group owns its `childIds` order.
+   A drop edits one or both, and then App.objects is rebuilt from them.
+
+   The alternative was arithmetic on App.objects indices, converting a visual
+   drop position into an array index while groups occupy several slots and
+   their members need not be contiguous. That is where the bugs live. Rebuild
+   instead: it is O(objects) over a scene of a few dozen, it cannot desync the
+   two orderings, and every case below is three lines. */
+
+function outEntries() {
+  const seen = new Set(), entries = [];
+  App.objects.forEach(o => {
+    if (seen.has(o.id)) return;
+    const g = groupOf(o.id);
+    if (g) {
+      entries.push({ kind: 'group', id: g.id });
+      g.childIds.forEach(id => seen.add(id));
+    } else {
+      entries.push({ kind: 'object', id: o.id });
+    }
+  });
+  return entries;
+}
+
+function flattenEntries(entries) {
+  const out = [], taken = new Set();
+  entries.forEach(e => {
+    if (e.kind === 'group') {
+      const g = findGroup(e.id);
+      if (!g) return;
+      g.childIds.forEach(id => {
+        const o = findObject(id);
+        if (o && !taken.has(o.id)) { out.push(o); taken.add(o.id); }
+      });
+    } else {
+      const o = findObject(e.id);
+      if (o && !taken.has(o.id)) { out.push(o); taken.add(o.id); }
+    }
+  });
+  /* THE SAFETY NET. If any walk above ever misses an object it keeps its
+     place at the end rather than being dropped from the scene. Reordering a
+     list must not be able to delete anything, whatever else is wrong. */
+  App.objects.forEach(o => { if (!taken.has(o.id)) out.push(o); });
+  App.objects = out;
+}
+
+/* Detach the dragged thing from wherever it currently is, and hand back the
+   top-level entry list with it removed. A child leaves its group's childIds;
+   a top-level object or a group leaves `entries`. */
+function outDetach(t, entries) {
+  if (t.kind === 'group') return entries.filter(e => !(e.kind === 'group' && e.id === t.id));
+  const g = groupOf(t.id);
+  if (g) {
+    g.childIds = g.childIds.filter(id => id !== t.id);
+    return entries;
+  }
+  return entries.filter(e => !(e.kind === 'object' && e.id === t.id));
+}
+
+/* Applies a resolved drop. Returns a short description of what changed, or
+   null when the drop was a no-op - which is what decides whether a history
+   step is pushed. */
+function applyOutDrop(t, drop) {
+  if (!drop) return null;
+  const before = JSON.stringify({
+    o: App.objects.map(o => o.id),
+    g: App.groups.map(g => [g.id, g.childIds.slice()])
+  });
+
+  let entries = outEntries();
+  const wasIn = t.kind === 'object' ? groupOf(t.id) : null;
+  entries = outDetach(t, entries);
+
+  if (drop.kind === 'into') {
+    const g = findGroup(drop.groupId);
+    if (!g) return null;
+    /* Worked out HERE, against childIds as it is after the detach. Reading a
+       number captured before it would put the row one place too low whenever
+       it was moving down its own group. */
+    let at = g.childIds.length;
+    if (drop.anchorId !== null && drop.anchorId !== undefined) {
+      const k0 = g.childIds.indexOf(drop.anchorId);
+      at = k0 < 0 ? g.childIds.length : k0 + (drop.after ? 1 : 0);
+    }
+    at = Math.max(0, Math.min(g.childIds.length, at));
+    g.childIds.splice(at, 0, t.id);
+  } else if (drop.kind === 'pair') {
+    /* Two loose objects become a NEW group, standing where the one dropped
+       onto stood. Adding to an existing group is the `into` case above. */
+    const host = findObject(drop.objId);
+    if (!host) return null;
+    const at = entries.findIndex(e => e.kind === 'object' && e.id === host.id);
+    if (at < 0) return null;
+    const ng = { id: App.nextId++, name: freshGroupName(), childIds: [host.id, t.id], open: true };
+    App.groups.push(ng);
+    entries.splice(at, 1, { kind: 'group', id: ng.id });
+  } else {
+    // Same rule: the anchor is looked up in the POST-detach entry list.
+    const a = drop.anchor;
+    let at = entries.length;
+    if (a) {
+      const key = a.isChild ? { kind: 'group', id: a.groupId } : { kind: a.kind, id: a.id };
+      const k0 = entries.findIndex(e => e.kind === key.kind && e.id === key.id);
+      at = k0 < 0 ? entries.length : k0 + (drop.after ? 1 : 0);
+    }
+    at = Math.max(0, Math.min(entries.length, at));
+    entries.splice(at, 0, { kind: t.kind, id: t.id });
+  }
+
+  flattenEntries(entries);
+  pruneGroups();
+  const after = JSON.stringify({
+    o: App.objects.map(o => o.id),
+    g: App.groups.map(g => [g.id, g.childIds.slice()])
+  });
+  if (before === after) return null;
+
+  if (drop.kind === 'into') return 'Moved into ' + ((findGroup(drop.groupId) || {}).name || 'the group');
+  if (drop.kind === 'pair') return 'Grouped';
+  if (wasIn && !groupOf(t.id)) return outTargetName(t) + ' left ' + wasIn.name;
+  return 'Reordered';
+}
+
 /* ---------------- The outliner shelf (a2.91) ----------------
    The same open/close shape as the materials tray, minus the closing-delay
    dance: that exists because the tray's card layout outlives its own
@@ -24603,8 +25035,13 @@ function outlinerRename(t) {
 function wireOutlinerSwipe(slot, row, t) {
   const del = slot.querySelector('.outHint.del');
   const dup = slot.querySelector('.outHint.dup');
-  let id = null, x0 = 0, y0 = 0, t0 = 0, dx = 0, far = 0;
+  let id = null, x0 = 0, y0 = 0, t0 = 0, dx = 0, far = 0, hold = 0;
   let live = false, dead = false;
+  const dropHold = () => { if (hold) { clearTimeout(hold); hold = 0; } };
+  /* Handed to the lift so that ending one - by Escape, with the button still
+     down - cannot leave this row holding a pointer id and an origin from
+     before the hold. */
+  row._outReset = () => { dropHold(); id = null; dx = 0; far = 0; live = false; dead = false; };
 
   const paint = (v) => {
     row.style.transform = v ? 'translateX(' + v + 'px)' : '';
@@ -24627,15 +25064,26 @@ function wireOutlinerSwipe(slot, row, t) {
     if (ev.button && ev.button !== 0) return;
     if (ev.target.closest('.outEye') || ev.target.closest('.outRename')) return;
     id = ev.pointerId; x0 = ev.clientX; y0 = ev.clientY; t0 = performance.now();
+    /* HOLD TO LIFT. Armed on every press and dropped by the first few pixels
+       of movement, so a swipe and a scroll both still start instantly -
+       nobody waits out the timer to flick the list. */
+    dropHold();
+    hold = setTimeout(() => {
+      hold = 0;
+      if (id !== ev.pointerId || live || dead) return;
+      beginOutlinerLift(slot, row, t, ev.pointerId, y0);
+    }, OUT_HOLD_MS);
   });
 
   row.addEventListener('pointermove', (ev) => {
+    if (_outLift) return;      // the lift owns the pointer now
     if (ev.pointerId !== id) return;
     // Belt and braces on the same staleness: no press lasts a minute.
-    if (!live && performance.now() - t0 > 60000) { id = null; return; }
+    if (!live && performance.now() - t0 > 60000) { id = null; dropHold(); return; }
     const ddx = ev.clientX - x0, ddy = ev.clientY - y0;
     // Measured even after bowing out, because a tap has to prove it did not move.
     far = Math.max(far, Math.abs(ddx), Math.abs(ddy));
+    if (far > OUT_HOLD_SLOP) dropHold();
     if (dead) return;
     if (!live) {
       /* Mostly vertical means the tray is being scrolled, and touch-action
@@ -24651,7 +25099,9 @@ function wireOutlinerSwipe(slot, row, t) {
   });
 
   const finish = (ev, cancelled) => {
+    if (_outLift) return;      // the lift has its own ending
     if (ev.pointerId !== id) return;
+    dropHold();
     const wasLive = live, wasDead = dead, wasFar = far, d = dx;
     id = null; live = false; dx = 0; far = 0; dead = false;
     try { row.releasePointerCapture(ev.pointerId); } catch (e) {}
@@ -24721,9 +25171,16 @@ function refreshOutliner() {
 /* The slot is what a swipe uncovers: two labels, fixed, and the row sliding
    over them. Delete is on the RIGHT because the row leaves to the left and
    reveals what is behind it there. */
-function buildOutSlot(row, t) {
+function buildOutSlot(row, t, isChild) {
   const slot = document.createElement('div');
   slot.className = 'outSlot';
+  slot.dataset.kind = t.kind;
+  slot.dataset.id = t.id;
+  if (isChild) {
+    slot.dataset.child = '1';
+    const g = groupOf(t.id);
+    if (g) slot.dataset.group = g.id;
+  }
   const hDup = document.createElement('div');
   hDup.className = 'outHint dup';
   hDup.textContent = 'Duplicate';
@@ -24774,9 +25231,10 @@ function buildObjectSlot(o, isChild) {
     ev.stopPropagation();
     // The click that ends a swipe would otherwise select what it deleted.
     if (row._swiped) { row._swiped = false; return; }
+    if (outJustLifted()) return;
     outlinerActivate(t);
   });
-  return buildOutSlot(row, t);
+  return buildOutSlot(row, t, isChild);
 }
 
 function buildGroupSlot(g) {
@@ -24820,6 +25278,7 @@ function buildGroupSlot(g) {
   row.addEventListener('click', (ev) => {
     ev.stopPropagation();
     if (row._swiped) { row._swiped = false; return; }
+    if (outJustLifted()) return;
     outlinerActivate(t);
   });
   return buildOutSlot(row, t);
@@ -25911,7 +26370,9 @@ function refreshUI() {
      shelf is open - refreshUI runs on every selection change and every drag
      frame that touches the UI, and rebuilding a list nobody is looking at is
      work for nothing. */
-  if (outlinerIsOpen() && !_outHoldRebuild) refreshOutliner();
+  /* NOT WHILE A ROW IS LIFTED. A rebuild would throw away the element the
+     finger is holding - and the lift ends by rebuilding anyway. */
+  if (outlinerIsOpen() && !_outHoldRebuild && !_outLift) refreshOutliner();
 
   statusEl.textContent = App.objects.length + ' object' + (App.objects.length === 1 ? '' : 's') +
     (App.mode !== 'object' ? ' · editing: ' + (findObject(App.activeObjectId)?.name || 'none') : '');
@@ -26531,6 +26992,11 @@ if (PICK_DEBUG) {
     groupSelection, ungroupSelection, findGroup, groupOf, groupMembers,
     pruneGroups, hideGroup, unhideGroup, groupIsHidden, selectionTouchesGroup,
     outTarget, freshGroupName,
+    /* The pick-up (a2.94). Exported so a probe can lift a row, move it and
+       drop it rather than assert against the arrays it edits. */
+    beginOutlinerLift, endOutlinerLift, resolveOutDrop, applyOutDrop,
+    outEntries, flattenEntries, outSlots, OUT_HOLD_MS, OUT_HOLD_SLOP,
+    get outLift() { return _outLift; },
     hideObject,
     get modeViewSuspended() { return modeViewSuspended; },
     MATERIALS, getMaterialDef, updateMaterialEverywhere, saveMaterialLibrary,
