@@ -1541,7 +1541,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.86</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.87</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -2435,6 +2435,10 @@ function cubeAlignTo(n) {
     q: new THREE.Quaternion().setFromUnitVectors(u1, u2),
     start: performance.now(), duration: 420
   };
+  /* A swing changes the direction wholesale and on purpose. Anything the
+     watch was holding is stale, and it would read the swing's own arrival
+     as a turn and drop straight out of the view it was heading for. */
+  watchingTurn = false;
 }
 
 const _cubeQ = new THREE.Quaternion();
@@ -2522,7 +2526,11 @@ function setOrthoFrustum(half) {
   orthoCam.updateProjectionMatrix();
 }
 
-function engageOrtho() {
+/* `via` is 'pill' or 'cube' - see the note further down. A flat view
+   opened any other way (a probe, a future caller) is treated as a
+   decision rather than a glance, because a glance is a thing only the
+   cube can ask for. */
+function engageOrtho(via) {
   if (orthoView) return;
   /* THE FRUSTUM THAT SHOWS WHAT THE LENS WAS SHOWING: the perspective
      camera's visible height at the TARGET plane. Same pose, same framing,
@@ -2547,9 +2555,13 @@ function engageOrtho() {
   orthoCam.matrixWorldInverse.copy(orthoCam.matrixWorld).invert();
   camera = orthoCam;
   orbit.object = orthoCam;
-  orthoView = {};
+  orthoView = { sticky: via !== 'cube' };
+  watchingTurn = false;   // a fresh flat view owes nothing to the last gesture
   refreshProjPill();
-  toast('Orthographic view');
+  /* The toast is the only place the difference is stated, and it is
+     stated at the moment it matters rather than parked in a tooltip. */
+  toast(orthoView.sticky ? 'Orthographic view - stays until you tap again'
+                         : 'Orthographic view - turn to leave');
   invalidate();
 }
 
@@ -2576,6 +2588,10 @@ function disengageOrtho(silent) {
   camera = perspCam;
   orbit.object = perspCam;
   orthoView = null;
+  /* Or the watch keeps the direction it was armed with under the LAST
+     gesture, and the next engage inherits it - so a pan, a camera
+     flight and then a cube tap would read the flight as a turn. */
+  watchingTurn = false;
   refreshProjPill();
   if (!silent) toast('Perspective view');
   invalidate();
@@ -2591,7 +2607,8 @@ function refreshProjPill() {
   projPillNameEl.innerHTML = icon(on ? 'ortho' : 'persp', 20);
   projPillEl.classList.toggle('on', on);
   projPillEl.title = on
-    ? 'Flat view - tap for perspective'
+    ? (orthoView.sticky ? 'Flat view - tap for perspective'
+                        : 'Flat view from the cube - turn to leave, or tap for perspective')
     : 'Perspective - tap for the flat view';
 }
 /* NO EAGER CALL HERE ANY MORE (a2.65). It draws an icon now, and ICON is a
@@ -2604,7 +2621,7 @@ projPillEl.addEventListener('click', () => {
      you have just asked for a projection by hand, that pending decision is
      not yours any more. */
   viewCube.cancel();
-  if (orthoView) disengageOrtho(); else engageOrtho();
+  if (orthoView) disengageOrtho(); else engageOrtho('pill');
 });
 
 viewCubeEl.addEventListener('click', (ev) => {
@@ -2614,27 +2631,64 @@ viewCubeEl.addEventListener('click', (ev) => {
   if (viewCube.handleClick(ev)) { cubeAligning = true; camAnim = null; }
 });
 
-/* TURNING KEEPS THE FLAT VIEW (a2.86).
+/* TWO WAYS IN, AND THEY MEAN DIFFERENT THINGS (a2.87).
 
-   From a2.61 to a2.85 a turn of more than a degree dropped you back into
-   perspective. That was the right rule for what the flat view WAS: an
-   emulation, a long lens pretending, which only really meant anything
-   looking straight down an axis after a cube tap. Something you visited.
+   a2.61 made every flat view temporary: a turn of more than a degree put
+   perspective back. a2.86 made every flat view permanent, because a2.85's
+   real orthographic camera is just as true from three-quarters as from the
+   front. Both were one rule for two intents.
 
-   a2.85 made it a real orthographic camera, and that removed the reason.
-   A parallel projection is just as true from three-quarters as it is from
-   the front - orbiting around a model in it is the ordinary way to work,
-   not a state to be rescued from. Every gesture now stays flat, and the
-   pill is the only thing that changes projection.
+   A CUBE TAP IS A GLANCE. You wanted to see the front, square on, to check
+   something. Turning away from it is you finishing with it, and it should
+   hand the perspective back without being asked - which is what a2.61's
+   rule was for, and it was right about this case all along.
 
-   Deleted with the rule: ORTHO_TURN_COS, _turnFrom, _turnNow, watchingTurn,
-   both listeners' turn logic, and the note about a flick's damping coast
-   carrying the view round while it still claimed to be a plan view. The
-   `start` listener survives only to cancel a cube swing, which is not about
-   projection at all. */
+   THE PILL IS A DECISION. You have said which projection you want to work
+   in. Orbiting is then ordinary work, not a reason to be overruled, and
+   only the pill takes it back.
+
+   So the watch is armed only for the flat views a cube tap opened, and
+   `orthoView.sticky` is the whole difference. A pill tap while a glance is
+   open still just toggles: the pill means perspective when it is lit,
+   whichever way you got there. And tapping the CUBE while a pill view is
+   open swings the angle without downgrading it, which falls out of
+   engageOrtho returning early when it is already flat.
+
+   The measurement is unchanged from a2.61 and it was careful. A TURN is the
+   gesture that changes the direction you look FROM: a pan moves the camera
+   and its target together, a dolly only changes the distance, so both leave
+   that unit vector alone. Reading the vector rather than asking the
+   controls which gesture is running keeps it working for a wheel, a
+   trackpad pinch and two fingers without knowing anything about any of
+   them. One degree, not zero, so a sub-pixel wobble in a pan does not
+   count.
+
+   NOT DISARMED ON `end`. Damping keeps a flick turning for about a second
+   after the finger leaves, and the controls keep firing `change` the whole
+   time. Disarming on `end` let a fast flick - one that had barely moved by
+   lift-off - coast thirty degrees round while the app still claimed to be
+   showing a plan view. A cube swing is excluded because it is not a
+   gesture: it is on its way to the flat view by design, and cubeAlignTo
+   clears the watch when it starts. */
+const ORTHO_TURN_COS = Math.cos(1 * Math.PI / 180);
+const _turnFrom = new THREE.Vector3();
+const _turnNow = new THREE.Vector3();
+let watchingTurn = false;
+
 orbit.addEventListener('start', () => {
   // A gesture abandons a swing whatever kind of gesture it is.
   viewCube.cancel();
+  if (!orthoView || orthoView.sticky) { watchingTurn = false; return; }
+  _turnFrom.copy(camera.position).sub(orbit.target).normalize();
+  watchingTurn = true;
+});
+orbit.addEventListener('change', () => {
+  if (!watchingTurn || !orthoView || orthoView.sticky || viewCube.animating) return;
+  _turnNow.copy(camera.position).sub(orbit.target).normalize();
+  if (_turnNow.dot(_turnFrom) < ORTHO_TURN_COS) {
+    watchingTurn = false;
+    disengageOrtho();
+  }
 });
 
 const raycaster = new THREE.Raycaster();
@@ -25062,7 +25116,7 @@ function animate() {
      swing - and the newer instruction should win. */
   if (camAnim) viewCube.cancel();
   else if (viewCube.animating) viewCube.update();
-  else if (cubeAligning) { cubeAligning = false; engageOrtho(); }
+  else if (cubeAligning) { cubeAligning = false; engageOrtho('cube'); }
   // ALWAYS - it is what advances the damping, and it fires 'change' while it
   // is still settling, which is what keeps the frames coming during a flick.
   orbit.update();
@@ -25350,6 +25404,11 @@ if (PICK_DEBUG) {
        that wants to LOOK at it has no way to make it paint on demand. */
     engageOrtho, disengageOrtho, viewCube, cubeRenderer, cubeScene, cubeCam,
     get orthoOn() { return !!orthoView; },
+    /* Which KIND of flat view, so a probe's failure line can say why
+       rather than only that something is wrong. The behaviour is still
+       what gets asserted - whether a turn leaves it - because that is
+       the thing a person can feel. */
+    get orthoSticky() { return !!(orthoView && orthoView.sticky); },
     MODE_VIEW, modeView, refreshModeView, setMatTrayOpen,
     get modeViewSuspended() { return modeViewSuspended; },
     MATERIALS, getMaterialDef, updateMaterialEverywhere, saveMaterialLibrary,

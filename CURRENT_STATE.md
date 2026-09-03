@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,697 lines)
-- Version at time of writing: **a2.86**
+- Version at time of writing: **a2.87**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -37,6 +37,88 @@ still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
 
+## Two ways into the flat view, and they mean different things (a2.87)
+
+Zeghreit: *"From view cube it is like temporary ortho - it is gone the moment
+one turns the camera (not translate or zoom), but ortho from pill is constant
+until it switched via same pill."*
+
+a2.61 made every flat view temporary. a2.86 made every flat view permanent.
+Both were one rule for two intents, and the argument between them was really
+an argument about which intent mattered more.
+
+**A cube tap is a GLANCE.** You wanted to see the front, square on, to check
+something. Turning away is you finishing with it, and it should hand the
+perspective back without being asked. a2.61's rule was right about this case
+all along.
+
+**The pill is a DECISION.** You have said which projection you want to work
+in. Orbiting is then ordinary work, not a reason to be overruled, and only
+the pill takes it back.
+
+`orthoView.sticky` is the whole difference, and `engageOrtho(via)` sets it
+from the call site: `'cube'` is a glance, anything else - the pill, a probe,
+any future caller - is a decision, because a glance is a thing only the cube
+can ask for.
+
+### The cases that fall out, and the ones that had to be chosen
+
+- **Pan and zoom never end a glance.** They were never the question; the
+  measurement is the camera-to-target VECTOR, and a pan moves the camera and
+  its target together while a dolly only changes the distance.
+- **A cube tap while a pill view is open swings the angle without downgrading
+  it.** That falls straight out of `engageOrtho` returning early when it is
+  already flat - no special case, and it is the right answer: you asked to
+  work in ortho, the cube just changed where you are standing.
+- **A pill tap while a glance is open still just toggles to perspective.**
+  Chosen, not inherited. The alternative - promoting a glance to a decision -
+  makes the pill mean two different things depending on a state you cannot
+  see, and leaves no obvious way out. The pill means "perspective" whenever
+  it is lit, whichever way you got there.
+- **A swing is not a turn.** `cubeAlignTo` clears the watch when it starts,
+  or the swing's own arrival reads as a turn and drops you out of the view it
+  was heading for.
+
+### Saying which one you are in
+
+The toast, at the moment it matters: *"Orthographic view - stays until you tap
+again"* against *"Orthographic view - turn to leave"*. The pill's title
+carries the same distinction for anyone who hovers. Nothing else on screen
+changes, because a second visual state for the same control would cost more
+attention than the difference is worth - the behaviour teaches itself the
+first time you turn.
+
+### The measurement, unchanged from a2.61 and still careful
+
+A TURN is the gesture that changes the direction you look FROM. Reading the
+vector rather than asking the controls which gesture is running keeps it
+working for a wheel, a trackpad pinch and two fingers alike. One degree, not
+zero, so a sub-pixel wobble in a pan does not count. And it is **not disarmed
+on `end`**: damping keeps a flick turning for about a second after the finger
+leaves, and a fast flick has barely moved by lift-off - disarming early let
+that coast carry the view thirty degrees while the app still claimed to be
+showing a plan view.
+
+### Probes
+
+`_proj_probe` sections 13-15 own this, driven through the widget and the pill
+rather than through `engageOrtho`, because `via` is decided at the call site
+and calling the worker would be asserting the argument the probe exists to
+check. A cube tap lands flat and non-sticky; a pan and a 0.3-degree wobble
+leave it alone; six degrees ends it; the pill's view survives twenty degrees,
+survives a cube tap on top of that, and still lets go when tapped.
+
+`_theme_probe` section 9 keeps the sticky half only, and says so - both halves
+in two probes is how two probes drift apart.
+
+### The lesson
+
+**When a rule is argued about twice, it is usually two rules.** a2.61 and
+a2.86 were each right about one intent and wrong about the other, and three
+versions went by before anyone asked which of the two entrances the user was
+holding in mind. The tell was that both rules had obvious counterexamples the
+author had to talk himself past.
+
 ## Turning keeps the flat view (a2.86)
 
 Zeghreit, after testing a2.85: *"camera still works the same - it breaks
@@ -54,6 +136,10 @@ Every DCC and CAD tool orbits freely in ortho and leaves it only when told.
 
 **Every gesture now stays flat. The pill is the only thing that changes
 projection**, and the cube still swings you in.
+
+> **SCOPED BY a2.87.** This holds for the flat view the PILL opens. A cube
+> tap opens a glance instead, and a turn still ends that one - which is what
+> a2.61's rule was for. Read the a2.87 section above.
 
 ### What went with it
 
@@ -4181,9 +4267,10 @@ its hue.
 > **SUPERSEDED IN PART BY a2.85.** The long-lens emulation this section
 > describes is gone - the flat view is a real `OrthographicCamera` now,
 > and with it `syncOrthoDepth`, `orthoFactor` and the fog shifting went
-> too, and a2.86 deleted the turn rule with it - every gesture stays flat
-> now and the pill is the only way out. What still holds: the switch and
-> where it sits. Read the a2.86 and a2.85 sections first.
+> too. The turn rule went in a2.86 and came back scoped in a2.87: it
+> applies to the flat view a CUBE TAP opens, not the one the pill opens.
+> What still holds unchanged: the switch and where it sits. Read the a2.87,
+> a2.86 and a2.85 sections first.
 
 Zeghreit: *"add perspective/orthogonal switch near axis cube, and after going
 into orthographic via tapping the cube, only turning the view (or the switch)
