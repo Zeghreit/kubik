@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,697 lines)
-- Version at time of writing: **a2.92**
+- Version at time of writing: **a2.93**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -36,6 +36,119 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## Objects can be grouped (a2.93)
+
+Zeghreit: *"group/ungroup op that will be both in obj bloom menu and in
+outliner."*
+
+### A group is a record, not a THREE.Group
+
+`App.groups` holds `{ id, name, childIds, open }` and the meshes stay parented
+to the scene exactly as they were. Reparenting into a real `THREE.Group` would
+have composed transforms for free and broken everything that assumes
+`mesh.parent === scene` — world matrices and the `matrixWorld`-staleness class
+of bug this file has been bitten by twice, raycasting, export, symmetry planes,
+gizmo attachment.
+
+It buys nothing here anyway, and that was checked rather than assumed before a
+line was written: **the multi-object drag is already rigid about the
+selection's shared centre** (`selectionCenterWorld`, and the `T · M · T⁻¹`
+sandwich in the rotate and scale paths). So selecting a group's members and
+dragging moves them as one, and a group never needs a transform of its own.
+
+**One level deep.** A group holds objects, never groups. Nesting would turn
+every walk of the object list — and there are 37 of them — into a walk of a
+tree, for something nobody has asked for. Dropping a row onto a group will
+ADD to it rather than nest.
+
+Group ids come from the same `App.nextId` counter as objects, so one id can
+never mean two different rows.
+
+### Upkeep is one hook
+
+`pruneGroups()` runs from `refreshUI`, the same trick `reconcileIsolation`
+uses and for the same reason: every op in the app ends by refreshing the UI,
+so hooking that one place covers join, separate, delete, collapse, detach and
+import at once, and **not one of them had to learn that groups exist**. It
+drops dead ids and dissolves a group that is down to one member — a group of
+one is not a group, and leaving it would put a disclosure triangle over a
+single object for ever.
+
+### What a group does
+
+- **A tap in the viewport on any member takes the whole group.** That is what
+  grouping is FOR — a tap that grabbed one leg of a chair would make the group
+  an outliner decoration rather than a modelling tool. Region select and
+  Shrink expand the same way, or a box over two legs of a three-part group
+  would drag two legs with nothing on screen to say so.
+- **The outliner is where one member is still reachable.** Unfold the group
+  and tap a child row: that child alone. That is what unfolding was for.
+- **Group** (seat 12, inboard of Join) and **Ungroup** (seat 4, inboard of
+  Separate) — the pairings are the point. Join makes several meshes one mesh
+  and only Separate undoes it; Group makes several objects one selection and
+  lets go again. Each is offered only where it would do something.
+- **On a group row**: the eye hides every member, swipe left takes the group
+  and its contents, swipe right copies the assembly AS an assembly, double-tap
+  renames it, and the caret unfolds it without selecting anything.
+- **The group eye is all-or-nothing.** `hideObject` refuses the last object
+  still showing one at a time, so a group taken member by member would hide
+  some and refuse the rest — a switch that did most of what it said. Decided
+  for the whole group up front instead.
+
+### The file
+
+`groups` is a list of ids and a name. `open` is deliberately not written —
+which rows you had unfolded is a way of looking, not part of the model, the
+same line the view gizmo drew at a2.90. A file from before this version has no
+`groups` key and loads with none.
+
+### What a fresh reviewer found before this shipped
+
+Five, and the first one would have shipped a feature that could not be undone:
+
+- **Grouping recorded no undo step at all.** `pushHistory` dedupes on a
+  signature of the model, and `groups` was not in it — so a document that had
+  just gained a group looked byte-identical to the one before it and took the
+  early return. Group was unrecoverable, Ungroup could be undone back into
+  existence by a Redo carrying the old grouping, and a renamed group lost its
+  name to the next undo. Serialize and restore were already right; this one
+  gate threw the step away.
+- **Region select and Shrink bypassed the expansion**, because they write the
+  selection set by hand rather than going through the tap.
+- **The two Duplicates gave two different answers** — the outliner swipe
+  re-grouped its copies and the ring handed back a loose pile, and the ring is
+  the common path precisely because a tap already takes the whole group.
+- **A partly hidden group could be selected into.** The check asked whether the
+  WHOLE group was hidden, so a group with one child hidden on its own fell
+  through and selected an object nobody could see — the exact trap the object
+  row was fixed for at a2.91.
+- **Group and Ungroup shared one seat**, so Group vanished the moment anything
+  in the selection was grouped: no way to add a fourth part to a group of
+  three except to dissolve it and start over — and the re-parenting
+  `groupSelection` does on the way in, the code that makes adding work, could
+  never run.
+
+### Probe
+
+`_out_probe.js`, thirty-six sections. Ten cover grouping: the ring groups and
+offers each op only where it does something; the list nests with the group
+standing where its first member stood; a group row takes the assembly and a
+child row takes the child; a viewport tap takes the group; the eye is
+all-or-nothing and can never empty the scene; the swipe takes the contents and
+undo brings them back; a copy of a group is a group; a group of one dissolves
+itself; ungroup keeps every object; and the grouping survives a save/load
+round trip while a file without a `groups` key still opens. Five more came
+straight out of the review, one per finding — including a box-select fixture
+that **proves itself first**, because a box that happened to catch all three
+objects would have passed while measuring nothing.
+
+### Still to come
+
+**a2.94 — long-press pick-up.** a2.92 spent the row's horizontal axis on swipe
+and its vertical on scroll, so reorder cannot be a plain drag: hold to lift a
+row, then drop it between two rows to reorder or onto a row to group, and drag
+a child out of its parent to ungroup that one.
 
 ## A row is a handle on an object (a2.92)
 

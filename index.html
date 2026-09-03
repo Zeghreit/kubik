@@ -657,6 +657,25 @@
     border-color: var(--accent); color: var(--text);
     background: linear-gradient(var(--accent-dim), var(--accent-dim)), var(--panel);
   }
+  /* A GROUP READS AS A HEADING and its members as what is under it: the
+     caret and the count carry the difference, and the children are indented
+     rather than decorated. */
+  .outRow.outGroup { font-weight: 600; color: var(--text); }
+  .outRow.outChild { margin-left: 18px; }
+  .outCaret {
+    width: 24px; height: 32px; min-height: 0; padding: 0; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: none; border: none; color: var(--text-dim);
+    font-size: 16px; line-height: 1;
+    transition: transform .16s ease;
+  }
+  .outCaret.open { transform: rotate(90deg); }
+  .outCount {
+    flex-shrink: 0; min-width: 20px; padding: 0 6px;
+    font-size: 11px; font-weight: 600; text-align: center;
+    color: var(--text-dim); background: var(--panel2);
+    border-radius: 999px; line-height: 18px;
+  }
   .outRename {
     flex: 1 1 auto; min-width: 0; min-height: 32px; height: 32px;
     padding: 0 6px; font-size: 12px;
@@ -1667,7 +1686,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.92</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.93</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -2788,6 +2807,25 @@ const raycaster = new THREE.Raycaster();
 
 const App = {
   objects: [],          // {id, name, mesh}
+  /* GROUPS (a2.93). A group is a RECORD - { id, name, childIds } - and NOT a
+     THREE.Group: the meshes stay parented to the scene exactly as they were.
+     Reparenting would have composed transforms for free and broken everything
+     that assumes `mesh.parent === scene` - world matrices and the
+     matrixWorld-staleness class of bug this file has been bitten by twice,
+     raycasting, export, symmetry planes, gizmo attachment. It buys nothing
+     here either, because the multi-object drag is ALREADY rigid about the
+     selection's shared centre: select a group's members and the existing
+     transform moves them as one.
+
+     ONE LEVEL DEEP. A group holds objects, never groups. Nesting would turn
+     every walk of the object list - and there are 37 of them - into a walk of
+     a tree, for a feature nobody has asked for yet. Dropping a row onto a
+     group ADDS to it rather than nesting.
+
+     Ids come from the same counter as objects, so one id can never mean two
+     different rows. `open` is UI state and is deliberately not saved, the
+     same rule the view gizmo took at a2.90. */
+  groups: [],           // {id, name, childIds:[], open}
   nextId: 1,
   mode: 'object',        // object | vertex | edge | face
   multiSelect: true,  // permanently on: every tap adds, tap empty space to clear
@@ -14730,13 +14768,154 @@ function refreshIsoChip() {
   document.body.classList.toggle('isolating', on);
 }
 
+/* ---------------- Groups (a2.93) ----------------
+   A group is a way of holding several objects as one thing. It owns no
+   transform of its own: selecting it selects its members, and the multi-
+   object drag - rigid about the selection's shared centre - does the rest. */
+
+function findGroup(id) { return App.groups.find(g => g.id === id) || null; }
+function groupOf(objId) {
+  return App.groups.find(g => g.childIds.indexOf(objId) >= 0) || null;
+}
+function groupMembers(g) {
+  return g ? g.childIds.map(findObject).filter(Boolean) : [];
+}
+/* THE SELECTION SET IS WRITTEN IN MORE PLACES THAN THE TAP. Region select and
+   Shrink build it by hand, and without this a box that caught two legs of a
+   grouped chair dragged two legs - the group's own contract ("select it and
+   the rigid multi-drag moves it as one") quietly not holding, with nothing on
+   screen to say so. */
+function expandIdsToGroups(ids) {
+  const out = new Set();
+  ids.forEach(id => {
+    const g = groupOf(id);
+    if (g) g.childIds.forEach(cid => { if (findObject(cid)) out.add(cid); });
+    else if (findObject(id)) out.add(id);
+  });
+  return out;
+}
+
+/* Grouping a selection that is ALREADY exactly one whole group would do
+   nothing, and that is the only case where offering Group is wrong. */
+function selectionIsWholeGroup() {
+  const ids = Array.from(App.selectedObjectIds);
+  if (ids.length < 2) return false;
+  const g = groupOf(ids[0]);
+  if (!g) return false;
+  return ids.length === g.childIds.length && ids.every(id => groupOf(id) === g);
+}
+
+function selectionTouchesGroup() {
+  return Array.from(App.selectedObjectIds).some(id => !!groupOf(id));
+}
+
+/* The lowest unused "Group N". Counting the array instead was wrong the
+   moment anything was deleted - group 2 of two is "Group 3" after you remove
+   the first one, and two groups can end up sharing a name. */
+function freshGroupName() {
+  const used = new Set(App.groups.map(g => g.name));
+  for (let i = 1; ; i++) if (!used.has('Group ' + i)) return 'Group ' + i;
+}
+
+/* RUN FROM refreshUI, and that is the whole upkeep story - the same trick
+   reconcileIsolation uses, and for the same reason. Every op in the app ends
+   by refreshing the UI, so hooking this one place covers join, separate,
+   delete, collapse and the swipe on a row at once, and not one of them has to
+   know groups exist.
+
+   Two jobs: drop ids that no longer name anything, and dissolve a group that
+   is down to one member or none. A group of one is not a group, and leaving
+   it would put a disclosure triangle over a single object for ever. */
+function pruneGroups() {
+  if (!App.groups.length) return;
+  let changed = false;
+  App.groups.forEach(g => {
+    const kept = g.childIds.filter(id => !!findObject(id));
+    if (kept.length !== g.childIds.length) { g.childIds = kept; changed = true; }
+  });
+  const live = App.groups.filter(g => g.childIds.length > 1);
+  if (live.length !== App.groups.length) { App.groups = live; changed = true; }
+  return changed;
+}
+
+function groupSelection() {
+  if (App.mode !== 'object') { toast('Group works in Object mode'); return; }
+  const ids = Array.from(App.selectedObjectIds).filter(id => findObject(id));
+  if (ids.length < 2) { toast('Select two or more objects to group'); return; }
+  /* An object belongs to exactly ONE group, so anything already in another
+     leaves it on the way in. Without this an object would be listed twice and
+     ungrouping either one would half-dissolve the other. */
+  App.groups.forEach(g => { g.childIds = g.childIds.filter(id => ids.indexOf(id) < 0); });
+  App.groups.push({ id: App.nextId++, name: freshGroupName(), childIds: ids.slice(), open: true });
+  hideRadialMenu();
+  refreshUI();          // prunes whatever the reshuffle above emptied
+  pushHistory();
+  toast(ids.length + ' objects grouped');
+}
+
+function ungroupSelection() {
+  if (App.mode !== 'object') { toast('Ungroup works in Object mode'); return; }
+  const gs = [];
+  App.selectedObjectIds.forEach(id => {
+    const g = groupOf(id);
+    if (g && gs.indexOf(g) < 0) gs.push(g);
+  });
+  if (!gs.length) { toast('Nothing in the selection is grouped'); return; }
+  let n = 0;
+  gs.forEach(g => { n += g.childIds.length; });
+  App.groups = App.groups.filter(g => gs.indexOf(g) < 0);
+  hideRadialMenu();
+  refreshUI();
+  pushHistory();
+  toast(gs.length > 1 ? gs.length + ' groups dissolved' : n + ' objects ungrouped');
+}
+
+/* THE EYE ON A GROUP ROW. hideObject refuses the last object still showing,
+   one at a time - so hiding a group of three when four are visible would take
+   two and then refuse the third, leaving the group half hidden and the user
+   holding a switch that did most of what it said. Decided for the whole group
+   up front instead: either all of it goes or none of it does. */
+function hideGroup(g) {
+  const ids = groupMembers(g).map(o => o.id).filter(id => !App.hidden.has(id));
+  if (!ids.length) return false;
+  if (App.hidden.size + ids.length >= App.objects.length) {
+    toast('That would hide everything');
+    return false;
+  }
+  ids.forEach(id => App.hidden.add(id));
+  reconcileIsolation();
+  return true;
+}
+function unhideGroup(g) {
+  let any = false;
+  groupMembers(g).forEach(o => { if (App.hidden.delete(o.id)) any = true; });
+  if (any) applyIsolation();
+  return any;
+}
+function groupIsHidden(g) {
+  const m = groupMembers(g);
+  return m.length > 0 && m.every(o => App.hidden.has(o.id));
+}
+
 function clearObjectSelection() { App.selectedObjectIds.clear(); }
 
-function selectObjectClick(id, additive) {
+function selectObjectClick(id, additive, alone) {
   const was = App.selectedObjectIds.size;
+  /* A TAP ON ONE MEMBER TAKES THE WHOLE GROUP (a2.93). That is what grouping
+     is FOR - you group an assembly so you can move it as an assembly, and a
+     tap that grabbed one leg of a chair would make the group an outliner
+     decoration rather than a modelling tool. The members are still reachable
+     one at a time from the outliner, which is where a list belongs. */
+  const g = alone ? null : groupOf(id);
+  const ids = g ? g.childIds.filter(cid => !!findObject(cid)) : [id];
   if (!additive) App.selectedObjectIds.clear();
-  if (App.selectedObjectIds.has(id) && additive) App.selectedObjectIds.delete(id);
-  else App.selectedObjectIds.add(id);
+  // Additive on a group toggles the whole group, or a second tap would
+  // half-deselect it.
+  if (additive && ids.every(cid => App.selectedObjectIds.has(cid))) {
+    ids.forEach(cid => App.selectedObjectIds.delete(cid));
+  } else {
+    ids.forEach(cid => App.selectedObjectIds.add(cid));
+  }
   /* ONE AND ONLY ONE OF THESE, EVER (a2.66). Said at the moment it first
      becomes true - the tap that takes you from one to two - because that is
      the tap whose next drag moves something you did not mean to move. */
@@ -18261,7 +18440,8 @@ function performRegionSelect(region) {
       if (anyInside(pts)) hitIds.push(o.id);
     });
     if (!additive) App.selectedObjectIds.clear();
-    hitIds.forEach(id => App.selectedObjectIds.add(id));
+    // A group caught by the box comes in WHOLE - see expandIdsToGroups.
+    expandIdsToGroups(hitIds).forEach(id => App.selectedObjectIds.add(id));
     refreshUI();
     refreshGizmoAttachment();
     toast(hitIds.length ? hitIds.length + ' object(s) selected' : 'Nothing in that region');
@@ -18466,7 +18646,12 @@ function shrunkElements(obj) {
 function shrinkSelection() {
   if (App.mode === 'object') {
     if (App.selectedObjectIds.size <= 1) { App.selectedObjectIds.clear(); }
-    else { const ids = Array.from(App.selectedObjectIds); App.selectedObjectIds = new Set([ids[0]]); }
+    else {
+      const ids = Array.from(App.selectedObjectIds);
+      // Shrinking to one object of a group shrinks to that group, not to a
+      // fragment of it.
+      App.selectedObjectIds = expandIdsToGroups([ids[0]]);
+    }
     refreshUI(); refreshGizmoAttachment();
     return;
   }
@@ -19841,8 +20026,26 @@ function duplicateSelection() {
   if (App.mode !== 'object') { toast('Duplicate works in Object mode'); return; }
   const ids = Array.from(App.selectedObjectIds);
   if (!ids.length) { toast('Select an object to duplicate'); return; }
-  const newIds = ids.map(findObject).filter(Boolean).map(o => duplicateObject(o).id);
+  /* A COPY OF A GROUP IS A GROUP (a2.93), and it has to be true HERE as well
+     as on the outliner's swipe - a tap takes the whole group, so Duplicate
+     from the ring is the COMMON way to copy one. Without this the ring handed
+     back a loose pile and the swipe handed back a group, which is two answers
+     to one question. */
+  const copyOf = new Map();
+  const newIds = ids.map(findObject).filter(Boolean).map(o => {
+    const d = duplicateObject(o);
+    copyOf.set(o.id, d.id);
+    return d.id;
+  });
   if (!newIds.length) { toast('Nothing left to duplicate'); return; }
+  /* Only a group copied WHOLE becomes a group. Half a group duplicated is
+     two loose objects, which is what half a group is. */
+  App.groups.slice().forEach(g => {
+    const copies = g.childIds.map(id => copyOf.get(id)).filter(id => id !== undefined);
+    if (copies.length > 1 && copies.length === g.childIds.length) {
+      App.groups.push({ id: App.nextId++, name: freshGroupName(), childIds: copies, open: g.open });
+    }
+  });
   App.selectedObjectIds = new Set(newIds);
   hideRadialMenu();
   refreshUI();
@@ -21117,6 +21320,12 @@ function serializeDoc() {
     /* `axis` is still written so a file saved here opens in a2.88 and
        earlier with its primary axis intact. `axes` is what a2.89 reads. */
     symmetry: { on: App.symmetryAxes.length > 0, axes: App.symmetryAxes.slice(), axis: primarySymAxis() },
+    /* GROUPS (a2.93). Ids only - the objects themselves are written below and
+       a group owns nothing but a name and a list. `open` is NOT written: which
+       rows you had unfolded is a way of looking, not part of the model, the
+       same line the view gizmo drew at a2.90. A file from before this version
+       has no `groups` key and loads with none. */
+    groups: App.groups.map(g => ({ id: g.id, name: g.name, childIds: g.childIds.slice() })),
     objects: App.objects.map(o => {
       const g = o.mesh.geometry;
       const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
@@ -21338,6 +21547,7 @@ function restoreDoc(doc, opts = {}) {
   hideRadialMenu();
   App.objects.slice().forEach(o => disposeObject(o));
   App.objects = [];
+  App.groups = [];
   App.selectedObjectIds.clear();
   App.selectedElements.clear();
   App.activeObjectId = null;
@@ -21416,7 +21626,17 @@ function restoreDoc(doc, opts = {}) {
     scene.add(mesh);
     App.objects.push(obj);
   });
-  App.nextId = doc.nextId || (Math.max(0, ...App.objects.map(o => o.id)) + 1);
+  /* Rebuilt AFTER the objects, and pruned - a childId naming an object the
+     file does not contain has to go, or the group would carry a hole that
+     every member count and every hide walks past. */
+  App.groups = (Array.isArray(doc.groups) ? doc.groups : [])
+    .filter(g => g && Array.isArray(g.childIds))
+    .map(g => ({ id: g.id, name: g.name || 'Group', childIds: g.childIds.slice(), open: true }));
+  pruneGroups();
+  /* Group ids share the object counter, so the fallback has to see both or a
+     re-opened file could mint an object wearing a group's id. */
+  App.nextId = doc.nextId || (Math.max(
+    0, ...App.objects.map(o => o.id), ...App.groups.map(g => g.id)) + 1);
 
   // Put the selection back exactly as it was when this snapshot was taken,
   // dropping anything that no longer exists in the restored document. The
@@ -21524,8 +21744,16 @@ function pushHistory() {
      existed, so an op that builds a temporary and throws it away bumps it,
      and `selection` moves on its own - neither is something an Undo press
      should have anything to take back. */
+  /* `groups` IS PART OF THE MODEL (a2.93). Left out, this signature called a
+     document that had just gained or lost a group identical to the one before
+     it, took the early return, and recorded no step at all - so Group could
+     not be undone, Ungroup could be undone into existence again by a Redo
+     that carried the old grouping, and a renamed group lost its name to the
+     next undo. Everything else about the round trip was already right; this
+     one gate threw the step away. */
   const modelSig = d => JSON.stringify({
-    objects: d.objects, environment: d.environment, materialLib: d.materialLib
+    objects: d.objects, groups: d.groups,
+    environment: d.environment, materialLib: d.materialLib
   });
   if (cur && modelSig(cur) === modelSig(doc)) { refreshUI(); return; }
   App.history = App.history.slice(0, App.historyIndex + 1);
@@ -23263,6 +23491,11 @@ const ICON = {
      quads does, and the diagonal is the thing you can see disappear. */
   cleanup: '<rect x="3" y="5" width="18" height="14"/><path d="M3 19L21 5" opacity=".3"/>',
   join:    '<circle cx="9" cy="12" r="5.5"/><circle cx="15" cy="12" r="5.5"/>',
+  /* A BRACKET ROUND TWO THINGS, and the same bracket broken open. Group and
+     Ungroup share one seat and never both appear, so they read as one
+     control in two states rather than two controls. */
+  group:   '<rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/><path d="M2 8V2h6"/><path d="M22 16v6h-6"/>',
+  ungroup: '<rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/><path d="M2 8V5" /><path d="M5 2h3"/><path d="M22 16v3"/><path d="M19 22h-3"/>',
   split:   '<path d="M12 3v18"/><path d="M8 8L4 12l4 4M16 8l4 4-4 4"/>',
   /* SHARP keeps the old crease glyph, because a hard peak is what it always
      depicted - a2.18 only gave that picture the right name. CREASE is the
@@ -23497,6 +23730,26 @@ const HUB_TOOLS_OBJECT_BASE = [
 // the old radial menu's own condition for showing it - appended live rather
 // than baked into the base array.
 const HUB_TOOL_JOIN = { key: 'join', icon: 'join', label: 'Join', seat: 12, ring: 1, run: joinSelection };
+/* JOIN'S BEARING, ONE RING IN (a2.93). Join and Group are the two answers to
+   "treat these as one thing": Join makes them one MESH and cannot be undone
+   except by Separate, Group makes them one SELECTION and lets go again. Same
+   compass point, one step nearer the middle because Group is the reversible
+   one and therefore the one you reach for first.
+
+   Group and Ungroup share the seat and are never both offered - the selection
+   either touches a group or it does not, so the seat reads as one control in
+   two states. */
+const HUB_TOOL_GROUP = { key: 'group', icon: 'group', label: 'Group', seat: 12, ring: 0, run: groupSelection };
+/* SEPARATE'S BEARING, ONE RING IN. Ungroup is to Group what Separate is to
+   Join - the way back out of "these are one thing" - so it takes that compass
+   point rather than sharing Group's.
+
+   It shared it at first, and that was wrong twice over: Group became
+   unreachable the moment anything in the selection was grouped, so there was
+   no way to add a fourth part to a group of three except Ungroup and start
+   again - and the re-parenting `groupSelection` does on the way in, the code
+   that makes adding work, could never run. */
+const HUB_TOOL_UNGROUP = { key: 'ungroup', icon: 'ungroup', label: 'Ungroup', seat: 4, ring: 0, run: ungroupSelection };
 
 const HUB_TOOLS_EMPTY = [
   { key: 'addgeo', icon: 'object', label: 'Add geo', ring: 0, run: openGeoRing },
@@ -23568,7 +23821,15 @@ const HUB_TOOLS_WORLD = [
 function currentHubTools() {
   if (App.mode === 'object') {
     if (App.selectedObjectIds.size === 0) return HUB_TOOLS_EMPTY;
-    return App.selectedObjectIds.size > 1 ? HUB_TOOLS_OBJECT_BASE.concat(HUB_TOOL_JOIN) : HUB_TOOLS_OBJECT_BASE;
+    let tools = App.selectedObjectIds.size > 1
+      ? HUB_TOOLS_OBJECT_BASE.concat(HUB_TOOL_JOIN) : HUB_TOOLS_OBJECT_BASE;
+    /* Both, on their own seats, and each only when it would DO something.
+       Group is offered for any selection of two or more that is not already
+       exactly one whole group - which is what makes adding to an existing
+       group possible at all. */
+    if (App.selectedObjectIds.size > 1 && !selectionIsWholeGroup()) tools = tools.concat(HUB_TOOL_GROUP);
+    if (selectionTouchesGroup()) tools = tools.concat(HUB_TOOL_UNGROUP);
+    return tools;
   }
   if (App.mode === 'vertex') return HUB_TOOLS_VERTEX;
   if (App.mode === 'edge') return HUB_TOOLS_EDGE;
@@ -24098,7 +24359,44 @@ outTabEl.addEventListener('click', (ev) => {
 /* WHAT TAPPING A ROW MEANS. Moved wholesale from the drawer's Scene chips at
    a2.91 - every guard below was earned there and none of them is about where
    the list is drawn. */
-function outlinerActivate(o) {
+function outlinerActivate(t) {
+  /* A GROUP ROW IS THE ASSEMBLY. Selecting it selects every member, which is
+     the whole reason a group is worth having: the multi-object drag is rigid
+     about the selection's shared centre, so a selected group moves as one
+     without a group ever owning a transform. */
+  if (t.kind === 'group') {
+    const g = findGroup(t.id);
+    if (!g) return;
+    const members = groupMembers(g);
+    if (!members.length) return;
+    /* Hidden members come BACK first, for the same reason one hidden row
+       does: selecting what nobody can see is how Delete ends up acting on a
+       thing the user has no picture of. */
+    /* ANY hidden member, not every one. groupIsHidden asks whether the whole
+       group is out of sight, and a group with one child hidden individually is
+       not - so the branch below used to select an object nobody could see,
+       which is exactly the trap the object row was fixed for: Delete and
+       swipe then act on a thing the user has no picture of. */
+    if (groupMembers(g).some(m => App.hidden.has(m.id))) {
+      unhideGroup(g);
+      toast('Showing ' + g.name);
+      refreshUI();
+      return;
+    }
+    if (App.mode !== 'object') {
+      if (App.knife) cancelKnife();
+      if (App.pendingOp && App.pendingOp.live) confirmPendingOp();
+      else if (App.pendingOp) cancelPendingOp();
+      setMode('object');
+    }
+    App.selectedObjectIds = new Set(members.map(m => m.id));
+    App.activeObjectId = null;
+    refreshUI();
+    refreshGizmoAttachment();
+    return;
+  }
+  const o = findObject(t.id);
+  if (!o) return;
   /* A hidden row is the one place you can still see that an object exists,
      so tapping it brings that one back rather than selecting something
      invisible - which was the trap: the row selected a hidden object and
@@ -24110,7 +24408,11 @@ function outlinerActivate(o) {
     return;
   }
   if (App.mode === 'object') {
-    selectObjectClick(o.id, App.multiSelect);
+    /* `alone` - the outliner is where a single member of a group is still
+       reachable. A tap in the VIEWPORT takes the whole group, because that is
+       what grouping is for; a tap on a child ROW takes that child, because
+       that is what unfolding the group was for. */
+    selectObjectClick(o.id, App.multiSelect, true);
   } else {
     /* Same reasoning as setMode: this empties the selection the op is aimed
        at. A live one is committed, any other cancelled - and the knife
@@ -24148,20 +24450,51 @@ const OUT_DBLTAP_MS = 340;
    blur is what pressing the next row does first. The row is corrected in
    place instead, so there is nothing for the rebuild to fix. */
 let _outHoldRebuild = false;
-let _outLastTap = { id: null, t: 0 };
+let _outLastTap = { key: null, t: 0 };
 
-function outlinerDelete(o) {
-  const obj = findObject(o.id);
-  if (!obj) return;
+/* WHAT A ROW NAMES. Object and group ids come from one counter so they can
+   never collide, but the kind is carried anyway - every branch below reads
+   better for being asked rather than inferred. */
+function outTarget(kind, id) { return { kind: kind, id: id }; }
+function outTargetKey(t) { return t.kind + ':' + t.id; }
+function outTargetName(t) {
+  const rec = t.kind === 'group' ? findGroup(t.id) : findObject(t.id);
+  return rec ? rec.name : '';
+}
+// The objects a gesture on this row is aimed at: one, or a group's whole set.
+function outTargetObjects(t) {
+  if (t.kind === 'group') return groupMembers(findGroup(t.id));
+  const o = findObject(t.id);
+  return o ? [o] : [];
+}
+function outRowFor(t) {
+  if (!outListEl) return null;
+  return outListEl.querySelector(t.kind === 'group'
+    ? '.outRow[data-group-id="' + t.id + '"]'
+    : '.outRow[data-obj-id="' + t.id + '"]');
+}
+
+function outlinerDelete(t) {
+  const g = t.kind === 'group' ? findGroup(t.id) : null;
+  /* A GROUP ROW TAKES ITS CONTENTS. It is what the gesture already means on
+     an object row - that row and the thing it stands for is gone - and undo
+     brings the lot back. Ungroup is how you keep the members. */
+  const victims = outTargetObjects(t);
+  if (!victims.length) return;
+  const label = g ? g.name : victims[0].name;
   /* An open op belongs to the object it was started on, and this may not be
      that object - either way its snapshot is about to be stale. */
   if (App.knife) cancelKnife();
   if (App.pendingOp) cancelPendingOp();
-  const wasActive = App.activeObjectId === obj.id;
-  disposeObject(obj);
-  App.objects = App.objects.filter(x => x.id !== obj.id);
-  App.selectedObjectIds.delete(obj.id);
-  App.hidden.delete(obj.id);
+  let wasActive = false;
+  victims.forEach(obj => {
+    if (App.activeObjectId === obj.id) wasActive = true;
+    disposeObject(obj);
+    App.objects = App.objects.filter(x => x.id !== obj.id);
+    App.selectedObjectIds.delete(obj.id);
+    App.hidden.delete(obj.id);
+  });
+  if (g) App.groups = App.groups.filter(x => x !== g);
   if (wasActive) {
     App.activeObjectId = null;
     detachAllGizmos();
@@ -24181,39 +24514,52 @@ function outlinerDelete(o) {
   refreshUI();
   refreshGizmoAttachment();
   pushHistory();
-  toast('Deleted ' + obj.name);
+  toast(g ? 'Deleted ' + label + ' and its ' + victims.length + ' objects'
+          : 'Deleted ' + label);
 }
 
-function outlinerDuplicate(o) {
-  const obj = findObject(o.id);
-  if (!obj) return;
-  const dup = duplicateObject(obj);
-  if (!dup) return;
+function outlinerDuplicate(t) {
+  const g = t.kind === 'group' ? findGroup(t.id) : null;
+  const src = outTargetObjects(t);
+  if (!src.length) return;
+  const label = g ? g.name : src[0].name;
+  const dups = src.map(duplicateObject).filter(Boolean);
+  if (!dups.length) return;
+  /* A COPY OF A GROUP IS A GROUP. Anything else hands back a loose pile you
+     have to re-group by hand, which is the opposite of what duplicating an
+     assembly is for. */
+  if (g && dups.length > 1) {
+    App.groups.push({
+      id: App.nextId++, name: freshGroupName(),
+      childIds: dups.map(d => d.id), open: g.open
+    });
+  }
   /* Selecting the copy is only meaningful in Object mode - in a component
      mode the selection is elements of the ACTIVE object, and quietly moving
      the lock to a fresh copy is not what a swipe on some other row asked
      for. */
-  if (App.mode === 'object') App.selectedObjectIds = new Set([dup.id]);
+  if (App.mode === 'object') App.selectedObjectIds = new Set(dups.map(d => d.id));
   hideRadialMenu();
   refreshUI();
   refreshGizmoAttachment();
   pushHistory();
-  toast('Duplicated ' + obj.name);
+  toast(g ? 'Duplicated ' + label + ' and its ' + dups.length + ' objects'
+          : 'Duplicated ' + label);
 }
 
 /* Looked up by id rather than handed a row, because the tap that asks for a
    rename also runs outlinerActivate, and that rebuilds the list - the row
    the finger came down on is gone by the time we get here. */
-function outlinerRename(o) {
+function outlinerRename(t) {
   if (!outListEl) return;
-  const row = outListEl.querySelector('.outRow[data-obj-id="' + o.id + '"]');
+  const row = outRowFor(t);
   if (!row || row.querySelector('.outRename')) return;
   const nameEl = row.querySelector('.outName');
   if (!nameEl) return;
   const input = document.createElement('input');
   input.className = 'outRename';
   input.type = 'text';
-  input.value = o.name;
+  input.value = outTargetName(t);
   nameEl.style.display = 'none';
   row.insertBefore(input, nameEl.nextSibling);
 
@@ -24224,10 +24570,10 @@ function outlinerRename(o) {
     const v = input.value.trim();
     input.remove();
     nameEl.style.display = '';
-    const obj = findObject(o.id);
-    if (commit && v && obj && v !== obj.name) {
-      obj.name = v;
-      if (obj.mesh) obj.mesh.name = v;
+    const rec = t.kind === 'group' ? findGroup(t.id) : findObject(t.id);
+    if (commit && v && rec && v !== rec.name) {
+      rec.name = v;
+      if (rec.mesh) rec.mesh.name = v;
       nameEl.textContent = v;      // the row is right without a rebuild
       _outHoldRebuild = true;
       try { refreshUI(); } finally { _outHoldRebuild = false; }
@@ -24254,7 +24600,7 @@ function outlinerRename(o) {
 
 /* The row rides over two fixed backdrops. Nothing is decided until the
    finger lifts, so a swipe started and thought better of springs back. */
-function wireOutlinerSwipe(slot, row, o) {
+function wireOutlinerSwipe(slot, row, t) {
   const del = slot.querySelector('.outHint.del');
   const dup = slot.querySelector('.outHint.dup');
   let id = null, x0 = 0, y0 = 0, t0 = 0, dx = 0, far = 0;
@@ -24323,21 +24669,21 @@ function wireOutlinerSwipe(slot, row, o) {
       if (wasDead || wasFar >= 8) return;
       /* A tap. The pair is remembered by object id, not by element: the
          first tap selects, and selecting rebuilds every row. */
-      const now = performance.now();
-      if (_outLastTap.id === o.id && now - _outLastTap.t < OUT_DBLTAP_MS) {
-        _outLastTap = { id: null, t: 0 };
+      const now = performance.now(), key = outTargetKey(t);
+      if (_outLastTap.key === key && now - _outLastTap.t < OUT_DBLTAP_MS) {
+        _outLastTap = { key: null, t: 0 };
         // After the click this lift is about to fire, or activate's rebuild
         // throws the input away the moment it appears.
-        setTimeout(() => outlinerRename(o), 0);
+        setTimeout(() => outlinerRename(t), 0);
       } else {
-        _outLastTap = { id: o.id, t: now };
+        _outLastTap = { key: key, t: now };
       }
       return;
     }
 
     row._swiped = true;   // and the click this drag ends with means nothing
-    if (d <= -OUT_SWIPE_COMMIT) { paint(0); outlinerDelete(o); return; }
-    if (d >= OUT_SWIPE_COMMIT) { paint(0); outlinerDuplicate(o); return; }
+    if (d <= -OUT_SWIPE_COMMIT) { paint(0); outlinerDelete(t); return; }
+    if (d >= OUT_SWIPE_COMMIT) { paint(0); outlinerDuplicate(t); return; }
     settle();
   };
   row.addEventListener('pointerup', (ev) => finish(ev, false));
@@ -24354,60 +24700,129 @@ function refreshOutliner() {
     outListEl.appendChild(empty);
     return;
   }
+  /* THE GROUP TAKES THE PLACE OF ITS FIRST MEMBER and its members come out
+     of the flow beneath it. One ordering - the object array's - does both
+     jobs, so there is no second list to keep in step, and reordering that
+     array later (a2.94) moves groups as well as objects for free. */
+  const emitted = new Set();
   App.objects.forEach(o => {
-    const row = document.createElement('div');
-    row.className = 'outRow' +
-      (App.selectedObjectIds.has(o.id) || App.activeObjectId === o.id ? ' selected' : '') +
-      (App.hidden.has(o.id) ? ' is-hidden' : '');
-    row.dataset.objId = o.id;
-
-    const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
-    const sw = document.createElement('div');
-    sw.className = 'swatch';
-    sw.style.background = '#' + mats[0].color.getHexString();
-
-    const name = document.createElement('span');
-    name.className = 'outName';
-    name.textContent = o.name;
-
-    /* The eye is its own target, so the row's own tap keeps meaning
-       "work on this" and never has to guess which of the two you meant. */
-    const eye = document.createElement('button');
-    eye.className = 'outEye';
-    eye.title = App.hidden.has(o.id) ? 'Show' : 'Hide';
-    eye.innerHTML = icon('eye', 18);
-    eye.addEventListener('pointerdown', (ev) => ev.stopPropagation());
-    eye.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      if (App.hidden.has(o.id)) unhideObject(o.id); else hideObject(o.id);
-      refreshUI();
-    });
-
-    row.appendChild(sw); row.appendChild(name); row.appendChild(eye);
-    row.addEventListener('pointerdown', (ev) => ev.stopPropagation());
-    row.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      // The click that ends a swipe would otherwise select what it deleted.
-      if (row._swiped) { row._swiped = false; return; }
-      outlinerActivate(o);
-    });
-
-    /* The slot is what the swipe uncovers: two labels, fixed, and the row
-       sliding over them. Delete is on the right because the row leaves to
-       the LEFT and reveals what is behind it there. */
-    const slot = document.createElement('div');
-    slot.className = 'outSlot';
-    slot.dataset.objId = o.id;
-    const hDup = document.createElement('div');
-    hDup.className = 'outHint dup';
-    hDup.textContent = 'Duplicate';
-    const hDel = document.createElement('div');
-    hDel.className = 'outHint del';
-    hDel.textContent = 'Delete';
-    slot.appendChild(hDup); slot.appendChild(hDel); slot.appendChild(row);
-    wireOutlinerSwipe(slot, row, o);
-    outListEl.appendChild(slot);
+    if (emitted.has(o.id)) return;
+    const g = groupOf(o.id);
+    if (g) {
+      outListEl.appendChild(buildGroupSlot(g));
+      if (g.open) groupMembers(g).forEach(m => outListEl.appendChild(buildObjectSlot(m, true)));
+      g.childIds.forEach(id => emitted.add(id));
+      return;
+    }
+    outListEl.appendChild(buildObjectSlot(o, false));
   });
+}
+
+/* The slot is what a swipe uncovers: two labels, fixed, and the row sliding
+   over them. Delete is on the RIGHT because the row leaves to the left and
+   reveals what is behind it there. */
+function buildOutSlot(row, t) {
+  const slot = document.createElement('div');
+  slot.className = 'outSlot';
+  const hDup = document.createElement('div');
+  hDup.className = 'outHint dup';
+  hDup.textContent = 'Duplicate';
+  const hDel = document.createElement('div');
+  hDel.className = 'outHint del';
+  hDel.textContent = 'Delete';
+  slot.appendChild(hDup); slot.appendChild(hDel); slot.appendChild(row);
+  wireOutlinerSwipe(slot, row, t);
+  return slot;
+}
+
+/* The eye is its own target, so the row's own tap keeps meaning "work on
+   this" and never has to guess which of the two you meant. */
+function buildOutEye(hidden, onToggle) {
+  const eye = document.createElement('button');
+  eye.className = 'outEye';
+  eye.title = hidden ? 'Show' : 'Hide';
+  eye.innerHTML = icon('eye', 18);
+  eye.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+  eye.addEventListener('click', (ev) => { ev.stopPropagation(); onToggle(); refreshUI(); });
+  return eye;
+}
+
+function buildObjectSlot(o, isChild) {
+  const t = outTarget('object', o.id);
+  const row = document.createElement('div');
+  row.className = 'outRow' +
+    (isChild ? ' outChild' : '') +
+    (App.selectedObjectIds.has(o.id) || App.activeObjectId === o.id ? ' selected' : '') +
+    (App.hidden.has(o.id) ? ' is-hidden' : '');
+  row.dataset.objId = o.id;
+
+  const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
+  const sw = document.createElement('div');
+  sw.className = 'swatch';
+  sw.style.background = '#' + mats[0].color.getHexString();
+
+  const name = document.createElement('span');
+  name.className = 'outName';
+  name.textContent = o.name;
+
+  row.appendChild(sw); row.appendChild(name);
+  row.appendChild(buildOutEye(App.hidden.has(o.id), () => {
+    if (App.hidden.has(o.id)) unhideObject(o.id); else hideObject(o.id);
+  }));
+  row.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+  row.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    // The click that ends a swipe would otherwise select what it deleted.
+    if (row._swiped) { row._swiped = false; return; }
+    outlinerActivate(t);
+  });
+  return buildOutSlot(row, t);
+}
+
+function buildGroupSlot(g) {
+  const t = outTarget('group', g.id);
+  const members = groupMembers(g);
+  const allSelected = members.length > 0 &&
+    members.every(m => App.selectedObjectIds.has(m.id));
+  const row = document.createElement('div');
+  row.className = 'outRow outGroup' +
+    (allSelected ? ' selected' : '') +
+    (groupIsHidden(g) ? ' is-hidden' : '');
+  row.dataset.groupId = g.id;
+
+  /* THE CARET IS ITS OWN TARGET, like the eye. Unfolding a group to look
+     inside it is not the same act as selecting the assembly, and a row that
+     did both would make it impossible to do either on purpose. */
+  const caret = document.createElement('button');
+  caret.className = 'outCaret' + (g.open ? ' open' : '');
+  caret.title = g.open ? 'Collapse' : 'Expand';
+  caret.innerHTML = '&#8250;';
+  caret.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+  caret.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    g.open = !g.open;
+    refreshOutliner();     // a fold is a way of looking: no history, no UI churn
+  });
+
+  const name = document.createElement('span');
+  name.className = 'outName';
+  name.textContent = g.name;
+
+  const count = document.createElement('span');
+  count.className = 'outCount';
+  count.textContent = members.length;
+
+  row.appendChild(caret); row.appendChild(name); row.appendChild(count);
+  row.appendChild(buildOutEye(groupIsHidden(g), () => {
+    if (groupIsHidden(g)) unhideGroup(g); else hideGroup(g);
+  }));
+  row.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+  row.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    if (row._swiped) { row._swiped = false; return; }
+    outlinerActivate(t);
+  });
+  return buildOutSlot(row, t);
 }
 
 let _matCloseTimer = null;
@@ -25460,6 +25875,9 @@ function refreshUI() {
      none of which the first version's two hooks reached. It is O(objects) over
      a scene of a few dozen and does nothing at all when nothing is hidden. */
   reconcileIsolation();
+  /* Same hook, same reasoning: an op that removed an object has already
+     refreshed the UI, so no op has to know groups exist. */
+  pruneGroups();
   refreshPivotMarker();
   refreshObjComponentBtn();
   document.getElementById('btnUndo').disabled = App.historyIndex <= 0;
@@ -26108,6 +26526,11 @@ if (PICK_DEBUG) {
     setOutlinerOpen, outlinerIsOpen, refreshOutliner, outlinerActivate,
     outlinerRename, outlinerDelete, outlinerDuplicate,
     OUT_SWIPE_COMMIT, OUT_DBLTAP_MS,
+    /* Groups (a2.93), so a probe can build one and drive its row rather than
+       assert against the array it was built from. */
+    groupSelection, ungroupSelection, findGroup, groupOf, groupMembers,
+    pruneGroups, hideGroup, unhideGroup, groupIsHidden, selectionTouchesGroup,
+    outTarget, freshGroupName,
     hideObject,
     get modeViewSuspended() { return modeViewSuspended; },
     MATERIALS, getMaterialDef, updateMaterialEverywhere, saveMaterialLibrary,
