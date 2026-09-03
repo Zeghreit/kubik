@@ -279,7 +279,13 @@
     font-size: 17px; border-radius: 0; border: none; border-left: var(--rule) solid var(--line);
     background: transparent;
   }
-  .brand { font-weight: 600; letter-spacing: 0.02em; color: var(--text); font-size: 13px; }
+  /* The brand is the caps word with the signal's full stop (a2.101), and the
+     version beside it is a mono readout. checkForUpdate reads `.brand span`. */
+  .brand { font-weight: 800; letter-spacing: .04em; color: var(--text); font-size: 18px; text-transform: uppercase; }
+  /* The full stop is the version span's ::before - generated content is not
+     textContent, so checkForUpdate's comparison is untouched. */
+  .brand span { font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: .08em; text-transform: none; margin-left: 4px; }
+  .brand span::before { content: '.'; font-family: 'Archivo', sans-serif; font-size: 18px; font-weight: 800; color: var(--signal); margin-right: 8px; }
 
   /* Edge switches are gone (a2.65). Nothing in this file is two halves and
      a sliding knob any more: #symAxes is three cells in the header (a2.100),
@@ -624,7 +630,7 @@
   /* ---- Drawer: rarely-touched settings, for the assisting finger ---- */
   #scrim {
     position: fixed; inset: 0; background: rgb(var(--shadow) / .28); z-index: 30;
-    display: none; backdrop-filter: blur(2px);
+    display: none;
   }
   #scrim.show { display: block; }
   #drawer {
@@ -894,18 +900,21 @@
     min-height: 0; border-radius: var(--r-md);
   }
   .mat-card img { width: 50px; height: 50px; border-radius: 50%; display: block; pointer-events: none; }
-  .mat-card span { font-size: 10px; color: var(--text-dim); pointer-events: none; }
+  .mat-card span:not(.mat-edit) { font-family: var(--mono); font-size: 9px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-dim); pointer-events: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* ONE SIGNAL (a2.63). The applied card said so twice - a border AND a
      recoloured label - for one boolean. The border alone is enough, and
      dropping the second is what buys back the calm in a shelf of small
      round things. (The third thing riding the active card, .mat-edit, is a
      CONTROL rather than a status, so it stays.) */
-  .mat-card.active { border-color: var(--accent); }
+  /* THE APPLIED MATERIAL WEARS THE SIGNAL (a2.101, decision A): applying is
+     an action taken, not a mode you are in, so it is the one mark in the
+     shelf that is red. */
+  .mat-card.active { border-color: var(--signal); }
   .mat-card { position: relative; }
   /* The edit affordance rides whichever card the selection is wearing. */
   .mat-edit {
     position: absolute; top: 2px; right: 2px; width: 20px; height: 20px;
-    border-radius: 50%; background: var(--accent); color: var(--on-accent);
+    border-radius: 0; background: var(--signal); color: var(--on-accent);
     font-size: 11px; line-height: 20px; text-align: center; display: none;
   }
   .mat-card.active .mat-edit { display: block; }
@@ -970,8 +979,8 @@
   .drawer-sec { padding: 12px 0; border-bottom: var(--rule) solid var(--line); }
   .drawer-sec:last-child { border-bottom: none; }
   .drawer-title {
-    font-size: 11px; color: var(--text-dim); text-transform: uppercase;
-    letter-spacing: .08em; margin-bottom: 8px;
+    font-family: var(--mono); font-size: 10px; font-weight: 600; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: .14em; margin-bottom: 8px;
   }
   .drawer-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
   .drawer-row:last-child { margin-bottom: 0; }
@@ -1138,7 +1147,8 @@
 
   #status {
     /* In the drawer since a2.48, above the object list it summarises. */
-    padding: 0 14px 10px; font-size: 12px; color: var(--text-dim);
+    padding: 0 14px 10px; font-family: var(--mono); font-size: 11px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--text-dim);
   }
   input[type=color] {
     -webkit-appearance: none; appearance: none; width: 40px; height: 36px; border: var(--rule) solid var(--line);
@@ -1265,7 +1275,7 @@
      the inspector and then the object underneath it would hit the fading
      panel and do nothing. */
   .submerging { pointer-events: none; }
-  /* #inspector carries backdrop-filter: blur(6px). Blurring the backdrop
+  /* #inspector carried backdrop-filter: blur(6px) until a2.101. Blurring the backdrop
      AND the element is a read-back of the live WebGL canvas plus a second
      blur on the result, per frame, and WebKit has been inconsistent about
      the combination. The backdrop blur is worth nothing during a 260ms
@@ -1383,7 +1393,10 @@
     position: absolute; left: calc(10px + env(safe-area-inset-left));
     top: calc(var(--edge) + 64px); z-index: 16; display: none;
     background: var(--panel2); border: var(--rule) solid var(--line); border-radius: var(--r-md);
-    padding: 8px 10px 10px; min-width: 226px; backdrop-filter: blur(6px);
+    padding: 8px 10px 10px; min-width: 226px;
+    /* A 3px mode-coloured rule down the left edge (a2.101): the panel
+       belongs to what is selected, and says so the way the header does. */
+    border-left: 3px solid var(--accent-mode);
   }
   #inspector.show { display: block; }
 
@@ -1586,7 +1599,8 @@
   }
   .insp-head {
     display: flex; align-items: center; justify-content: space-between;
-    font-size: 12px; color: var(--text-dim); margin-bottom: 8px; gap: 10px;
+    font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--text-dim); margin-bottom: 8px; gap: 10px;
   }
   .insp-head button { min-height: 26px; padding: 2px 8px; }
 
@@ -1613,7 +1627,7 @@
   #helpOverlay {
     position: fixed; inset: 0; z-index: 40; display: none;
     align-items: center; justify-content: center; padding: 20px;
-    background: rgb(var(--shadow) / .6); backdrop-filter: blur(2px);
+    background: rgb(var(--shadow) / .6);
   }
   #helpOverlay.show { display: flex; }
   #helpCard {
@@ -1622,7 +1636,6 @@
     /* Keep the scroll inside the card - without this, reaching either end
        hands the gesture to whatever is behind. */
     overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
-    box-shadow: 0 12px 32px rgb(var(--shadow) / .3);
   }
   .help-row {
     display: flex; align-items: center; gap: 10px; padding: 6px 0;
@@ -1918,7 +1931,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.100</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.101</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects

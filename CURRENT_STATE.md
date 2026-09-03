@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~25,350 lines)
-- Version at time of writing: **a2.100**
+- Version at time of writing: **a2.101**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -36,6 +36,32 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## The design pass, step 5 - the panels (a2.101)
+
+The drawer, inspector, help card, material shelf and outliner in the same
+language. The canvas never drew these; this is the vocabulary applied.
+
+- **No blur anywhere.** `#scrim`, `#helpOverlay` and `#inspector` lost their
+  `backdrop-filter`. Two reasons that agree: the canvas draws with rules,
+  never haze; and a backdrop blur over a live WebGL canvas is recomposited
+  on every rendered frame (it was on performance-a2.96's list). The
+  `.surfacing/.submerging { backdrop-filter: none }` rule is now a no-op
+  and stays only as a guard.
+- **Mono caps for every heading and readout**: `.drawer-title`, `#status`,
+  `.insp-head` (inspector and help), `.mat-card` labels.
+- **The brand** is "KUBIK." at 18px/800 with the full stop in the signal,
+  the version beside it in mono. The stop is the version span's `::before`
+  - generated content is not textContent, so `checkForUpdate`'s comparison
+  of `.brand span` is untouched. **Do not move the version out of that
+  span.**
+- **The inspector** carries a 3px `--accent-mode` rule down its left edge -
+  it belongs to what is selected, and says so the way the header does.
+- **The applied material wears the signal** (`.mat-card.active` border and
+  the `.mat-edit` pencil, now square): applying is an action taken, not a
+  mode you are in (decision A).
+- Regression: 30/32 identical; `_theme` 11.tab_box moves 3px on the tray
+  height (mono labels are shorter).
 
 ## The design pass, step 4 - the header (a2.100)
 
