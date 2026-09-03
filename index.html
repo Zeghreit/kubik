@@ -1541,7 +1541,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.87</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.88</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -7126,17 +7126,71 @@ function buildSymmetryMap(obj, axis) {
   const tol = Math.max(size.x, size.y, size.z, 1) * 1e-3;
   const tol2 = tol * tol;
 
-  // Reflect about the captured plane, not local zero: x' = 2*offset - x.
+  /* A GRID, NOT A SCAN (a2.88). Finding each vertex's partner by walking
+     every vertex is O(V^2), and it bites early: measured on spheres, one map
+     costs 0.9ms at 362 logical vertices, 11.3ms at 1,490 and 20.0ms at
+     1,986 - and 1490 -> 1986 is 1.33x the vertices for 1.77x the time,
+     which is 1.33 squared. An imported 20k mesh is seconds.
+
+     That was survivable while symmetry meant one axis and one map. Symmetry
+     across a SET of axes needs the whole mirror group - three maps for two
+     axes, seven for three - so the cost had to come down before the feature
+     could stand on it.
+
+     Bucket every vertex by its position on a grid whose cell is the
+     tolerance. Any point within `tol` of the reflection is then at most one
+     cell away on each side, so 27 cells hold every candidate and the answer
+     is the same one the scan gave. The tie-break is spelled out to keep it
+     the same ANSWER and not just the same shape: the scan ran k upward and
+     took d < bestD strictly, so among equal distances the lowest index won.
+     Bucket order is not index order, so that has to be said out loud. */
+  /* NUMBERS, NOT STRINGS, FOR THE CELL KEY. The first cut of this built
+     `cx + '_' + cy + '_' + cz` for every vertex and then twenty-seven more
+     per lookup, and measured SLOWER than the scan it replaced at every size
+     up to 2,000 vertices - 0.2x to 0.9x. The scan is a tight numeric loop
+     and V8 loves it; the grid was paying for string concatenation about
+     thirty times per vertex.
+
+     A multiplicative hash folded into one integer costs nothing, and a
+     collision is harmless here because the real squared distance is what
+     decides: an unrelated cell landing in the same bucket only adds
+     candidates that then fail the tolerance, and the true partner's own cell
+     is always among the twenty-seven, so nothing can be missed. */
   const off = symmetryPlane(obj, axis).offset;
+  const inv = 1 / tol;
+  const cellHash = (cx, cy, cz) =>
+    ((cx * 73856093) ^ (cy * 19349663) ^ (cz * 83492791)) | 0;
+  const buckets = new Map();
+  for (let l = 0; l < pts.length; l++) {
+    const p = pts[l];
+    const h = cellHash(Math.floor(p.x * inv), Math.floor(p.y * inv), Math.floor(p.z * inv));
+    const b = buckets.get(h);
+    if (b) b.push(l); else buckets.set(h, [l]);
+  }
+
   const map = new Map();
   const m = new THREE.Vector3();
   for (let l = 0; l < topo.logicalCount; l++) {
     m.copy(pts[l]);
     m[axis] = 2 * off - m[axis];
+    const cx = Math.floor(m.x * inv), cy = Math.floor(m.y * inv), cz = Math.floor(m.z * inv);
     let best = -1, bestD = tol2;
-    for (let k = 0; k < pts.length; k++) {
-      const d = m.distanceToSquared(pts[k]);
-      if (d < bestD) { bestD = d; best = k; }
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          const b = buckets.get(cellHash(cx + dx, cy + dy, cz + dz));
+          if (!b) continue;
+          for (let i = 0; i < b.length; i++) {
+            const q = b[i];
+            const d = m.distanceToSquared(pts[q]);
+            /* The scan ran k upward and took `d < bestD` strictly, so among
+               equal distances the LOWEST index won. Bucket order is not
+               index order, so that has to be said out loud to keep the
+               answer identical and not merely equivalent. */
+            if (d < bestD || (d === bestD && best >= 0 && q < best)) { bestD = d; best = q; }
+          }
+        }
+      }
     }
     if (best >= 0) map.set(l, best);
   }

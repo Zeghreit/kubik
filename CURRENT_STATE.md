@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,697 lines)
-- Version at time of writing: **a2.87**
+- Version at time of writing: **a2.88**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -36,6 +36,73 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## The symmetry map stops being quadratic (a2.88)
+
+`buildSymmetryMap` found each vertex's mirror partner by walking every
+vertex. O(V^2), and it bites hard:
+
+| logical vertices | scan | grid |
+|---|---|---|
+| 1,681 | 9ms | 2.4ms |
+| 6,561 | 118ms | 8.7ms |
+| 14,641 | **598ms** | **27.5ms** |
+
+1,681 -> 6,561 is 3.9x the vertices for 13x the time; 6,561 -> 14,641 is
+2.2x for 5x. Textbook quadratic. The grid over the same range goes 3.6x and
+3.2x for those same steps - linear, with a bucket-overhead tail.
+
+This was survivable while symmetry meant one axis and one map. It stopped
+being survivable the moment symmetry needed a SET of axes: the mirror group
+for three axes has seven non-identity elements, so **seven maps**. On the
+14,641-vertex grid that is 4.2 seconds against 193ms.
+
+### How
+
+Bucket every vertex by its position on a grid whose cell is the existing
+tolerance (`max(size) * 1e-3`). Any point within `tol` of the reflection is
+then at most one cell away on each side, so 27 cells hold every candidate
+and the answer is the one the scan gave.
+
+Two details keep it the same ANSWER rather than merely an equivalent one:
+
+- **The tie-break is spelled out.** The scan ran `k` upward taking
+  `d < bestD` strictly, so among equal distances the lowest index won.
+  Bucket order is not index order, so that rule had to be written down.
+- **The cell key is a number, not a string.** See below.
+
+### The first cut was SLOWER, and that was the useful result
+
+Keying cells as `cx + '_' + cy + '_' + cz` measured **0.2x to 0.9x** - worse
+than the scan at every size it could reach. The scan is a tight numeric loop
+V8 compiles beautifully; the grid was paying for string concatenation about
+thirty times per vertex, once to file and twenty-seven times to look up. A
+multiplicative hash folded into one integer removed all of it. Collisions
+are harmless because the real squared distance still decides: a foreign cell
+landing in the same bucket only adds candidates that fail the tolerance, and
+the true partner's own cell is always among the twenty-seven.
+
+### And the fixture did not contain the problem
+
+The second cut asked for `sphere 180x120` and reported it as an
+import-sized mesh. `PRIM_SPECS` clamps `h` and `v`, so it came back with the
+same **1,986** logical vertices a 72x48 sphere gives - and at two thousand
+vertices O(V^2) has not yet overtaken the grid's constant factor, so the
+honest speedups (5-6x) looked like the whole story while the 22x case went
+unmeasured. The primitives cover the SHAPES; a hand-built N x N grid covers
+the SIZE.
+
+**Asking a fixture for a size is not the same as checking it has one.** The
+running tally in this file is long and this is another entry on it.
+
+### Probe
+
+`_symrace_probe.js` / `_sym_run.py` carries the pre-a2.88 scan verbatim
+beside the shipped implementation and runs both on the same geometry:
+8 primitive shapes x 3 axes, 3 hand-built grids, and one deliberately
+asymmetric mesh where most vertices have no partner at all and the grid must
+not invent any. **27 maps, 0 mismatched.** The interesting line is the diff;
+the clock is the second question.
 
 ## Two ways into the flat view, and they mean different things (a2.87)
 
