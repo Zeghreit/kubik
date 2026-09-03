@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~25,350 lines)
-- Version at time of writing: **a2.98**
+- Version at time of writing: **a2.99**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -36,6 +36,53 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## The design pass, step 3 - the op deck and the bottom row (a2.99)
+
+The canvas's 2b op deck on the app's own controls. Same ids, same handlers,
+same slot above the thumb row.
+
+- **`#opBar` is a full-width deck**: `left/right: 0` with the safe-area
+  insets as PADDING (so it stays welded in landscape), `--panel` ground,
+  rules top and bottom only, and a 6px **hazard band** (`--hazard`, signal on
+  panel at 135deg) along its top edge via `::before`. `#geoBar` wears the
+  same clothes, as its comment always claimed.
+- **The rows are in the MARKUP now**: `#opHead` (numeral `#opValue`, name
+  `#opLabel`, slider) and `#opCells` (chips, toggle, stepper, then
+  `#opCommit` = Cancel + Apply). The first cut re-sequenced the old flat
+  flex row with `order` and auto margins; the reviewer measured Cancel on a
+  different row from Apply, in the wrong order, in every op with chips, and
+  the deck at 231px. `#opCommit` is one flex group with `margin-left: auto`,
+  so the pair can only ever wrap TOGETHER. Any probe that walked
+  `#opBar.children` would see two children now; none did.
+- **The numeral**: `#opValue` is 36px/800, 118px wide, still the same text
+  input. Widest readout the app makes is "0.0002" (Merge by distance, four
+  decimals) at 106px. **An input scrolls rather than overflows**, so a wider
+  readout would clip silently - keep the width honest if a new op needs
+  more digits.
+- **The name**: `#opLabel` caps 13px/800 with a `--signal` full stop from
+  `::after` ("INSET."). Same on `#geoLabel`.
+- **Apply** (`#opOk`) is the slab: `flex: 1 1 96px`, max 220px, glyph left,
+  a hatched 22px end via `::after`. `#geoDone` matches. **Cancel** is the
+  44px cell before it.
+- **The slider knob is a diamond** (18px, `rotate(45deg)` on the thumb
+  pseudo; WebKit may ignore the transform, leaving a square, which is fine).
+- **The deck rises instead of scaling**: `deck-surfacing` / `deck-submerging`
+  override the animation-name of `.surfacing` / `.submerging` on `#opBar`
+  and `#geoBar` - the full-bleed edges pulling 11px off the screen and
+  snapping back read as a bug. The id outranks the reduced-motion class
+  rule, so the deck carries its own `animation: none` there.
+- **Bottom row**: `#hubBtn` is a 56px square with the right edge cut
+  (`clip-path` at 88%, not the canvas's 82% - the cut is empty hit area
+  that falls through to the canvas, so it is kept small); `.soft` rings it
+  from the INSIDE now (outer shadows are clipped). `#quickRow` is one
+  bordered block of two borderless cells with a rule between. `#btnHelp`
+  square.
+- **`#toolChip`** is `--mono` caps, 11px, .06em. It overlapped the view cube
+  by 18px on a 360px screen before this and by ~25px now - `pointer-events:
+  none`, visual only, and the spine (design-pass-plan.md decision F) will
+  move it anyway.
+- Tokens added: `--mono`, `--hazard`.
 
 ## The design pass, step 2 - the diamond ring (a2.98)
 
