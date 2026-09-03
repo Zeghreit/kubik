@@ -1715,7 +1715,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.94</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.95</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -2292,7 +2292,10 @@ const _envDirV = new THREE.Vector3();
 function applyEnvRig() {
   const spec = envPreset(App.env.preset);
   const t = THEME;
-  const turn = App.env.rotation || 0;
+  // manualTurn is what the light-turn gesture has added on top of
+  // wherever the headlight rig already has the lights pointed (a2.95).
+  const manualTurn = App.env.rotation || 0;
+  const turn = manualTurn + cameraTurnDeg();
   const gain = App.env.intensity;
 
   hemi.color.setHex(new THREE.Color(spec.sky).getHex());
@@ -2353,7 +2356,9 @@ function applyEnvRig() {
     _matPreviewRig.key.color.setHex(new THREE.Color(panels[0].color).getHex());
     // 0.65 keeps the old ratio between the preview's key and the scene's.
     _matPreviewRig.key.intensity = (wsum > 0 ? budget * (envPanelWeight(panels[0]) / wsum) : 0) * gain * 0.65;
-    envDirFromAzEl(panels[0].az + turn, panels[0].el, 6, _envDirV);
+    // manualTurn, not turn - the shelf is never orbited, so only the
+    // gesture should move its key (a2.95).
+    envDirFromAzEl(panels[0].az + manualTurn, panels[0].el, 6, _envDirV);
     _matPreviewRig.key.position.copy(_envDirV);
   }
 }
@@ -2361,7 +2366,9 @@ function applyEnvRig() {
 // Rotation and intensity are LIVE SCENE PROPERTIES in this three - no
 // re-bake, no prefilter, no recompile. They are free; treat them as free.
 function applyEnvLive() {
-  scene.environmentRotation.y = (App.env.rotation || 0) * Math.PI / 180;
+  // Reflections turn with the camera too (a2.95) - a mirror-finish sphere
+  // is the surest tell that the key light didn't follow.
+  scene.environmentRotation.y = ((App.env.rotation || 0) + cameraTurnDeg()) * Math.PI / 180;
   /* THE IMAGE-BASED LIGHT IS A LIGHT (a2.62a). Multiplying only the four
      analytic lights left a metal - lit almost entirely by the environment
      reflection - barely dimmed in Vertex and Edge, and impossible to
@@ -2372,7 +2379,9 @@ function applyEnvLive() {
   scene.environmentIntensity = App.env.intensity * modeView().env;
   applyEnvRig();   // the analytic lights turn with the reflections
   if (_matPreviewRig) {
-    _matPreviewRig.sc.environmentRotation.y = scene.environmentRotation.y;
+    // The shelf's own scene, unaffected by the viewport camera (a2.95) -
+    // see the note on the preview key above.
+    _matPreviewRig.sc.environmentRotation.y = (App.env.rotation || 0) * Math.PI / 180;
     _matPreviewRig.sc.environmentIntensity = App.env.intensity;
   }
 }
@@ -2435,6 +2444,22 @@ const orbit = new OrbitControls(camera, renderer.domElement);
 orbit.enableDamping = true;
 orbit.dampingFactor = 0.11; // a little coast after a flick, which suits the feel we're after
 orbit.target.set(0, 0, 0);
+
+/* THE HEADLIGHT RIG (a2.95). "on rotation we will see model well lit all
+   the time" - so the analytic lights and the reflections track the
+   camera's azimuth, offset by however far the light-turn gesture has
+   nudged them. HOME_CAM_AZ_DEG is the OPENING camera's own azimuth, not
+   zero: every preset's az/el numbers were tuned by eye against THIS
+   framing - the rim light's whole job is to trace the silhouette from
+   here - so tracking the DELTA from it keeps every preset looking exactly
+   as designed at the opening view, and only departs from that as you
+   orbit away from it. */
+const HOME_CAM_AZ_DEG = Math.atan2(camera.position.x - orbit.target.x, camera.position.z - orbit.target.z) * 180 / Math.PI;
+function cameraTurnDeg() {
+  // getAzimuthalAngle() reads OrbitControls' own cached angle, kept
+  // current because animate() calls orbit.update() every frame regardless.
+  return orbit.getAzimuthalAngle() * 180 / Math.PI - HOME_CAM_AZ_DEG;
+}
 
 /* ---------------- Transform gizmo ----------------
    Purpose-built rather than three.js's TransformControls, because running
@@ -2830,6 +2855,18 @@ orbit.addEventListener('change', () => {
     watchingTurn = false;
     disengageOrtho();
   }
+});
+
+/* THE HEADLIGHT RIG, cont'd. 'change' also fires for a pan or a dolly -
+   camera.position moves but the azimuth doesn't - so a no-op turn is
+   skipped rather than re-deriving six light directions on frames that
+   didn't need it. */
+let _lastHeadlightTurn = null;
+orbit.addEventListener('change', () => {
+  const turnNow = cameraTurnDeg();
+  if (_lastHeadlightTurn !== null && Math.abs(turnNow - _lastHeadlightTurn) < 0.02) return;
+  _lastHeadlightTurn = turnNow;
+  if (App.env) applyEnvLive();
 });
 
 const raycaster = new THREE.Raycaster();
@@ -15905,6 +15942,20 @@ function lightHoldCandidate() {
 
 function engageLightHold(anchors) {
   lightHold = { anchors: anchors, slide: null };
+  /* SPEND THE COAST FIRST (a2.95, same fix as cubeAlignTo's). A flick
+     right before this hold leaves damping still feeding rotation into
+     orbit.update() for about a second - `enabled = false` stops the
+     CONTROLS reading fingers, not the coast already in flight, and
+     animate() calls orbit.update() every frame regardless of `enabled`.
+     Left alone, that leftover turn kept reaching the headlight rig
+     through cameraTurnDeg() for a moment after the hand landed, drifting
+     the light out from under a gesture whose whole point is manual
+     control. One update with damping off applies the remainder at once
+     and zeroes it. */
+  const damp = orbit.enableDamping;
+  orbit.enableDamping = false;
+  orbit.update();
+  orbit.enableDamping = damp;
   /* The camera must let go, or the anchor fingers keep orbiting underneath
      the gesture. OrbitControls checks `enabled` on every event, so clearing
      it mid-pinch stops it where it stands. */
@@ -26860,6 +26911,10 @@ init();
 if (PICK_DEBUG) {
   window.__kubik = {
     App, orbit, scene,
+    // a2.95: the headlight rig, so a probe can measure light directions
+    // and the camera-turn tracker rather than infer them from pixels.
+    hemi, dir, rimLight, fill, applyEnvRig, applyEnvLive, cameraTurnDeg,
+    get homeCamAzDeg() { return HOME_CAM_AZ_DEG; },
     /* A GETTER, because `camera` is a binding that moves. Exporting the
        value froze whichever lens was live at init, and a probe that
        raycast through it after tapping the pill would have been asking

@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,697 lines)
-- Version at time of writing: **a2.94**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~25,350 lines)
+- Version at time of writing: **a2.95**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -36,6 +36,82 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## The headlight rig - lighting follows the camera (a2.95)
+
+Zeghreit: *"link light to camera so on rotation we will see model well lit
+all the time. If one will want to change it - we already have light turning
+feature."*
+
+### Turn splits into two numbers
+
+`App.env.rotation` used to be an absolute world angle. It is now a MANUAL
+OFFSET on top of a camera-tracked baseline: `turn = manualTurn +
+cameraTurnDeg()`, where `manualTurn` is `App.env.rotation` itself (still what
+the light-turn gesture writes, unchanged) and `cameraTurnDeg()` is how far
+the camera has orbited, in degrees, from where it started.
+
+### The baseline is the OPENING camera, not zero
+
+`HOME_CAM_AZ_DEG` is the opening camera's own azimuth (about 36.87 degrees,
+from the hardcoded `camera.position.set(4.5, 3.5, 6)`), not zero.
+`cameraTurnDeg()` is `orbit.getAzimuthalAngle()` minus that constant, so it
+reads 0 at the opening view and only departs as the camera actually orbits
+away from it. Every preset's az/el numbers were tuned by eye against THAT
+framing - the rim light's whole job is to trace the silhouette from there -
+so anchoring to it, not to world zero, means every preset looks exactly as
+designed at the opening view and nowhere else changes retroactively. A saved
+project opens looking exactly as it did before, then relights coherently as
+you orbit from wherever it opened.
+
+### The shelf stays still
+
+The material-preview tray runs its own scene, never orbited, so its key
+light and its `environmentRotation.y` keep using `manualTurn` alone - the
+gesture can still turn it, the viewport camera cannot. Two call sites in
+`applyEnvRig()` and `applyEnvLive()` had to be told apart from the three (the
+scene's `dir`/`fill`/`rimLight` and `scene.environmentRotation.y`) that do
+track the camera. Getting this backwards in either direction was the
+likeliest mistake in a change this shape - a reviewer checked both.
+
+### Driven off `orbit`'s own 'change', not a per-frame poll
+
+A second `orbit.addEventListener('change', ...)` (the app already had one,
+for the ortho-turn watch) recomputes the rig whenever the camera's azimuth
+actually changes - drag, damping settle, or a programmatic flight all reach
+it, because `animate()` calls `orbit.update()` every frame regardless and
+that is what fires 'change'. A pan or a dolly fires 'change' too without
+changing azimuth, so a small epsilon (0.02 degrees) skips the recompute
+rather than re-deriving six light directions on frames that did not need it.
+`applyEnvLive()`/`applyEnvRig()` only touch colours, positions and two scene
+uniforms - no PMREM rebake - so this is cheap enough to run on every frame
+that actually turns.
+
+### What a fresh reviewer found before this shipped
+
+**The manual gesture inherited a flick's leftover coast.** `engageLightHold`
+cleared `orbit.enabled` to take the camera away from the anchor fingers, but
+`enabled` only stops the CONTROLS reading pointers - it does not stop
+damping already in flight, and `animate()`'s `orbit.update()` keeps applying
+that regardless of `enabled`. Flick-orbit, then immediately hold two fingers
+to adjust the light, and the leftover turn kept reaching the headlight rig
+for close to a second, drifting the light out from under a gesture whose
+entire point is manual control. `cubeAlignTo` had already solved this exact
+problem for its own swing - spend the coast with one `orbit.update()` under
+`enableDamping = false` before taking over - and `engageLightHold` now does
+the same thing first.
+
+### Probe
+
+`_light_probe.py` measures the real light objects and the real
+`OrbitControls` angle rather than inferring from pixels: baseline is
+untouched at the opening view, a +40 degree orbit shifts `dir`/`fill`/
+`rimLight` and the environment rotation by exactly 40, the manual gesture's
+offset adds on top rather than replacing it, a round trip back to the
+opening azimuth reproduces the original directions with no drift, and a
+pan leaves the lights alone. The full regression suite ran clean apart from
+the two flakes already on record (`_imp_probe`'s CDN race, `_soft2_probe`'s
+headless `releasePointerCapture` warning).
 
 ## Hold a row to pick it up (a2.94)
 
