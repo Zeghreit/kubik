@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~25,350 lines)
-- Version at time of writing: **a2.95**
+- Version at time of writing: **a2.96**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -36,6 +36,56 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## Cool running - the gesture-time render scale (a2.96)
+
+An iPhone 15 got hot after 5-10 minutes of modelling. The render loop was
+already right (see On-demand rendering, a2.46) and a full audit found no
+timer, animation or leaked pointer re-arming it. The heat is in the frames
+that DO draw: 2x device pixels, multisampled, PBR under the environment map,
+sixty times a second for as long as a finger moves on the glass. Full
+write-up in the project doc `performance-a2.96.md`.
+
+- **While a touch GESTURE is live the main renderer draws at
+  `LIVE_PIXEL_RATIO` (1.25) instead of the 2.0 cap** - 39% of the pixels.
+  The first frame after the finger lifts is full resolution again; the
+  restore calls `invalidate()` itself so it never waits for the heartbeat.
+- **A gesture, not a touch.** A touch qualifies only once it has travelled
+  `LIVE_TOUCH_PX` (8) and only if it landed on the canvas or on a range
+  slider (the op bar re-runs its operation per frame, so it is the other path
+  that draws continuously). Taps, holds and drawer scrolls never switch the
+  scale - switching reallocates the drawing buffer, and a tap would have paid
+  for that twice while blurring the ring you were reading.
+- **`liveTouches` is its own document-level tracker, not `activePointers`.**
+  That Map is canvas-only and has leaked before; each entry here carries its
+  own last-move clock and is ignored `POINTER_LIVE_MS` after it, so a leak
+  costs four seconds of soft viewport, not a session. Mouse and pen never
+  qualify.
+- **The switch happens inside `animate()`, right before `renderer.render`,
+  never in an event handler** - `setSize` clears the drawing buffer, and
+  anywhere else that is a blank flash.
+- **Every non-attenuated Points material is carried across by the ratio of
+  ratios** (`m.size *= to/from`; 1.25/2 and back round-trips bit-exactly).
+  This leans on an invariant that is now literally true: every site that
+  sets a Points size reads `renderer.getPixelRatio()` at that moment
+  (`knifeDotMat`'s constructor was the one that did not; fixed). **Keep it
+  true** - a Points size set without the ratio will be wrong by 1.6x after
+  the first gesture. Line2 strokes need nothing: `LineMaterial.resolution`
+  is CSS size.
+- **Direct drags coalesce to one apply per frame.** The move handler parks
+  the event in `pendingDragEv`; `flushDirectDrag()` runs at the top of
+  `animate()` (before the render decision) and first thing in
+  `endDirectDrag()`, so the final position is the finger's. `beginDirectDrag`
+  clears the park. `updateDirectDrag` used to run once per pointermove, and
+  an element drag's apply re-shades the whole mesh.
+- Not measured, and cannot be here: rAF does not fire under the harness's
+  virtual clock and no headless Chrome has a phone's thermal envelope.
+  `renderScaleWanted`, `setRenderScale`, `liveTouches`, `pendingDragEv` and
+  `PERF.rescale` are on `__kubik`. Next levers if the phone is still warm:
+  `LIVE_PIXEL_RATIO` to 1.0; a 30fps cap on the drag loop; the
+  `backdrop-filter` panels over a live canvas; the unthrottled edge-field
+  bake during an op-slider drag on a shape-masked material.
+- Regression: 32 of 32 suites byte-identical, `_a296` against `_a295f`.
 
 ## The headlight rig - lighting follows the camera (a2.95)
 

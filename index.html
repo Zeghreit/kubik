@@ -1715,7 +1715,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.95</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.96</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -10900,7 +10900,7 @@ function beginPendingOp(kind, obj, payload, init) {
    expensive things RUN is stable, and it is what the optimisations here
    actually change. Read via __kubik.PERF. */
 const PERF = { applyOp: 0, topo: 0, shade: 0, shadeTopo: 0, selRebuild: 0,
-               matClone: 0, render: 0, bake: 0 };
+               matClone: 0, render: 0, bake: 0, rescale: 0 };
 
 function applyPendingOp() {
   invalidate();   // see On-demand rendering
@@ -16577,7 +16577,8 @@ gizmoStrokes.push(axisGuide);
    stay stuck to the surface if the camera moves, and both ignore depth - a
    cut point on the far side of a fold is still a point you placed. */
 const knifeDotMat = new THREE.PointsMaterial({
-  size: VERTEX_DOT_PX * 3, color: 0x3ddc84, sizeAttenuation: false,
+  size: VERTEX_DOT_PX * 3 * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1),
+  color: 0x3ddc84, sizeAttenuation: false,
   map: vertexDotTexture(), alphaTest: 0.4, transparent: true,
   depthTest: false, depthWrite: false, fog: false
 });
@@ -17257,6 +17258,7 @@ function snapSkipSet() {
 }
 
 function beginDirectDrag(ev) {
+  pendingDragEv = null;   // a move parked by an earlier drag is not this drag's (a2.96)
   /* Reached during extrude mode only with Rotate or Scale active - Move is
      the pull, and pointerdown routes it elsewhere. Both act on real
      geometry, so the pulled section is turned into mesh first. */
@@ -17408,6 +17410,25 @@ function resolveDirectAxis(ev) {
   d.prevScreenAngle = undefined;
   d.totalAngle = 0;
   d.decided = true;
+}
+
+/* ONE APPLY PER FRAME (a2.96). updateDirectDrag used to run once per
+   pointermove, and an element drag's apply re-shades the WHOLE mesh, then
+   recomputes both bounds and rewrites every overlay buffer. The op bar has
+   coalesced its slider since a2.46 (schedulePendingApply); direct drags
+   never did. A mouse reports at 125-1000Hz, a phone under load can hand
+   several coalesced moves to one frame - all but the last are work the
+   screen never shows. The move handler now parks the event here and
+   animate() applies the latest one before it decides whether to draw.
+   endDirectDrag flushes first, so the final position is the finger's
+   final position and not a frame behind it. The very first apply of a
+   drag (beginDirectDrag's) stays synchronous - the axis has to be resolved
+   from the event that promoted the candidate. */
+let pendingDragEv = null;
+function flushDirectDrag() {
+  const ev = pendingDragEv;
+  pendingDragEv = null;
+  if (ev && directDrag) updateDirectDrag(ev);
 }
 
 function updateDirectDrag(ev) {
@@ -17653,6 +17674,7 @@ function updateAxisGuide() {
 
 function endDirectDrag() {
   if (!directDrag) return;
+  flushDirectDrag();   // the last move lands before the drag is over (a2.96)
   directDrag = null;
   directCandidate = null;
   settleShadingAfterDrag(dragCtx);
@@ -18957,7 +18979,7 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
     }
     return;
   }
-  if (directDrag) { updateDirectDrag(ev); return; }
+  if (directDrag) { pendingDragEv = ev; return; }
 
   // A candidate becomes a real drag only once the finger has travelled far
   // enough that it clearly isn't a tap - which also means it clearly isn't
@@ -26694,6 +26716,90 @@ const POINTER_LIVE_MS = 4000;
 let renderUntil = 0;
 let lastRenderAt = -1e9;
 let lastPointerAt = -1e9;
+
+/* GESTURE-TIME RENDER SCALE (a2.96). A phone got hot after ten minutes of
+   modelling. The loop above already draws nothing when nothing happens, so
+   the heat is in the frames that DO draw: every one of them was 2x device
+   pixels, multisampled, PBR under an environment map - about 1.3M
+   fragments a frame on an iPhone 15, sixty times a second for as long as a
+   finger is moving on the glass. While a TOUCH GESTURE is live the
+   renderer draws at LIVE_PIXEL_RATIO instead: 39% of the pixels, so 39%
+   of the fragment work, for the whole of every orbit, every drag and every
+   op-bar slide. The first frame after the finger lifts is drawn at full
+   resolution again - the linger window guarantees that frame - so nothing
+   you look AT is ever soft, only what you are moving.
+
+   A GESTURE, not a touch. A tap and a hold are the two most common things a
+   finger does here, both on a picture nobody is moving, and switching the
+   scale for them would reallocate the drawing buffer twice per tap and
+   blur the ring you are reading. So a touch qualifies only once it has
+   TRAVELLED LIVE_TOUCH_PX, and only if it landed on the canvas or on a
+   range slider - the op bar's slider re-runs the whole operation per
+   frame, so it is the other path that draws continuously. A finger
+   scrolling a drawer does not count. The tracker is document-level and
+   its own, not activePointers: that Map is canvas-only and has leaked
+   before, and a leaked entry here would mean a viewport soft for the rest
+   of the session. Each entry carries its own last-move clock and is
+   ignored POINTER_LIVE_MS after it, so the worst a leak can do is four
+   seconds. Mouse and pen never qualify: a mouse is on a machine with a fan,
+   and a mouse-held frame at reduced resolution would be a regression for
+   no thermal gain.
+
+   The switch happens INSIDE animate, immediately before the render, never
+   in an event handler: setSize reallocates and clears the drawing buffer,
+   and doing that anywhere but right before the frame that refills it is a
+   blank flash. Vertex dots are sized in DEVICE pixels (gl_PointSize) and
+   every site reads renderer.getPixelRatio() when it sets a size, so a
+   Points material's size is always in step with the ratio that was live
+   when it was set; the rescale below carries every one across by the
+   ratio of ratios rather than re-deriving each from its own formula
+   (1.25/2 and its inverse round-trip bit-exactly). The Line2 strokes need
+   nothing - LineMaterial works in CSS pixels through `resolution`, which
+   is the viewport's CSS size and does not move. */
+const LIVE_PIXEL_RATIO = 1.25;
+const LIVE_TOUCH_PX = 8;
+const liveTouches = new Map();   // pointerId -> { x, y, moved, at }
+document.addEventListener('pointerdown', (ev) => {
+  if (ev.pointerType !== 'touch') return;
+  const t = ev.target;
+  const qualifies = t === renderer.domElement ||
+    (t && t.matches && t.matches('input[type="range"]'));
+  if (!qualifies) return;
+  liveTouches.set(ev.pointerId, { x: ev.clientX, y: ev.clientY, moved: 0, at: performance.now() });
+}, { capture: true, passive: true });
+document.addEventListener('pointermove', (ev) => {
+  const p = liveTouches.get(ev.pointerId);
+  if (!p) return;
+  p.moved = Math.max(p.moved, Math.hypot(ev.clientX - p.x, ev.clientY - p.y));
+  p.at = performance.now();
+}, { capture: true, passive: true });
+['pointerup', 'pointercancel'].forEach(t =>
+  document.addEventListener(t, (ev) => { liveTouches.delete(ev.pointerId); },
+    { capture: true, passive: true }));
+
+let renderScaleLive = false;
+function setRenderScale(live) {
+  if (live === renderScaleLive) return;
+  const from = renderer.getPixelRatio();
+  const to = live ? Math.min(pixelRatio, LIVE_PIXEL_RATIO) : pixelRatio;
+  renderScaleLive = live;
+  if (to === from) return;
+  renderer.setPixelRatio(to);
+  renderer.setSize(viewportEl.clientWidth, viewportEl.clientHeight);
+  const k = to / from;
+  scene.traverse(o => {
+    const m = o.isPoints && o.material;
+    if (m && m.sizeAttenuation === false) m.size *= k;
+  });
+  PERF.rescale++;
+}
+// Pure, like renderWanted, and for the same reason: a probe can ask it.
+function renderScaleWanted(now) {
+  for (const p of liveTouches.values()) {
+    if (p.moved > LIVE_TOUCH_PX && now - p.at < POINTER_LIVE_MS) return true;
+  }
+  return false;
+}
 function invalidate() { renderUntil = performance.now() + RENDER_LINGER_MS; }
 
 function renderWanted(now) {
@@ -26753,8 +26859,17 @@ function animate() {
   // ALWAYS - it is what advances the damping, and it fires 'change' while it
   // is still settling, which is what keeps the frames coming during a flick.
   orbit.update();
+  // The parked pointermove, applied once per frame (a2.96) - before the
+  // render decision, so the frame that follows shows it.
+  flushDirectDrag();
+  /* Going back to full resolution IS a change to draw: without this a
+     gesture that ended with nothing else pending would sit soft until the
+     heartbeat, up to a second later. */
+  const scaleLive = renderScaleWanted(now);
+  if (renderScaleLive && !scaleLive) invalidate();
 
   if (!renderWanted(now)) return;
+  setRenderScale(scaleLive);
   const heartbeat = now - lastRenderAt >= RENDER_HEARTBEAT_MS;
   lastRenderAt = now;
   PERF.render++;
@@ -26914,6 +27029,11 @@ if (PICK_DEBUG) {
     // a2.95: the headlight rig, so a probe can measure light directions
     // and the camera-turn tracker rather than infer them from pixels.
     hemi, dir, rimLight, fill, applyEnvRig, applyEnvLive, cameraTurnDeg,
+    // a2.96: the gesture-time render scale and the drag coalescer
+    renderScaleWanted, setRenderScale, flushDirectDrag, LIVE_PIXEL_RATIO,
+    liveTouches, LIVE_TOUCH_PX,
+    get renderScaleLive() { return renderScaleLive; },
+    get pendingDragEv() { return pendingDragEv; },
     get homeCamAzDeg() { return HOME_CAM_AZ_DEG; },
     /* A GETTER, because `camera` is a binding that moves. Exporting the
        value froze whichever lens was live at init, and a probe that
