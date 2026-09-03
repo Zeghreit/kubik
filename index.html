@@ -622,16 +622,47 @@
     box-shadow: 0 8px 24px rgb(var(--shadow) / .18);
   }
   #outFly.open #outTray { display: flex; }
+  #outList { display: flex; flex-direction: column; gap: 4px; }
   #outEmpty { font-size: 12px; color: var(--text-dim); padding: 8px 6px; }
   /* 44 tall, like every other target in this file. A 36px row fits more
      names on screen and is the wrong trade on a phone. */
+  /* EACH ROW RIDES IN A SLOT (a2.92). The slot holds the two backdrops a
+     swipe reveals and clips them; the row is what moves over the top. */
+  .outSlot { position: relative; overflow: hidden; border-radius: var(--r-md); }
+  .outHint {
+    position: absolute; inset: 0; display: flex; align-items: center;
+    padding: 0 12px; font-size: 11px; font-weight: 600;
+    opacity: 0; pointer-events: none; border-radius: var(--r-md);
+  }
+  /* The label sits on the side the row is uncovering, so it is already read
+     by the time the finger has gone far enough to mean it. */
+  .outHint.del { justify-content: flex-end; background: rgb(220 70 70 / .18); color: #e06a6a; }
+  .outHint.dup { justify-content: flex-start; background: var(--accent-dim); color: var(--accent); }
   .outRow {
+    position: relative;
     display: flex; align-items: center; gap: 8px;
     min-height: 44px; padding: 0 4px 0 8px;
     border: 1px solid transparent; border-radius: var(--r-md);
     cursor: pointer; font-size: 12px; color: var(--text-dim);
+    /* pan-y hands VERTICAL to the browser so the tray scrolls on its own,
+       and leaves horizontal to us. Deciding the axis by hand would fight the
+       scroller for the first few pixels of every drag. */
+    touch-action: pan-y;
+    /* Opaque, or the hint behind it shows through the row it is meant to be
+       hidden by. `--accent-dim` is translucent, so the selected state stacks
+       it OVER the panel colour rather than replacing it. */
+    background: var(--panel);
   }
-  .outRow.selected { border-color: var(--accent); color: var(--text); background: var(--accent-dim); }
+  .outRow.selected {
+    border-color: var(--accent); color: var(--text);
+    background: linear-gradient(var(--accent-dim), var(--accent-dim)), var(--panel);
+  }
+  .outRename {
+    flex: 1 1 auto; min-width: 0; min-height: 32px; height: 32px;
+    padding: 0 6px; font-size: 12px;
+    background: var(--panel2); border: 1px solid var(--accent);
+    border-radius: var(--r-sm); color: var(--text);
+  }
   /* A hidden object stays LISTED - dimmed, struck through. The list is the
      one place it can still be seen to exist. */
   .outRow.is-hidden { opacity: .45; }
@@ -1636,7 +1667,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.91</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.92</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -24105,6 +24136,214 @@ function outlinerActivate(o) {
   refreshUI();
 }
 
+/* ROW GESTURES (a2.92). The three below act on the object UNDER THE FINGER,
+   not on the selection - that is the whole point of a list. Swiping a row
+   you never selected still deletes that row's object, in any mode. */
+const OUT_SWIPE_COMMIT = 96;   // far enough that no scroll wobble reaches it
+const OUT_SWIPE_MAX = 130;     // and it stops there, so the row stays readable
+const OUT_DBLTAP_MS = 340;
+/* Held while the rename box closes. Committing calls refreshUI, refreshUI
+   rebuilds the list, and the row a NEXT press has already recorded its
+   origin on would be thrown away mid-gesture - the box closes on blur, and
+   blur is what pressing the next row does first. The row is corrected in
+   place instead, so there is nothing for the rebuild to fix. */
+let _outHoldRebuild = false;
+let _outLastTap = { id: null, t: 0 };
+
+function outlinerDelete(o) {
+  const obj = findObject(o.id);
+  if (!obj) return;
+  /* An open op belongs to the object it was started on, and this may not be
+     that object - either way its snapshot is about to be stale. */
+  if (App.knife) cancelKnife();
+  if (App.pendingOp) cancelPendingOp();
+  const wasActive = App.activeObjectId === obj.id;
+  disposeObject(obj);
+  App.objects = App.objects.filter(x => x.id !== obj.id);
+  App.selectedObjectIds.delete(obj.id);
+  App.hidden.delete(obj.id);
+  if (wasActive) {
+    App.activeObjectId = null;
+    detachAllGizmos();
+    /* And everything that was pointing INTO that mesh. deleteSelection never
+       had to do this - its object branch only runs in Object mode - but a
+       swipe works in any mode, so a face selection could outlive the object
+       it belonged to. It does not throw; it lies. The root keeps `data-armed`
+       and the HUD goes on reporting "3 faces" with nothing left to pick. */
+    App.selectedElements.clear();
+    App.edgeAnchor = null;
+    App.lastEdgePick = null;
+    App.vertAnchor = null;
+    App.lastVertPick = null;
+    hideAllHelpers();
+  }
+  hideRadialMenu();
+  refreshUI();
+  refreshGizmoAttachment();
+  pushHistory();
+  toast('Deleted ' + obj.name);
+}
+
+function outlinerDuplicate(o) {
+  const obj = findObject(o.id);
+  if (!obj) return;
+  const dup = duplicateObject(obj);
+  if (!dup) return;
+  /* Selecting the copy is only meaningful in Object mode - in a component
+     mode the selection is elements of the ACTIVE object, and quietly moving
+     the lock to a fresh copy is not what a swipe on some other row asked
+     for. */
+  if (App.mode === 'object') App.selectedObjectIds = new Set([dup.id]);
+  hideRadialMenu();
+  refreshUI();
+  refreshGizmoAttachment();
+  pushHistory();
+  toast('Duplicated ' + obj.name);
+}
+
+/* Looked up by id rather than handed a row, because the tap that asks for a
+   rename also runs outlinerActivate, and that rebuilds the list - the row
+   the finger came down on is gone by the time we get here. */
+function outlinerRename(o) {
+  if (!outListEl) return;
+  const row = outListEl.querySelector('.outRow[data-obj-id="' + o.id + '"]');
+  if (!row || row.querySelector('.outRename')) return;
+  const nameEl = row.querySelector('.outName');
+  if (!nameEl) return;
+  const input = document.createElement('input');
+  input.className = 'outRename';
+  input.type = 'text';
+  input.value = o.name;
+  nameEl.style.display = 'none';
+  row.insertBefore(input, nameEl.nextSibling);
+
+  let done = false;
+  const close = (commit) => {
+    if (done) return;
+    done = true;                       // removing the input blurs it: once only
+    const v = input.value.trim();
+    input.remove();
+    nameEl.style.display = '';
+    const obj = findObject(o.id);
+    if (commit && v && obj && v !== obj.name) {
+      obj.name = v;
+      if (obj.mesh) obj.mesh.name = v;
+      nameEl.textContent = v;      // the row is right without a rebuild
+      _outHoldRebuild = true;
+      try { refreshUI(); } finally { _outHoldRebuild = false; }
+      pushHistory();
+      toast('Renamed to ' + v);
+    }
+    /* Cancelling needs nothing at all: removing the input and un-hiding the
+       name has already put the row back. */
+  };
+  /* Every key stops here. The app reads single letters as shortcuts, so
+     typing a name without this deletes, extrudes and changes mode. */
+  ['keydown', 'keyup', 'keypress'].forEach(t =>
+    input.addEventListener(t, (ev) => ev.stopPropagation()));
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); close(true); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); close(false); }
+  });
+  input.addEventListener('blur', () => close(true));
+  input.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+  input.addEventListener('click', (ev) => ev.stopPropagation());
+  input.focus();
+  input.select();
+}
+
+/* The row rides over two fixed backdrops. Nothing is decided until the
+   finger lifts, so a swipe started and thought better of springs back. */
+function wireOutlinerSwipe(slot, row, o) {
+  const del = slot.querySelector('.outHint.del');
+  const dup = slot.querySelector('.outHint.dup');
+  let id = null, x0 = 0, y0 = 0, t0 = 0, dx = 0, far = 0;
+  let live = false, dead = false;
+
+  const paint = (v) => {
+    row.style.transform = v ? 'translateX(' + v + 'px)' : '';
+    if (del) del.style.opacity = v < 0 ? Math.min(1, -v / OUT_SWIPE_COMMIT) : 0;
+    if (dup) dup.style.opacity = v > 0 ? Math.min(1, v / OUT_SWIPE_COMMIT) : 0;
+  };
+  const settle = () => {
+    row.style.transition = 'transform .16s ease';
+    paint(0);
+    setTimeout(() => { row.style.transition = ''; }, 200);
+  };
+
+  row.addEventListener('pointerdown', (ev) => {
+    /* Cleared BEFORE the guards. A gesture that ends off the row never gets
+       its pointerup here, so the id would otherwise survive - and on desktop
+       the mouse keeps one id forever, so a later press the guards mean to
+       ignore would be measured against a stale origin and could go live. */
+    row._swiped = false;
+    id = null; dx = 0; far = 0; live = false; dead = false;
+    if (ev.button && ev.button !== 0) return;
+    if (ev.target.closest('.outEye') || ev.target.closest('.outRename')) return;
+    id = ev.pointerId; x0 = ev.clientX; y0 = ev.clientY; t0 = performance.now();
+  });
+
+  row.addEventListener('pointermove', (ev) => {
+    if (ev.pointerId !== id) return;
+    // Belt and braces on the same staleness: no press lasts a minute.
+    if (!live && performance.now() - t0 > 60000) { id = null; return; }
+    const ddx = ev.clientX - x0, ddy = ev.clientY - y0;
+    // Measured even after bowing out, because a tap has to prove it did not move.
+    far = Math.max(far, Math.abs(ddx), Math.abs(ddy));
+    if (dead) return;
+    if (!live) {
+      /* Mostly vertical means the tray is being scrolled, and touch-action
+         has already handed that to the browser. Bow out for good rather
+         than grabbing the drag back halfway down the list. */
+      if (Math.abs(ddy) > 10 && Math.abs(ddy) > Math.abs(ddx)) { dead = true; return; }
+      if (Math.abs(ddx) < 8) return;
+      live = true;
+      try { row.setPointerCapture(id); } catch (e) {}
+    }
+    dx = Math.max(-OUT_SWIPE_MAX, Math.min(OUT_SWIPE_MAX, ddx));
+    paint(dx);
+  });
+
+  const finish = (ev, cancelled) => {
+    if (ev.pointerId !== id) return;
+    const wasLive = live, wasDead = dead, wasFar = far, d = dx;
+    id = null; live = false; dx = 0; far = 0; dead = false;
+    try { row.releasePointerCapture(ev.pointerId); } catch (e) {}
+
+    /* A CANCEL IS NOT A LIFT. The browser takes the pointer away on the
+       long-press menu and whenever the compositor claims the touch, and a
+       gesture that was taken from you past the commit distance must not
+       delete anything - it puts the row back and nothing else. */
+    if (cancelled) { if (wasLive) { row._swiped = true; settle(); } return; }
+
+    if (!wasLive) {
+      /* And a drag that bowed out to the scroller is not a tap either. It
+         would otherwise arm the double-tap, so a flick down the list
+         followed by a tap on that same row opened the rename. */
+      if (wasDead || wasFar >= 8) return;
+      /* A tap. The pair is remembered by object id, not by element: the
+         first tap selects, and selecting rebuilds every row. */
+      const now = performance.now();
+      if (_outLastTap.id === o.id && now - _outLastTap.t < OUT_DBLTAP_MS) {
+        _outLastTap = { id: null, t: 0 };
+        // After the click this lift is about to fire, or activate's rebuild
+        // throws the input away the moment it appears.
+        setTimeout(() => outlinerRename(o), 0);
+      } else {
+        _outLastTap = { id: o.id, t: now };
+      }
+      return;
+    }
+
+    row._swiped = true;   // and the click this drag ends with means nothing
+    if (d <= -OUT_SWIPE_COMMIT) { paint(0); outlinerDelete(o); return; }
+    if (d >= OUT_SWIPE_COMMIT) { paint(0); outlinerDuplicate(o); return; }
+    settle();
+  };
+  row.addEventListener('pointerup', (ev) => finish(ev, false));
+  row.addEventListener('pointercancel', (ev) => finish(ev, true));
+}
+
 function refreshOutliner() {
   if (!outListEl) return;
   outListEl.innerHTML = '';
@@ -24146,9 +24385,28 @@ function refreshOutliner() {
 
     row.appendChild(sw); row.appendChild(name); row.appendChild(eye);
     row.addEventListener('pointerdown', (ev) => ev.stopPropagation());
-    row.addEventListener('click', (ev) => { ev.stopPropagation(); outlinerActivate(o); });
-    row.addEventListener('dblclick', () => { focusOnObject(o); toast('Focused on ' + o.name); });
-    outListEl.appendChild(row);
+    row.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      // The click that ends a swipe would otherwise select what it deleted.
+      if (row._swiped) { row._swiped = false; return; }
+      outlinerActivate(o);
+    });
+
+    /* The slot is what the swipe uncovers: two labels, fixed, and the row
+       sliding over them. Delete is on the right because the row leaves to
+       the LEFT and reveals what is behind it there. */
+    const slot = document.createElement('div');
+    slot.className = 'outSlot';
+    slot.dataset.objId = o.id;
+    const hDup = document.createElement('div');
+    hDup.className = 'outHint dup';
+    hDup.textContent = 'Duplicate';
+    const hDel = document.createElement('div');
+    hDel.className = 'outHint del';
+    hDel.textContent = 'Delete';
+    slot.appendChild(hDup); slot.appendChild(hDel); slot.appendChild(row);
+    wireOutlinerSwipe(slot, row, o);
+    outListEl.appendChild(slot);
   });
 }
 
@@ -25235,7 +25493,7 @@ function refreshUI() {
      shelf is open - refreshUI runs on every selection change and every drag
      frame that touches the UI, and rebuilding a list nobody is looking at is
      work for nothing. */
-  if (outlinerIsOpen()) refreshOutliner();
+  if (outlinerIsOpen() && !_outHoldRebuild) refreshOutliner();
 
   statusEl.textContent = App.objects.length + ' object' + (App.objects.length === 1 ? '' : 's') +
     (App.mode !== 'object' ? ' · editing: ' + (findObject(App.activeObjectId)?.name || 'none') : '');
@@ -25848,6 +26106,8 @@ if (PICK_DEBUG) {
     /* The outliner, so a probe can open it and drive a row rather than
        assert against the array it was built from. */
     setOutlinerOpen, outlinerIsOpen, refreshOutliner, outlinerActivate,
+    outlinerRename, outlinerDelete, outlinerDuplicate,
+    OUT_SWIPE_COMMIT, OUT_DBLTAP_MS,
     hideObject,
     get modeViewSuspended() { return modeViewSuspended; },
     MATERIALS, getMaterialDef, updateMaterialEverywhere, saveMaterialLibrary,

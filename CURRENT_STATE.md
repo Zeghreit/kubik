@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,697 lines)
-- Version at time of writing: **a2.91**
+- Version at time of writing: **a2.92**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -36,6 +36,103 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## A row is a handle on an object (a2.92)
+
+Zeghreit: *"rename by double tap on name, delete by swipe left and duplicate
+by swiping right."*
+
+Three gestures on an outliner row, and one rule underneath all three: **they
+act on the object under the finger, not on the selection.** That is the whole
+point of having a list. Swiping a row you never selected deletes that row's
+object, in any mode, with whatever else still selected untouched - the probe
+selects one cube and swipes the other, and checks the right one went.
+
+### The slot
+
+Each row now rides in an `.outSlot` that holds two fixed backdrops and clips
+them: **Duplicate** on the left, **Delete** on the right. The row slides over
+the top, so the label you are uncovering is on the side the row is leaving
+towards, and it is readable well before the finger has gone far enough to
+mean it. The row had to become **opaque** for this - the hint behind it
+showed straight through - and `--accent-dim` is translucent, so the selected
+state stacks it OVER the panel colour as a gradient layer rather than
+replacing it.
+
+**Nothing is decided until the finger lifts.** A swipe started and thought
+better of springs back; the commit distance is 96px and the row stops
+travelling at 130.
+
+### Not fighting the scroller
+
+`.outRow` takes `touch-action: pan-y`, which hands vertical to the browser
+and keeps horizontal. Deciding the axis by hand would fight the scroller for
+the first few pixels of every drag. On top of that the handler **bows out for
+good** once a drag reads as mostly vertical (`|dy| > 10` and `|dy| > |dx|`)
+rather than grabbing it back halfway down the list, and the click that ends
+a real swipe is swallowed, or it would select what it had just deleted.
+
+### Double tap, remembered by id
+
+The rename pair is tracked by **object id, not by element**. The first tap
+selects, selecting calls `refreshUI`, and that rebuilds every row - so the
+element the first tap landed on no longer exists for the second. For the same
+reason `outlinerRename` looks its row up by id, and the second tap **defers**
+it by a tick: the click that tap still has to fire would rebuild the list and
+throw the input away the moment it appeared.
+
+The box **stops every key**. Single letters are shortcuts in this app - `x`
+deletes, `e` extrudes - so a name typed into a box that leaked would edit the
+mesh it was naming. Enter commits, Escape cancels, blur commits, and removing
+the input blurs it, which is why the close is guarded to run once.
+
+The old `dblclick` on a row - focus the camera on that object - is gone.
+Double-tapping the object itself in the viewport already does that, so the
+row was the second way to reach the same thing, and the name was the better
+use of the gesture.
+
+### What a fresh reviewer found before this shipped
+
+Five, all real, all in the first cut:
+
+- **A cancel was being read as a lift.** `pointercancel` ran the same branch
+  as `pointerup`, so a swipe the browser took away past the commit distance
+  deleted the object. Android fires it on the long-press menu and whenever
+  the compositor claims the touch - a gesture you never finished. It settles
+  now and commits nothing.
+- **A flick counted as the first tap of a pair.** Bowing out to the scroller
+  ends with the drag never having gone live, which is the same shape as a
+  tap unless the distance is checked. Flicking the list and then tapping the
+  same row opened the rename. The tap branch now has to prove it did not
+  move.
+- **A face selection outlived its object.** `deleteSelection` never had to
+  think about this, because its object branch only runs in Object mode - the
+  swipe works in any mode. It did not throw; it LIED: `data-armed` stayed on
+  the root and the HUD went on reporting three faces with nothing left to
+  pick. The four component anchors go with the mesh now.
+- **Committing a rename rebuilt the list mid-gesture.** The box closes on
+  blur, and pressing the next row is what blurs it - so that row recorded its
+  origin and was then thrown away before its own pointerup. The row is
+  corrected in place and the rebuild held off. Cancelling rebuilt for no
+  reason at all and no longer does.
+- **The pointerdown guards left their state behind.** A gesture that ends off
+  the row never gets its `pointerup` here, and a desktop mouse keeps one
+  pointer id forever - so a later press the guards meant to ignore could be
+  measured against a stale origin and go live. Cleared before the guards, not
+  after.
+
+### Probe
+
+`_out_probe.js` grew to twenty-one sections and gained a `_out_probe.py`
+harness of its own. The nine new ones drive synthetic pointer events: swipe
+left deletes the row's object and not the selected one; swipe right makes
+exactly one copy; a short swipe springs back; a mostly-vertical drag scrolls
+and leaves the row where it was; the rename box commits on Enter with zero
+keys reaching the document; and two taps open it - that last one measured
+across a tick, because the app defers the box on purpose. Three more came
+straight out of the review and would have caught it: a cancel 40px past the
+commit distance deletes nothing, a flick followed by a tap does not open the
+rename, and three selected faces do not survive the object being swiped away.
 
 ## The outliner leaves the drawer (a2.91)
 
@@ -94,10 +191,9 @@ about where the list is drawn:
 
 ### Still to come
 
-Rename by double tap, delete by swipe left, duplicate by swipe right,
-reorder by drag, and group/ungroup by dragging one row onto another - with
-group/ungroup also in the object ring. Those are gestures on a row and a
-change to the object model respectively, and they are their own versions.
+Reorder by drag, and group/ungroup by dragging one row onto another - with
+group/ungroup also in the object ring. That is a change to the object model,
+and it is its own version. (Rename, delete and duplicate arrived at a2.92.)
 
 ### Probe
 
