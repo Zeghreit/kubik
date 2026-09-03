@@ -1541,7 +1541,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.85</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.86</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -2435,12 +2435,6 @@ function cubeAlignTo(n) {
     q: new THREE.Quaternion().setFromUnitVectors(u1, u2),
     start: performance.now(), duration: 420
   };
-  /* The turn watch is armed against the direction you were looking from
-     when the last gesture began. A swing changes that direction wholesale
-     and on purpose, so anything the watch was holding is now stale - it
-     would read the swing's own arrival as a turn and drop straight back out
-     of the flat view it was heading for. */
-  watchingTurn = false;
 }
 
 const _cubeQ = new THREE.Quaternion();
@@ -2554,7 +2548,6 @@ function engageOrtho() {
   camera = orthoCam;
   orbit.object = orthoCam;
   orthoView = {};
-  watchingTurn = false;   // a fresh flat view owes nothing to the last gesture
   refreshProjPill();
   toast('Orthographic view');
   invalidate();
@@ -2583,11 +2576,6 @@ function disengageOrtho(silent) {
   camera = perspCam;
   orbit.object = perspCam;
   orthoView = null;
-  /* Otherwise the watch keeps the direction it was armed with under the
-     LAST gesture, and the next engage inherits it - so a pan, a programmatic
-     camera flight and then a tap on the pill would read the flight as a
-     turn and switch straight back out again. */
-  watchingTurn = false;
   refreshProjPill();
   if (!silent) toast('Perspective view');
   invalidate();
@@ -2626,59 +2614,27 @@ viewCubeEl.addEventListener('click', (ev) => {
   if (viewCube.handleClick(ev)) { cubeAligning = true; camAnim = null; }
 });
 
-/* ONLY TURNING LEAVES THE FLAT VIEW (a2.61).
+/* TURNING KEEPS THE FLAT VIEW (a2.86).
 
-   It used to be any gesture at all: the controls fire `start` for a rotate,
-   a pan and a dolly alike, so nudging the model sideways or zooming in to
-   check a corner threw you back into perspective and you had to tap the
-   cube again. Which made the flat view something you visited rather than
-   something you worked in - and drafting is exactly the thing it is for.
+   From a2.61 to a2.85 a turn of more than a degree dropped you back into
+   perspective. That was the right rule for what the flat view WAS: an
+   emulation, a long lens pretending, which only really meant anything
+   looking straight down an axis after a cube tap. Something you visited.
 
-   A TURN is the one that changes the direction you are looking FROM. Pan
-   moves the camera and its target together and a dolly only changes the
-   distance, so both leave that unit vector alone; a rotate moves it
-   immediately. Measuring the vector rather than asking the controls which
-   gesture is running also keeps this working for a mouse wheel, a trackpad
-   pinch and two fingers without knowing anything about any of them.
+   a2.85 made it a real orthographic camera, and that removed the reason.
+   A parallel projection is just as true from three-quarters as it is from
+   the front - orbiting around a model in it is the ordinary way to work,
+   not a state to be rescued from. Every gesture now stays flat, and the
+   pill is the only thing that changes projection.
 
-   One degree, not zero, so the odd sub-pixel wobble in a pan does not count
-   as a turn. And the swap itself is invisible: disengageOrtho restores the
-   framing exactly, so the picture does not jump - only the perspective in
-   it relaxes. */
-const ORTHO_TURN_COS = Math.cos(1 * Math.PI / 180);
-const _turnFrom = new THREE.Vector3();
-const _turnNow = new THREE.Vector3();
-let watchingTurn = false;
-
+   Deleted with the rule: ORTHO_TURN_COS, _turnFrom, _turnNow, watchingTurn,
+   both listeners' turn logic, and the note about a flick's damping coast
+   carrying the view round while it still claimed to be a plan view. The
+   `start` listener survives only to cancel a cube swing, which is not about
+   projection at all. */
 orbit.addEventListener('start', () => {
   // A gesture abandons a swing whatever kind of gesture it is.
   viewCube.cancel();
-  if (!orthoView) { watchingTurn = false; return; }
-  _turnFrom.copy(camera.position).sub(orbit.target).normalize();
-  watchingTurn = true;
-});
-orbit.addEventListener('change', () => {
-  /* NOT DISARMED ON `end`. Damping means a flick keeps turning the view for
-     about a second after the finger leaves, and the controls keep firing
-     `change` the whole time. Disarming on `end` let a fast flick - one that
-     had barely moved by the time the finger lifted - coast thirty degrees
-     round while still claiming to be a plan view. The watch stays live
-     until it finds a turn, or until the next gesture re-arms it with a
-     fresh reference.
-
-     A cube swing is excluded because it is not a gesture: it is on its way
-     to the flat view by design, and cubeAlignTo re-arms when it lands. */
-  /* The depth band used to be re-shifted here on every camera move, and
-     had to be: the emulated flat view sat 27x further out than the fog was
-     banded for, and a band frozen at engage went solid background colour
-     three wheel notches later. The real camera sits where the lens did, so
-     there is nothing to follow. */
-  if (!watchingTurn || !orthoView || viewCube.animating) return;
-  _turnNow.copy(camera.position).sub(orbit.target).normalize();
-  if (_turnNow.dot(_turnFrom) < ORTHO_TURN_COS) {
-    watchingTurn = false;
-    disengageOrtho();
-  }
 });
 
 const raycaster = new THREE.Raycaster();

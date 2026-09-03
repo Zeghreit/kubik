@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,697 lines)
-- Version at time of writing: **a2.85**
+- Version at time of writing: **a2.86**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -36,6 +36,64 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## Turning keeps the flat view (a2.86)
+
+Zeghreit, after testing a2.85: *"camera still works the same - it breaks
+into perspective after I turn it."*
+
+It did, and it was doing exactly what a2.61 asked for. The rule was right for
+what the flat view WAS: an emulation, a long lens pretending, which only
+really meant anything looking straight down an axis after a cube tap.
+Something you visited and got returned from.
+
+a2.85 removed the reason and left the rule standing. A parallel projection is
+just as true from three-quarters as it is from the front - orbiting around a
+model in it is the ordinary way to work, not a state to be rescued from.
+Every DCC and CAD tool orbits freely in ortho and leaves it only when told.
+
+**Every gesture now stays flat. The pill is the only thing that changes
+projection**, and the cube still swings you in.
+
+### What went with it
+
+`ORTHO_TURN_COS`, `_turnFrom`, `_turnNow`, `watchingTurn`, both listeners'
+turn logic, and `cubeAlignTo`'s re-arm. The `start` listener survives only to
+cancel a cube swing, which was never about projection.
+
+The care that went into the deleted rule is worth recording, because it was
+all real: the watch measured the camera-to-target VECTOR rather than asking
+the controls which gesture was running, so it worked for a wheel, a trackpad
+pinch and two fingers alike; the threshold was one degree rather than zero so
+a sub-pixel wobble in a pan did not count; and it was deliberately not
+disarmed on `end`, because damping keeps a flick turning for about a second
+after the finger leaves and a fast flick has barely moved by lift-off. None
+of it was wrong. The requirement underneath it stopped existing.
+
+### The lesson
+
+**When a change removes the reason for a rule, the rule is part of the
+change.** a2.85 was written to preserve behaviour - "the turn rule is decided,
+do not touch" - and that was the wrong instinct twice over: it left the app
+doing the one thing the user would notice most, and it meant a2.85 shipped
+looking to him like nothing had happened at all. A justification that has been
+deleted should be re-examined in the same version that deletes it, not
+inherited.
+
+### Probes
+
+`_theme_probe` section 9 keeps every one of its assertions and inverts two:
+`9.turn_keeps_it` and `9.flick_coast` now check that a six-degree turn and the
+whole damped coast after a flick leave the projection alone. `_proj_probe`
+section 12 does the same at twenty degrees, and 12 gained
+`pill_still_leaves` - because "nothing drops you out" is only half the
+requirement, and the other half is that the pill still can, from a turned
+angle.
+
+`_theme_probe`'s harness also learned to say WHY it gave up. Its
+`ERROR=no __kubik` reads exactly like a hung app, and a stale Chrome profile
+lock sent this version chasing an app that was fine; it now prints the page's
+own errors, the ready state and whether THREE loaded.
 
 ## The flat view is a real camera (a2.85)
 
@@ -140,8 +198,9 @@ holds the target plane and moves everything else; the rails; the picking
 rays; `worldPerPixel` has no distance term and matches the frustum; the
 frustum survives a resize; a zoomed round trip; the fog band there and back;
 the export is a live binding and `orbit.object` follows it; framing while
-flat leaves the object filling a sensible part of the frame; and a
-twenty-degree turn still drops back to perspective.
+flat leaves the object filling a sensible part of the frame. Section 12
+asserted that a twenty-degree turn dropped back to perspective; a2.86
+inverted it.
 
 `_lens_probe.js` / `_lens_run.py <wip|head>` is the comparison harness - it
 injects the same probe into `git show HEAD:index.html` or the working copy,
@@ -4122,8 +4181,9 @@ its hue.
 > **SUPERSEDED IN PART BY a2.85.** The long-lens emulation this section
 > describes is gone - the flat view is a real `OrthographicCamera` now,
 > and with it `syncOrthoDepth`, `orthoFactor` and the fog shifting went
-> too. What still holds: the switch, where it sits, and the rule that
-> only TURNING leaves the flat view. Read the a2.85 section first.
+> too, and a2.86 deleted the turn rule with it - every gesture stays flat
+> now and the pill is the only way out. What still holds: the switch and
+> where it sits. Read the a2.86 and a2.85 sections first.
 
 Zeghreit: *"add perspective/orthogonal switch near axis cube, and after going
 into orthographic via tapping the cube, only turning the view (or the switch)
