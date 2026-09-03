@@ -250,16 +250,48 @@
 
      Paired with #projPill in the 44px strip under the cube. Both clear
      #matFly, which moved down to 194 to make the room. */
+  /* ONE BLOCK, TOP-LEFT, UNDER THE MENU BUTTON (a2.89).
+
+     The toggle and the axes were in two different places: the on/off under
+     the view cube, X/Y/Z buried in a drawer row that carried a note saying
+     "Symmetry on and off is the button under the view cube". A control that
+     has to apologise for where its other half lives is one control split in
+     two.
+
+     a2.65 tore a column out of this corner and the reason still stands - on
+     a phone with a 59pt top inset, menu over symmetry over lighting ran from
+     73pt to 211pt before the model got a look in. This is a ROW: one 44px
+     band under the menu button, 44px tall whether it is showing one control
+     or four. It spends width, which a portrait phone has, instead of height,
+     which it does not.
+
+     The axes only appear when symmetry is on, so the resting state is the
+     single toggle it has always been. */
+  #symBlock {
+    position: absolute; left: var(--edge-l); top: calc(var(--edge) + 52px);
+    z-index: 13; display: flex; align-items: center; gap: 4px;
+  }
   #symPill {
-    position: absolute;
-    right: 66px; top: calc(env(safe-area-inset-top, 0px) + 130px);
-    z-index: 13; width: 44px; height: 44px; border-radius: var(--r-md);
+    width: 44px; height: 44px; border-radius: var(--r-md);
     background: var(--panel2); border: 1px solid var(--line);
     display: flex; align-items: center; justify-content: center;
     color: var(--text-dim); cursor: pointer;
     touch-action: none; -webkit-user-select: none; user-select: none;
   }
   #symPill.on { border-color: var(--accent); color: var(--accent); }
+  #symAxes { display: none; align-items: center; gap: 4px; }
+  #symBlock.on #symAxes { display: flex; }
+  /* EACH ONE IS ITS OWN SWITCH, not a choice among three: X and Y together
+     is four-fold symmetry, and that is the point of the set. */
+  #symAxes button {
+    width: 44px; height: 44px; min-height: 44px; padding: 0;
+    border-radius: var(--r-md); border: 1px solid var(--line);
+    background: var(--panel2); color: var(--text-dim);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px; font-weight: 600; letter-spacing: 0.02em;
+    touch-action: none; -webkit-user-select: none; user-select: none;
+  }
+  #symAxes button.active { border-color: var(--accent); color: var(--accent); }
 
   /* THE ONE THING THE APP SAYS UNASKED (a2.66). It sits above the bottom
      row rather than beside the hub, because the gesture it describes works
@@ -552,10 +584,9 @@
      500px is below every phone in landscape and above every window the probe
      suite runs in, so the suite keeps measuring the portrait layout. */
   @media (max-height: 500px) {
-    #symPill {
-      right: calc(env(safe-area-inset-right, 0px) + 194px);
-      top: calc(env(safe-area-inset-top, 0px) + 42px);
-    }
+    /* #symPill moved out of this strip at a2.89 - it is top-left now, and
+       the short-screen shuffle was only ever about the pair crowding the
+       cube and the material shelf. */
     #projPill {
       right: calc(env(safe-area-inset-right, 0px) + 142px);
       top: calc(env(safe-area-inset-top, 0px) + 42px);
@@ -1337,9 +1368,17 @@
     <!-- The mode switch stays nearest the middle of the bottom edge, where
          the thumb rests. Symmetry left this corner in a2.65 for the strip
          under the view cube, and the two-position switch went with it. -->
-    <!-- Symmetry: one 44px toggle under the view cube, beside projection.
-         It shows the state it is IN - see #symPill in the stylesheet. -->
-    <div id="symPill" title="Symmetry"><span class="ic"></span></div>
+    <!-- SYMMETRY, one block, top-left under the menu button (a2.89). The
+         toggle shows the state it is IN; the three axes appear only while it
+         is on, and each is its own switch - see #symBlock in the stylesheet. -->
+    <div id="symBlock">
+      <div id="symPill" title="Symmetry"><span class="ic"></span></div>
+      <div id="symAxes">
+        <button data-sym="x" title="Mirror across X">X</button>
+        <button data-sym="y" title="Mirror across Y">Y</button>
+        <button data-sym="z" title="Mirror across Z">Z</button>
+      </div>
+    </div>
 
     <!-- Perspective / orthographic. Under the cube, because the cube is the
          other way into the flat view. Lighting used to sit here too; since
@@ -1541,7 +1580,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.88</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.89</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -1584,15 +1623,9 @@
           <input type="range" id="sensSlider" min="0.2" max="1.5" step="0.05" value="0.7" />
           <span class="label" id="sensValue">0.70</span>
         </div>
-        <div class="drawer-row">
-          <span class="label">Symmetry axis</span>
-          <div class="group" id="symAxisGroup">
-            <button data-sym="x">X</button>
-            <button data-sym="y">Y</button>
-            <button data-sym="z">Z</button>
-          </div>
-        </div>
-        <div class="drawer-note">Symmetry on and off is the button under the view cube.</div>
+        <!-- The axis buttons and the note that apologised for them being
+             here left at a2.89: symmetry is one block in the top-left now,
+             toggle and axes together. -->
       </div>
 
       <div class="drawer-sec">
@@ -2788,7 +2821,11 @@ const App = {
   // changes no geometry until OK, so there is nothing to re-run.
   knife: null,
   symmetry: false,
-  symmetryAxis: 'x',
+  /* A SET, NOT AN AXIS (a2.89). With X and Y both on, an edit has THREE
+     mirror images - X, Y, and XY - because the mirror group generated by n
+     planes has 2^n elements. Ordered x,y,z so the group is enumerated the
+     same way every time and a saved file reloads identically. */
+  symmetryAxes: ['x'],
   showInspector: false,
   selectedObjectIds: new Set(),
   activeObjectId: null,   // used for vertex/edge/face editing
@@ -6911,6 +6948,12 @@ function captureSymmetryPlane(obj, axis) {
   geo.computeBoundingBox();
   const c = geo.boundingBox.getCenter(new THREE.Vector3());
   const plane = { axis: axis, offset: c[axis] };
+  /* ONE PLANE PER AXIS (a2.89). The single `symPlane` field recaptured
+     whenever the axis differed, which was right when only one axis could be
+     live and is thrashing when three can. `symPlane` is still written so
+     saved files and anything older that reads it keep working. */
+  const store = obj.mesh.userData.symPlanes || (obj.mesh.userData.symPlanes = {});
+  store[axis] = plane;
   obj.mesh.userData.symPlane = plane;
   return plane;
 }
@@ -6928,8 +6971,14 @@ function remapFinishes(fin, remap) {
 }
 
 function symmetryPlane(obj, axis) {
-  const p = obj.mesh.userData.symPlane;
-  if (p && p.axis === axis) return p;
+  const store = obj.mesh.userData.symPlanes;
+  const p = store && store[axis];
+  if (p) return p;
+  const old = obj.mesh.userData.symPlane;   // a file saved before a2.89
+  if (old && old.axis === axis) {
+    (obj.mesh.userData.symPlanes || (obj.mesh.userData.symPlanes = {}))[axis] = old;
+    return old;
+  }
   return captureSymmetryPlane(obj, axis);
 }
 
@@ -7004,32 +7053,49 @@ function runMirrored(obj, fn) {
   if (!App.symmetry || App.mode === 'object') { fn(); return; }
   ensureHelpers(obj);
   const mine = new Set(App.selectedElements);
-  const m = mirrorOfSelection(obj, Array.from(mine));
-  if (m === null) {
+  const images = mirrorImages(obj, Array.from(mine));
+  if (!images.length) {
     toast('Symmetry found no pairs here - working on one side only');
     fn();
     return;
   }
-  const other = new Set(Array.from(m).filter(e => !mine.has(e)));
+  /* ONE PASS PER GROUP ELEMENT (a2.89). Two axes mean three images, three
+     axes mean seven. An image that is already the selection under the
+     finger is not a second pass - it is the same edit. */
+  const todo = images
+    .map(im => new Set(Array.from(im).filter(e => !mine.has(e))))
+    .filter(im => im.size);
   // The selection is its own mirror: one pass is the whole job.
-  if (!other.size) { fn(); return; }
+  if (!todo.length) { fn(); return; }
 
-  const marks = markElements(obj, other);
+  /* EVERY MARK IS TAKEN BEFORE THE FIRST PASS. Marks are positions, and the
+     first pass moves geometry - a mark taken after it would be describing a
+     mesh that no longer exists. Resolving happens one at a time, against
+     whatever the mesh has become by then. */
+  const marks = todo.map(im => markElements(obj, im));
   const objId = obj.id;
   symQuietHistory = true;
   try { fn(); } finally { symQuietHistory = false; }
 
-  const o2 = findObject(objId);
-  if (!o2) { pushHistory(); return; }   // the op removed the object
-  ensureHelpers(o2);
-  const back = resolveElements(o2, marks);
-  if (!back.size) {
-    toast('Symmetry: could not find the mirrored side after the first pass');
-    pushHistory();
-    return;
+  for (let i = 0; i < marks.length; i++) {
+    const o2 = findObject(objId);
+    if (!o2) { pushHistory(); return; }   // the op removed the object
+    ensureHelpers(o2);
+    const back = resolveElements(o2, marks[i]);
+    if (!back.size) {
+      toast('Symmetry: could not find the mirrored side after the first pass');
+      pushHistory();
+      return;
+    }
+    App.selectedElements = back;
+    // The LAST pass writes history; the others are quiet, as the first was.
+    if (i < marks.length - 1) {
+      symQuietHistory = true;
+      try { fn(); } finally { symQuietHistory = false; }
+    } else {
+      fn();
+    }
   }
-  App.selectedElements = back;
-  fn();
 }
 
 /* SYMMETRY-AWARE OPS.
@@ -7040,20 +7106,68 @@ function runMirrored(obj, fn) {
    edge - it appears twice, no wall is built there, and the seam problem
    solves itself. No welding, no merge threshold. An element that is its own
    mirror appears once; set semantics handle that for free. */
+/* THE MIRROR GROUP (a2.89). n planes generate 2^n transforms, one of which
+   is the identity: one map for a single axis, three for two, seven for
+   three. The map for a subset is the COMPOSITION of the per-axis maps -
+   follow x's partner, then y's - and a vertex belongs to the composed map
+   only if every step of that chain had a partner of its own.
+
+   `buildSymmetryMap` is O(V) since a2.88. Before that, seven maps on a
+   14,641-vertex mesh cost 4.2 seconds and this feature could not have been
+   built on it at all. */
+function symAxes() {
+  return App.symmetry ? (App.symmetryAxes || []) : [];
+}
+/* The one-shot actions - Mirror, Flip, Array's default - act across ONE
+   plane by their nature. They take the first live axis, which is the one
+   the set names first. */
+function primarySymAxis() {
+  return (App.symmetryAxes && App.symmetryAxes[0]) || 'x';
+}
+function symmetryMaps(obj) {
+  const axes = symAxes();
+  if (!axes.length) return [];
+  const per = axes.map(a => buildSymmetryMap(obj, a));
+  const out = [];
+  for (let bits = 1; bits < (1 << axes.length); bits++) {
+    let m = null;
+    const subset = [];
+    for (let i = 0; i < axes.length; i++) {
+      if (!(bits & (1 << i))) continue;
+      subset.push(axes[i]);
+      const pa = per[i];
+      if (!m) { m = pa; continue; }
+      const c = new Map();
+      m.forEach((v, key) => { if (pa.has(v)) c.set(key, pa.get(v)); });
+      m = c;
+    }
+    if (m && m.size) out.push({ axes: subset, map: m });
+  }
+  return out;
+}
+/* The planes an op keeps its geometry symmetric about - a LIST now. See
+   `symmetrise` in extrudeRegionOp, which walks it. */
 function opSymmetry(obj) {
-  if (!App.symmetry) return null;
-  const pl = symmetryPlane(obj, App.symmetryAxis);
+  const axes = symAxes();
+  if (!axes.length) return null;
   const geo = obj.mesh.geometry;
   geo.computeBoundingBox();
   const s = geo.boundingBox.getSize(new THREE.Vector3());
   // Same relative tolerance buildSymmetryMap pairs with, so "on the plane"
   // means the same thing to both.
-  return { axis: pl.axis, offset: pl.offset, eps: Math.max(s.x, s.y, s.z, 1) * 1e-3 };
+  const eps = Math.max(s.x, s.y, s.z, 1) * 1e-3;
+  const planes = axes.map(a => {
+    const pl = symmetryPlane(obj, a);
+    return { axis: pl.axis, offset: pl.offset };
+  });
+  /* `axis` and `offset` are the FIRST plane's, kept so anything still
+     reading a single plane gets the primary one rather than undefined. */
+  return { planes: planes, axis: planes[0].axis, offset: planes[0].offset, eps: eps };
 }
 
-function mirrorOfSelection(obj, elements) {
-  const map = buildSymmetryMap(obj, App.symmetryAxis);
-  if (!map.size) return null;
+/* ONE IMAGE, GIVEN ONE MAP. Split out of mirrorOfSelection at a2.89 so the
+   same translation can be run for every element of the mirror group. */
+function mirrorViaMap(obj, elements, map) {
   const topo = obj.mesh.userData.topo;
   const out = new Set();
   const mv = l => (map.has(l) ? map.get(l) : -1);
@@ -7088,6 +7202,30 @@ function mirrorOfSelection(obj, elements) {
     });
   }
   return out;
+}
+
+/* EVERY image, unioned. With X and Y live that is the X mirror, the Y
+   mirror and the diagonal - three sets, not one. A map that pairs nothing
+   contributes nothing rather than failing the whole call, so two good axes
+   and one useless one still work. */
+function mirrorOfSelection(obj, elements) {
+  const groups = symmetryMaps(obj);
+  if (!groups.length) return null;
+  const out = new Set();
+  let any = false;
+  groups.forEach(g => {
+    const one = mirrorViaMap(obj, elements, g.map);
+    if (one.size) { any = true; one.forEach(e => out.add(e)); }
+  });
+  return any ? out : null;
+}
+
+/* The images kept APART, one per group element - runMirrored visits each in
+   turn rather than selecting their union. */
+function mirrorImages(obj, elements) {
+  return symmetryMaps(obj)
+    .map(g => mirrorViaMap(obj, elements, g.map))
+    .filter(im => im.size);
 }
 
 /* Adds the mirror of the selection to the selection, in place, and returns
@@ -9182,9 +9320,21 @@ function extrudeRegionOp(obj, groupIndices, offset, useOwnNormals, sym) {
   const avgDir = new THREE.Vector3();
   if (sym) {
     faceNormals.forEach((n, gi) => {
-      const d = loopCentroid(ed, loops.get(gi))[sym.axis] - sym.offset;
-      if (d > sym.eps) avgDir.add(n);
-      else if (d >= -sym.eps) { const m = n.clone(); m[sym.axis] = 0; avgDir.add(m); }
+      /* One plane at a time (a2.89): a loop sitting ON a plane contributes
+         a direction with that plane's component flattened, and a loop on
+         the far side of a plane is skipped by it. With several planes live
+         the tests compose - a loop must be on the positive side of every
+         plane to contribute unflattened. */
+      const c = loopCentroid(ed, loops.get(gi));
+      let skip = false;
+      const m = n.clone();
+      sym.planes.forEach(pl => {
+        const d = c[pl.axis] - pl.offset;
+        if (d > sym.eps) return;
+        if (d >= -sym.eps) m[pl.axis] = 0;
+        else skip = true;
+      });
+      if (!skip) avgDir.add(m);
     });
   }
   if (avgDir.lengthSq() < 1e-12) { avgDir.set(0, 0, 0); faceNormals.forEach(n => avgDir.add(n)); }
@@ -9205,10 +9355,21 @@ function extrudeRegionOp(obj, groupIndices, offset, useOwnNormals, sym) {
   }
 
   // Which side of the plane a vertex is on: +1, -1, or 0 for on it.
+  /* PER PLANE now (a2.89). A vertex has a side for each live plane; the
+     caller asks about one at a time rather than getting a single answer
+     that could only ever describe one axis. */
+  const symSideOn = (l, pl) => {
+    const d = vecAt(ed, L.logicalGroups[l][0])[pl.axis] - pl.offset;
+    return Math.abs(d) <= sym.eps ? 0 : (d > 0 ? 1 : -1);
+  };
+  // On ANY live plane - the test the old single-axis symSide()===0 stood for.
+  const symOnAnyPlane = (l) => {
+    if (!sym) return false;
+    return sym.planes.some(pl => symSideOn(l, pl) === 0);
+  };
   const symSide = (l) => {
     if (!sym) return 1;
-    const d = vecAt(ed, L.logicalGroups[l][0])[sym.axis] - sym.offset;
-    return Math.abs(d) <= sym.eps ? 0 : (d > 0 ? 1 : -1);
+    return symSideOn(l, sym.planes[0]);
   };
   /* The plus side keeps the region direction; the mirrored side gets its
      axis component negated, so both halves grow outward instead of sliding
@@ -9216,9 +9377,14 @@ function extrudeRegionOp(obj, groupIndices, offset, useOwnNormals, sym) {
      has to agree with it - so its axis component is zero. */
   const symmetrise = (v, l) => {
     if (!sym) return v;
-    const s = symSide(l);
-    if (s === 0) v[sym.axis] = 0;
-    else if (s < 0) v[sym.axis] = -v[sym.axis];
+    /* Every plane gets its say, independently: a vertex may sit on the X
+       plane and behind the Y one, and each answer touches only its own
+       component. */
+    sym.planes.forEach(pl => {
+      const s = symSideOn(l, pl);
+      if (s === 0) v[pl.axis] = 0;
+      else if (s < 0) v[pl.axis] = -v[pl.axis];
+    });
     return v;
   };
 
@@ -9242,7 +9408,9 @@ function extrudeRegionOp(obj, groupIndices, offset, useOwnNormals, sym) {
     // Own normals are already symmetric when the face set is - the mirrored
     // vertex sums the mirrored faces - so only the on-plane case needs help.
     if (n.lengthSq() < 1e-12) return symmetrise(avgDir.clone(), l);
-    if (sym && symSide(l) === 0) n[sym.axis] = 0;
+    if (sym) {
+      sym.planes.forEach(pl => { if (symSideOn(l, pl) === 0) n[pl.axis] = 0; });
+    }
     if (n.lengthSq() < 1e-12) return symmetrise(avgDir.clone(), l);
     n.normalize();
     // On a bend the vertex normal leans away from each face, which would thin
@@ -10489,7 +10657,11 @@ function decideLoopCutFlip(obj, pa, pb, mpa, mpb, sym) {
 
     // Where the mirrored loop OUGHT to land.
     const want = p1.clone();
-    want[sym.axis] = 2 * sym.offset - want[sym.axis];
+    // Every live plane, so a loop cut placed under two-axis symmetry lands
+    // the same way its diagonal image does.
+    (sym.planes || [sym]).forEach(pl => {
+      want[pl.axis] = 2 * pl.offset - want[pl.axis];
+    });
 
     const m1 = resolveEdgeByPositions(obj, mpa, mpb);
     if (!m1) return false;
@@ -10795,7 +10967,8 @@ function applyPendingOp() {
        snapshot is the ORIGINAL single shape, which is what makes dragging
        the count up and down a preview rather than an accumulation - without
        the restore, 3 then 4 would leave twelve. */
-    /* op.axis, NOT App.symmetryAxis. The axis is set in the drawer, which
+    /* op.axis, NOT the live symmetry set. The axes are set in the block,
+       which
        stays reachable with this bar open, and the chip there only calls
        refreshUI - so reading it live meant tapping Y mid-op changed nothing
        on screen while the confirm toast went on to read the NEW axis and
@@ -12544,10 +12717,16 @@ function orientedSlideItems(obj) {
      loop being placed. Lowest logical id wins, so the answer does not depend
      on map order. */
   if (App.symmetry) {
-    let map = null;
-    try { map = buildSymmetryMap(obj, App.symmetryAxis); } catch (e) { map = null; }
-    if (map) {
-      const ax = App.symmetryAxis;
+    /* Every element of the group, not one axis (a2.89): a vertex may be
+       paired with its X mirror, its Y mirror and the diagonal, and each
+       pairing wants its own components negated. `settled` is per group
+       element, so the first one to claim a pair owns it - and the group is
+       enumerated in a fixed order, so that does not depend on map iteration
+       order either. */
+    let groups = [];
+    try { groups = symmetryMaps(obj); } catch (e) { groups = []; }
+    groups.forEach(g => {
+      const map = g.map, subset = g.axes;
       const settled = new Set();
       Array.from(byV.keys()).sort((x, y) => x - y).forEach(v => {
         const q = map.get(v);
@@ -12555,14 +12734,14 @@ function orientedSlideItems(obj) {
         if (settled.has(v) || settled.has(q)) return;
         settled.add(v); settled.add(q);
         const want = dirOf(byV.get(v));
-        want[ax] = -want[ax];
+        subset.forEach(ax => { want[ax] = -want[ax]; });
         const qi = byV.get(q);
         const pv = logicalPos(obj, qi.v);
         const da = logicalPos(obj, qi.a).sub(pv);
         const db = logicalPos(obj, qi.b).sub(pv);
         qi.flip = db.dot(want) > da.dot(want);
       });
-    }
+    });
   }
 
   const out = [];
@@ -15134,9 +15313,18 @@ function captureDragContext(pivot) {
     // Marks travel by logical edge for the length of the drag - see
     // snapshotEdgeMarks.
     ctx.marks = snapshotEdgeMarks(obj);
-    ctx.mirrorMap = App.symmetry ? buildSymmetryMap(obj, App.symmetryAxis) : null;
-    // Snapshot the plane with the map: it must not move mid-drag.
-    ctx.mirrorOffset = App.symmetry ? symmetryPlane(obj, App.symmetryAxis).offset : 0;
+    /* THE WHOLE GROUP, SNAPSHOT WITH ITS PLANES (a2.89). A vertex has one
+       partner per group element - three of them with two axes live - and the
+       planes are frozen here for the same reason the maps are: neither may
+       move mid-drag. `mirrorMap` and `mirrorOffset` survive as the FIRST
+       element's, for the few places that only ask "has this vertex got a
+       partner at all". */
+    ctx.mirrorGroups = App.symmetry ? symmetryMaps(obj) : [];
+    ctx.mirrorOffsets = {};
+    symAxes().forEach(a => { ctx.mirrorOffsets[a] = symmetryPlane(obj, a).offset; });
+    ctx.mirrorMap = ctx.mirrorGroups.length ? ctx.mirrorGroups[0].map : null;
+    ctx.mirrorOffset = ctx.mirrorGroups.length
+      ? ctx.mirrorOffsets[ctx.mirrorGroups[0].axes[0]] : 0;
 
     /* THE INVARIANT SYMMETRY RELIES ON: an entry writes ITSELF and its mirror
        partner, so the entries and their partners must be disjoint sets. Every
@@ -15160,17 +15348,24 @@ function captureDragContext(pivot) {
        Runs HERE, after ctx.mirrorMap exists - the first attempt sat next to
        the soft entries a few lines up, where the map is still undefined, so
        the whole filter quietly skipped and the probe caught it unchanged. */
-    if (ctx.mirrorMap) {
+    if (ctx.mirrorGroups.length) {
       const claimed = new Set();
       const kept = [];
       ctx.entries.forEach(e => {
-        const p = ctx.mirrorMap.get(e.logical);
-        // A vertex ON the plane is its own partner: it writes only itself
-        // (clamped), so it claims nothing and can never be claimed away.
-        const mirrors = p !== undefined && p !== e.logical;
-        if (mirrors && claimed.has(e.logical)) return;
+        /* EVERY partner, across every group element (a2.89). Claiming only
+           the first axis's partner would let a vertex keep an entry that
+           the diagonal mirror also writes, which is the same double-write
+           this filter exists to stop. A vertex ON a plane is its own
+           partner under it: it writes only itself, clamped, so it claims
+           nothing there and can never be claimed away. */
+        const partners = [];
+        ctx.mirrorGroups.forEach(g => {
+          const p = g.map.get(e.logical);
+          if (p !== undefined && p !== e.logical) partners.push(p);
+        });
+        if (partners.length && claimed.has(e.logical)) return;
         kept.push(e);
-        if (mirrors) claimed.add(p);
+        partners.forEach(p => claimed.add(p));
       });
       ctx.entries = kept;
     }
@@ -15210,8 +15405,8 @@ function applyDeltaToSelection(deltaMatrix) {
     if (!obj) return;
     const topo = obj.mesh.userData.topo;
     const pa = obj.mesh.geometry.attributes.position;
-    const axis = App.symmetryAxis;
-    const off = dragCtx.mirrorOffset || 0;
+    const symOffs = dragCtx.mirrorOffsets || {};
+    const symGroups = dragCtx.mirrorGroups || [];
     const setLocal = (logical, v) => {
       topo.logicalGroups[logical].forEach(ai => pa.setXYZ(ai, v.x, v.y, v.z));
     };
@@ -15233,18 +15428,29 @@ function applyDeltaToSelection(deltaMatrix) {
         ? moved : entry.world.clone().lerp(moved, entry.w);
       const local = newWorld.applyMatrix4(invWorld);   // newWorld is already a fresh vector
       setLocal(entry.logical, local);
-      if (dragCtx.mirrorMap) {
-        const partner = dragCtx.mirrorMap.get(entry.logical);
-        if (partner === entry.logical) {
-          // Its own mirror: it lives ON the plane, wherever the plane is.
-          const clamped = local.clone();
-          clamped[axis] = off;
-          setLocal(entry.logical, clamped);
-        } else if (partner !== undefined) {
-          const mirrored = local.clone();
-          mirrored[axis] = 2 * off - mirrored[axis];
+      if (symGroups.length) {
+        /* CLAMPS FIRST, THEN MIRRORS (a2.89). A vertex that is its own
+           partner under a plane lives ON that plane, wherever the plane is -
+           and with several planes live it can be pinned by more than one, so
+           the clamps accumulate into one position instead of each writing
+           its own. The mirrors are then taken from the CLAMPED position: a
+           vertex pinned to the X plane and mirrored across Y wants the
+           reflection of where it actually ended up, not of where the pointer
+           would have put it. */
+        let base = local;
+        symGroups.forEach(g => {
+          if (g.map.get(entry.logical) !== entry.logical) return;
+          if (base === local) base = local.clone();
+          g.axes.forEach(ax => { base[ax] = symOffs[ax] || 0; });
+        });
+        if (base !== local) setLocal(entry.logical, base);
+        symGroups.forEach(g => {
+          const partner = g.map.get(entry.logical);
+          if (partner === undefined || partner === entry.logical) return;
+          const mirrored = base.clone();
+          g.axes.forEach(ax => { mirrored[ax] = 2 * (symOffs[ax] || 0) - mirrored[ax]; });
           setLocal(partner, mirrored);
-        }
+        });
       }
     });
     pa.needsUpdate = true;
@@ -16683,9 +16889,15 @@ function snapSkipSet() {
      finder thinks is standing still. Dragging a vertex and pointing at its own
      mirror was the worst case: the highest-priority branch accepted it, and
      the pivot chased a target running away from it. */
-  if (dragCtx && dragCtx.mirrorMap) {
+  if (dragCtx && dragCtx.mirrorGroups && dragCtx.mirrorGroups.length) {
+    // Every group element (a2.89) - the diagonal image moves too.
     const partners = [];
-    verts.forEach(l => { const p = dragCtx.mirrorMap.get(l); if (p !== undefined) partners.push(p); });
+    verts.forEach(l => {
+      dragCtx.mirrorGroups.forEach(g => {
+        const p = g.map.get(l);
+        if (p !== undefined) partners.push(p);
+      });
+    });
     partners.forEach(p => verts.add(p));
   }
   return { verts };
@@ -18188,7 +18400,7 @@ document.addEventListener('touchmove', (ev) => {
 
      #hubBtn replaces #thumbZone, which no longer exists. */
   if (ev.target && ev.target.closest &&
-      ev.target.closest('#btnMenu, #drawer, #inspector, #opBar, #geoBar, #pivotBar, #hubBtn, #symPill, #projPill, #helpCard, #matFly')) return;
+      ev.target.closest('#btnMenu, #drawer, #inspector, #opBar, #geoBar, #pivotBar, #hubBtn, #symBlock, #projPill, #helpCard, #matFly')) return;
   if (ev.cancelable) ev.preventDefault();
 }, { passive: false });
 
@@ -19734,7 +19946,7 @@ function mirrorSelectedObjects(axis, apart) {
   // Every UI path passes one, but a missing axis used to reach
   // activeMirrorPlane and throw on undefined rather than doing the obvious
   // thing - the axis the Symmetry pill is already set to.
-  axis = axis || App.symmetryAxis || 'y';
+  axis = axis || primarySymAxis() || 'y';
   if (App.mode !== 'object') { toast('Mirror works in Object mode'); return; }
   const ids = Array.from(App.selectedObjectIds);
   if (!ids.length) { toast('Select an object to mirror'); return; }
@@ -19979,7 +20191,7 @@ function separateSelection() {
    where tapping a face selects that face on all twelve at once and painting
    one paints them all.
 
-   THE AXIS IS App.symmetryAxis - the same one Mirror and Flip read, and they
+   THE AXIS IS primarySymAxis() - the same one Mirror and Flip read, and they
    sit either side of Array in the ring. There is no second axis picker to
    keep in sync, and the axis chip in the drawer already says which one is
    live. Local space throughout, exactly as symmetry works: a rotated object
@@ -20195,7 +20407,7 @@ function arraySelection() {
   const obj = findObject(ids[0]) || findObject(App.activeObjectId);
   if (!obj) return;
   beginPendingOp('array', obj, {}, {
-    groupMode: 'line', segments: 3, axis: App.symmetryAxis || 'x'
+    groupMode: 'line', segments: 3, axis: primarySymAxis() || 'x'
   });
 }
 
@@ -20789,7 +21001,7 @@ document.getElementById('isoChipOut').addEventListener('click', (ev) => {
 // rings call duplicateSelection/deleteSelection directly, and the Ctrl+D and
 // Delete/Backspace keyboard shortcuts already did too.
 // Mirror X/Y/Z drawer buttons removed - the fan's Mirror item calls
-// mirrorSelectedObjects(App.symmetryAxis) directly, using whichever axis is
+// mirrorSelectedObjects(primarySymAxis()) directly, using whichever axis is
 // set. mirrorSelectedObjects itself is untouched and still takes an axis.
 
 /* ---------------- Serialize / Undo / Save / Load ---------------- */
@@ -20808,7 +21020,9 @@ function serializeDoc() {
     // Symmetry is a modelling state, not an appearance one: it belongs with
     // the geometry it mirrors, and an undo that quietly switched it off was
     // the kind of thing you only notice three edits later.
-    symmetry: { on: !!App.symmetry, axis: App.symmetryAxis },
+    /* `axis` is still written so a file saved here opens in a2.88 and
+       earlier with its primary axis intact. `axes` is what a2.89 reads. */
+    symmetry: { on: !!App.symmetry, axes: App.symmetryAxes.slice(), axis: primarySymAxis() },
     objects: App.objects.map(o => {
       const g = o.mesh.geometry;
       const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
@@ -21132,7 +21346,13 @@ function restoreDoc(doc, opts = {}) {
      and switch symmetry off on every load of an older file. */
   if (doc.symmetry && !opts.keepAppearance) {
     App.symmetry = !!doc.symmetry.on;
-    if (doc.symmetry.axis) App.symmetryAxis = doc.symmetry.axis;
+    /* A file saved before a2.89 has one axis and no set. */
+    if (Array.isArray(doc.symmetry.axes) && doc.symmetry.axes.length) {
+      App.symmetryAxes = ['x', 'y', 'z'].filter(a => doc.symmetry.axes.indexOf(a) >= 0);
+    } else if (doc.symmetry.axis) {
+      App.symmetryAxes = [doc.symmetry.axis];
+    }
+    if (!App.symmetryAxes.length) App.symmetryAxes = ['x'];
   }
   App.selectedObjectIds = new Set(((sel && sel.objects) || []).filter(id => findObject(id)));
 
@@ -23152,10 +23372,11 @@ const HUB_TOOLS_OBJECT_BASE = [
      when you want more than one, so it belongs on the same compass point
      and one step further from the middle, not on a bearing of its own. It
      also lands next to Mirror and Flip, which is the right company: those
-     three are the ops that read App.symmetryAxis. */
+     three are the ops that read primarySymAxis() - one plane by their
+     nature, so they take the first of the live set. */
   { key: 'array', icon: 'array', label: 'Array', seat: 0, ring: 1, run: arraySelection },
-  { key: 'mirror', icon: 'mirroraction', label: 'Mirror', seat: 2, ring: 0, run: () => showMirrorChooser(App.symmetryAxis) },
-  { key: 'flip', icon: 'flip', label: 'Flip', seat: 3, ring: 0, run: () => flipSelectedObjects(App.symmetryAxis) },
+  { key: 'mirror', icon: 'mirroraction', label: 'Mirror', seat: 2, ring: 0, run: () => showMirrorChooser(primarySymAxis()) },
+  { key: 'flip', icon: 'flip', label: 'Flip', seat: 3, ring: 0, run: () => flipSelectedObjects(primarySymAxis()) },
   { key: 'separate', icon: 'separate', label: 'Separate', seat: 4, ring: 1, run: separateSelection },
   { key: 'centre', icon: 'centre', label: 'Centre', seat: 5, ring: 0, run: centreSelectionToOrigin },
   { key: 'cap', icon: 'cap', label: 'Cap holes', seat: 6, ring: 1, run: fillHolesSelection },
@@ -24665,6 +24886,11 @@ function toggleShading() {
    stays because this is still the safer signature: every entry point this
    might grow - a ring seat, a restored file, a keyboard key - knows the
    state it WANTS, not the state it is flipping from. */
+/* "X", "X+Y", "X+Y+Z" - the set, in the order it is enumerated, so what the
+   toast says matches what the block shows and what the group did. */
+function symAxesLabel(axes) {
+  return (axes || []).map(a => a.toUpperCase()).join('+') || 'none';
+}
 function setSymmetry(on) {
   if (App.symmetry === on) { refreshObjComponentBtn(); return; }
   App.symmetry = on;
@@ -24680,28 +24906,47 @@ function setSymmetry(on) {
     ensureHelpers(obj);
     // Switching symmetry on is the capture moment, and the escape hatch when
     // the plane has gone stale - so capture, never reuse what is stored.
-    plane = captureSymmetryPlane(obj, App.symmetryAxis);
-    const map = buildSymmetryMap(obj, App.symmetryAxis);
-    pairs = 0;
-    map.forEach((v, k) => { if (v !== k) pairs++; });
-    pairs = Math.round(pairs / 2);
+    /* EVERY live axis gets its plane captured, and the pair count is the
+       count for the whole GROUP - with X and Y on, a vertex off both planes
+       has three partners, and reporting only X's would understate what the
+       toggle just switched on. */
+    App.symmetryAxes.forEach(a => captureSymmetryPlane(obj, a));
+    plane = symmetryPlane(obj, primarySymAxis());
+    const seen = new Set();
+    symmetryMaps(obj).forEach(g => {
+      g.map.forEach((v, k) => { if (v !== k) seen.add(k < v ? k + '_' + v : v + '_' + k); });
+    });
+    pairs = seen.size;
   }
   const where = plane && Math.abs(plane.offset) > 1e-4
     ? ' = ' + plane.offset.toFixed(2) : '';
-  toast('Symmetry on (' + App.symmetryAxis.toUpperCase() + where + ') - ' +
+  toast('Symmetry on (' + symAxesLabel(App.symmetryAxes) + where + ') - ' +
         (pairs < 0 ? 'no active object'
                    : pairs + ' pairs' + (App.mode === 'object' ? ' - switch to a component mode' : '')));
 }
-document.querySelectorAll('#symAxisGroup button').forEach(btn => {
-  btn.addEventListener('click', () => {
-    App.symmetryAxis = btn.dataset.sym;
+
+/* EACH AXIS IS ITS OWN SWITCH (a2.89). Tapping one adds or removes it from
+   the set; the set is kept in x,y,z order so the mirror group is enumerated
+   the same way every time. Turning the last one off would leave symmetry on
+   with nothing to mirror about, which is a state with no meaning, so it
+   turns symmetry off instead - the toggle and the axes are one control and
+   this is where that shows. */
+document.querySelectorAll('#symAxes button').forEach(btn => {
+  btn.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+  btn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const a = btn.dataset.sym;
+    const have = App.symmetryAxes.indexOf(a) >= 0;
+    const next = have ? App.symmetryAxes.filter(x => x !== a)
+                      : ['x', 'y', 'z'].filter(x => x === a || App.symmetryAxes.indexOf(x) >= 0);
+    if (!next.length) { setSymmetry(false); return; }
+    App.symmetryAxes = next;
     refreshUI();
     if (App.symmetry) {
       // A new axis means a new plane - the other capture moment.
       const o = findObject(App.activeObjectId);
-      const pl = o ? captureSymmetryPlane(o, App.symmetryAxis) : null;
-      toast('Symmetry axis: ' + App.symmetryAxis.toUpperCase() +
-            (pl && Math.abs(pl.offset) > 1e-4 ? ' (plane at ' + pl.offset.toFixed(2) + ')' : ''));
+      if (o) App.symmetryAxes.forEach(ax => captureSymmetryPlane(o, ax));
+      toast('Symmetry: ' + symAxesLabel(App.symmetryAxes));
     }
   });
 });
@@ -24789,7 +25034,12 @@ function refreshUI() {
      anything restored from a save - are built DoubleSide, so culling has to
      be re-asserted here rather than only when the button is pressed. */
   refreshXrayMode();
-  document.querySelectorAll('#symAxisGroup button').forEach(b => b.classList.toggle('active', b.dataset.sym === App.symmetryAxis));
+  /* The block wears the on state so the axes can appear with it, and each
+     axis button wears its own - several can be lit at once. */
+  const symBlockEl = document.getElementById('symBlock');
+  if (symBlockEl) symBlockEl.classList.toggle('on', App.symmetry);
+  document.querySelectorAll('#symAxes button').forEach(b =>
+    b.classList.toggle('active', App.symmetryAxes.indexOf(b.dataset.sym) >= 0));
 
   // object list chips
   const listEl = document.getElementById('objList');
@@ -25239,8 +25489,8 @@ function refreshObjComponentBtn() {
     const symIc = symPillEl.querySelector('.ic');
     if (symIc) symIc.innerHTML = icon(App.symmetry ? 'mirror' : 'symoff', 20);
     symPillEl.title = App.symmetry
-      ? 'Symmetry on (' + App.symmetryAxis.toUpperCase() + ') - tap to turn it off'
-      : 'Symmetry off - tap to mirror edits across ' + App.symmetryAxis.toUpperCase();
+      ? 'Symmetry on (' + symAxesLabel(App.symmetryAxes) + ') - tap to turn it off'
+      : 'Symmetry off - tap to mirror edits across ' + symAxesLabel(App.symmetryAxes);
   }
 
   /* Moved here from module scope, where drawing its glyph would have hit the
@@ -25457,6 +25707,9 @@ if (PICK_DEBUG) {
        cube when the camera has turned or the heartbeat fires, so a harness
        that wants to LOOK at it has no way to make it paint on demand. */
     engageOrtho, disengageOrtho, viewCube, cubeRenderer, cubeScene, cubeCam,
+    /* The mirror group and its parts, so a probe can count the images
+       rather than infer them from what the mesh looks like afterwards. */
+    symmetryMaps, symAxes, primarySymAxis, symAxesLabel, mirrorImages,
     get orthoOn() { return !!orthoView; },
     /* Which KIND of flat view, so a probe's failure line can say why
        rather than only that something is wrong. The behaviour is still

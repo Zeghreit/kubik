@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,697 lines)
-- Version at time of writing: **a2.88**
+- Version at time of writing: **a2.89**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -36,6 +36,97 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## Symmetry takes a SET of axes, in one block (a2.89)
+
+Zeghreit: *"x y z switches for sym switch and the sym switch placement - it
+will be one whole block"*, and *"axes is switches too so we can have multiple
+axes on at the same time"*.
+
+Two things were wrong, and only one of them was where the controls sat.
+
+### The control was in two places
+
+The on/off toggle lived under the view cube. X/Y/Z lived in a drawer row,
+under a note reading *"Symmetry on and off is the button under the view
+cube."* **A control that has to apologise for where its other half lives is
+one control split in two.**
+
+It is one block now, top-left under the menu button: the toggle, and three
+axis switches that appear only when it is on.
+
+a2.65 tore a column out of that corner and the reason still stands - on a
+phone with a 59pt top inset, menu over symmetry over lighting ran from 73pt
+to 211pt before the model got a look in. **This is a row.** Measured at 375px:
+`x 14..202, y 66..110` - 188 wide, 44 tall, ending less than half as far down
+the screen as the column did. It spends width, which a portrait phone has,
+instead of height, which it does not.
+
+### And the axes are switches, not a choice
+
+`App.symmetryAxis` (one string) became `App.symmetryAxes` (a set). With X and
+Y both on, an edit has **three** mirror images - X, Y, and the diagonal -
+because n planes generate a group of 2^n transforms. Measured on a cube
+corner: one axis expands the selection to 2, two axes to 4, three to 8.
+
+The map for a subset is the COMPOSITION of the per-axis maps, and a vertex
+belongs to it only if every step of the chain had a partner. `symmetryMaps`
+returns 1, 3 and 7 maps for 1, 2 and 3 axes.
+
+Turning off the last axis turns symmetry off. Symmetry on with nothing to
+mirror about is a state with no meaning, and the toggle and the axes being
+one control is exactly where that shows.
+
+### What had to learn to loop
+
+- **`mirrorOfSelection`** unions every image; `mirrorImages` keeps them apart
+  for the one caller that needs them separately.
+- **`runMirrored`** runs the op once per group element. **Every mark is taken
+  before the first pass** - marks are positions and the first pass moves
+  geometry, so a mark taken afterwards would describe a mesh that no longer
+  exists. The last pass writes history; the rest are quiet, as the first
+  always was.
+- **The drag** snapshots the whole group with a plane per axis. Clamps come
+  first, then mirrors: a vertex pinned to the X plane and mirrored across Y
+  wants the reflection of where it actually ended up, not of where the
+  pointer would have put it. The claim filter that stops double-writes now
+  claims **every** partner, not the first axis's - claiming one would let the
+  diagonal write the same vertex twice, which is the bug that filter exists
+  to prevent.
+- **`extrudeRegionOp`'s `symmetrise`** walks the plane list. Each plane
+  touches only its own component, so a vertex can sit on the X plane and
+  behind the Y one and get the right answer from both.
+- **`resolveEdgeMarks`**, **`opSymmetry`**, **`decideLoopCutFlip`** and the
+  snap skip-set likewise.
+- **One plane per object per axis.** `userData.symPlane` recaptured whenever
+  the axis differed, which was right when only one could be live and is
+  thrashing when three can. It is still written, so a file saved here opens
+  in a2.88.
+
+`primarySymAxis()` is what Mirror, Flip and Array's default read: those act
+across ONE plane by their nature, and take the first of the live set.
+
+### None of this was affordable before a2.88
+
+Three axes need seven maps. At the old O(V^2) that was 4.2 seconds on a
+14,641-vertex mesh. The groundwork went first for that reason.
+
+### Probe
+
+`_symaxes_probe.js`, ten sections. The one that matters is section 5, which
+asserts **the property the feature exists to create**: after an extrude under
+two-axis symmetry, every vertex of the finished mesh has a partner at its
+reflection in BOTH planes - asked of the result with the app's own weld
+tolerance, so it cannot agree with the code that built it by construction.
+0 unmatched of 16, winding clean.
+
+Section 6 is its guard: two-axis symmetry that quietly mirrored across a
+third would pass section 5 just as well, so one axis is checked for what it
+must NOT do.
+
+`_theme_probe` section 9 kept the strip under the cube and gave up the
+symmetry half, which now lives with the block. Both halves in two probes is
+how two probes drift apart.
 
 ## The symmetry map stops being quadratic (a2.88)
 
@@ -3547,6 +3638,10 @@ had two faces.
 
 - **Top-left** hamburger → drawer. **Top-centre** tool/mode readout.
   **Top-right** view cube.
+> **SUPERSEDED BY a2.89 wherever it describes where symmetry lives.** The
+> toggle and the axes are one block, top-left under the menu button. The
+> drawer row and its note are gone.
+
 - **Top-left, under the drawer button**: the Symmetry pill, a horizontal
   two-state switch. It hung under the view cube until v1.99d, which left
   the top-left empty and the top-right crowded - the cube is a 128px
