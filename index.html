@@ -209,9 +209,9 @@
   .brand { font-weight: 600; letter-spacing: 0.02em; color: var(--text); font-size: 13px; }
 
   /* Edge switches are gone (a2.65). Nothing in this file is two halves and
-     a sliding knob any more: #projPill is a single 44px toggle under the
-     view cube, #symAxes is the row of three beside it, and #hubBtn below is
-     a round button that cycles. */
+     a sliding knob any more: #symAxes is a row of three 44px switches under
+     the view cube, projection is a seat in the world ring since a2.90b, and
+     #hubBtn below is a round button that cycles. */
   /* Object / Component, back to a single round button in the bottom-left
      corner - opposite Help, with Undo/Redo between them. */
   /* Bottom EDGES, not centres. v1.99b aligned the row on centres, which is
@@ -232,25 +232,13 @@
     box-shadow: 0 6px 18px rgb(var(--shadow) / .16);
   }
 
-  /* SYMMETRY: ONE BUTTON, UNDER THE VIEW CUBE (a2.65).
+  /* WHY THE TOP-LEFT COLUMN IS NOT COMING BACK (a2.65, still true).
 
-     It was a two-seat edge switch in the top-left, showing both states side
-     by side at 100x46. Three things were wrong with that by a2.65: it was
-     the only control in the app wearing that shape; it spent 100px on a
-     binary every other toggle settles in 44; and it anchored a top-left
-     column of three unrelated things - menu, symmetry, lighting - which on a
-     phone with a 59pt top inset ran from 73pt to 211pt before the model got
-     a look in.
-
-     The old rule against a cycling button ("you could not tell which state a
-     tap would leave you in") is answered rather than ignored. This is not a
-     cycle, it is a two-state toggle that SHOWS the state it is in: the mirror
-     glyph in the accent when on, the crossed glyph in dim when off - exactly
-     what #projPill has worn since a2.61. The swipe goes with the halves; the
-     tap, always the primary path, does not.
-
-     Paired with #projPill in the 44px strip under the cube. Both clear
-     #matFly, which moved down to 194 to make the room. */
+     Symmetry was a two-seat edge switch up there, and it anchored a column
+     of three unrelated things - menu, symmetry, lighting - which on a phone
+     with a 59pt top inset ran from 73pt to 211pt before the model got a look
+     in. a2.89 put a block back in that corner and a2.90 took it out again.
+     Two items deep is the most that corner has ever carried well. */
   /* SYMMETRY JOINED THE VIEW GIZMO (a2.90).
 
      The on/off toggle is gone. Symmetry is on when an axis is lit and off
@@ -580,10 +568,8 @@
      500px is below every phone in landscape and above every window the probe
      suite runs in, so the suite keeps measuring the portrait layout. */
   @media (max-height: 500px) {
-    /* The projection pill is in the menu corner since a2.90a and has
-       nothing to step aside from: two 44px items down the left edge fit a
-       short screen without argument. Only the axes still share this corner
-       with the cube and the material shelf. */
+    /* Only the axes share this corner with the cube and the material shelf
+       now - the projection pill moved into the world ring at a2.90b. */
     #symAxes {
       right: calc(env(safe-area-inset-right, 0px) + 142px);
       top: calc(env(safe-area-inset-top, 0px) + 42px);
@@ -775,32 +761,17 @@
      you can see - and it had pushed the pill out from under the cube and
      off to its left, which is where your screenshot found it. #matFly moved
      down to 194 instead, which frees the whole strip under the cube. */
-  /* THE CORNER BESIDE THE MENU (a2.90a). a2.90 emptied the top-left, and a
-     44px toggle under a 44px button is the whole of what goes back there -
-     two items ending at 110px, not the three-deep column a2.65 removed,
-     which ran to 211pt before the model got a look in.
+  /* THE PROJECTION PILL IS GONE (a2.90b). It went to the menu corner at
+     a2.90a and into the world ring one version later, which is where it
+     should have gone in the first place: the ring's own note says it holds
+     "everything that used to sit as a button around the viewport edge", and
+     this was the last of them.
 
-     WHAT THIS COSTS, said out loud: a2.61 put the pill under the cube
-     BECAUSE the cube is the other way into the flat view, and a2.87 built
-     the whole glance-versus-decision distinction on that pairing - tap a
-     cube face for a look, tap the pill to work in it. Splitting them makes
-     that relationship less discoverable. What holds it together is that the
-     pill still shows the projection you are IN, so wherever it sits you can
-     always read where you are; and the strip under the cube now carries only
-     the axes, which is the one thing that genuinely needs the cube beside it
-     to be legible. */
-  #projPill {
-    position: absolute; left: var(--edge-l);
-    top: calc(var(--edge) + 52px);
-    z-index: 13; width: 44px; height: 44px; border-radius: var(--r-md);
-    background: var(--panel2); border: 1px solid var(--line);
-    display: flex; align-items: center; justify-content: center;
-    color: var(--text-dim);
-    touch-action: none; -webkit-user-select: none; user-select: none; cursor: pointer;
-  }
-  /* Flat view is a STATE you are in, not a button you pressed, so it wears
-     the accent the way every other on-state in the app does. */
-  #projPill.on { border-color: var(--accent); color: var(--accent); }
+     What that costs: nothing on screen now says which projection you are in
+     until you bloom the ring. See-through, Floor grid and Snap have had
+     exactly that property since they moved here, and it was accepted then
+     for the same reason - the edges got clear. The flat view also announces
+     itself when you enter it, and the cube is right there. */
   /* LIGHTING LIVES IN THE DRAWER NOW (a2.65). It was a pill in the viewport
      with a menu falling out of it: a permanent word on screen and the third
      seat of the top-left column, for a six-way choice you make once a
@@ -1399,7 +1370,6 @@
          gesture - hold two fingers anywhere and slide with the other hand -
          because they are judged entirely by what happens to the model, and
          no widget can be watched and dragged at once. -->
-    <div id="projPill" title="Perspective or orthographic view"><span class="ic" id="projPillName"></span></div>
     <div id="lightHud">
       <div><div class="lh-k" id="lhTurnK">Turn</div><div class="lh-v" id="lhTurn">0&deg;</div></div>
       <div><div class="lh-k" id="lhStrK">Strength</div><div class="lh-v" id="lhStr">1.00</div></div>
@@ -1593,7 +1563,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.90a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.90b</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -2603,7 +2573,6 @@ function engageOrtho(via) {
   orbit.object = orthoCam;
   orthoView = { sticky: via !== 'cube' };
   watchingTurn = false;   // a fresh flat view owes nothing to the last gesture
-  refreshProjPill();
   /* The toast is the only place the difference is stated, and it is
      stated at the moment it matters rather than parked in a tooltip. */
   toast(orthoView.sticky ? 'Orthographic view - stays until you tap again'
@@ -2638,37 +2607,13 @@ function disengageOrtho(silent) {
      gesture, and the next engage inherits it - so a pan, a camera
      flight and then a cube tap would read the flight as a turn. */
   watchingTurn = false;
-  refreshProjPill();
   if (!silent) toast('Perspective view');
   invalidate();
 }
 
-const projPillEl = document.getElementById('projPill');
-const projPillNameEl = document.getElementById('projPillName');
-function refreshProjPill() {
-  const on = !!orthoView;
-  /* The glyph says which projection you are IN; the accent says the flat one
-     is a state rather than the default. The same two cues the symmetry axes
-     wear beside it. The word it used to carry is in the title. */
-  projPillNameEl.innerHTML = icon(on ? 'ortho' : 'persp', 20);
-  projPillEl.classList.toggle('on', on);
-  projPillEl.title = on
-    ? (orthoView.sticky ? 'Flat view - tap for perspective'
-                        : 'Flat view from the cube - turn to leave, or tap for perspective')
-    : 'Perspective - tap for the flat view';
-}
-/* NO EAGER CALL HERE ANY MORE (a2.65). It draws an icon now, and ICON is a
-   const declared much further down this file - calling it at this point in
-   module evaluation lands in the temporal dead zone and throws. refreshUI()
-   already runs at init, already calls icon(), and owns it instead. */
-
-projPillEl.addEventListener('click', () => {
-  /* A swing in flight is heading for the flat view of its own accord; if
-     you have just asked for a projection by hand, that pending decision is
-     not yours any more. */
-  viewCube.cancel();
-  if (orthoView) disengageOrtho(); else engageOrtho('pill');
-});
+/* `refreshProjPill` went with the pill at a2.90b. The world ring reads
+   `orthoView` when it blooms, so there is nothing standing to keep in sync -
+   engageOrtho and disengageOrtho just no longer have to tell anyone. */
 
 viewCubeEl.addEventListener('click', (ev) => {
   /* The helper animates at the camera's CURRENT radius, so this works the
@@ -18427,7 +18372,7 @@ document.addEventListener('touchmove', (ev) => {
 
      #hubBtn replaces #thumbZone, which no longer exists. */
   if (ev.target && ev.target.closest &&
-      ev.target.closest('#btnMenu, #drawer, #inspector, #opBar, #geoBar, #pivotBar, #hubBtn, #symAxes, #projPill, #helpCard, #matFly')) return;
+      ev.target.closest('#btnMenu, #drawer, #inspector, #opBar, #geoBar, #pivotBar, #hubBtn, #symAxes, #helpCard, #matFly')) return;
   if (ev.cancelable) ev.preventDefault();
 }, { passive: false });
 
@@ -23473,6 +23418,19 @@ const HUB_TOOLS_WORLD = [
     on: () => grid.visible, run: toggleFloorGrid },
   { key: 'snap', icon: 'snap', label: 'Snap', half: 'top',
     on: () => App.snapMode !== 'off', run: toggleSnapping },
+  /* PROJECTION JOINS THE VIEW TOGGLES (a2.90b). It is the last of the things
+     that "used to sit as a button around the viewport edge", which is what
+     this half of the ring is for - and it belongs beside See-through, Floor
+     grid and Snap because it is the same kind of thing: a view state you set
+     and forget, not an action on the model.
+
+     The glyph still says which projection you are IN, the way it has since
+     a2.61 - the `shade` seat uses the same function-icon trick. Choosing it
+     here is a DECISION in a2.87's sense, so it engages the sticky kind that
+     a turn does not undo; the cube's own tap is still the glance. */
+  { key: 'proj', icon: () => (orthoView ? 'ortho' : 'persp'), label: 'Flat view', half: 'top',
+    on: () => !!orthoView,
+    run: () => { viewCube.cancel(); if (orthoView) disengageOrtho(); else engageOrtho('pill'); } },
 
   { key: 'selfree', icon: 'free', label: 'Tap select', half: 'bottom',
     on: () => App.selectDrag === 'off', run: () => setSelectGesture('off') },
@@ -25517,7 +25475,6 @@ function refreshObjComponentBtn() {
 
   /* Moved here from module scope, where drawing its glyph would have hit the
      ICON temporal dead zone. */
-  refreshProjPill();
 }
 
 /* ---------------- Update detection ----------------

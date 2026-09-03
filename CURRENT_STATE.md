@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,697 lines)
-- Version at time of writing: **a2.90a**
+- Version at time of writing: **a2.90b**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -111,7 +111,12 @@ actually symmetric about what you asked for. Adding a second axis says
 nothing - the lit letter is the message, and a2.89a's mistake was a toast
 repeating the control it was covering.
 
-### The projection pill takes the menu corner (a2.90a)
+### The projection pill takes the menu corner (a2.90a) - and leaves it again
+
+> **SUPERSEDED BY a2.90b**, below: the pill is a world-ring seat now and the
+> top-left corner is empty. Kept because the cost it names - splitting the
+> pill from the cube that a2.87's glance-versus-decision rule pairs it with -
+> is still paid, just from a different place.
 
 a2.90 emptied the top-left. A 44px toggle under a 44px button is what goes
 back into it: menu ends at y 58, the pill runs 66..110, and it stops there -
@@ -138,9 +143,57 @@ measurement that did not think to ask. So `_symaxes_probe` asks, with the
 longest message the feature can produce, at the width where a centred toast
 is widest.
 
+### The projection pill becomes a ring seat (a2.90b)
+
+Zeghreit: *"I wanted to put perspective switch inside bloom menu that blooms
+on empty space tap, not in upper left corner"*.
+
+a2.90a moved it to the menu corner. That was the wrong reading of "the empty
+space round the menu", and the right home was already written down - the
+world ring's own note says it holds **"everything that used to sit as a
+button around the viewport edge, which is how the edges finally got clear."**
+The projection pill was the last of them.
+
+It is a seat in the top half now, beside See-through, Floor grid and Snap,
+which is the right company: those are view states you set and forget, not
+actions on the model. The seat keeps both cues the pill wore since a2.61 -
+a function icon that says which projection you are IN, and the accent that
+says the flat one is a state rather than the default. Choosing it from the
+ring is a **decision** in a2.87's sense, so it engages the sticky kind a turn
+does not undo; the cube's own tap is still the glance.
+
+The top-left corner is empty again. a2.89 put a symmetry block there, a2.90a
+put this pill there, and both came back out - two items is the most that
+corner has ever carried well, and the model is better off with none.
+
+**What it costs:** nothing on screen says which projection you are in until
+you bloom the ring. See-through, Floor grid and Snap have had exactly that
+property since they moved here and it was accepted then for the same reason.
+The flat view also announces itself when you enter it, and the cube is right
+beside where it happens.
+
+### A check that stopped being about one control
+
+`_symaxes_probe` section 9 asked, at a2.89a, whether the toast covered the
+symmetry switches. At a2.90a it asked whether the toast covered the
+projection pill. Asking the same narrow question a third time would have
+missed the point, so it now asks whether the longest message in the app
+crosses **anything tappable in the viewport** - and it immediately found
+something neither version had looked for:
+
+**At 375px the toast crosses the view cube**, x 247..281. That is
+pre-existing - the toast has been top-centre since a2.65 and the cube
+top-right since long before, and nothing in this version moved either - so it
+is reported with its numbers rather than failed. It is recorded here so it is
+a decision rather than an oversight.
+
+Elements with `pointer-events: none` are excluded, because something you
+cannot tap is not a control the toast can obscure, and `#vignette` covers the
+whole viewport - counting it would make the check pass or fail on nothing.
+
 ### Probe
 
-`_symaxes_probe.js`, seventeen sections. Beyond the mirror-group work a2.89
+`_symaxes_probe.js`, eighteen sections. Beyond the mirror-group work a2.89
 already covered: one tap arms it and none-lit is off; the row is level with
 the pill and strictly below the cube's faces; the top-left corner is free;
 the longest possible symmetry toast and the switches no longer share a band
