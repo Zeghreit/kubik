@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~25,350 lines)
-- Version at time of writing: **a2.99**
+- Version at time of writing: **a2.100**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -36,6 +36,56 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+## The design pass, step 4 - the header (a2.100)
+
+**A top bar is back, on Zeghreit's direction** (his screenshot of the
+canvas's 2c header, 2026-09-03). a2.48 deleted one for costing 7.2% of a
+phone screen to hold a hamburger, a wordmark and a status line; that
+reasoning still stands and is still in the file. This bar is different in
+kind: it CARRIES the menu button, the symmetry axes (which were a 44px strip
+under the cube) and the tool readout, so most of the band it takes is band
+those already took. `#hdr`, 58px including its 2px bottom rule, plus the
+safe-area top as padding.
+
+- **The slab** (`#hdrMode`): "MODE" in mono caps over the mode word,
+  `--accent-mode` fill with dark text, right edge cut on a diagonal. It is a
+  BUTTON: the same tap as `#hubBtn` (cycleEditMode), so the mode can be
+  changed at either end of the screen. `refreshObjComponentBtn` writes the
+  word; **soft goes in the small line ("SOFT" over the mode), never in the
+  word** - the reviewer measured "vertex soft" pushing the menu cell off a
+  390px screen. The slab can shrink (`flex: 0 1 auto; min-width: 0`) and
+  clips with an ellipsis; nothing else in the header can.
+- **The cells**: `#symAxes` X / Y / Z, 56px each, rules between, then the
+  menu `#btnMenu` as the last cell. A lit axis is `--accent-MODE` (ungated)
+  on its tint with a 3px inset underline - the gated `--accent` read 1.5:1
+  in Object mode.
+- **The readout** (`#toolChip`) hangs under the bar, flush left, `--text-dim`
+  mono caps: "MOVE · AXIS · 1 FACE · CUBE 3". `refreshToolIndicator` now
+  appends the selection count (component modes; "N objects" for a
+  multi-select in Object mode) and the SELECTED object's name - not the
+  active one: `clearObjectSelection` leaves `activeObjectId` standing, and a
+  name with nothing selected is not what a drag will touch. Names are typed
+  by the user and go through `textContent`. `refreshUI` calls it, so it
+  tracks every selection change. It stops 136px short of the right edge
+  (the cube) and clips with an ellipsis.
+- **`--edge` includes `--hdr-h`** (58px), so the HUDs, the inspector, the
+  toast and the pivot chip stack under the bar without knowing it exists.
+  `#viewCube` is at `--hdr-h`; `#outFly`'s tab at `--hdr-h + 40` (under
+  the readout); `#matFly` keeps 194, which clears the cube's new bottom (186)
+  by 8px - its landscape `top: 132` override is GONE, it was written against
+  a cube at `top: 0` and would have put the tab back on the cube's faces.
+- **`#modeBar`** (the 3px mode stripe) is the header's bottom rule now, at
+  `--hdr-h - 2px`, z 16 over the bar's 15. Under the bar it was invisible.
+- The pointerdown guard that keeps a tap on chrome from reaching the model
+  lists `#hdr`.
+- `_theme_probe.js` section 9 re-baselined: the axes are measured against
+  the menu CELL and "clear of the cube" either side; the left-column depth
+  is measured from the header's bottom-left, not the menu button, which
+  now sits at the right. `_piv` line 15 moves because the readout carries
+  the object name.
+- **Known**: `frameBox` centres on the full canvas, so a framed model sits
+  ~29px above the centre of what is visible under the bar.
 
 ## The design pass, step 3 - the op deck and the bottom row (a2.99)
 

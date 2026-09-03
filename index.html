@@ -117,7 +117,12 @@
        one of those controls already uses means none of them needed changing,
        and none of them can pick it up TWICE, which is the mistake this file
        has recorded twice already. */
-    --edge: calc(14px + env(safe-area-inset-top));
+    /* THE HEADER IS PART OF THE TOP INSET (a2.100). Everything keyed to
+       --edge - the readout, the HUDs, the inspector, the toast - stacks
+       under the bar without knowing it exists. --hdr-h is the bar's
+       height including its bottom rule. */
+    --hdr-h: 58px;
+    --edge: calc(14px + var(--hdr-h) + env(safe-area-inset-top));
     --edge-l: calc(14px + env(safe-area-inset-left));
     --edge-r: calc(14px + env(safe-area-inset-right));
     /* The bottom row sits closer to the edge than the other three insets
@@ -187,9 +192,9 @@
      the screen. Three pixels, only while a component mode is on, is the
      whole of it. */
   #modeBar {
-    position: absolute; z-index: 12;
+    position: absolute; z-index: 16;
     left: env(safe-area-inset-left, 0px); right: env(safe-area-inset-right, 0px);
-    top: env(safe-area-inset-top, 0px);
+    top: calc(var(--hdr-h) - 2px + env(safe-area-inset-top, 0px));   /* over the header's rule (a2.100) */
     height: 3px; pointer-events: none;
     background: var(--accent); opacity: 0; transition: opacity .12s ease;
   }
@@ -234,16 +239,50 @@
      thing paying for it. The button floats over the viewport now, exactly
      like the mode button, the symmetry pill and everything else; the name and
      the status moved into the drawer. */
+  /* THE HEADER (a2.100). a2.48 deleted the top bar for costing 7.2% of a
+     phone screen to hold a hamburger, the word Kubik and a status line,
+     and that reasoning stands: a bar that holds nothing the model needs
+     is the model's loss. This one is back on Zeghreit's direction (the
+     canvas's 2c header), and it PAYS FOR ITSELF: it carries the menu
+     button, the symmetry axes - which were a 44px strip under the cube -
+     and the tool readout, so the band it takes is mostly the band those
+     already took. The slab on the left is the mode, in the mode's colour,
+     with the cut edge every mode slab in the app now wears; it is also a
+     second way to cycle the mode, the same tap as #hubBtn. */
+  #hdr {
+    position: absolute; left: 0; right: 0; top: 0; z-index: 15;
+    height: calc(var(--hdr-h) + env(safe-area-inset-top, 0px));
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
+    display: flex; align-items: stretch;
+    background: var(--panel); border-bottom: var(--rule) solid var(--line);
+  }
+  #hdrMode {
+    flex: 0 1 auto; min-width: 0; overflow: hidden; margin-right: auto; min-height: 0; border: none; border-radius: 0;
+    font-family: inherit;
+    padding: 0 36px 0 14px; display: flex; flex-direction: column; justify-content: center;
+    align-items: flex-start; gap: 2px; text-align: left;
+    background: var(--accent-mode); color: var(--on-accent);
+    clip-path: polygon(0 0, 100% 0, calc(100% - 22px) 100%, 0 100%);
+    touch-action: none;
+  }
+  #hdrMode:hover, #hdrMode:active { background: var(--accent-mode); }
+  #hdrMode .hdr-cap {
+    font-family: var(--mono); font-size: 9px; font-weight: 600; letter-spacing: .18em;
+    text-transform: uppercase; opacity: .8; line-height: 1;
+  }
+  #hdrModeName {
+    font-size: 22px; font-weight: 800; letter-spacing: .01em; line-height: 1;
+    text-transform: uppercase; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   #btnMenu {
-    position: absolute; left: var(--edge-l); top: var(--edge); z-index: 14;
-    width: 44px; height: 44px; min-height: 44px; padding: 0;
-    justify-content: center; font-size: 17px; border-radius: 50%;
-    background: var(--panel2); box-shadow: 0 2px 10px rgb(var(--shadow) / .14);
+    flex: 0 0 56px; width: 56px; min-height: 0; padding: 0; justify-content: center;
+    font-size: 17px; border-radius: 0; border: none; border-left: var(--rule) solid var(--line);
+    background: transparent;
   }
   .brand { font-weight: 600; letter-spacing: 0.02em; color: var(--text); font-size: 13px; }
 
   /* Edge switches are gone (a2.65). Nothing in this file is two halves and
-     a sliding knob any more: #symAxes is a row of three 44px switches under
+     a sliding knob any more: #symAxes is three cells in the header (a2.100),
      the view cube, projection is a seat in the world ring since a2.90b, and
      #hubBtn below is a round button that cycles. */
   /* Object / Component, back to a single round button in the bottom-left
@@ -300,24 +339,22 @@
      a2.89 put this block top-left under the menu. It measured fine and it
      was still wrong twice over: the toast landed on the switches, and the
      top-left corner was carrying a control that belongs with the axes. */
-  #symAxes {
-    position: absolute;
-    /* The strip is theirs alone since a2.90a - the projection pill moved to
-       the menu corner, so the row sits against the right edge under the
-       cube rather than 52px in to clear it. */
-    right: var(--edge-r);
-    top: calc(env(safe-area-inset-top, 0px) + 130px);
-    z-index: 13; display: flex; align-items: center; gap: 8px;
-  }
+  /* Three cells in the header (a2.100), divided by rules. A lit axis is
+     symmetry on, in the accent and its tint - the state shown, not the
+     action (a2.65's rule). */
+  #symAxes { display: flex; align-items: stretch; gap: 0; }
   #symAxes button {
-    width: 44px; height: 44px; min-height: 44px; padding: 0;
-    border-radius: var(--r-md); border: var(--rule) solid var(--line);
-    background: var(--panel2); color: var(--text-dim);
+    width: 56px; min-height: 0; padding: 0;
+    border-radius: 0; border: none; border-left: var(--rule) solid var(--line);
+    background: transparent; color: var(--text-dim);
     display: flex; align-items: center; justify-content: center;
-    font-size: 15px; font-weight: 600; letter-spacing: 0.02em;
+    font-family: var(--mono); font-size: 14px; font-weight: 700; letter-spacing: 0.02em;
     touch-action: none; -webkit-user-select: none; user-select: none;
   }
-  #symAxes button.active { border-color: var(--accent); color: var(--accent); }
+  #symAxes button.active {
+    color: var(--accent-mode); background: var(--accent-mode-dim);
+    box-shadow: inset 0 -3px 0 var(--accent-mode);   /* reads at any hue, in any mode */
+  }
 
   /* THE ONE THING THE APP SAYS UNASKED (a2.66). It sits above the bottom
      row rather than beside the hub, because the gesture it describes works
@@ -556,16 +593,20 @@
      get out of the way. Still lines up with undo/redo's centre via the
      same top offset and height, content centred by flexbox. */
   #toolChip {
-    position: absolute; left: 50%; transform: translateX(-50%);
-    top: var(--edge); height: 44px; z-index: 13;
+    position: absolute; left: calc(14px + env(safe-area-inset-left, 0px));
+    top: calc(var(--hdr-h) + env(safe-area-inset-top, 0px)); height: 32px; z-index: 13;
+    /* Stops short of the cube, and clips rather than crossing it. */
+    max-width: calc(100% - 14px - 136px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
     display: flex; align-items: center;
     /* Mono caps at 11px with wide tracking (a2.99): a readout, not a label.
        Still --text: the a2.57a rule that a thing you cannot read is not
        a thing politely out of the way. */
-    color: var(--text); font-family: var(--mono); font-size: 11px; font-weight: 600;
-    letter-spacing: .06em; text-transform: uppercase; pointer-events: none;
+    color: var(--text-dim); font-family: var(--mono); font-size: 11px; font-weight: 600;
+    letter-spacing: .1em; text-transform: uppercase; pointer-events: none;
   }
-  #toolChip .mode { color: var(--text-dim); font-weight: 500; margin-left: 6px; }
+  #toolChip .mode { color: var(--text-dim); font-weight: 500; margin-left: 8px; }
+  #toolChip .mode::before { content: '\00b7'; margin-right: 8px; }
 
   /* Anchored above the tool arc rather than centred in the viewport.
      Centring works on a tall phone but collides the moment the viewport
@@ -608,9 +649,9 @@
        sitting inside the cube's square - and at z-index 25 against the cube's
        12, tapping the cube's side faces opened the material tray instead.
 
-       194 since a2.65, not 132: the cube is 128 tall from the inset, and the
-       symmetry/projection pair now sits in the 44px strip below it, so this
-       is the first position that clears both outright. */
+       194 since a2.65, not 132: the cube is 128 tall from the inset. Since
+       a2.100 the cube sits under the 58px header, so 194 clears it by 8px;
+       the symmetry strip that used to sit below the cube is in the header. */
     position: absolute; right: env(safe-area-inset-right, 0px);
     top: calc(194px + env(safe-area-inset-top, 0px));
     z-index: 25; display: flex; flex-direction: column; align-items: flex-end;
@@ -651,12 +692,9 @@
   @media (max-height: 500px) {
     /* Only the axes share this corner with the cube and the material shelf
        now - the projection pill moved into the world ring at a2.90b. */
-    #symAxes {
-      right: calc(env(safe-area-inset-right, 0px) + 142px);
-      top: calc(env(safe-area-inset-top, 0px) + 42px);
-    }
+    /* No `top` override since a2.100: the cube sits under the header now and
+       the portrait 194 clears it in landscape too. */
     #matFly {
-      top: calc(132px + env(safe-area-inset-top, 0px));
       --mat-max: calc(100vh - 204px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
     }
   }
@@ -678,7 +716,7 @@
      opening the drawer covers the shelf rather than fighting it. ---- */
   #outFly {
     position: absolute; left: env(safe-area-inset-left, 0px);
-    top: calc(76px + env(safe-area-inset-top, 0px));
+    top: calc(var(--hdr-h) + 40px + env(safe-area-inset-top, 0px));   /* under the readout (a2.100) */
     z-index: 25; display: flex; flex-direction: column; align-items: flex-start;
   }
   #outTab {
@@ -1291,7 +1329,7 @@
        the top of the screen now, so the notch is the cube's own problem - and
        ONLY the notch: the cube leaves its own margin inside this square, so
        no --edge goes here or the inset reads as double. */
-    position: absolute; top: env(safe-area-inset-top, 0px); right: 0;
+    position: absolute; top: calc(var(--hdr-h) + env(safe-area-inset-top, 0px)); right: 0;
     width: 128px; height: 128px;
     z-index: 12; cursor: pointer; touch-action: none;
     /* A ROUND HIT AREA (a2.64). The box is square and the cube is not: at
@@ -1622,7 +1660,22 @@
     <div id="modeBar"></div>
     <!-- The drawer button lives IN the viewport now, floating like every
          other control, rather than in a bar of its own. -->
-    <button id="btnMenu" title="Tools, files and settings">☰</button>
+    <!-- THE HEADER (a2.100). The mode slab, the symmetry cells and the menu
+         in one bar; the tool readout hangs under it. See #hdr in the
+         stylesheet for why a top bar is back. -->
+    <div id="hdr">
+      <button id="hdrMode" title="Object/Component - tap to switch">
+        <span class="hdr-cap">Mode</span><span id="hdrModeName">Object</span>
+      </button>
+      <!-- SYMMETRY (a2.90; in the header since a2.100). No on/off: a lit
+           axis IS symmetry on, none lit is off. -->
+      <div id="symAxes">
+        <button data-sym="x" title="Mirror edits across X">X</button>
+        <button data-sym="y" title="Mirror edits across Y">Y</button>
+        <button data-sym="z" title="Mirror edits across Z">Z</button>
+      </div>
+      <button id="btnMenu" title="Tools, files and settings">☰</button>
+    </div>
     <div id="toast"></div>
     <div id="viewCube"></div>
     <!-- The right rail (Xray / Grid / Snap) and the left-side
@@ -1647,13 +1700,6 @@
     <!-- The mode switch stays nearest the middle of the bottom edge, where
          the thumb rests. Symmetry left this corner in a2.65 for the strip
          under the view cube, and the two-position switch went with it. -->
-    <!-- SYMMETRY, in the view cube's strip (a2.90). No on/off: a lit axis
-         IS symmetry on, none lit is off. See #symAxes in the stylesheet. -->
-    <div id="symAxes">
-      <button data-sym="x" title="Mirror edits across X">X</button>
-      <button data-sym="y" title="Mirror edits across Y">Y</button>
-      <button data-sym="z" title="Mirror edits across Z">Z</button>
-    </div>
 
     <!-- Perspective / orthographic. Under the cube, because the cube is the
          other way into the flat view. Lighting used to sit here too; since
@@ -1872,7 +1918,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.99</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.100</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -16673,7 +16719,28 @@ function refreshToolIndicator() {
   // can only show that it is on, not which of the two it is on.
   const snp = App.snapMode === 'off' ? ''
     : '<span class="mode snp">' + (App.snapMode === 'grid' ? 'Grid' : 'Snap') + '</span>';
-  el.innerHTML = label + '<span class="mode">' + mode + '</span>' + piv + snp;
+  /* WHAT, and HOW MANY OF WHAT (a2.100): the selection count and the active
+     object's name join the line, so the readout answers "what will a drag
+     do" and "to what" in one glance. refreshUI calls this, so it tracks
+     every selection change. */
+  let what = '';
+  const active = App.activeObjectId !== undefined && App.activeObjectId !== null ? findObject(App.activeObjectId) : null;
+  if (App.mode !== 'object') {
+    const n = App.selectedElements ? App.selectedElements.size : 0;
+    const noun = { vertex: 'vertex', edge: 'edge', face: 'face' }[App.mode] || App.mode;
+    what += '<span class="mode">' + n + ' ' + (n === 1 ? noun : (noun === 'vertex' ? 'vertices' : noun + 's')) + '</span>';
+  } else if (App.selectedObjectIds && App.selectedObjectIds.size > 1) {
+    what += '<span class="mode">' + App.selectedObjectIds.size + ' objects</span>';
+  }
+  // In Object mode the name is the SELECTED object's; an active object with
+  // nothing selected is not what a drag will touch.
+  const named = active && active.name && (App.mode !== 'object' || (App.selectedObjectIds && App.selectedObjectIds.has(App.activeObjectId)));
+  if (named) {
+    // Names are typed by the user: text, never markup.
+    const nm = document.createElement('span'); nm.className = 'mode'; nm.textContent = active.name;
+    what += nm.outerHTML;
+  }
+  el.innerHTML = label + '<span class="mode">' + mode + '</span>' + piv + snp + what;
 }
 
 function setTransformTool(tool) {
@@ -18952,7 +19019,7 @@ document.addEventListener('touchmove', (ev) => {
 
      #hubBtn replaces #thumbZone, which no longer exists. */
   if (ev.target && ev.target.closest &&
-      ev.target.closest('#btnMenu, #drawer, #inspector, #opBar, #geoBar, #pivotBar, #hubBtn, #symAxes, #helpCard, #matFly, #outFly')) return;
+      ev.target.closest('#hdr, #btnMenu, #drawer, #inspector, #opBar, #geoBar, #pivotBar, #hubBtn, #symAxes, #helpCard, #matFly, #outFly')) return;
   if (ev.cancelable) ev.preventDefault();
 }, { passive: false });
 
@@ -24490,6 +24557,10 @@ function closeToolRing(run) {
 
 hubBtnEl.addEventListener('pointerdown', (ev) => ev.stopPropagation());
 hubBtnEl.addEventListener('click', (ev) => { ev.stopPropagation(); cycleEditMode(); });
+// The header's slab is the same control at the other end of the screen.
+const hdrModeEl = document.getElementById('hdrMode');
+hdrModeEl.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+hdrModeEl.addEventListener('click', (ev) => { ev.stopPropagation(); cycleEditMode(); });
 
 /* One tap, one toggle (a2.65). stopPropagation for the same reason #hubBtn
    does it: a pointerdown that reaches the viewport arms a tap which would
@@ -26633,6 +26704,7 @@ function refreshUI() {
   pruneGroups();
   refreshPivotMarker();
   refreshObjComponentBtn();
+  refreshToolIndicator();   // the readout carries the selection now (a2.100)
   document.getElementById('btnUndo').disabled = App.historyIndex <= 0;
   document.getElementById('btnRedo').disabled = App.historyIndex >= App.history.length - 1;
 
@@ -27136,6 +27208,12 @@ function refreshObjComponentBtn() {
   if (hubBtnEl) {
     // The button shows the mode you are IN, same as it always did.
     hubBtnEl.innerHTML = icon(isObj ? 'object' : App.mode, 24);
+    // The header's slab says the same thing in a word (a2.100).
+    const hn = document.getElementById('hdrModeName');
+    if (hn) hn.textContent = isObj ? 'Object' : App.mode;
+    // Soft is the small line, not a longer word - the slab must not grow.
+    const hc = document.querySelector('#hdrMode .hdr-cap');
+    if (hc) hc.textContent = (!isObj && App.soft) ? 'Soft' : 'Mode';
     // Soft keeps the component icon and grows a ring - the icon still has to
     // say which type you are picking.
     hubBtnEl.classList.toggle('soft', !isObj && App.soft);
