@@ -209,8 +209,9 @@
   .brand { font-weight: 600; letter-spacing: 0.02em; color: var(--text); font-size: 13px; }
 
   /* Edge switches are gone (a2.65). Nothing in this file is two halves and
-     a sliding knob any more: #symPill and #projPill are single 44px toggles
-     under the view cube, and #hubBtn below is a round button that cycles. */
+     a sliding knob any more: #projPill is a single 44px toggle under the
+     view cube, #symAxes is the row of three beside it, and #hubBtn below is
+     a round button that cycles. */
   /* Object / Component, back to a single round button in the bottom-left
      corner - opposite Help, with Undo/Redo between them. */
   /* Bottom EDGES, not centres. v1.99b aligned the row on centres, which is
@@ -250,39 +251,31 @@
 
      Paired with #projPill in the 44px strip under the cube. Both clear
      #matFly, which moved down to 194 to make the room. */
-  /* ONE BLOCK, TOP-LEFT, UNDER THE MENU BUTTON (a2.89).
+  /* SYMMETRY JOINED THE VIEW GIZMO (a2.90).
 
-     The toggle and the axes were in two different places: the on/off under
-     the view cube, X/Y/Z buried in a drawer row that carried a note saying
-     "Symmetry on and off is the button under the view cube". A control that
-     has to apologise for where its other half lives is one control split in
-     two.
+     The on/off toggle is gone. Symmetry is on when an axis is lit and off
+     when none is - one control instead of two, and the state a2.89 had to
+     special-case (on, with nothing to mirror about) cannot be expressed any
+     more.
 
-     a2.65 tore a column out of this corner and the reason still stands - on
-     a phone with a 59pt top inset, menu over symmetry over lighting ran from
-     73pt to 211pt before the model got a look in. This is a ROW: one 44px
-     band under the menu button, 44px tall whether it is showing one control
-     or four. It spends width, which a portrait phone has, instead of height,
-     which it does not.
+     The axes sit in the strip under the view cube, beside the projection
+     pill, because the cube is the app's canonical THIS IS X, THIS IS Y,
+     THIS IS Z object and the axes are meaningless without knowing which is
+     which. The honest cost of that neighbourhood: the cube is view state
+     and symmetry is model state, and putting them together risks reading as
+     "this face is mirrored". They stay off the cube's own faces for exactly
+     that reason - the cube's taps mean look-down-this-axis and must keep
+     meaning only that.
 
-     The axes only appear when symmetry is on, so the resting state is the
-     single toggle it has always been. */
-  #symBlock {
-    position: absolute; left: var(--edge-l); top: calc(var(--edge) + 52px);
-    z-index: 13; display: flex; align-items: center; gap: 4px;
+     a2.89 put this block top-left under the menu. It measured fine and it
+     was still wrong twice over: the toast landed on the switches, and the
+     top-left corner was carrying a control that belongs with the axes. */
+  #symAxes {
+    position: absolute;
+    right: calc(var(--edge-r) + 52px);
+    top: calc(env(safe-area-inset-top, 0px) + 130px);
+    z-index: 13; display: flex; align-items: center; gap: 8px;
   }
-  #symPill {
-    width: 44px; height: 44px; border-radius: var(--r-md);
-    background: var(--panel2); border: 1px solid var(--line);
-    display: flex; align-items: center; justify-content: center;
-    color: var(--text-dim); cursor: pointer;
-    touch-action: none; -webkit-user-select: none; user-select: none;
-  }
-  #symPill.on { border-color: var(--accent); color: var(--accent); }
-  #symAxes { display: none; align-items: center; gap: 4px; }
-  #symBlock.on #symAxes { display: flex; }
-  /* EACH ONE IS ITS OWN SWITCH, not a choice among three: X and Y together
-     is four-fold symmetry, and that is the point of the set. */
   #symAxes button {
     width: 44px; height: 44px; min-height: 44px; padding: 0;
     border-radius: var(--r-md); border: 1px solid var(--line);
@@ -584,11 +577,13 @@
      500px is below every phone in landscape and above every window the probe
      suite runs in, so the suite keeps measuring the portrait layout. */
   @media (max-height: 500px) {
-    /* #symPill moved out of this strip at a2.89 - it is top-left now, and
-       the short-screen shuffle was only ever about the pair crowding the
-       cube and the material shelf. */
     #projPill {
       right: calc(env(safe-area-inset-right, 0px) + 142px);
+      top: calc(env(safe-area-inset-top, 0px) + 42px);
+    }
+    /* The axes step aside with the pill they sit beside (a2.90). */
+    #symAxes {
+      right: calc(env(safe-area-inset-right, 0px) + 194px);
       top: calc(env(safe-area-inset-top, 0px) + 42px);
     }
     #matFly {
@@ -936,6 +931,12 @@
      animation: it is by far the most frequent thing on screen, it fires
      during drags, and blurred text is the least forgiving thing to blur. */
   #toast.show { opacity: 1; translate: -50% 4px; }
+  /* a2.89a pushed the toast down here, because the symmetry block sat in the
+     top-left straight under it and the pair-count toast fired at the exact
+     moment the switches appeared. a2.90 moved the switches to the cube's
+     strip at y 130 and the collision went with them - so the toast keeps its
+     own row again, and the rule that moved it is gone rather than left
+     standing as a no-op nobody dares delete. */
   /* The isolate chip is PERSISTENT and sits at --edge + 52 with an opaque
      background, two pixels below where the toast lives - so for the whole
      time you were isolated, every message the app tried to give you was
@@ -1368,16 +1369,12 @@
     <!-- The mode switch stays nearest the middle of the bottom edge, where
          the thumb rests. Symmetry left this corner in a2.65 for the strip
          under the view cube, and the two-position switch went with it. -->
-    <!-- SYMMETRY, one block, top-left under the menu button (a2.89). The
-         toggle shows the state it is IN; the three axes appear only while it
-         is on, and each is its own switch - see #symBlock in the stylesheet. -->
-    <div id="symBlock">
-      <div id="symPill" title="Symmetry"><span class="ic"></span></div>
-      <div id="symAxes">
-        <button data-sym="x" title="Mirror across X">X</button>
-        <button data-sym="y" title="Mirror across Y">Y</button>
-        <button data-sym="z" title="Mirror across Z">Z</button>
-      </div>
+    <!-- SYMMETRY, in the view cube's strip (a2.90). No on/off: a lit axis
+         IS symmetry on, none lit is off. See #symAxes in the stylesheet. -->
+    <div id="symAxes">
+      <button data-sym="x" title="Mirror edits across X">X</button>
+      <button data-sym="y" title="Mirror edits across Y">Y</button>
+      <button data-sym="z" title="Mirror edits across Z">Z</button>
     </div>
 
     <!-- Perspective / orthographic. Under the cube, because the cube is the
@@ -1580,7 +1577,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.89</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.90</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -2635,8 +2632,8 @@ const projPillNameEl = document.getElementById('projPillName');
 function refreshProjPill() {
   const on = !!orthoView;
   /* The glyph says which projection you are IN; the accent says the flat one
-     is a state rather than the default. The same two cues #symPill wears
-     since a2.65. The word it used to carry is in the title. */
+     is a state rather than the default. The same two cues the symmetry axes
+     wear beside it. The word it used to carry is in the title. */
   projPillNameEl.innerHTML = icon(on ? 'ortho' : 'persp', 20);
   projPillEl.classList.toggle('on', on);
   projPillEl.title = on
@@ -2820,12 +2817,26 @@ const App = {
   // The knife's points while a cut is being placed. Not a pendingOp: it
   // changes no geometry until OK, so there is nothing to re-run.
   knife: null,
-  symmetry: false,
-  /* A SET, NOT AN AXIS (a2.89). With X and Y both on, an edit has THREE
-     mirror images - X, Y, and XY - because the mirror group generated by n
-     planes has 2^n elements. Ordered x,y,z so the group is enumerated the
-     same way every time and a saved file reloads identically. */
-  symmetryAxes: ['x'],
+  /* THE SET IS THE STATE (a2.90). There is no on/off flag any more: symmetry
+     is on when an axis is lit and off when none is. a2.89 had both, and had
+     to write a special case for the state they could disagree about - on,
+     with nothing to mirror about.
+
+     Ordered x,y,z, so the mirror group is enumerated the same way every time
+     and a saved file reloads identically. With X and Y both lit an edit has
+     THREE mirror images - X, Y, and XY - because n planes generate 2^n
+     transforms.
+
+     `symmetry` stays as a derived property because some thirty places ask
+     it, and it keeps a SETTER so that assigning to it - which is how it
+     worked until now, and how every older probe still drives it - lands
+     somewhere sensible instead of failing silently. */
+  symmetryAxes: [],
+  get symmetry() { return this.symmetryAxes.length > 0; },
+  set symmetry(on) {
+    if (!on) this.symmetryAxes = [];
+    else if (!this.symmetryAxes.length) this.symmetryAxes = ['x'];
+  },
   showInspector: false,
   selectedObjectIds: new Set(),
   activeObjectId: null,   // used for vertex/edge/face editing
@@ -18400,7 +18411,7 @@ document.addEventListener('touchmove', (ev) => {
 
      #hubBtn replaces #thumbZone, which no longer exists. */
   if (ev.target && ev.target.closest &&
-      ev.target.closest('#btnMenu, #drawer, #inspector, #opBar, #geoBar, #pivotBar, #hubBtn, #symBlock, #projPill, #helpCard, #matFly')) return;
+      ev.target.closest('#btnMenu, #drawer, #inspector, #opBar, #geoBar, #pivotBar, #hubBtn, #symAxes, #projPill, #helpCard, #matFly')) return;
   if (ev.cancelable) ev.preventDefault();
 }, { passive: false });
 
@@ -21022,7 +21033,7 @@ function serializeDoc() {
     // the kind of thing you only notice three edits later.
     /* `axis` is still written so a file saved here opens in a2.88 and
        earlier with its primary axis intact. `axes` is what a2.89 reads. */
-    symmetry: { on: !!App.symmetry, axes: App.symmetryAxes.slice(), axis: primarySymAxis() },
+    symmetry: { on: App.symmetryAxes.length > 0, axes: App.symmetryAxes.slice(), axis: primarySymAxis() },
     objects: App.objects.map(o => {
       const g = o.mesh.geometry;
       const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
@@ -21345,14 +21356,16 @@ function restoreDoc(doc, opts = {}) {
      a2.44 has no symmetry block, and reading `on` off it would read undefined
      and switch symmetry off on every load of an older file. */
   if (doc.symmetry && !opts.keepAppearance) {
-    App.symmetry = !!doc.symmetry.on;
-    /* A file saved before a2.89 has one axis and no set. */
+    /* A file saved before a2.89 has one axis and a separate on flag; a2.89
+       added the set. Either way `on` decides whether anything is lit, since
+       an empty set IS off now. */
+    let axes = [];
     if (Array.isArray(doc.symmetry.axes) && doc.symmetry.axes.length) {
-      App.symmetryAxes = ['x', 'y', 'z'].filter(a => doc.symmetry.axes.indexOf(a) >= 0);
+      axes = ['x', 'y', 'z'].filter(a => doc.symmetry.axes.indexOf(a) >= 0);
     } else if (doc.symmetry.axis) {
-      App.symmetryAxes = [doc.symmetry.axis];
+      axes = [doc.symmetry.axis];
     }
-    if (!App.symmetryAxes.length) App.symmetryAxes = ['x'];
+    App.symmetryAxes = doc.symmetry.on ? (axes.length ? axes : ['x']) : [];
   }
   App.selectedObjectIds = new Set(((sel && sel.objects) || []).filter(id => findObject(id)));
 
@@ -23234,7 +23247,6 @@ function icon(name, size) {
 }
 
 const hubBtnEl = document.getElementById('hubBtn');
-const symPillEl = document.getElementById('symPill');
 
 // Three tool sets, one per state, read by currentHubTools() and rendered
 // fresh into the press-and-hold ring each time it blooms. Every action here
@@ -23802,11 +23814,6 @@ hubBtnEl.addEventListener('click', (ev) => { ev.stopPropagation(); cycleEditMode
 /* One tap, one toggle (a2.65). stopPropagation for the same reason #hubBtn
    does it: a pointerdown that reaches the viewport arms a tap which would
    clear the selection behind the button. */
-symPillEl.addEventListener('pointerdown', (ev) => ev.stopPropagation());
-symPillEl.addEventListener('click', (ev) => {
-  ev.stopPropagation();
-  setSymmetry(!App.symmetry);
-});
 
 /* ---------------- Drawer ---------------- */
 
@@ -24891,11 +24898,25 @@ function toggleShading() {
 function symAxesLabel(axes) {
   return (axes || []).map(a => a.toUpperCase()).join('+') || 'none';
 }
-function setSymmetry(on) {
-  if (App.symmetry === on) { refreshObjComponentBtn(); return; }
-  App.symmetry = on;
+/* THE ONE ENTRY POINT (a2.90). Takes the set it should end with - an empty
+   one means off - rather than a flag to flip. `setSymmetry(bool)` is kept
+   below as a thin wrapper, because a ring seat, a keyboard key or a restored
+   file may still think in terms of on and off. */
+function setSymmetryAxes(list) {
+  const next = ['x', 'y', 'z'].filter(a => list.indexOf(a) >= 0);
+  const was = App.symmetryAxes.join(',');
+  if (next.join(',') === was) { refreshObjComponentBtn(); return; }
+  const turningOn = !was && next.length;
+  App.symmetryAxes = next;
   refreshUI();
-  if (!App.symmetry) { toast('Symmetry off'); return; }
+  if (!next.length) { refreshObjComponentBtn(); return; }
+  /* ONLY THE FIRST ONE SPEAKS. Adding or dropping an axis while symmetry is
+     already live says nothing: the lit letters are the message, and a toast
+     repeating them would cover the buttons that just changed - which is
+     exactly what a2.89a had to fix. The pair count is different. It is the
+     one thing the buttons cannot show, and it is how you find out the mesh
+     is not actually symmetric about what you just asked for. */
+  if (!turningOn) return;
   /* Report how many mirror pairs were actually found, on screen. Symmetry
      silently does nothing when the map comes back empty - which happens if
      the geometry isn't symmetric about the chosen axis in LOCAL space - and
@@ -24925,29 +24946,28 @@ function setSymmetry(on) {
                    : pairs + ' pairs' + (App.mode === 'object' ? ' - switch to a component mode' : '')));
 }
 
-/* EACH AXIS IS ITS OWN SWITCH (a2.89). Tapping one adds or removes it from
-   the set; the set is kept in x,y,z order so the mirror group is enumerated
-   the same way every time. Turning the last one off would leave symmetry on
-   with nothing to mirror about, which is a state with no meaning, so it
-   turns symmetry off instead - the toggle and the axes are one control and
-   this is where that shows. */
+/* For callers that think in on and off. Off clears the set; on with nothing
+   lit falls back to X, which is the axis the app has always started from. */
+function setSymmetry(on) {
+  setSymmetryAxes(on ? (App.symmetryAxes.length ? App.symmetryAxes : ['x']) : []);
+}
+
+/* EACH AXIS IS ITS OWN SWITCH, AND THE ONLY SWITCH (a2.90). Tap one to add
+   it, tap it again to drop it; drop the last and symmetry is off. There is
+   nothing else to turn on.
+
+   NO MEMORY, by decision: turning the last axis off forgets which were lit,
+   so re-arming is always an explicit tap. A remembered set would be a state
+   the control does not show, and the one thing this arrangement buys is that
+   what you see IS what is on. */
 document.querySelectorAll('#symAxes button').forEach(btn => {
   btn.addEventListener('pointerdown', (ev) => ev.stopPropagation());
   btn.addEventListener('click', (ev) => {
     ev.stopPropagation();
     const a = btn.dataset.sym;
     const have = App.symmetryAxes.indexOf(a) >= 0;
-    const next = have ? App.symmetryAxes.filter(x => x !== a)
-                      : ['x', 'y', 'z'].filter(x => x === a || App.symmetryAxes.indexOf(x) >= 0);
-    if (!next.length) { setSymmetry(false); return; }
-    App.symmetryAxes = next;
-    refreshUI();
-    if (App.symmetry) {
-      // A new axis means a new plane - the other capture moment.
-      const o = findObject(App.activeObjectId);
-      if (o) App.symmetryAxes.forEach(ax => captureSymmetryPlane(o, ax));
-      toast('Symmetry: ' + symAxesLabel(App.symmetryAxes));
-    }
+    setSymmetryAxes(have ? App.symmetryAxes.filter(x => x !== a)
+                         : App.symmetryAxes.concat([a]));
   });
 });
 document.getElementById('btnInspector').addEventListener('click', (ev) => {
@@ -25034,10 +25054,8 @@ function refreshUI() {
      anything restored from a save - are built DoubleSide, so culling has to
      be re-asserted here rather than only when the button is pressed. */
   refreshXrayMode();
-  /* The block wears the on state so the axes can appear with it, and each
-     axis button wears its own - several can be lit at once. */
-  const symBlockEl = document.getElementById('symBlock');
-  if (symBlockEl) symBlockEl.classList.toggle('on', App.symmetry);
+  /* Each axis wears its own state, and several can be lit at once. There is
+     nothing else to light: the lit letters ARE symmetry being on. */
   document.querySelectorAll('#symAxes button').forEach(b =>
     b.classList.toggle('active', App.symmetryAxes.indexOf(b.dataset.sym) >= 0));
 
@@ -25479,18 +25497,6 @@ function refreshObjComponentBtn() {
       : (App.soft
           ? 'Soft (' + App.mode + ') - three fingers slide to size it, tap for Object'
           : 'Component mode (' + App.mode + ') - tap for Soft');
-  }
-
-  if (symPillEl) {
-    /* One button since a2.65: the glyph is the STATE, not the action. Mirror
-       in the accent means symmetry is on; the crossed mirror, dim, means it
-       is off. Reading it needs no memory of what a tap would do. */
-    symPillEl.classList.toggle('on', App.symmetry);
-    const symIc = symPillEl.querySelector('.ic');
-    if (symIc) symIc.innerHTML = icon(App.symmetry ? 'mirror' : 'symoff', 20);
-    symPillEl.title = App.symmetry
-      ? 'Symmetry on (' + symAxesLabel(App.symmetryAxes) + ') - tap to turn it off'
-      : 'Symmetry off - tap to mirror edits across ' + symAxesLabel(App.symmetryAxes);
   }
 
   /* Moved here from module scope, where drawing its glyph would have hit the

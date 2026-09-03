@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~23,697 lines)
-- Version at time of writing: **a2.89**
+- Version at time of writing: **a2.90**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -37,6 +37,88 @@ still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
 
+## Symmetry joins the view gizmo, and loses its switch (a2.90)
+
+Zeghreit, after using a2.89: *"what if we change whole conception... imagine
+if xyz will sits as a part of view gizmo, no need to turn on/off symmetry -
+just activate one or multiple axes and go with the Flow) deactivate all and
+sym is off too"*.
+
+### There is no on/off any more
+
+A lit axis IS symmetry on. None lit is off. `App.symmetry` is a derived
+property now, not a stored one:
+
+```
+symmetryAxes: [],
+get symmetry() { return this.symmetryAxes.length > 0; },
+```
+
+a2.89 had both a flag and a set, which meant it could express **on with
+nothing to mirror about** - and had to write a special case to stop the axis
+buttons producing it. A state you have to defend against is usually a state
+that should not exist.
+
+The setter is kept, and does something sensible, because assigning to
+`App.symmetry` is how this worked for thirty versions and how every older
+probe still drives it. A getter alone would have failed those assignments
+**silently** - which is the worst of the three options.
+
+**No memory, by decision.** Turning the last axis off forgets the set, so
+re-arming is always an explicit tap. A remembered set is state the control
+does not show, and the one thing this arrangement buys is that what you see
+is all there is.
+
+### And it sits with the cube
+
+The three switches are in the strip under the view cube, beside the
+projection pill: `[X][Y][Z]  [persp]`. Measured at 375px: the row spans
+x 161..309, the pill 317..361, both level at y 130..174.
+
+The cube is the app's canonical **this is X, this is Y, this is Z** object,
+and axis switches are meaningless without knowing which axis is which. That
+is the whole argument for the neighbourhood.
+
+**The honest cost:** the cube is VIEW state and symmetry is MODEL state, and
+putting them together risks reading as "this face is mirrored". The switches
+therefore stay strictly BELOW the cube and never on its faces - the cube's
+own taps mean look-down-this-axis and have to keep meaning only that. The
+probe asserts that separation rather than trusting it.
+
+### a2.89's block lasted one version
+
+It measured fine - one 44px row, top-left, 188 wide, ending less than half as
+far down as the column a2.65 removed. It was still wrong twice:
+
+- **The toast landed on the switches.** a2.89a pushed the toast down to dodge
+  them, which worked and was a patch over a placement that should not have
+  needed one. a2.90 moved the switches instead and the collision went with
+  them: the toast keeps its own row at y 65..116, the switches sit at
+  130..174, and the rule that moved the toast is **deleted** rather than left
+  standing as a no-op nobody dares remove.
+- **The top-left corner was carrying a control that belongs with the axes.**
+
+The lesson is not "measure the placement" - a2.89 did measure it, and the
+numbers were good. It is that **a measurement can only check the question you
+thought to ask.** Nothing in a2.89's probe asked what else lives in that band,
+because the toast is transient and a static rect never sees it.
+
+### The message that survives
+
+Arming the first axis still reports the pair count, because that is the one
+thing the buttons cannot show and it is how you find out the mesh is not
+actually symmetric about what you asked for. Adding a second axis says
+nothing - the lit letter is the message, and a2.89a's mistake was a toast
+repeating the control it was covering.
+
+### Probe
+
+`_symaxes_probe.js`, fifteen sections. Beyond the mirror-group work a2.89
+already covered: one tap arms it and none-lit is off; the row is level with
+the pill and strictly below the cube's faces; the top-left corner is free;
+the longest possible symmetry toast and the switches no longer share a band
+at all; the second axis is quiet and the first one reports pairs.
+
 ## Symmetry takes a SET of axes, in one block (a2.89)
 
 Zeghreit: *"x y z switches for sym switch and the sym switch placement - it
@@ -52,7 +134,12 @@ under a note reading *"Symmetry on and off is the button under the view
 cube."* **A control that has to apologise for where its other half lives is
 one control split in two.**
 
-It is one block now, top-left under the menu button: the toggle, and three
+> **THE PLACEMENT AND THE TOGGLE ARE BOTH SUPERSEDED BY a2.90.** The three
+> switches moved to the strip under the view cube, and the on/off toggle is
+> gone - a lit axis is symmetry on. What still holds below: why the axes had
+> to stop living in a drawer, and every word about the mirror group.
+
+It was one block, top-left under the menu button: the toggle, and three
 axis switches that appear only when it is on.
 
 a2.65 tore a column out of that corner and the reason still stands - on a
