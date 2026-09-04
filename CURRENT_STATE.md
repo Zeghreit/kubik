@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~25,350 lines)
-- Version at time of writing: **a2.110a**
+- Version at time of writing: **a2.111a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -39,6 +39,93 @@ v1.85d.
 
 
 
+
+
+## The reach, and one diamond (a2.111)
+
+Zeghreit, testing a2.110a: *"make rings 1.5 times wider away from finger tap,
+make icons that sit along diamond line sit on it - now there's different space
+between such icons and lines of diamond."*
+
+### The reach
+
+`TOOL_RING_R = 160` joins the `Math.max` that decides the radius. Spacing
+alone asks for 107 at eight seats, and that was the radius - but spacing is
+the wrong thing to size a ring by once every ring fits in eight. At 160 the
+thumb is not sitting on the seats, and the model reads through the middle of
+the ring instead of behind a wall of them.
+
+**It raises the ceiling and nothing else.** a2.108 shrinks the ring uniformly
+to what the screen affords and only then moves the centre, and the band in
+which it blooms exactly under your thumb is set by `seatMinR` (88.8), which
+has not moved. Measured: the world ring goes 107 -> 160 with the centre band
+unchanged at 234px of 512. On a 393px phone the drawn radius is 145.7 at the
+viewport centre - `fits` caps it below 160 - and floors at 88.8 in a corner.
+
+**Only rings that carry seats get it.** Add geo and Pivot have none: they
+bloom at the viewport centre after the finger has lifted and are dismissed by
+aiming past the items, `dist > radius * 2.2`. At 160 that escape becomes
+352px, which on a phone is off the side of the screen in every horizontal
+direction - the ring could no longer be dismissed by aiming out of it. They
+keep the radius their own spacing asks for, which is right for four items.
+
+`TOOL_RING_ARM_PX` (70 flat) became `TOOL_RING_ARM_FRAC` (0.6) with a floor of
+dead zone + 20. A mode ring is drawn anywhere from 89 to 160, and a fixed arm
+put the commit two thirds of the way out on a small ring and under half way on
+a big one - the same gesture arriving at different moments.
+
+### Every seat sits ON the line, and there is one line
+
+The figure had its **corners** on the seats, so each square touched only its
+own four and the other square's line passed 0.293R from the rest - at a
+cardinal seat that is 31px against a 37px tip, so the line grazes it; at a
+diagonal seat 31px against a 26px flat face, so it floats 5px clear. Four
+seats welded to the line and four hovering beside it, out of one figure.
+
+**A chord between two points on a circle cannot pass through a third point on
+that circle**, so no radius puts corners on four seats and the line through
+the other four. The corners move OUT instead: at `ringR * sqrt2` each edge
+passes exactly through the centre of the seat between its two corners.
+Measured: worst seat-to-its-own-edge distance **0.01px**.
+
+Then, Zeghreit again: *"let's leave only one diamond square - the square
+square can be removed."* Two squares cross eight times at eight seats and the
+lattice started competing with what it frames. **The diamond stays** - the
+square turned 45 degrees, corners along the axes, four edges each crossing a
+diagonal seat.
+
+The cost is real and worth stating: with one square only four seats can be on
+a line. The four cardinal ones (N, E, S and Delete's own bearing) sit inside
+the diamond, short of its corners, on nothing. That is arithmetic, not a
+choice - see the chord argument above.
+
+The cut still applies where there is an edge to cut. A missing DIAGONAL
+bearing drops its edge and opens the diamond; a missing cardinal one has no
+edge to drop, so the World ring's empty seat 4 is told only by the seat that
+is not there.
+
+The points reach 1.41x the seat radius - further out than the 14px edge
+clearance guarantees - so a point can run off the side of a large ring bloomed
+near an edge. Accepted: the diamond is a lattice with no hit area, and a line
+cropped by the frame reads as a figure continuing past it.
+
+### Deliberately absent - do not rebuild these
+
+- **The second square.** Removed on the record at a2.111a. Rebuilding it puts
+  all eight seats back on a line and puts the crossings back too.
+- **Corners on the seats.** That is the 0.293R mismatch above. If the figure
+  ever goes back to corners-on-seats, four seats will float beside it again.
+- **`stroke-linejoin: miter` on the star.** Every edge is its own two-point
+  polyline, so there is no join to miter - and the default BUTT cap left a 1px
+  notch out of the outer corner of all four points, exactly where the figure
+  should be sharpest. `stroke-linecap: square` extends each end by half the
+  stroke, which lands precisely on the point.
+- **`#ringStar polygon`.** Nothing has drawn a polygon since a2.111. `fill:
+  none` on the polyline rule is still load-bearing: an open polyline fills by
+  default in SVG, and the first version painted a black wedge across the model
+  over the very gap the figure was cut to show.
+- **The flat reach on Add geo and Pivot.** See above - it breaks their only
+  outward escape.
 
 ## Eight bearings, and doors (a2.110)
 

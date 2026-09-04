@@ -727,19 +727,24 @@
      pointer-events: none for the same load-bearing reason the ring itself
      has it - the ring picks by ANGLE, and anything here that could take a
      pointer would break the release. */
-  /* The lattice. Stroked in the mode's hue at 45% - present enough to
-     read as one instrument, quiet enough that the model shows through
-     it. No fill, or it would be a plate rather than a lattice. */
+  /* The lattice. Stroked in --line at 80% - present enough to read as one
+     instrument, quiet enough that the model shows through it. No fill, or it
+     would be a plate rather than a lattice. */
   #ringStar {
     position: absolute; overflow: visible; pointer-events: none;
   }
-  /* POLYLINE TOO (a2.110). A square missing a corner is drawn open, and an
-     open polyline still FILLS by default in SVG - a black wedge across the
-     model, over the exact hole the cut was meant to show. Both shapes, one
-     rule, so a third can never be added without its fill. */
-  #ringStar polygon, #ringStar polyline {
+  /* FILL NONE IS LOAD-BEARING (a2.110): an open polyline still fills by
+     default in SVG, and the first version painted a black wedge across the
+     model over the very gap the figure was cut to show.
+
+     SQUARE CAPS, NOT MITER JOINS (a2.111a). Every edge is its own two-point
+     polyline now, so there is no join left to miter - and the default butt
+     cap left a 1px notch out of the outer corner of all four points, exactly
+     where the figure should be sharpest. A square cap extends each end by
+     half the stroke, which lands precisely on the point. */
+  #ringStar polyline {
     fill: none; stroke: var(--line); stroke-width: var(--rule);
-    opacity: .8; stroke-linejoin: miter;
+    opacity: .8; stroke-linecap: square;
   }
 
   #ringLabel {
@@ -2252,7 +2257,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.110a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.111a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -24621,17 +24626,45 @@ const RING_MOVE_CANCEL_PX = 8;   // travel this far and it was never a hold
 const TOOL_RING_DEAD_ZONE_PX = 26;   // release this close to centre = cancel
 const TOOL_RING_ITEM = 52;           // width of a single tool icon
 const TOOL_RING_TIP = TOOL_RING_ITEM * Math.SQRT1_2;   // a2.98: the diamond's half-diagonal, 37px
-/* 30 since a2.110, from 40. Eight seats at a 40px gap ask for a 120px
-   radius, which leaves a 393px phone only 51px of band to bloom the ring
-   exactly under the thumb. 30 puts the radius at 108 and the band at 59,
-   and the seats still sit 82.6px apart against a 68px floor. */
+/* 30 since a2.110, from 40. It sets the radius a ring needs so its seats
+   clear each other, and it decided the radius until a2.111 put a flat reach
+   of 160 above it. It no longer wins for any ring in the file - eight seats
+   at 30 ask for 107 - and it is kept because it is the thing that would
+   catch a denser ring if one were ever built: it is the SPACING floor, and
+   the reach is a want. */
 const TOOL_RING_GAP = 30;            // minimum clear space between icons
 /* THE ARM (a2.110). Pull a door this far and it opens, before the finger has
    reached the seat - the same "commit on the way, not on arrival" the two
-   layer spec asks for. Between the dead zone (26) and here you are only
-   aiming, and a lift runs the door's first op. */
-const TOOL_RING_ARM_PX = 70;
+   layer spec asks for. Between the dead zone and here you are only aiming,
+   and a lift runs the door's first op.
+
+   A FRACTION OF THE RADIUS since a2.111, not 70 flat. A mode ring is drawn
+   anywhere from 89 to 160 depending on the screen and where you pressed, and
+   a fixed arm means the commit lands two thirds of the way out on a small
+   ring and under half way on a big one - the same gesture arriving at
+   different moments. 0.6 keeps it at the same point in the stroke whatever
+   size the ring came out.
+
+   The floor matters for the small rings: Add geo and Pivot sit at 69 to 80,
+   where 0.6 would put the arm at 41 and leave a 15px aiming band above the
+   dead zone. Neither has a door, so nothing reads the arm there today - but
+   the floor is what keeps it honest if one ever does. */
+const TOOL_RING_ARM_FRAC = 0.6;
+const toolRingArmPx = (ringR) =>
+  Math.max(TOOL_RING_DEAD_ZONE_PX + 20, ringR * TOOL_RING_ARM_FRAC);
 const TOOL_RING_MIN_R = 80;          // floor, so small sets don't crowd the finger
+/* HOW FAR THE RING WANTS TO SIT FROM THE FINGER (a2.111), 1.5x what spacing
+   alone asks for. Eight seats only need 107 to clear each other, and that was
+   the radius until now - but spacing is the wrong thing to size a ring by
+   once it fits in eight. At 160 the thumb is not sitting on top of the seats,
+   the model reads through the middle of the ring instead of behind a wall of
+   them, and a flick has room to be a flick.
+
+   It is a want, not a promise. a2.108 shrinks the ring uniformly to whatever
+   the screen affords and only then moves the centre, so this raises the
+   CEILING and changes nothing about how far the ring follows your thumb -
+   that band is set by the spacing floor, which has not moved. */
+const TOOL_RING_R = 160;
 const RING_EDGE_PX = 14;             // a2.104: every seat keeps this clear of the edge
 /* a2.104: the ABSOLUTE floor for a clamped seat - clear of the dead zone
    by its own tip and a little more, so a seat pulled all the way in is
@@ -24768,8 +24801,18 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
      390px screen, and the ring picks by DIRECTION anyway, so you never have
      to land on one. */
   const gap = THREE.MathUtils.degToRad(minAngularGapDeg(anglesDeg));
+  /* THE REACH IS FOR THE MODE RINGS ONLY (a2.111a). Add geo, Pivot and the
+     empty-scene ring carry no seat: they bloom at the viewport CENTRE after
+     the finger has lifted, and they are dismissed by aiming well past the
+     items - `dist > radius * 2.2` below. Giving those 160 doubled that escape
+     distance to 352px, which on a 393px phone is off the side of the screen
+     in every horizontal direction: the ring could no longer be dismissed by
+     aiming out of it at all. They keep the radius their own spacing asks for,
+     which is what they always had and is the right size for four items. */
+  const reach = tools.every(t => t.seat !== undefined) ? TOOL_RING_R : 0;
   const ideal = Math.max(
     TOOL_RING_MIN_R,
+    reach,
     (TOOL_RING_ITEM + TOOL_RING_GAP) / (2 * Math.sin(gap / 2))
   );
   /* RING_EDGE_PX, not a literal 14: `place` below only stays sane while
@@ -24916,46 +24959,48 @@ function paintToolRing(tools, ringR, ox, oy, tag, spin) {
     touchToolRingEl.appendChild(el);
   });
 
-  /* THE STAR (a2.107, a3.0 2.5): "two 210px squares, 0 and 45 degrees,
-     through all 8 centres". Two squares, literally - one axis-aligned and
-     one turned 45 degrees, which is the rhomb - drawn as two four-point
-     polygons through the eight compass bearings. Together they are an
-     eight-pointed star, and the seats lay on it.
+  /* THE DIAMOND (a2.107 the star, a2.111 the geometry, a2.111a one square).
 
-     The first attempt joined alternate SEAT centres. That is the same
-     figure at eight seats and a tangle at thirteen, because it made the
-     star a function of how many tools a ring happens to hold. It is not:
-     it is the RING's shape, and the seats sit on its points or between
-     them.
+     THROUGH the seat centres, not AT them. The figure used to have its
+     CORNERS on the seats, which put four seats on their own square and left
+     the other four beside the second square's line - 0.293R away, which at a
+     cardinal seat is 31px against a 37px tip (the line grazes the seat) and at
+     a diagonal seat 31px against a 26px flat face (the line floats 5px clear).
+     Four seats welded to the line and four hovering beside it, out of one
+     figure. It read as sloppy drawing rather than as a design.
 
-     One radius for all eight points (a2.108) - the same one the seats
-     use - so the star is always two true squares, and the seats are always
-     on it.
+     A chord between two points on a circle cannot pass through a third point
+     on that circle, so there is no radius at which corners-on-seats also puts
+     the rest on a line. The corners move OUT instead: at `ringR * sqrt2` each
+     edge passes exactly through the centre of the seat between its two
+     corners, and the corners become points projecting past the ring.
 
-     AND IT IS CUT WHERE A SEAT IS MISSING (a2.110). With bearings fixed for
-     life, a ring can legitimately have an empty one - Vertex has no seventh
-     op, the world ring has nothing destructive to put straight down - and a
-     star drawn straight through the gap says the seat is merely absent today.
-     Breaking the line there says it is not coming: the shape you learn has a
-     hole in it, deliberately. Runs of two or more surviving points are drawn
-     as open polylines; an isolated corner draws nothing.
+     The points reach 1.41x the seat radius, further out than the 14px edge
+     clearance guarantees, so a point can run off the side of a large ring
+     bloomed near an edge. Accepted: the diamond is a lattice with no hit area,
+     and a line cropped by the frame reads as a figure continuing past it.
 
      Inserted first, so the seats lay on top of it. Through the ring, not
-     behind it: at 45% the model still reads underneath. */
+     behind it - at 80% of --line the model still reads underneath. */
   {
     const NS = 'http://www.w3.org/2000/svg';
-    const bear = [0, 45, 90, 135, 180, 225, 270, 315].map(d => d * Math.PI / 180);
-    const rmax = ringR + 2;
-    const at = (i) => (rmax + Math.cos(bear[i]) * ringR).toFixed(1) + ',' +
-                      (rmax - Math.sin(bear[i]) * ringR).toFixed(1);
+    // The star's points, straight out past each seat. cos45 of this is ringR,
+    // which is what puts every seat on the middle of an edge.
+    const corner = ringR * Math.SQRT2;
+    const rmax = corner + 2;
+    const at = (i) => {
+      const a = i * Math.PI / 4;
+      return (rmax + Math.cos(a) * corner).toFixed(1) + ',' +
+             (rmax - Math.sin(a) * corner).toFixed(1);
+    };
     /* Which of the eight compass points a seat actually stands on. Only a
        fixed-bearing ring can answer; the evenly spread ones (Add geo, Pivot)
        keep the whole star. */
     const fixed = tools.every(t => Number.isInteger(t.seat) && t.seat >= 0 && t.seat < 8);
     const live = new Set();
     /* Seat -> compass index, through the spin: seat 0 is straight up, which
-       is `bear` index 2, and the seats run clockwise while `bear` runs
-       anticlockwise - hence 2 minus, not 2 plus. */
+       is compass index 2, and the seats run clockwise while the compass here
+       runs anticlockwise - hence 2 minus, not 2 plus. */
     if (fixed) tools.forEach(t => live.add((((2 - t.seat - spin) % 8) + 8) % 8));
     const has = (i) => !fixed || live.has(i);
     const star = document.createElementNS(NS, 'svg');
@@ -24964,31 +25009,28 @@ function paintToolRing(tools, ringR, ox, oy, tag, spin) {
     star.setAttribute('height', rmax * 2);
     star.style.left = (-rmax) + 'px';
     star.style.bottom = (-rmax) + 'px';
-    // [E N W S] is the turned square, the rhomb; [NE NW SW SE] the flat one.
-    [[0, 2, 4, 6], [1, 3, 5, 7]].forEach((idx) => {
-      if (idx.every(has)) {
-        const p = document.createElementNS(NS, 'polygon');
-        p.setAttribute('points', idx.map(at).join(' '));
-        star.appendChild(p);
-        return;
-      }
-      /* Rotate the square so it STARTS on a gap, then every surviving run is
-         one unbroken stroke and no run is split across the wrap. */
-      const gap = idx.findIndex(i => !has(i));
-      if (gap < 0) return;
-      const order = idx.slice(gap).concat(idx.slice(0, gap));
-      let run = [];
-      const flush = () => {
-        if (run.length > 1) {
-          const p = document.createElementNS(NS, 'polyline');
-          p.setAttribute('points', run.map(at).join(' '));
-          star.appendChild(p);
-        }
-        run = [];
-      };
-      order.forEach(i => { if (has(i)) run.push(i); else flush(); });
-      flush();
-    });
+    /* ONE DIAMOND (a2.111a), Zeghreit's call. Two squares was one figure too
+       many: at eight seats they cross eight times, and the lattice started
+       competing with the thing it was meant to frame.
+
+       The one kept is the DIAMOND - the square turned 45 degrees, corners
+       pointing along the axes. Its four edges are the odd i, each crossing a
+       diagonal seat at its own centre. The four cardinal seats then sit inside
+       it, short of its corners, on no line at all; that is the price of one
+       square rather than two, and it is a real one - a chord between two
+       points on a circle cannot pass through a third, so no single square
+       touches more than four of eight.
+
+       The cut still applies, but only where an edge exists to cut: a missing
+       DIAGONAL bearing drops its edge and opens the diamond. A missing
+       cardinal one has no edge to drop, so the figure stays whole and the
+       empty bearing is told only by the seat that is not there. */
+    for (let i = 1; i < 8; i += 2) {
+      if (!has(i)) continue;
+      const p = document.createElementNS(NS, 'polyline');
+      p.setAttribute('points', at((i + 7) % 8) + ' ' + at((i + 1) % 8));
+      star.appendChild(p);
+    }
     touchToolRingEl.insertBefore(star, touchToolRingEl.firstChild);
   }
 
@@ -25110,7 +25152,7 @@ function updateToolRingHover(ev) {
     swapToolRing(rt.root, null);
     return updateToolRingHover(ev);
   }
-  if (!rt.door && hovered >= 0 && dist >= TOOL_RING_ARM_PX) {
+  if (!rt.door && hovered >= 0 && dist >= toolRingArmPx(rt.radius)) {
     const aimed = rt.itemEls[hovered];
     if (aimed && aimed.tool.door) {
       swapToolRing(aimed.tool.door, aimed.tool);
