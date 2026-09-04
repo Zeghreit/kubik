@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~25,350 lines)
-- Version at time of writing: **a2.112**
+- Version at time of writing: **a2.113a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -41,6 +41,91 @@ v1.85d.
 
 
 
+
+
+## Vertex bevel, round by default (a2.113)
+
+The last empty bearing. Zeghreit: *"vertex bevel is most of the time need to
+do quick circle of it - it bevels into diamond with edges split in the middle
+and connected to outer geo vertices... so lets do bevel do this with also
+circularized."*
+
+Every edge meeting the vertex gets a new point a little way along it, each
+face that came to a point there stops at two of them instead, and the hole is
+capped with a new face. **Round is the default**, and that is the reason the op
+is worth having: a bevelled corner left alone comes out a diamond - the new
+points sit wherever the incident edges happened to run - and what you wanted
+was a circle, which otherwise costs a second trip through Circularize.
+
+`vbevel` in OP_SPECS. Chips **Round / Flat**, toggle **Even** (equal angles as
+well as equal radius, which turns a lopsided corner into a regular polygon).
+Vertex bearing 7. `symExpand` before `beginPendingOp`, like Bevel and Inset,
+because the op is derived from each corner's own geometry.
+
+### Walk the fan; do not sort by angle
+
+The ring's order comes from chaining the incident faces - each is entered from
+one neighbour and left toward the next, so the faces chain through the
+neighbours and that chain IS the order.
+
+Sorting by angle around an averaged normal was the first version and it is
+wrong twice. On a saddle the averaged normal nearly cancels and the order
+stops matching the faces. And on a vertex where two separate fans meet - two
+pyramids tip to tip, which Merge by distance makes - the sort interleaves both
+fans into one self-crossing cap laid over two holes, with no refusal. The walk
+cannot do either: it returns to its own start having used every incident face
+exactly once, or the corner is not a single closed fan and the op refuses.
+
+### Deliberately absent - do not rebuild these
+
+- **A cap group without a material.** This was the shipped-blocker review
+  caught. `rebuildFromEditable` sets `materialIndex = gi` and does not touch
+  the material array; three.js silently SKIPS a group whose material is
+  undefined. The geometry was right and the corner rendered as a HOLE. Every
+  other group-growing op in the file pushes a material in the same breath -
+  extrude, inset, `bevelEdgesOp`, cap holes, solidify. Miss it and the probe
+  will not see it either: counting `geometry.groups.length` goes 6 -> 7 and
+  passes.
+- **The mean radius for Round.** The cut distances are each capped against
+  their OWN edge, so on a corner with one short edge and three long ones the
+  mean lands far past the end of the short one and folds the two faces sharing
+  it. **The smallest radius is the safe one** - the tightest edge sets the size
+  of the hole - which is how `bevelEdgesOp` guards the same thing.
+- **A fan triangulation.** `polygonTriangles` ear-clips; a fan emits zero-area
+  triangles on collinear outlines and triangles outside the polygon on concave
+  ones, and imports routinely produce concave n-gons.
+- **Accepting a partial boundary walk in `outlineOf`.** A group with two loops
+  or a pinch walks fine and closes fine, and the rebuild then replaces the
+  whole group with that partial loop - deleting every triangle it did not
+  cover. `loop.length === open.size` is the guard, and it is the same one
+  `trisOutlineLogical` states in as many words.
+- **A quiet fallback when a face's ring lookup misses.** Keeping the original
+  corner in one face while every other face round it is cut back and a cap is
+  laid over the hole leaves overlapping non-manifold geometry and says
+  nothing. It refuses.
+- **Reusing `flat` / `round` as chip keys.** `refreshOpGrouping` looks a chip's
+  tooltip up by KEY in one shared table, so these carried the EDGE bevel's
+  words. They are `vround` / `vflat`, and `_vbev_probe.js` section 0 asserts
+  it - because setting a key the op does not know falls through to Flat, and
+  Flat on a symmetric cube corner IS a circle, so sections 3 and 4 passed
+  while testing nothing at all. That happened.
+
+### Known, not fixed
+
+The op rebuilds the whole mesh every slider frame - about four mesh passes and
+two topology builds. That is the same shape as every other slider op here and
+is fine for a handful of vertices. What is out of line is `findLogicalByPosition`
+running once per ring point in `applyPendingOp`: O(targets x valence x
+logicalCount), and `symExpand` doubles the target count first. Select an edge
+loop's worth of vertices and a drag will crawl. One position -> logical map
+built per run collapses it, the way `buildSymmetryMap` already does.
+
+`_vbev_probe.js` (in the suite): the chip keys, a cube corner becoming a
+triangular face, Flat sitting exactly on its edges, zero open edges with a
+shrinking positive signed volume (a cap wound inside out is the one failure a
+screenshot would not show), the selection following the corner to the ring,
+cancel restoring, Round giving equal radii, and Even giving 120.00 degree gaps
+on a deliberately skewed corner.
 
 ## A bearing never empties (a2.112)
 

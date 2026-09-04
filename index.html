@@ -2284,7 +2284,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.112</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.113a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -11291,6 +11291,22 @@ const OP_SPECS = {
       { key: 'out', label: 'In front' }
     ]
   },
+  /* No `segments`: an edge bevel can be rounded by adding rings across the
+     strip, but a vertex bevel's ring IS the shape, and the thing you actually
+     want from it - a circle rather than a diamond - is the Round chip below,
+     not more geometry. */
+  vbevel: {
+    label: 'Bevel', min: 0.005, max: 4, step: 0.005, start: 0.06,
+    /* Keys of its own, not 'flat'/'round'. refreshOpGrouping looks a chip's
+       tooltip up by KEY in one shared table, so reusing the edge bevel's keys
+       put the edge bevel's words under these chips - "straight chamfer across
+       the edge", which is not what either of them does here. */
+    options: [
+      { key: 'vround', label: 'Round' },
+      { key: 'vflat', label: 'Flat' }
+    ],
+    toggle: { key: 'even', label: 'Even', tip: 'Space the ring equally around the circle' }
+  },
   bevel: {
     label: 'Bevel', min: 0.005, max: 4, step: 0.005, start: 0.06, segments: true,
     options: [
@@ -11715,7 +11731,32 @@ function applyPendingOp() {
     ensureHelpers(obj);
     resultSelection = new Set(op.payload.groups);
 
-  } else if (op.kind === 'bevel') {
+  } else if (op.kind === 'vbevel') {
+      ensureHelpers(obj);
+      const vs = [];
+      op.payload.at.forEach(p => {
+        const l = findLogicalByPosition(obj, p);
+        if (l >= 0) vs.push(l);
+      });
+      if (!vs.length) refuseOp('those vertices are not there any more');
+      else {
+        const made = vertexBevelOp(obj, vs, op.amount,
+                                  (op.groupMode || 'vround') === 'vround', !!op.even);
+        if (!made) refuseOp('that corner cannot be bevelled');
+        else {
+          ensureHelpers(obj);
+          /* The vertex you aimed at is GONE - it became the ring - so the
+             selection has to follow it there, or the next op would be
+             pointing at nothing. */
+          resultSelection = new Set();
+          made.forEach(p => {
+            const l = findLogicalByPosition(obj, p);
+            if (l >= 0) resultSelection.add(l);
+          });
+        }
+      }
+      ensureHelpers(obj);
+    } else if (op.kind === 'bevel') {
     // Every selected edge is resolved in one pass - beveling them one after
     // another would let each consume corners the next one still needs.
     ensureHelpers(obj);
@@ -14360,6 +14401,296 @@ function insetSelection() {
   // all symmetry needs here - no per-side handling.
   symExpand(obj);
   beginPendingOp('inset', obj, { groups: Array.from(App.selectedElements) });
+}
+
+
+/* VERTEX BEVEL (a2.113). Cut the corner off: every edge meeting the vertex
+   gets a new point a little way along it, each face that came to a point
+   there stops at two of them instead, and the hole left behind is capped
+   with a new face.
+
+   ROUND IS THE DEFAULT, and that is the whole reason this op is worth having
+   rather than being a curiosity. A bevelled corner left alone comes out as a
+   diamond - the new points sit wherever the incident edges happened to run -
+   and what you almost always wanted was a circle, which then costs a second
+   trip through Circularize. Round pushes the ring onto its own best-fit
+   circle before capping, so one pull gives a round hole.
+
+   The mesh is REBUILT rather than patched. Every rebuild renumbers the raw
+   attribute anyway (separateGroupVertices splits vertices per group), so
+   there is nothing to preserve by patching - and rebuilding lets each face
+   keep its own deduplicated vertices instead of one copy per triangle. */
+function vertexBevelOp(obj, logicals, amount, round, even) {
+  const topo = obj.mesh.userData.topo;
+  if (!topo) return null;
+  const ed = toEditable(obj.mesh);
+  const mats = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
+  const targets = new Set(logicals);
+  if (!targets.size) return null;
+
+  /* A group is a RUN OF TRIANGLES, so its outline is the edges used by only
+     one of them - a directed edge with nothing going back the other way.
+
+     ONE CLOSED LOOP OR NOTHING, the same rule `trisOutlineLogical` states in
+     as many words. A group holding two loops (a face with a hole) or pinched
+     through one vertex walks fine and closes fine, and returning that partial
+     walk would hand the rebuild below a polygon that silently DELETES every
+     triangle the walk did not cover. Counting the boundary edges is the whole
+     guard: a real outline uses all of them. */
+  const outlineOf = (g) => {
+    const open = new Map();
+    g.triangles.forEach(t => {
+      for (let i = 0; i < 3; i++) {
+        const a = t[i], b = t[(i + 1) % 3];
+        if (open.has(b + ',' + a)) open.delete(b + ',' + a);
+        else open.set(a + ',' + b, [a, b]);
+      }
+    });
+    if (open.size < 3) return null;
+    const next = new Map();
+    let first = -1;
+    let pinched = false;
+    open.forEach(([a, b]) => {
+      if (first < 0) first = a;
+      if (next.has(a)) pinched = true; else next.set(a, b);
+    });
+    if (pinched) return null;
+    const loop = [first];
+    let cur = next.get(first);
+    while (cur !== undefined && cur !== first && loop.length < 4096) {
+      loop.push(cur);
+      cur = next.get(cur);
+    }
+    return (cur === first && loop.length === open.size) ? loop : null;
+  };
+
+  const lg = (ai) => topo.logicalOf[ai];
+  const newell = (pts) => {
+    const n = new THREE.Vector3();
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      n.x += (a.y - b.y) * (a.z + b.z);
+      n.y += (a.z - b.z) * (a.x + b.x);
+      n.z += (a.x - b.x) * (a.y + b.y);
+    }
+    return n;
+  };
+
+  // Every group's outline once, and which of them each target sits in.
+  const outlines = new Map();
+  const touched = new Map();
+  ed.groups.forEach((g, gi) => {
+    const loop = outlineOf(g);
+    if (!loop) return;
+    outlines.set(gi, loop);
+    loop.forEach(ai => {
+      const l = lg(ai);
+      if (!targets.has(l)) return;
+      if (!touched.has(l)) touched.set(l, []);
+      if (touched.get(l).indexOf(gi) < 0) touched.get(l).push(gi);
+    });
+  });
+
+  // Neighbours of every target, in one pass rather than one pass per target.
+  const nbrs = new Map();
+  targets.forEach(l => nbrs.set(l, []));
+  topo.edges.forEach(([a, b]) => {
+    if (nbrs.has(a)) nbrs.get(a).push(b);
+    if (nbrs.has(b)) nbrs.get(b).push(a);
+  });
+
+  const rings = new Map();
+  const made = [];
+  let failed = false;
+
+  targets.forEach(v => {
+    if (failed) return;
+    const gis = touched.get(v);
+    const nbs = nbrs.get(v) || [];
+    if (!gis || gis.length < 3 || nbs.length < 3) { failed = true; return; }
+
+    /* WALK THE FAN, do not sort by angle. Each face that meets the corner is
+       entered from one neighbour and left toward the next, so the faces chain
+       through the neighbours and the chain IS the ring's order.
+
+       Sorting by angle around an averaged normal looked simpler and is wrong
+       twice over. On a saddle the averaged normal nearly cancels and the
+       order stops matching the faces. And on a vertex where two separate fans
+       meet - two pyramids joined tip to tip, which Merge by distance makes -
+       the sort interleaves both fans into one self-crossing cap laid over two
+       holes. The walk cannot do either: it either returns to its own start
+       having used every incident face exactly once, or the corner is not a
+       single closed fan and the op refuses. */
+    const around = new Map();          // gi -> { prev, next } logical at v
+    let ok = true;
+    gis.forEach(gi => {
+      const loop = outlines.get(gi);
+      const at = loop.findIndex(ai => lg(ai) === v);
+      if (at < 0) { ok = false; return; }
+      around.set(gi, {
+        prev: lg(loop[(at - 1 + loop.length) % loop.length]),
+        next: lg(loop[(at + 1) % loop.length])
+      });
+    });
+    if (!ok) { failed = true; return; }
+
+    const byPrev = new Map();
+    around.forEach((e, gi) => { if (!byPrev.has(e.prev)) byPrev.set(e.prev, gi); });
+    const order = [];
+    let gi = gis[0];
+    for (let i = 0; i < gis.length; i++) {
+      const e = around.get(gi);
+      if (!e) { ok = false; break; }
+      order.push(e.next);
+      const nx = byPrev.get(e.next);
+      if (nx === undefined) { ok = false; break; }
+      gi = nx;
+    }
+    if (!ok || gi !== gis[0] || order.length !== gis.length ||
+        new Set(order).size !== order.length || order.length !== nbs.length) {
+      failed = true; return;
+    }
+
+    const pv = logicalPos(obj, v);
+    // Never past the middle of an edge: two bevels on one edge would cross,
+    // and the face between them would turn inside out.
+    const cut = (nb) => {
+      const pn = logicalPos(obj, nb);
+      const len = pv.distanceTo(pn);
+      const t = len > 1e-9 ? Math.min(amount / len, 0.45) : 0.45;
+      return pv.clone().lerp(pn, t);
+    };
+    let pts = order.map(cut);
+
+    // The corner's outward normal, from the faces that meet there; the ring's
+    // own plane is the fallback when they cancel.
+    const face = new THREE.Vector3();
+    gis.forEach(g2 => face.add(newell(outlines.get(g2).map(ai => vecAt(ed, ai)))));
+    let nrm = newell(pts);
+    if (nrm.lengthSq() < 1e-20) { failed = true; return; }
+    if (face.lengthSq() > 1e-20 && nrm.dot(face) < 0) {
+      // The walk went the other way round. Reverse it, so the cap that gets
+      // fanned below faces out with the faces it closes against.
+      order.reverse(); pts.reverse(); nrm = newell(pts);
+    }
+    nrm.normalize();
+
+    const ring = new Map();
+    if (round) {
+      const mid = new THREE.Vector3();
+      pts.forEach(p => mid.add(p));
+      mid.divideScalar(pts.length);
+      const flat = pts.map(p => {
+        const d = new THREE.Vector3().subVectors(p, mid);
+        return d.addScaledVector(nrm, -d.dot(nrm));
+      });
+      /* THE SMALLEST RADIUS, NOT THE MEAN. The mean is what a circle through
+         these points wants, and it is unsafe: the cut distances are each
+         capped against their OWN edge, so on a corner with one short edge and
+         three long ones the mean lands far past the end of the short one and
+         folds the two faces sharing it. `bevelEdgesOp` guards the same way and
+         for the same reason. The tightest edge sets the size of the hole. */
+      let r = Infinity;
+      flat.forEach(d => { r = Math.min(r, d.length()); });
+      if (!(r > 1e-9)) { failed = true; return; }
+      let u = flat[0].clone();
+      if (u.lengthSq() < 1e-18) { failed = true; return; }
+      u.normalize();
+      const w = new THREE.Vector3().crossVectors(nrm, u).normalize();
+      const step = (Math.PI * 2) / order.length;
+      pts = order.map((nb, i) => {
+        const a = even ? i * step
+                       : Math.atan2(flat[i].dot(w), flat[i].dot(u));
+        return mid.clone().addScaledVector(u, Math.cos(a) * r)
+                          .addScaledVector(w, Math.sin(a) * r);
+      });
+    }
+    order.forEach((nb, i) => ring.set(nb, pts[i]));
+    rings.set(v, { ring, order, gi0: gis[0] });
+    pts.forEach(p => made.push(p.clone()));
+  });
+  if (failed || rings.size !== targets.size) return null;
+
+  /* Rebuilt from nothing. Every rebuild renumbers the raw attribute anyway
+     (separateGroupVertices splits per group), so there is nothing to preserve
+     by patching - and rebuilding lets each face keep its own deduplicated
+     vertices instead of one copy per triangle.
+
+     Groups come out in their original order, so `mats` stays aligned; the caps
+     are appended, and each pushes a material of its own. Miss that and the cap
+     has geometry with nothing to draw it: three.js skips a group whose
+     material is undefined, and the corner reads as a HOLE. */
+  const out = { positions: [], groups: [] };
+  const put = (verts) => {
+    const base = out.positions.length / 3;
+    verts.forEach(v => out.positions.push(v.x, v.y, v.z));
+    return verts.map((_, i) => base + i);
+  };
+
+  ed.groups.forEach((g, gi) => {
+    const loop = outlines.get(gi);
+    const hit = loop && loop.some(ai => rings.has(lg(ai)));
+    if (!hit) {
+      // Untouched: copied triangle for triangle. Re-triangulating a face the
+      // bevel never reached could only change it for the worse.
+      const local = new Map(), verts = [];
+      g.triangles.forEach(t => t.forEach(ai => {
+        if (!local.has(ai)) { local.set(ai, verts.length); verts.push(vecAt(ed, ai)); }
+      }));
+      const idx = put(verts);
+      out.groups.push({ triangles: g.triangles.map(t => t.map(ai => idx[local.get(ai)])) });
+      return;
+    }
+    const poly = [];
+    let broke = false;
+    loop.forEach((ai, i) => {
+      const l = lg(ai);
+      const r = rings.get(l);
+      if (!r) { poly.push(vecAt(ed, ai)); return; }
+      const a = r.ring.get(lg(loop[(i - 1 + loop.length) % loop.length]));
+      const b = r.ring.get(lg(loop[(i + 1) % loop.length]));
+      /* No quiet fallback here. Keeping the original corner in ONE face while
+         every other face round it is cut back and a cap laid over the hole
+         leaves overlapping, non-manifold geometry and says nothing. */
+      if (!a || !b) { broke = true; return; }
+      // The corner is entered from `prev` and left toward `next`, so the cut
+      // on the incoming edge comes first and the face keeps its winding.
+      poly.push(a.clone(), b.clone());
+    });
+    if (broke || poly.length < 3) { broke = true; }
+    if (broke) { out.groups.push(null); return; }
+    const idx = put(poly);
+    out.groups.push({ triangles: polygonTriangles(out, idx) });
+  });
+  if (out.groups.some(g => !g)) return null;
+
+  rings.forEach((r) => {
+    const idx = put(r.order.map(nb => r.ring.get(nb).clone()));
+    mats.push((mats[r.gi0] || mats[0]).clone());
+    out.groups.push({ triangles: polygonTriangles(out, idx) });
+  });
+
+  rebuildFromEditable(obj, out);
+  return made;
+}
+/* Vertex mode: knock the corner off, round by default. `symExpand` rather
+   than `runMirrored` for the same reason Bevel and Inset use it - the op is
+   derived from each corner's OWN geometry, so both sides come out mirrored
+   from a single pass over the union. */
+function vertexBevelSelection() {
+  if (App.mode !== 'vertex') { toast('Bevel works in Vertex mode'); return; }
+  const obj = findObject(App.activeObjectId);
+  if (!obj || App.selectedElements.size === 0) { toast('Select a vertex to bevel'); return; }
+  ensureHelpers(obj);
+  symExpand(obj);
+  /* Positions, not ids. Every slider frame restores the snapshot and rebuilds,
+     which renumbers everything - coordinates are the only handle that keeps
+     meaning across that. */
+  const at = Array.from(App.selectedElements)
+    .filter(l => l < obj.mesh.userData.topo.logicalCount)
+    .map(l => logicalPos(obj, l));
+  if (!at.length) { toast('Select a vertex to bevel'); return; }
+  beginPendingOp('vbevel', obj, { at });
 }
 
 // Edge mode: replace sharp edges with narrow flat faces.
@@ -24393,9 +24724,13 @@ const HUB_TOOLS_VERTEX = [
   { key: 'slide', icon: 'slide', label: 'Slide', seat: 3, run: slideSelection },
   { key: 'delete', icon: 'del', label: 'Delete', seat: 4, run: deleteSelection },
   { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 5, run: setFlowSelection },
-  { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 6, run: circularizeSelection }
-  // Seat 7 (NW) is empty and stays empty. Vertex mode has six ops and a
-  // Delete; there is nothing to put there and nothing behind a door.
+  { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 6, run: circularizeSelection },
+  /* THE LAST EMPTY BEARING (a2.113). Bevel takes 7 rather than Edge's 1
+     because the four bearings before it are already spoken for in this ring,
+     and 7 is where the reshaping ops live in the other two - it is the seat
+     that answers "change the shape of what is selected", which is what
+     knocking a corner off is. */
+  { key: 'bevel', icon: 'bevel', label: 'Bevel', seat: 7, run: vertexBevelSelection }
 ];
 
 const HUB_TOOLS_EDGE = [
@@ -28292,6 +28627,10 @@ if (PICK_DEBUG) {
        the buffer in ONE synchronous block, which is the only way to sample
        a canvas that does not preserve its drawing buffer. */
     renderer, applyShading, toEditable, rebuildFromEditable, creaseKeyFor,
+    // a2.113: the probe drives the real entry point, so symExpand and the
+    // payload's position round-trip are under test too - and it reads OP_SPECS
+    // so a renamed chip key cannot quietly turn its Round sections into no-ops.
+    vertexBevelSelection, OP_SPECS,
     bloomToolRing, updateToolRingHover, closeToolRing, placeRingLabel,
     currentHubTools, HUB_TOOLS_WORLD,
     // a2.109: a seat's word can be a function now, so anything reading one
