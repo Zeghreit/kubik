@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~29,200 lines)
-- Version at time of writing: **2.2a**
+- Version at time of writing: **2.2b**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -35,6 +35,70 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Cancel was sitting on the stepper's + (v2.2b)
+
+Reported from the phone, on edge Bevel: the ✕ button overlapped the segment
+stepper's **+**, so the count could be lowered and never raised.
+
+**One selector.** `#opBar button` sets `flex-shrink: 0` on everything in the
+bar, and one ID plus a type beats one ID — so `#opOk`'s own `flex: 1 1 96px`
+was overruled on its shrink and Apply could not give a pixel back. Everything
+in `#opCommit` was then unshrinkable at 44 + 6 + 96 = 146, while `#opCommit`
+itself shrank freely: `overflow: hidden` on `#opOk` zeroes THAT item's
+automatic minimum size, which is what its parent's min-content width is
+computed from. On a 393pt phone the group is handed about 113pt, laid its
+children out at 146 anyway, and `justify-content: flex-end` pushed the
+overflow out of the **left** edge — onto the stepper.
+
+Edge Bevel is where it showed because Flat/Round plus the segment stepper is
+the widest pair of cells the bar ever puts up.
+
+The fix is the selector: `#opBar #opOk` instead of `#opOk`, so Apply can
+shrink and Apply is what gives. `min-width: 56px` is its floor — 16 of left
+padding, the glyph, and the 22px hazard — and it is also what makes
+`#opCommit`'s min-content honest again at 106, so when even that will not fit
+the group WRAPS to a second row, which is what the note above `#opCommit`
+always said it would do.
+
+**It did not reproduce in the harness, and that is the finding.** Chrome
+honoured the automatic minimum size and wrapped the group at 393pt; Safari on
+the phone did not, shrank the group, and overflowed it. The fix does not
+depend on that behaviour in either engine — with Apply shrinkable there is
+nothing left to overflow.
+
+`_opbarchk.py` measures the row with Bevel open at 430 / 393 / 375 / 360 /
+320, reporting every cell's box, any overlap, how many rows, and whether
+anything sits outside the bar. Headless Chrome will not take a window under
+about 500px, so the widths are imposed on `#viewport` instead — the bar is
+`left: 0; right: 0` inside it. At 393:
+
+```
+before   bar h=183   two rows: chips and stepper, then cancel and apply
+after    bar h=133   one row: chips 12..139, stepper 145..263,
+                     cancel 269..313, apply 319..381 (62px)
+```
+
+375 and below still wrap, and nothing overlaps at any width.
+
+### And the `_imp_probe` flake was never a CDN race
+
+It had no `--user-data-dir`, so it shared Chrome's default profile. With a
+Chrome open on the machine the headless run exits in about four seconds with
+an empty DOM — which is exactly what "the known flake" has looked like every
+time it was written down. Given its own profile it passes first try.
+
+**Fresh, not fixed.** The first attempt handed it a FIXED directory, and the
+next run opened the PREVIOUS run's scene — the app autosaves the document into
+localStorage — so the probe reported "2 objects added", a face count of 10
+where it expected 6, and four other lines of nonsense. Every local probe now
+takes a `tempfile.mkdtemp()` profile and removes it afterwards, which is what
+the Testing loop section meant by "a fresh `--user-data-dir`" all along.
+
+**Re-check the two remaining flake notes against this.** `_perf_out`'s
+`slider_coalescing` and `_theme_out`'s `8.palette` were both written down as
+"re-run three times before believing either". Neither has been re-measured
+since the profiles were fixed.
 
 ## One rail on the left, and the cube gets its colours back (v2.2)
 

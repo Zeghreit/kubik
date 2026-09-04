@@ -1930,8 +1930,32 @@
      width by 2px and could nudge a wrapping bar onto another line. */
   #opBar .group button, #opBar .stepper button { border-radius: 0; }
   /* Apply is the slab, with the hazard stripe at its far end. The glyph
-     stays a glyph (a2.63) - the slab's width says the rest. */
-  #opOk { flex: 1 1 96px; max-width: 220px; justify-content: flex-start; padding-left: 16px; position: relative; overflow: hidden; }
+     stays a glyph (a2.63) - the slab's width says the rest.
+
+     #opBar #opOk, NOT #opOk, AND THAT IS THE WHOLE FIX (v2.2b). `#opBar
+     button` sets flex-shrink: 0 on everything in the bar, and one ID plus a
+     type beats one ID - so the `flex: 1 1 96px` below was overruled on its
+     shrink and Apply could not give a pixel back. Everything in #opCommit
+     was then unshrinkable at 44 + 6 + 96, while #opCommit itself shrank
+     freely: `overflow: hidden` here zeroes THIS item's automatic minimum
+     size, which is what its parent's min-content width is computed from. So
+     on a 393pt phone the group was handed about 113pt, kept laying its
+     children out at 146, and justify-content: flex-end pushed the overflow
+     out of the LEFT edge - which is Cancel sitting on top of the segment
+     stepper's + button. Edge bevel is where it showed, because Flat/Round
+     and the stepper are the widest pair of cells the bar ever puts up.
+
+     With Apply able to shrink, Apply is what gives: Cancel lands back in
+     its own 6px of air and the slab takes what is left. min-width 56 is
+     the floor - 16 of left padding, the glyph, and the 22px hazard - and it
+     is also what makes #opCommit's min-content honest again at 106, so when
+     even that will not fit the group WRAPS to a second row, which is what
+     the note above #opCommit always said it would do. */
+  #opBar #opOk {
+    flex: 1 1 96px; min-width: 56px; max-width: 220px;
+    justify-content: flex-start; padding-left: 16px;
+    position: relative; overflow: hidden;
+  }
   #opOk::after {
     content: ''; position: absolute; top: 0; bottom: 0; right: 0; width: 22px;
     background: repeating-linear-gradient(135deg, rgb(11 13 16 / .45) 0 4px, transparent 4px 8px);
@@ -2326,7 +2350,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.2a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.2b</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
