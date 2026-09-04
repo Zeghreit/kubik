@@ -906,8 +906,9 @@
   }
   #drawer.open { transform: translateX(0); }
 
-  /* ---- Materials fly-out: a slim tab centred on the right border. A tap
-     rolls the vertical tray of material previews out; a tap rolls it back.
+  /* ---- Materials fly-out: a slim named tab on the LEFT border, the rail's
+     second seat under the outliner (v2.2). A tap rolls the vertical tray of
+     material previews out; a tap rolls it back.
      Deliberately NOT a second drawer - it's a palette, not a settings
      panel, and the viewport stays the hero. ---- */
   #matFly {
@@ -925,13 +926,19 @@
        the symmetry strip that used to sit below the cube is in the header. */
     /* ON THE RAIL (a2.103): the second seat, under the outliner's tab, on
        the LEFT. Everything below that said "right" is mirrored. */
-    /* a3.0 6.1 and 6.3: the RIGHT edge, opposite the outliner, level with
-       it. a2.103 stacked both on the left rail because the right edge
-       still held a 128px view cube; the cube is 56 and up in the strip
-       now, so the edge is free and the two shelves stop competing. */
-    position: absolute; left: auto; right: env(safe-area-inset-right, 0px);
-    top: calc(241px + env(safe-area-inset-top, 0px));
-    z-index: 25; display: flex; flex-direction: column; align-items: flex-end;
+    /* BACK ON THE LEFT RAIL, SECOND SEAT (v2.2, Zeghreit's). a3.0 6.1 put
+       this on the right edge opposite the outliner, on the reasoning that
+       the cube had shrunk to 56 and freed that edge. The cube went back to
+       128 at a2.107 and the reasoning went with it: at 128 the right edge
+       is the cube's, and a shelf opposite it is a shelf competing with it.
+       So the two shelves are one rail again - outliner first at 71, this
+       one under it - and the whole right edge belongs to the cube.
+
+       185 is the outliner's 81 plus that tab's own 96 plus the 8px --gap,
+       so the pair cannot drift apart when either number moves. */
+    position: absolute; right: auto; left: env(safe-area-inset-left, 0px);
+    top: calc(185px + env(safe-area-inset-top, 0px));
+    z-index: 25; display: flex; flex-direction: column; align-items: flex-start;
     /* HOW TALL THE SHELF MAY GET. It used to be a flat 60vh, which on a
        laptop is about five cards - so the "+", the one control that makes a
        new material, sat below the fold and the panel ended in the middle of
@@ -947,12 +954,11 @@
        266 since a2.65, back up from 204: the tab moved down 62px to clear the
        symmetry/projection pair, and the shelf starts level with the tab, so
        it gives back exactly what the tab travelled. */
-    /* a2.106: the tab is at 241 now, not 162, and the bottom row is 16px
-       taller. 321 = 241 of tab plus 80 of clearance, which is the hub's
-       64 plus its ring plus air - so a full shelf ends ABOVE the hub
-       instead of covering it. Derived from the tab's own top, so the two
-       cannot drift apart again. */
-    --mat-max: calc(100vh - 321px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
+    /* 80 of clearance under the tab's own top: the hub's 64, plus its ring,
+       plus air - so a full shelf ends ABOVE the hub instead of covering it.
+       Derived from that top, so the two cannot drift apart. 265 = 185 + 80
+       at v2.2, from 321 = 241 + 80 before it. */
+    --mat-max: calc(100vh - 265px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
   }
 
   /* SHORT VIEWPORTS: THE PAIR STEPS ASIDE (a2.65). The 44px strip under the
@@ -990,11 +996,21 @@
      that clears it with air to spare. Its z-index is under the drawer's, so
      opening the drawer covers the shelf rather than fighting it. ---- */
   #outFly {
-    /* a3.0 6.1: top 300, at the left edge. Off the rail and down the
-       screen, into 1.5's STRETCH band - a panel you open now and then
-       does not belong in the row your eye reads first. */
+    /* LEVEL WITH THE VIEW CUBE (v2.2, Zeghreit's). The cube hangs at 71,
+       just under the 73px strip, and is the one thing --edge does not
+       clear; the rail is level with it on the other edge, so the two things
+       that sit below the strip read as one row rather than as two unrelated
+       heights.
+
+       81 IS THE READOUT'S OWN GAP, MEASURED TWICE (v2.2, Zeghreit's). The
+       strip is a 44px row running 7..51 and a readout under it at 59..73,
+       so the air between them is 8. The rail takes the same 8 under the
+       readout: 73 + 8 = 81. The number is not chosen, it is the one the
+       strip already uses - so the readout sits in equal air, and moving
+       either half of the strip moves this by the same amount or the gap
+       stops matching and says so. */
     position: absolute; left: env(safe-area-inset-left, 0px);
-    top: calc(241px + env(safe-area-inset-top, 0px));
+    top: calc(81px + env(safe-area-inset-top, 0px));
     z-index: 25; display: flex; flex-direction: column; align-items: flex-start;
   }
   /* Open, the list sits BESIDE the tab (a2.103), not under it - under it
@@ -1004,13 +1020,35 @@
   #outFly.open { flex-direction: row; align-items: flex-start; z-index: 26; }
   #outFly.open #outTab { border-right: none; background: var(--panel); }
   #outTab {
-    /* a3.0 6.1: 26 x 64, edge-tucked, with the 10px cut on the corner
-       that faces the viewport - the cut is what says pull. */
-    width: 26px; height: 64px; min-height: 0; padding: 0;
+    /* 26 x 96, edge-tucked, with the 10px cut on the corner that faces the
+       viewport - the cut is what says pull. 64 until v2.2; the name inside
+       it is what asked for the other 32 (see .tabName). */
+    width: 26px; height: 96px; min-height: 0; padding: 0;
     border-radius: 0; border-left: none;
     clip-path: polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%);
-    justify-content: center; font-size: 20px; color: var(--text-dim);
+    justify-content: center; align-items: center; color: var(--text-dim);
     background: var(--panel2);
+  }
+  /* THE TAB SAYS WHAT IT IS (v2.2, Zeghreit's). Both handles used to be a
+     chevron, which says only "this opens" - and once the two sat one above
+     the other on the same rail, "this opens" was the one thing you already
+     knew and "which of the two is this" was the thing you did not. The name
+     is set on its side because the tab is 26px wide and 96 tall: turned, it
+     has room to be read; straight, it has room for two letters.
+
+     vertical-rl plus a half turn, not sideways-lr. The two produce the same
+     bottom-to-top line, but sideways-lr is still missing from Safari on the
+     phone this app is built for, and a missing writing-mode falls back to
+     horizontal - which in a 26px column is a word broken one letter to a
+     line. This pair is supported everywhere.
+
+     The mono face and the tracking are the readout's, one step down: this
+     is a label on a frame, not a control's own word. */
+  .tabName {
+    writing-mode: vertical-rl; transform: rotate(180deg);
+    font-family: var(--mono); font-size: 10px; letter-spacing: .12em;
+    text-transform: uppercase; line-height: 1; white-space: nowrap;
+    pointer-events: none;
   }
   /* THE 44px SLOP WAS NEVER THERE (a2.106). It was a pseudo-element
      hanging outside the tab - and the tab carries a clip-path for its cut
@@ -1029,10 +1067,10 @@
     width: min(232px, 66vw);
     /* From just under the tab to clear of the bottom button row - the same
        reasoning #matFly uses, so a long list ends where the list ends rather
-       than in the middle of nowhere. 321 is that number, retuned with the
-       tab's move to 241 (a2.106); at 200 the list ran past the bottom of
-       the screen and over the undo row. */
-    max-height: calc(100vh - 321px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
+       than in the middle of nowhere. Derived from the tab's own top plus 80
+       of clearance (the hub's 64, its ring, and air), so the two cannot
+       drift apart: 81 + 80 = 161 at v2.2, from 241 + 80 = 321 before it. */
+    max-height: calc(100vh - 161px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
     overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
     margin-top: 0; padding: 8px;
     background: var(--panel); border: var(--rule) solid var(--line); border-left: none;
@@ -1141,14 +1179,17 @@
   .outRow.is-hidden .outEye { opacity: 1; color: var(--accent-mode); }
 
   #matTab {
-    /* a3.0 6.1: 26 x 64 on the RIGHT edge, so its cut and its borderless
-       side are the outliner tab's mirror. 26 is narrow for a thumb - the
-       reason it went from 30 to 44 once - so the touch slop below gives
-       it back the 44 it needs without drawing it. */
-    width: 26px; height: 64px; min-height: 0; padding: 0;
-    border-radius: 0; border-right: none; border-left: var(--rule) solid var(--line);
-    clip-path: polygon(10px 0, 100% 0, 100% 100%, 0 100%, 0 10px);
-    justify-content: center; font-size: 20px; color: var(--text-dim);
+    /* 26 x 96 on the LEFT edge since v2.2, the outliner tab's twin one seat
+       down. The cut is 10px on the corner that faces the VIEWPORT - the cut
+       is what says pull - so this one cuts the TOP right and the outliner
+       cuts the bottom right, and the pair face each other across the gap.
+       26 is narrow for a thumb, which is why it went from 30 to 44 once;
+       what gives it back the 44 is the screen edge, which a thumb entering
+       from the bezel is already on. */
+    width: 26px; height: 96px; min-height: 0; padding: 0;
+    border-radius: 0; border-left: none; border-right: var(--rule) solid var(--line);
+    clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%);
+    justify-content: center; align-items: center; color: var(--text-dim);
     background: var(--panel2);
   }
   /* WELDED (a2.63). Open, the tab used to take a 26px margin and a full
@@ -1161,9 +1202,9 @@
      Closed it is the only target there and wants the full 44; open, the
      whole tray is the target and the tab only has to be grabbable - 32 with
      56 of height still clears what a thumb needs. */
-  #matFly.open { flex-direction: row-reverse; align-items: flex-start; }
+  #matFly.open { flex-direction: row; align-items: flex-start; }
   #matFly.open #matTab {
-    width: 32px; font-size: 15px;
+    width: 32px;
     /* The width and the fill are part of the same movement as the tray, so
        they travel with it rather than snapping. */
     transition: width .22s ease, background-color .22s ease;
@@ -1173,13 +1214,13 @@
   #matTray {
     width: 96px; max-height: 0; opacity: 0; overflow: hidden; margin-top: 6px;
     transition: max-height .22s ease, opacity .22s ease;
-    /* a2.106: the tab is the tray's RIGHT shoulder now (a2.103 mirrored
-       a2.63 to the left; the right edge is where a3.0 6.1 puts it back). */
-    background: var(--panel); border: var(--rule) solid var(--line); border-right: none;
+    /* The tab is the tray's LEFT shoulder again (v2.2), which is what it
+       was at a2.103 and what a2.63 built on the other side. */
+    background: var(--panel); border: var(--rule) solid var(--line); border-left: none;
     border-radius: 0;
   }
-  /* No right border: the tab is the tray's right shoulder. */
-  #matFly.open #matTray { margin-top: 0; border-right: none; border-radius: 0; }
+  /* No left border: the tab is the tray's left shoulder. */
+  #matFly.open #matTray { margin-top: 0; border-left: none; border-radius: 0; }
   /* CLOSING KEEPS THE LAYOUT AND DROPS THE TRAY (a2.63a). Removing .open in
      one frame flipped the flyout back to a column instantly while the tray
      was still 220ms into collapsing, so the still-opaque shelf visibly
@@ -2183,14 +2224,15 @@
          What is IN the scene, consulted while working - so a shelf, not a
          page in the settings drawer. -->
     <div id="outFly">
-      <button id="outTab" title="Outliner - what is in the scene">&#8250;</button>
+      <button id="outTab" title="Outliner - what is in the scene"><span class="tabName">Outliner</span></button>
       <div id="outTray"><div id="outList"></div></div>
     </div>
 
-    <!-- Materials: a slim tab centred on the right border. Tap rolls the
+    <!-- Materials: a slim named tab on the left border, under the outliner
+         (v2.2). Tap rolls the
          tray of previews out, tap again rolls it back. -->
     <div id="matFly">
-      <button id="matTab" title="Materials">&#8249;</button>
+      <button id="matTab" title="Materials"><span class="tabName">Materials</span></button>
       <div id="matTray"><div id="matTrayInner"></div><div id="matEditor">
         <img id="meImg" alt="">
         <div class="me-name" id="meName"></div>
@@ -2284,7 +2326,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.1a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.2</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -2306,7 +2348,7 @@
              in the Help card in full; from here they only need to say where
              to go, and the lighting one keeps its gesture because that is the
              part you cannot discover by looking. -->
-        <div class="drawer-note">Colour is in the material — the tab on the right edge.
+        <div class="drawer-note">Colour is in the material — the Materials tab on the left edge.
           See-through, Floor grid and Snap are in the ring you get by holding on empty space.</div>
         <div class="drawer-note">Lighting - pick the type here. Hold two fingers still
           anywhere, then slide with the other hand to aim it.</div>
@@ -3103,27 +3145,37 @@ viewCubeEl.appendChild(cubeRenderer.domElement);
    system - MeshBasicMaterial with an sRGB texture on a renderer that has
    no tone mapping draws exactly the colours written below. */
 
-/* a2.107: THE CUBE IS CHROME, and now says so. Its faces were the panel's
-   family already; its LABELS were the axis colours - coral, gold and blue
-   - which made a 128px control the only place in the chrome carrying the
-   viewport's vocabulary. Those three colours mean X, Y and Z during a
-   drag, and a face of this cube means look-down-this-axis, which is a
-   different statement; wearing the same colours claimed they were the
-   same one. The cube is grey like every other frame now, and the axis
-   colours are left to say the one thing they say. */
+/* SIX FACES, SIX COLOURS (v2.2, Zeghreit's).
+
+   a2.107 made every label grey. Its argument: the axis triad means X, Y and
+   Z during a drag, and a face of this cube means look-DOWN-this-axis, which
+   is a different statement, so wearing the same colours claimed the two were
+   one. That is reversed here by request, and what goes back is sharper than
+   what came out. Before a2.107 a PAIR of opposite faces wore one colour, so
+   the cube said "X" twice and never said which end of it you were looking
+   at. Now each face has its own tone: the colour is the axis, and the tone
+   is the sign - the near face lifted toward --text, the far face the axis
+   colour itself. No two faces of this cube read the same.
+
+   The lifted tones are the axis hues moved toward --text, not new hues, so
+   the cube still carries three colours rather than six. Every one clears 3:1
+   on --panel2, the AA floor for text at this size and weight; the darkest of
+   the six is Z's own 4.1:1 and clears it with room.
+
+   BoxGeometry's own face order: +X, -X, +Y, -Y, +Z, -Z - which is RIGHT,
+   LEFT, TOP, BTM, FRONT, BACK, and the positive face of each pair is the
+   lifted one. GIZMO_AXES is where the three base hues come from and is
+   still the only place they are decided. */
 const CUBE_FACE_BG = '#1b1f25';    // --panel2
 const CUBE_FACE_LINE = '#454d56';  // --line
-const CUBE_LABEL = '#8b939c';      // --text-dim
-/* BoxGeometry's own face order: +X, -X, +Y, -Y, +Z, -Z. Labels were coloured
-   by AXIS, matching GIZMO_AXES exactly - so the pair of faces you can see
-   for a given axis is the colour that axis's guide line will be. */
+const CUBE_LABEL = '#8b939c';      // --text-dim, kept: the fallback tone
 const CUBE_FACES = [
-  { label: 'RIGHT', color: CUBE_LABEL },
-  { label: 'LEFT',  color: CUBE_LABEL },
-  { label: 'TOP',   color: CUBE_LABEL },
-  { label: 'BTM',   color: CUBE_LABEL },
-  { label: 'FRONT', color: CUBE_LABEL },
-  { label: 'BACK',  color: CUBE_LABEL }
+  { label: 'RIGHT', color: '#E08A78' },   // +X, coral lifted
+  { label: 'LEFT',  color: '#C85A47' },   // -X, GIZMO_AXES x
+  { label: 'TOP',   color: '#F2DCA6' },   // +Y, amber lifted
+  { label: 'BTM',   color: '#E8C87A' },   // -Y, GIZMO_AXES y
+  { label: 'FRONT', color: '#7FAEDC' },   // +Z, dusty blue lifted
+  { label: 'BACK',  color: '#4A82B8' }    // -Z, GIZMO_AXES z
 ];
 
 function cubeFaceTexture(label, color) {
@@ -3132,9 +3184,14 @@ function cubeFaceTexture(label, color) {
   const g = c.getContext('2d');
   g.fillStyle = CUBE_FACE_BG;
   g.fillRect(0, 0, 128, 128);
-  g.strokeStyle = CUBE_FACE_LINE;
-  g.lineWidth = 5;
-  g.strokeRect(2.5, 2.5, 123, 123);
+  /* NO BORDER BAKED INTO THE FACE (v2.2). There used to be a 5px stroked
+     rect here, and it was the thick outline you could see: two faces meet at
+     every edge that is not on the silhouette, each showing its own border,
+     so the line you actually read was DOUBLE what this drew - about 4.4 CSS
+     pixels against the 2px every button outline in the app wears. Worse, it
+     was baked, so its weight depended on how many texture pixels a CSS pixel
+     happened to be. The edge is drawn as an edge now, once, in CSS pixels,
+     below. */
   g.fillStyle = color;
   // FRONT is the longest label; size to it rather than per label, or the
   // six faces read as six different type scales as the cube turns.
@@ -3174,10 +3231,35 @@ if (document.fonts && document.fonts.load) {
     invalidate();
   }).catch(() => {});
 }
-cubeMesh.add(new THREE.LineSegments(
-  new THREE.EdgesGeometry(cubeMesh.geometry),
-  new THREE.LineBasicMaterial({ color: 0x454d56 })   // a2.105: CUBE_FACE_LINE
-));
+/* ONE RULE PER EDGE, AT --rule (v2.2). This was a THREE.LineSegments with a
+   LineBasicMaterial, whose linewidth WebGL ignores outright - it drew a
+   single device pixel, half a CSS pixel on a phone, which is why the weight
+   the eye read came from the baked border instead. LineSegments2 draws
+   strokes as triangle strips and takes a width in CSS pixels, which is what
+   the rest of this app's fat lines already do, so the cube's edges can be
+   exactly --rule: the same 2px as the outline of any button.
+
+   `resolution` is the CUBE's canvas, not the viewport's, and the cube canvas
+   is a fixed 128px square that never resizes - so this is set once and is
+   deliberately NOT pushed onto gizmoStrokes, which updateStrokeResolution
+   walks with the viewport's size on every resize.
+
+   polygonOffset on the faces, not depthTest off on the line: a fat line is a
+   quad straddling the edge, so half of it lies over a face at exactly the
+   same depth and would z-fight into a dashed rule. Pushing the faces back by
+   one unit settles that. Turning depthTest OFF instead would have shown the
+   three edges BEHIND the cube as well, which is a wireframe, not a solid. */
+const CUBE_RULE_PX = 2;            // --rule
+cubeMesh.material.forEach(m => {
+  m.polygonOffset = true; m.polygonOffsetFactor = 1; m.polygonOffsetUnits = 1;
+});
+const cubeEdgeMat = new LineMaterial({
+  color: 0x454d56, linewidth: CUBE_RULE_PX, worldUnits: false   // CUBE_FACE_LINE
+});
+cubeEdgeMat.resolution.set(cubeBox, cubeBox);
+const cubeEdgeGeo = new LineSegmentsGeometry()
+  .fromEdgesGeometry(new THREE.EdgesGeometry(cubeMesh.geometry));
+cubeMesh.add(new LineSegments2(cubeEdgeGeo, cubeEdgeMat));
 cubeScene.add(cubeMesh);
 
 const _cubeDir = new THREE.Vector3();
@@ -26544,8 +26626,14 @@ const outTabEl = document.getElementById('outTab');
 const outListEl = document.getElementById('outList');
 function outlinerIsOpen() { return outFlyEl.classList.contains('open'); }
 function setOutlinerOpen(open) {
+  /* ONE SHELF AT A TIME (v2.2). Both tabs are on the left rail now and both
+     trays roll out to the RIGHT of their tab, so two open shelves would be
+     two panels over the same strip of viewport. Whichever you just reached
+     for is the one you want. */
+  if (open && typeof matTrayIsOpen === 'function' && matTrayIsOpen()) setMatTrayOpen(false);
   outFlyEl.classList.toggle('open', !!open);
-  outTabEl.innerHTML = open ? '&#8249;' : '&#8250;';
+  /* The tab used to swap its chevron for the other one here. It wears its
+     own name since v2.2 and the name does not change, so nothing does. */
   if (open) refreshOutliner();
 }
 outTabEl.addEventListener('pointerdown', (ev) => ev.stopPropagation());
@@ -27055,6 +27143,8 @@ function matTrayIsOpen() {
   return matFlyEl.classList.contains('open') && !matFlyEl.classList.contains('closing');
 }
 function setMatTrayOpen(open) {
+  // See setOutlinerOpen: one shelf at a time, since v2.2 put both on one rail.
+  if (open && typeof outlinerIsOpen === 'function' && outlinerIsOpen()) setOutlinerOpen(false);
   if (!open) { matEditingId = null; matFlyEl.classList.remove('editing'); }
   if (open && !_matPreviews) buildMatTray();
   clearTimeout(_matCloseTimer);
@@ -27070,7 +27160,7 @@ function setMatTrayOpen(open) {
       _matCloseTimer = null;
     }, 240);
   }
-  matTabEl.innerHTML = open ? '&#8250;' : '&#8249;';
+  // See setOutlinerOpen: the tab wears its name, not a chevron (v2.2).
   if (open) refreshMatTray();
   /* THE TRAY SUSPENDS THE MODE'S LOOK (a2.62). A mode that dims the surface
      hides the material you are in the middle of choosing, so while the tray
@@ -27739,7 +27829,7 @@ HELP_SECTIONS.push(
   },
   {
     title: 'Materials',
-    lead: 'The tab flush to the right edge, below the two buttons under the view cube. Colour lives in the material — there is no separate colour picker.',
+    lead: 'The lower of the two named tabs on the left edge, under Outliner. Colour lives in the material — there is no separate colour picker.',
     rows: [
       ['color', 'Applying', 'Tap a ball to put it on. In Face mode it goes on the selected faces; anywhere else, on the whole object.'],
       [null, 'Editing', 'The pencil on the applied card, or a long press. Colour, Metal and Rough decide what it is made of, live on everything wearing it.'],

@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~29,200 lines)
-- Version at time of writing: **2.1a**
+- Version at time of writing: **2.2**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -35,6 +35,129 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## One rail on the left, and the cube gets its colours back (v2.2)
+
+Zeghreit's, all four of it. The right edge belongs to the view cube again and
+the left edge is the rail; each tab says its own name; and the cube's labels
+and its outline both changed.
+
+### Both shelves on one rail, under the readout
+
+a3.0 6.1 had put the material shelf on the RIGHT edge opposite the outliner,
+on the reasoning that the cube had shrunk to 56 and freed that edge. The cube
+went back to 128 at a2.107 and the reasoning went with it — at 128 the right
+edge is the cube's, and a shelf opposite it is a shelf competing with it. So
+both tabs are on the left again, as they were at a2.103.
+
+**Where the rail starts is not a chosen number.** The top strip is a 44px row
+running 7..51 with the tool readout under it at 59..73, so the air between
+them is 8. The rail takes the same 8 under the readout: **73 + 8 = 81**. The
+readout ends up sitting in equal air above and below, and if either half of
+the strip moves the gap stops matching and says so. The materials tab follows
+at 81 + 96 + 8 = **185**. Both shelves derive their max height from their own
+tab's top plus 80 of clearance, so nothing can drift.
+
+Two other things fell out of putting them on one rail:
+
+- **One shelf at a time.** Both trays roll out to the RIGHT of their tab, so
+  two open shelves would be two panels over the same strip of viewport.
+  Opening either closes the other.
+- **The material tab mirrored back to the left**: its border, its 10px cut
+  (top-right now, facing the viewport, against the outliner's bottom-right)
+  and the tray's shoulder.
+
+### The tabs say what they are
+
+Both handles used to be a chevron. A chevron says "this opens" — which, once
+the two sat one above the other on the same rail, was the one thing you
+already knew, while "which of these two is this" was the thing you did not.
+
+Each tab now carries its own name, set on its side: `writing-mode:
+vertical-rl` plus a half turn, in the readout's mono caps one step down.
+**Not `sideways-lr`** — it makes the same bottom-to-top line, but it is still
+missing from Safari on the phone this is built for, and a missing
+writing-mode falls back to horizontal, which in a 26px column is a word
+broken one letter to a line.
+
+The tab grew 64 → **96** to fit the name. Nothing else about it moved: 26
+wide, edge-tucked, the cut on the viewport-facing corner. The open/closed
+chevron swap is gone from both `setOutlinerOpen` and `setMatTrayOpen`; the
+name does not change, so nothing does.
+
+### Six faces, six colours
+
+a2.107 made every cube label grey, arguing that the axis triad means X, Y and
+Z during a drag while a face means look-DOWN-this-axis, so sharing the colours
+claimed the two were one statement. Reversed by request — and what goes back
+is sharper than what came out. Before a2.107 a PAIR of opposite faces wore one
+colour, so the cube said "X" twice and never said which end you were looking
+at. Now the colour is the axis and the TONE is the sign: the positive face is
+the axis hue lifted toward `--text`, the negative face is the axis hue itself.
+No two faces read the same, and the cube still carries three colours rather
+than six.
+
+| face | axis | colour |
+|---|---|---|
+| RIGHT | +X | `#E08A78` coral lifted |
+| LEFT | −X | `#C85A47` `GIZMO_AXES` x |
+| TOP | +Y | `#F2DCA6` amber lifted |
+| BTM | −Y | `#E8C87A` `GIZMO_AXES` y |
+| FRONT | +Z | `#7FAEDC` dusty blue lifted |
+| BACK | −Z | `#4A82B8` `GIZMO_AXES` z |
+
+`GIZMO_AXES` is still the only place the three base hues are decided. The
+darkest of the six clears 4.1:1 on `--panel2`; the AA floor for text this size
+and weight is 3:1.
+
+### One rule per edge, at --rule
+
+The thick outline you could see on the cube was **not** the edge object — it
+was a 5px stroked rect baked into each face's 128px texture. Two faces meet at
+every edge that is not on the silhouette, each showing its own border, so the
+line you actually read was DOUBLE what was drawn: about 4.4 CSS pixels against
+the 2px every button outline in this app wears. And being baked, its weight
+depended on how many texture pixels a CSS pixel happened to be.
+
+The `THREE.LineSegments` that was supposed to be the outline drew a single
+DEVICE pixel — half a CSS pixel on a phone — because WebGL ignores
+`LineBasicMaterial.linewidth` outright. This file has known that since a2.53
+and says so at the selection overlay.
+
+So: the baked border is gone, and the edges are a `LineSegments2` with a
+`LineMaterial` at `linewidth: 2`, which is `--rule`, in CSS pixels, like every
+other fat line in the app. Two details that are not optional:
+
+- **`resolution` is the CUBE's canvas, not the viewport's.** The cube canvas
+  is a fixed 128px square that never resizes, so it is set once — and
+  deliberately NOT pushed onto `gizmoStrokes`, which `updateStrokeResolution`
+  walks with the viewport's size on every resize.
+- **`polygonOffset` on the faces, not `depthTest: false` on the line.** A fat
+  line is a quad straddling the edge, so half of it lies over a face at
+  exactly the same depth and would z-fight into a dashed rule. Turning depth
+  testing off instead would have shown the three edges BEHIND the cube as
+  well, which is a wireframe, not a solid.
+
+### Measured
+
+`_traychk.py` (a real clock — a `max-height` transition does not run under
+Chrome's virtual time, so every screenshot of an open tray is a picture of its
+start value):
+
+```
+readout  y=59 h=14 bottom=73      gap header->readout = 8
+#outTab  x=0 y=81  w=26 h=96      gap readout->outTab = 8
+#matTab  x=0 y=185 w=26 h=96
+#viewCube x=348 y=71 w=128 h=128
+outliner open: #outTray x=26 y=81 w=232 h=64,  materials closed
+materials open: #matTray x=32 y=185 w=96 h=326, 4 cards, outliner closed
+```
+
+Suite: `_help_probe` PASS after its Materials lead was corrected (it said
+"flush to the right edge, below the two buttons under the view cube").
+`_theme_probe`'s `left_column_depth` bound moved from 240 to 300 with the
+rail's own reach — the DEPTH test that guards a2.65's decision is untouched,
+and a third seat would still trip it.
 
 ## Cool running, part two — the loop sleeps and the field stops re-baking (v2.0b / v2.1 / v2.1a)
 
