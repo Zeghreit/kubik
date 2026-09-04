@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~25,350 lines)
-- Version at time of writing: **a2.104**
+- Version at time of writing: **a2.105**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -35,6 +35,90 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+
+## The a3.0 palette - warm goes cool, Face goes violet (a2.105)
+
+Step 1 of the a3.0 visual pass, and the same shape a2.97 took: one patch,
+the whole app at once, judged on the phone. The a3.0 spec keeps every rule
+a2.97 established - one hue at a time, dark text on every hue, zero radius,
+2px rules - and changes the temperature.
+
+| token | a2.97 | a2.105 |
+|---|---|---|
+| `--bg` | #0b0c0b | **#0b0d10** |
+| `--panel` | #141312 | **#14171c** |
+| `--panel2` | #201e1d | **#1b1f25** |
+| `--line` | #4a4544 | **#454d56** |
+| `--text` | #f3f2f2 | **#eef1f4** |
+| `--text-dim` | #9b9797 | **#8b939c** |
+| `--accent` (object) | #bab6b6 | **#d5dce4** |
+| `--signal` | #ff563c | **#ff5230** |
+| `--danger` | #ff4d2e | **#ff5230** - the signal |
+| vertex / edge / face | #d6ff4a / #4ee3ff / #ff6fc2 | **#d9ff3d / #46e1ff / #b48cff** |
+
+Two of these are decisions rather than adjustments:
+
+- **Object mode is WHITE.** a3.0: "a fresh scene has no colour in it". Still
+  no hue, but a near-white instead of a mid grey, so the neutral accent is
+  unmistakably an accent. a2.97's reason for it not being a grey still
+  holds and is why it cannot go back: at #8d94a3 the accent and the dim text
+  were the same colour, so every "this one is chosen" cue that works by
+  colour said exactly what "not chosen" said.
+- **Face is VIOLET, and danger is the signal.** a3.0 asks for matched
+  lightness - no kind shouting over another - and the magenta sat brightest
+  of the three while meaning no more. Moving it also removes the reason
+  danger was held apart from the signal as its own orange: two warm hues a
+  glance apart, kept separate so neither read as the magenta. One signal
+  colour now, and **the HATCH is what says danger**.
+
+**That last rule had to be made true.** Review found `.hub-item.danger.active`
+replacing its stripes with a flat `--danger` fill - so an ARMED Delete seat
+was pixel-identical to the Apply slab, and the ring blooms over a live op
+bar, so the two can be on screen together. The gradient now paints OVER the
+fill instead of being replaced by it. `_theme_probe` gained
+`3.delete_striped`, which reads `backgroundImage` in both states:
+`3.delete_contrast` could never have caught this, because a gradient leaves
+`backgroundColor` transparent and it passes at ~18:1 whatever the seat looks
+like.
+
+### What a hex sweep misses
+
+Scanning for the old values found four things `:root` does not reach, and
+each missed for its own reason - worth knowing before the next palette step:
+
+- `<meta name="theme-color">` - the browser paints it behind the page and
+  around the notch before a pixel of ours exists.
+- `THREE.HemisphereLight(...)` and the view cube's own `LineBasicMaterial` -
+  literals written out a second time rather than read from `THEME` /
+  `CUBE_FACE_LINE`, and what the FIRST frame uses.
+- `button:hover` / `button:active` - the press states for every plain button
+  in the file, warm greys sitting outside the token system entirely.
+- `#opOk::after` - written `rgb(11 12 11 / .45)`, in decimal, so no hex
+  search finds it.
+
+The sweep that catches all of these is: every `#rrggbb` and `0xRRGGBB` in
+the file (skipping the font line), flagged where R - B > 6.
+
+### Contrast, measured
+
+`--text` on `--bg` 17.2:1 · `--text-dim` on `--panel` 5.8:1 · `--line` on
+`--panel` 2.09:1 (up from 1.97) · `--on-accent` on the four accents 14.1 /
+17.0 / 12.5 / 7.5:1 · on `--signal` 6.0:1 · op-bar chip `#666d76` 3.7:1 on
+its track with `--text` at 4.6:1 on it · the four `--accent-dim` tints 1.44 /
+1.38 / 1.47 / 1.32:1 against `--panel2`, all inside the stated 1.3-1.5 band.
+
+### Deliberately absent - do not rebuild these
+
+- **`--line-dim` (#2a3038).** a3.0 names a quieter rule for something that
+  divides rather than encloses. Declared once, then removed: nothing in the
+  file divides that way yet, and a token no rule reads is one more thing to
+  keep true for no benefit. Bring it back WITH its first consumer.
+- **Cooling the axis guides, the crease mark, or the lighting presets.**
+  X/Y/Z (#C85A47 / #E8C87A / #4A82B8), crease #ff7a45 and the preset ground
+  colours are the VIEWPORT's vocabulary, decided on the record and separate
+  from the chrome by where they appear. Face violet clears the Z blue by
+  1.7x in luminance and 50 degrees of hue, and they never share a surface.
 
 
 ## The ring blooms at the finger (a2.104)
