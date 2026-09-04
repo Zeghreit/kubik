@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~25,350 lines)
-- Version at time of writing: **a2.111a**
+- Version at time of writing: **a2.112**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -40,6 +40,87 @@ v1.85d.
 
 
 
+
+
+## A bearing never empties (a2.112)
+
+Zeghreit: *"there should be 8 icons but now in some menus it's lesser than 8
+and there is empty seats which I want to fill with something."*
+
+Three holes, and only one of them needed a new op.
+
+### Object bearing 5 - the disabled seat, at last
+
+`a3.0 2.1` has specified this since the beginning - *"BRIDGE / DISABLED /
+Needs 2 faces, you have 1. Still shown, can't be aimed"* - and it was never
+built. The grouping seat was withheld whenever neither Group nor Ungroup
+would do anything, which for **a single ungrouped object is the commonest
+state the app has**. Before a2.110 that silently re-rotated the whole ring;
+after it, it left a hole.
+
+`enabled` is now a field on a tool, and it is **purely a look**:
+
+```
+.hub-item.off   45deg hatch in --accent-dim over --panel, word dimmed
+```
+
+Deliberately NOT the danger stripe, which is orange and means very nearly the
+opposite - that one says this WILL work and you may regret it.
+
+**Still aimable**, against the spec's wording. A seat the aim skips over means
+pulling toward a seat you can see and lighting a different one, which is a
+worse lie than a pull that does nothing. Lifting runs the op, and every op in
+the file already refuses with a toast naming what is missing - "Select two or
+more objects to group" - which is the answer the user actually wanted. So
+`enabled` costs one class and no new plumbing.
+
+A door asks its FIRST op, the same one its second word names.
+
+Carrying it: `grouping` (bearing 5, always present now) and `join` inside the
+MESH door, which had its condition removed at a2.110 and gets it back as a
+look rather than an absence.
+
+### World bearing 4 - Isolate
+
+Isolation was fully built and reachable only by a **three-finger pinch**,
+which is to say not reachable: nobody finds a gesture with no affordance.
+
+Bearing 4 is straight down, and the rule for straight down is that it TAKES
+AWAY. Isolate takes away - everything except what you picked - and the second
+pull gives it all back. So the bearing keeps its meaning without becoming
+dangerous: **this is the one reductive op in the app that destroys nothing**,
+which is exactly why it can hold the seat Delete holds everywhere else. No
+hazard stripe, for the same reason. The pinch still works.
+
+It is a toggle, so it lights when isolation is on, and hatches when there is
+nothing selected to isolate.
+
+### Free recovery: Clear creases
+
+`clearAllCreases` was defined, working, and reachable from nowhere at all
+since the Subdivide drawer went. It joins the Edge FLOW door next to Crease,
+whose undo-all it is.
+
+### Vertex bearing 7 - still open
+
+The only hole that genuinely needs a new op. Zeghreit chose **Bevel** - turn a
+selected vertex into a face, the way Edge's Bevel turns an edge into a strip.
+Not built yet; it is real topology work, not a wiring job.
+
+### Deliberately absent - do not rebuild these
+
+- **Grow and Shrink on ring seats.** They held seats 12 and 13 in all three
+  component rings until a2.51, when both became the THREE-FINGER SLIDE -
+  the gesture a ring seat was always going to be tapped repeatedly to
+  imitate. They are the obvious thing to reach for when a bearing needs
+  filling, and reaching for them undoes a decision that was right.
+- **Withholding a seat because its op cannot run.** That is what a2.112
+  replaced. A bearing that comes and goes teaches the hand nothing.
+- **Skipping a disabled seat when picking.** See above: the aim must not lie
+  about which seat the finger is on.
+- **Hazard-striping a disabled seat.** Orange means destructive, not
+  unavailable. They are close enough on a small screen that using one for the
+  other would cost the stripe its meaning.
 
 ## The reach, and one diamond (a2.111)
 

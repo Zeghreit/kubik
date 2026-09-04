@@ -706,6 +706,33 @@
     white-space: nowrap; pointer-events: none;
   }
 
+  /* NOT NOW, BUT STILL THERE (a2.112, a3.0 2.1 "DISABLED"). A seat whose op
+     cannot do anything in the current state is DRAWN rather than removed. The
+     shape of the ring is the thing the hand learns, and a bearing that comes
+     and goes teaches nothing - worse, it silently re-rotated the whole ring
+     before a2.110 fixed the bearings, and since then it has left a hole in
+     the commonest state the app has.
+
+     Hatched at 45 degrees in --accent-dim over --panel, the word dimmed. NOT
+     the danger stripe, which is orange and means very nearly the opposite:
+     that one says this WILL work and you may regret it.
+
+     Still aimable, deliberately. "Can't be aimed" is what the spec says, but a
+     seat the aim skips means pulling toward a seat you can see and lighting a
+     different one, which is a worse lie than a pull that does nothing.
+     Lifting runs the op, and every op in the file already refuses with a
+     toast naming what is missing - "Select two or more objects to group" -
+     which is the answer the user actually wanted. */
+  .hub-item.off {
+    background:
+      repeating-linear-gradient(45deg, transparent 0 4px, var(--accent-dim) 4px 6px),
+      var(--panel);
+    border-color: var(--accent-dim);
+  }
+  .hub-item.off .tx, .hub-item.off .dx { color: var(--text-dim); }
+  .hub-item.off.active { background: var(--accent-dim); border-color: var(--line); }
+  .hub-item.off.active .tx { color: var(--text-dim); opacity: 1; }
+
   /* A PLATE UNDER THE ONE WORD YOU MUST NOT MISREAD (a2.107). The hazard
      stripe has a 5px period, so every 9px glyph of DELETE crossed a band
      boundary - 11.2:1 on the dark stripe and 4.4:1 on the light one. That
@@ -2257,7 +2284,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.111a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.112</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -24410,7 +24437,11 @@ const HUB_TOOLS_EDGE = [
     { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 0, run: setFlowSelection },
     { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 1, run: circularizeSelection },
     { key: 'sharp', icon: 'sharp', label: 'Mark Sharp', seat: 7, run: markSharpSelection },
-    { key: 'crease', icon: 'crease', label: 'Crease', seat: 2, run: () => creaseSelection() }
+    { key: 'crease', icon: 'crease', label: 'Crease', seat: 2, run: () => creaseSelection() },
+    /* Defined, working, and reachable from nowhere at all since the Subdivide
+       drawer went. Crease's own bearing here is 2 and this is its undo-all, so
+       it takes the next seat in the door's fill order. */
+    { key: 'uncrease', icon: 'crease', label: 'Clear creases', seat: 6, run: clearAllCreases }
   ] }
 ];
 
@@ -24454,7 +24485,12 @@ const HUB_TOOLS_OBJECT_BASE = [
   { key: 'mesh', label: 'Mesh', seat: 6, door: [
     { key: 'solidify', icon: 'solidify', label: 'Solidify', seat: 0, run: solidifySelection },
     { key: 'cap', icon: 'cap', label: 'Cap holes', seat: 1, run: fillHolesSelection },
-    { key: 'join', icon: 'join', label: 'Join', seat: 7, run: joinSelection },
+    // Join rode a conditional seat until a2.110 and was let in unconditionally
+    // then; a2.112 gives the condition back as a LOOK rather than an absence,
+    // so the door's contents never change but a join you cannot make is
+    // visibly one you cannot make.
+    { key: 'join', icon: 'join', label: 'Join', seat: 7,
+      enabled: () => App.selectedObjectIds.size > 1, run: joinSelection },
     { key: 'separate', icon: 'separate', label: 'Separate', seat: 2, run: separateSelection }
   ] },
   { key: 'finish', label: 'Finish', seat: 7, door: [
@@ -24495,7 +24531,7 @@ const HUB_TOOLS_OBJECT_BASE = [
    ambiguous anyway - "which group?" - and selecting the group, or any one of
    its members, still gets you there. */
 const HUB_TOOL_GROUPING = {
-  key: 'grouping', seat: 5,
+  key: 'grouping', seat: 5, enabled: groupingSeatApplies,
   icon: 'group',
   label: () => (groupingSeatUngroups() ? 'Ungroup' : 'Group'),
   run: () => (groupingSeatUngroups() ? ungroupSelection() : groupSelection())
@@ -24554,9 +24590,22 @@ const HUB_TOOLS_WORLD = [
     on: () => App.snapMode !== 'off', run: toggleSnapping },
   { key: 'grid', icon: 'grid', label: 'Floor grid', seat: 3,
     on: () => grid.visible, run: toggleFloorGrid },
-  // Seat 4 is straight down, and straight down destroys. The world ring makes
-  // and shows; it has nothing to put there, so bearing 4 stays empty and the
-  // star is cut across it.
+  /* ISOLATE TAKES THE DOWNWARD BEARING (a2.112). It had been reachable only
+     by a three-finger pinch, which is to say not reachable: nobody finds a
+     gesture with no affordance. And the world ring had a hole at 4, because
+     the rule for straight down is that it TAKES AWAY.
+
+     Isolate takes away - everything except what you picked - and the second
+     pull gives it all back. So the bearing keeps its meaning without becoming
+     dangerous: this is the one reductive op in the app that destroys nothing,
+     which is exactly why it can hold the seat Delete holds everywhere else.
+     No hazard stripe, for that reason, and the pinch still works.
+
+     Hatched when there is nothing selected to isolate, rather than absent. */
+  { key: 'isolate', icon: 'iso', label: 'Isolate', seat: 4,
+    on: () => isolationOn(),
+    enabled: () => isolationOn() || App.selectedObjectIds.size > 0,
+    run: () => { if (isolationOn()) exitIsolation(); else enterIsolation(); } },
   { key: 'xray', icon: 'eye', label: 'See-through', seat: 5,
     on: () => App.xraySelection, run: toggleXray },
   /* The glyph still says which projection you are IN, the way it has since
@@ -24582,13 +24631,13 @@ const HUB_TOOLS_WORLD = [
 function currentHubTools() {
   if (App.mode === 'object') {
     if (App.selectedObjectIds.size === 0) return HUB_TOOLS_EMPTY;
-    /* Bearing 5, and only when it would DO something. Which of the two ops it
-       is is the seat's own business - see HUB_TOOL_GROUPING. When it does not
-       apply the bearing is empty, and the other seven do not move: that is
-       what fixed bearings buy. */
-    return groupingSeatApplies()
-      ? HUB_TOOLS_OBJECT_BASE.concat(HUB_TOOL_GROUPING)
-      : HUB_TOOLS_OBJECT_BASE;
+    /* ALWAYS bearing 5, since a2.112 - hatched and inert when neither Group
+       nor Ungroup would do anything, which for a single ungrouped object is
+       most of the time. It used to be withheld, and once the bearings stopped
+       moving (a2.110) that showed up as a hole in the commonest state the app
+       has. Which of the two ops it is stays the seat's own business; see
+       HUB_TOOL_GROUPING. */
+    return HUB_TOOLS_OBJECT_BASE.concat(HUB_TOOL_GROUPING);
   }
   if (App.mode === 'vertex') return HUB_TOOLS_VERTEX;
   if (App.mode === 'edge') return HUB_TOOLS_EDGE;
@@ -24926,6 +24975,11 @@ function paintToolRing(tools, ringR, ox, oy, tag, spin) {
        nothing would have hidden the one thing those seats exist to report. */
     const shown = tool.door ? tool.door[0] : tool;
     if (shown.on && shown.on()) el.classList.add('on');
+    /* `enabled` is purely a LOOK (a2.112): the seat still takes the aim and
+       still runs, because the op's own guard names what is missing far better
+       than a dead pull does. What it buys is that a bearing never empties. A
+       door asks its first op - the same one its second word names. */
+    if (shown.enabled && !shown.enabled()) el.classList.add('off');
     // The one seat in the ring that takes something away rather than
     // adding to it. Marked by key so the four rings that carry Delete
     // cannot disagree about it.
