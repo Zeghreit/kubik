@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~26,500 lines)
-- Version at time of writing: **2.0**
+- Version at time of writing: **2.0a**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -35,6 +35,37 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## The help card follows the rings (v2.0a)
+
+The card had drifted badly. It was written before doors (a2.110) and still
+described a ring with no fixed seats and no second layer; it filed Connect
+under edges when it is vertex-only; it listed Flip as an object tool after
+Flip became a chip on Mirror; and it had no row at all for Slide, Array,
+Group/Ungroup, Solidify, Clean up or the vertex Bevel.
+
+**The tool sections now mirror the rings** — Vertex tools, Edge tools, Face
+tools, Object tools, each in seat order with its doors called out as
+`CUT — a door` rows followed by that door's contents. "Marks and cleanup"
+and "Edge and face tools" are gone; their rows moved to the ring they
+actually belong to. The card's own rule is that what you read matches what
+is on screen, and one section per ring is the only arrangement that keeps
+that true as the rings change.
+
+**Tool rings** gained rows for the eight fixed seats, doors and backing out
+of one, the shape near a border, and what a hatched seat means.
+
+`_help_probe.js` (suite index 34) is what keeps it honest from here. It
+opens the card and checks four things: it renders with no blank rows, every
+icon a row names exists in the glyph table (a missing one draws an empty box
+and throws nothing), **every seat and every door item in every ring has a row
+somewhere in the card**, and no tool row names something the rings no longer
+have. Terms are matched on the seat's own WORD — what a reader sees and would
+search for. The object ring is read live with a selection, because the
+grouping seat is conditional.
+
+`window.__kubik` gained `openHelp`, `HELP_SECTIONS`, `HELP_KEYS`, `icon` and
+`HUB_TOOLS_OBJECT_BASE` for it.
 
 ## The ring is an envelope (v2.0)
 

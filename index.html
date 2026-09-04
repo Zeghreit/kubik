@@ -2284,7 +2284,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.0</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.0a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -27479,10 +27479,10 @@ const HELP_SECTIONS = [
       [null, 'Zoom', 'Pinch, or the scroll wheel.'],
       [null, 'Pan', 'Two fingers together.'],
       [null, 'View cube', 'Top-right. Tap a face for a square-on, flat view. Panning and zooming stay flat; turning the view brings perspective back.'],
-      [null, 'Perspective / Orthographic', 'The right of the two buttons under the cube says which one you are in, and switches it.'],
+      [null, 'Perspective / Orthographic', 'The right of the two buttons under the cube says which one you are in, and switches it. Flat view, in the ring on empty space, is the same switch.'],
       [null, 'The view follows the mode', 'Vertex dims the surface and grows the dots, Edge lights the wireframe, Face flattens into panels with dark seams. Object mode shows the model plain, and opening the material tray does too.'],
       [null, 'Double tap', 'On empty space, frames your work. Inside a tool, cancels it.'],
-      [null, 'Isolate', 'Three-finger pinch, Object mode. Squeeze and everything else goes; spread brings it back. A chip says how many are hidden.'],
+      [null, 'Isolate', 'Three-finger pinch, Object mode — squeeze and everything else goes, spread brings it back. Also a seat in the ring on empty space, for one-handed use. A chip says how many are hidden.'],
       ['eye', 'See-through', 'Lets the selection show through the surface. From the ring on empty space.']
     ]
   },
@@ -27502,10 +27502,15 @@ const HELP_SECTIONS = [
   },
   {
     title: 'Tool rings',
-    lead: 'Hold, and tools bloom under your finger. Slide toward one and lift — it picks by direction, not by landing on it. Slide back to the middle to back out.',
+    lead: 'Hold, and tools bloom under your finger. Slide toward one and lift — it picks by DIRECTION, not by landing on it. Slide back to the middle to back out.',
     rows: [
+      [null, 'Eight seats, fixed', 'Every ring has eight, on the same eight compass points. A tool does not move because another one came or went, so the flick becomes muscle memory.'],
+      [null, 'Doors', 'A seat with two words on it — CUT KNIFE, FINISH SHADE — is a door. Keep pushing past it and its own four or five tools open in place, without lifting. The dim second word is what a lift right there would run.'],
+      [null, 'Backing out of a door', 'Slide back into the middle. The first ring comes back and you can aim somewhere else, still in the same stroke.'],
+      [null, 'Near a border', 'The ring is the same size wherever you press. What changes is its SHAPE: the diamond is cut flat against a close edge, and to a triangle in a corner, with the seats spread evenly along whatever is left. Aim exactly as you would anywhere else.'],
+      [null, 'A hatched seat', 'Diagonal stripes mean it has nothing to work on just now. It still runs — and says what is missing, which is more use than a dead button.'],
       [null, 'On a selection', 'A third of a second. That selection’s own tools, and they change with the mode.'],
-      [null, 'On empty space', 'Half a second — a careful orbit starts the same way. Add geo, the pivot, see-through, the floor grid, snap, and the three ways of selecting.'],
+      [null, 'On empty space', 'Half a second — a careful orbit starts the same way. Add geo, the pivot, snap, the floor grid, isolate, see-through, flat view, and the three ways of selecting.'],
       ['object', 'Add geo', 'Five shapes on a ring of their own. That one waits for a fresh press — aim and lift as usual, or aim well past it to back out.'],
       [null, 'The setup bar', 'Divisions and size, live on the new shape itself. Done keeps it; a tap anywhere but the shape throws the whole thing away.']
     ]
@@ -27547,52 +27552,74 @@ const HELP_SECTIONS = [
 
 HELP_SECTIONS.push(
   {
-    title: 'Edge and face tools',
-    lead: 'Component mode, from the ring on your selection. Several open a bar with a slider — set it, then confirm.',
+    title: 'Vertex tools',
+    lead: 'Vertex mode, from the ring on your selection. Eight seats, no doors. Several open a bar with a slider — set it, then confirm.',
     rows: [
-      ['extrude', 'Extrude', 'Pulls faces or edges out. Drag it out, tap it for another section, tap away when done. Two-finger tap switches to Rotate or Scale.'],
-      ['inset', 'Inset', 'A border inside a face.'],
-      ['bevel', 'Bevel', 'A narrow flat face along an edge. More segments rounds it.'],
-      ['loop', 'Loop', 'New edge rings across the mesh, square to the edge you picked. Flow curves them to follow the surface.'],
+      ['merge', 'Merge', 'Points sitting on almost the same spot become one.'],
+      ['weld', 'Weld', 'The selected vertices become one, in the middle. To send one vertex ONTO another instead, tap the first and double-tap the second within a second and a half.'],
+      ['connect', 'Connect', 'A new edge between selected vertices. Vertex mode only.'],
+      ['slide', 'Slide', 'Runs what you picked along the mesh, toward one neighbour or the other. It stops just short of arriving — landing exactly on a neighbour is a weld you did not ask for, and Merge and Collapse are the tools that do that on purpose.'],
+      ['del', 'Delete', 'Dissolves: the faces close over the gap instead of going with it.'],
       ['flow', 'Set flow', 'Settles a loop onto the curve the mesh around it implies. 0 is flat, 1 matches it, past that over-bends.'],
       ['circ', 'Circularize', 'Pulls a loop onto a true circle. Even spaces the points equally round it. Several loops at once are rounded one by one.'],
-      ['knife', 'Knife', 'Press and slide to place points, lift. Back removes one, OK cuts. Each run must cross a face side to side.'],
-      ['split', 'Split', 'A midpoint on every selected edge.'],
-      ['connect', 'Connect', 'A new edge between selected vertices.'],
-      ['collapse', 'Collapse', 'Edge mode. The selected edges shrink to nothing — each one’s two ends become a single point and the faces close over.'],
-      ['bridge', 'Bridge', 'Joins two selections with new faces. Sections subdivides it, Curved keeps each end going its own way.'],
-      ['cap', 'Cap hole', 'Closes an opening. In Edge mode just that one, otherwise all of them.'],
-      ['detach', 'Detach', 'The selected faces leave as their own object.']
+      ['bevel', 'Bevel', 'Cuts the corner off: every edge meeting the point stops short of it and the hole is capped. Round is the default and is the reason to reach for it — the cut comes out a true circle rather than the diamond the edges alone would give. Even spaces the new points equally round it.']
     ]
   },
   {
-    title: 'Marks and cleanup',
-    lead: 'Tidying, and the marks that decide how a surface reads. Same ring.',
+    title: 'Edge tools',
+    lead: 'Edge mode, same ring. Six seats and two doors.',
     rows: [
-      ['weld', 'Weld', 'The selected vertices become one, in the middle. To send one vertex ONTO another instead, tap the first and double-tap the second within a second and a half.'],
-      ['merge', 'Merge', 'Points sitting on almost the same spot become one.'],
-      ['crease', 'Crease', 'Holds an edge hard through smoothing and Subdivide. Clear creases is in the drawer.'],
-      ['sharp', 'Mark Sharp', 'Edge mode. Breaks the shading across an edge whatever the angle says. Tap it again on the same edges to let the angle decide again.'],
-      ['smooth', 'Shade', 'Flat or smooth, on faces or a whole object. In Edge mode use Mark Sharp instead — it is the same idea, said once.'],
-      ['flipnorm', 'Flip normals', 'Turns the selected faces inside out.'],
-      [null, 'Delete, faces', 'Cuts them away and leaves a hole. This is how you make one.'],
-      ['del', 'Delete, rest', 'Dissolves: the faces close over the gap instead of going with it.']
+      ['extrude', 'Extrude', 'Pulls edges out. Drag it out, tap it for another section, tap away when done. Two-finger tap switches to Rotate or Scale.'],
+      ['bevel', 'Bevel', 'A narrow flat face along an edge. More segments rounds it.'],
+      ['loop', 'Loop', 'New edge rings across the mesh, square to the edge you picked. Flow curves them to follow the surface.'],
+      ['slide', 'Slide', 'Runs the loop toward one neighbouring ring or the other, stopping just short of it.'],
+      ['del', 'Delete', 'Dissolves: the faces close over the gap.'],
+      ['bridge', 'Bridge', 'Joins two selections with new faces. Sections subdivides it, Curved keeps each end going its own way.'],
+      [null, 'CUT — a door', 'Knife, Split, Collapse, Cap hole.'],
+      ['knife', 'Knife', 'Press and slide to place points, lift. Back removes one, OK cuts. Each run must cross a face side to side.'],
+      ['split', 'Split', 'A midpoint on every selected edge.'],
+      ['collapse', 'Collapse', 'The selected edges shrink to nothing — each one’s two ends become a single point and the faces close over.'],
+      ['cap', 'Cap hole', 'Closes the opening these edges are part of.'],
+      [null, 'FLOW — a door', 'Set flow, Circularize, Mark Sharp, Crease, Clear creases.'],
+      ['sharp', 'Mark Sharp', 'Breaks the shading across an edge whatever the angle says. Tap it again on the same edges to let the angle decide again.'],
+      ['crease', 'Crease', 'Holds an edge hard through smoothing and Subdivide.'],
+      ['uncrease', 'Clear creases', 'Takes every crease off the object. The same button is in the drawer, under Editing.']
+    ]
+  },
+  {
+    title: 'Face tools',
+    lead: 'Face mode, same ring. Seven seats and one door.',
+    rows: [
+      ['extrude', 'Extrude', 'Pulls faces out. Drag it out, tap it for another section, tap away when done. Two-finger tap switches to Rotate or Scale.'],
+      ['inset', 'Inset', 'A border inside a face.'],
+      ['knife', 'Knife', 'The same cut as in Edge mode, straight on the seat here.'],
+      ['cap', 'Cap holes', 'Closes every opening in the object.'],
+      ['del', 'Delete', 'Cuts the faces away and leaves a hole. This is how you make one — every other mode’s Delete closes the gap instead.'],
+      ['bridge', 'Bridge', 'Joins two selections with new faces.'],
+      ['detach', 'Detach', 'The selected faces leave as their own object.'],
+      [null, 'SURFACE — a door', 'Shade, Flip normals, Set flow, Circularize.'],
+      ['smooth', 'Shade', 'Flat or smooth, on the selected faces. In Edge mode use Mark Sharp instead — it is the same idea, said once.'],
+      ['flipnorm', 'Flip normals', 'Turns the selected faces inside out.']
     ]
   },
   {
     title: 'Object tools',
-    lead: 'Object mode, from the same ring.',
+    lead: 'Object mode, same ring. Six seats and two doors.',
     rows: [
       ['dupe', 'Duplicate', 'Copies the object beside itself.'],
+      ['array', 'Array', 'Repeats it. Line spaces the copies out in a row; Ring turns them round a circle, and the angle says how far round.'],
+      ['mirroraction', 'Mirror', 'Reflects across the symmetry plane, once. Joined welds the halves into one object, Apart keeps the copy separate, Flip keeps no copy at all. If the plane cuts the object, it keeps the half you are looking at and rebuilds the other.'],
       ['subdiv', 'Subdivide', 'Divides every face. Smooth rounds, Keep shape holds the silhouette. Creases stay sharp.'],
-      ['smoothangle', 'Smooth by angle', 'One threshold for the whole object: edges sharper than it stay hard, the rest blend. It keeps deciding for geometry you have not made yet.'],
-      ['flip', 'Flip', 'Mirrors the object in place, no copy left behind.'],
-      ['flipnorm', 'Flip normals', 'Turns the whole object inside out.'],
-      ['separate', 'Separate', 'One object per loose piece.'],
+      ['del', 'Delete', 'Removes the selected objects.'],
+      ['group', 'Group / Ungroup', 'One seat, and which of the two it offers depends on what you have. Hatched when neither would do anything.'],
+      [null, 'MESH — a door', 'Solidify, Cap holes, Join, Separate.'],
+      ['solidify', 'Solidify', 'Gives a surface thickness. Behind leaves the face you can see exactly where it is; Centred and In front move it.'],
       ['join', 'Join', 'Merges the selected objects into one.'],
-      ['cap', 'Cap holes', 'Closes every opening in them.'],
-      ['centre', 'Centre', 'Back to the middle, resting on the floor.'],
-      ['del', 'Delete', 'Removes the selected objects.']
+      ['separate', 'Separate', 'One object per loose piece.'],
+      [null, 'FINISH — a door', 'Shade, Smooth by angle, Flip normals, Clean up, Centre.'],
+      ['smoothangle', 'Smooth by angle', 'One threshold for the whole object: edges sharper than it stay hard, the rest blend. It keeps deciding for geometry you have not made yet.'],
+      ['cleanup', 'Clean up', 'Tris to quads pairs triangles back into faces — the fix for an imported model that will not loop cut. Merge by distance welds points that are almost touching.'],
+      ['centre', 'Centre', 'Back to the middle, resting on the floor.']
     ]
   },
   {
@@ -27619,7 +27646,7 @@ HELP_SECTIONS.push(
       [null, 'What mirrors', 'Component edits, run once across both halves so nothing is built at the seam. Moving a whole object does not.'],
       [null, 'The catch', 'It pairs up vertices that already have a twin. It keeps a model symmetric; it cannot put symmetry back.'],
       [null, 'The axis', 'X, Y or Z, in the drawer under Editing.'],
-      ['mirroraction', 'Mirror', 'Object ring. Mirrors across the plane — and if that plane cuts the object, it keeps the half you are looking at and rebuilds the other.']
+      ['mirroraction', 'Mirror', 'The one-off version of all this, on the object ring. See Object tools.']
     ]
   }
 );
@@ -28791,6 +28818,8 @@ if (PICK_DEBUG) {
     // a2.109: a seat's word can be a function now, so anything reading one
     // from outside needs the same unwrap the ring itself uses.
     toolLabel,
+    // The help card, for _help_probe: it checks the card against the rings.
+    openHelp, HELP_SECTIONS, HELP_KEYS, icon, HUB_TOOLS_OBJECT_BASE,
     /* The pickers, callable with a plain {clientX, clientY}. Driving these
        directly beats dispatching synthetic taps: a BACKGROUNDED TAB reports
        a stale canvas rect, so a tap aimed at a projected point lands
