@@ -2284,7 +2284,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.113a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.0</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -25037,19 +25037,32 @@ const TOOL_RING_ARM_FRAC = 0.6;
 const toolRingArmPx = (ringR) =>
   Math.max(TOOL_RING_DEAD_ZONE_PX + 20, ringR * TOOL_RING_ARM_FRAC);
 const TOOL_RING_MIN_R = 80;          // floor, so small sets don't crowd the finger
-/* HOW FAR THE RING WANTS TO SIT FROM THE FINGER (a2.111), 1.5x what spacing
-   alone asks for. Eight seats only need 107 to clear each other, and that was
-   the radius until now - but spacing is the wrong thing to size a ring by
-   once it fits in eight. At 160 the thumb is not sitting on top of the seats,
-   the model reads through the middle of the ring instead of behind a wall of
-   them, and a flick has room to be a flick.
+/* HOW FAR THE RING SITS FROM THE FINGER. Eight seats only need 107 to clear
+   each other, and spacing is the wrong thing to size a ring by once it fits
+   in eight: at this distance the thumb is not sitting on the seats, the model
+   reads through the middle of the ring, and a flick has room to be a flick.
 
-   It is a want, not a promise. a2.108 shrinks the ring uniformly to whatever
-   the screen affords and only then moves the centre, so this raises the
-   CEILING and changes nothing about how far the ring follows your thumb -
-   that band is set by the spacing floor, which has not moved. */
-const TOOL_RING_R = 160;
-const RING_EDGE_PX = 14;             // a2.104: every seat keeps this clear of the edge
+   120 AND NOT 160 (v2.0). It was 160, and the ring then SHRANK toward the
+   spacing floor as you pressed nearer a border - measured, 160 in the middle
+   of the screen and 88.8 near the edge. That bought the widest possible ring
+   wherever there was room for one, and it cost the one thing a marking menu
+   must not lose: the same shape every time. Zeghreit read it as the ring
+   scaling with zoom, which it never did - the size tracked WHERE HE PRESSED.
+
+   One size now, whatever the press point. On a phone that has to be paid for
+   somewhere, because a ring cannot be both 145 wide and centred on a thumb
+   held 60px from the edge - 393px of screen does not contain both. It is paid
+   in reach: at 120 the ring keeps a 51px band on a 393px phone where it
+   blooms exactly under the finger, and outside that band it slides inboard
+   while the AIM still runs from the finger (a2.98), which is the part that
+   has to stay honest. Wider than 120 buys size and spends that band; 130
+   leaves 31px, 140 leaves 11, 145 leaves none at all. */
+const TOOL_RING_R = 120;
+/* Was "every seat keeps this clear of the edge" (a2.104). Since v2.0 no seat
+   is kept clear of anything - the ring sits on the finger and the frame crops
+   what falls outside. It survives as the margin in `fits`, which is what stops
+   a ring being asked for that could not be drawn whole even dead centre. */
+const RING_EDGE_PX = 14;
 /* a2.104: the ABSOLUTE floor for a clamped seat - clear of the dead zone
    by its own tip and a little more, so a seat pulled all the way in is
    still outside the middle and still separable from a cancel. A dense
@@ -25176,11 +25189,13 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
   /* The ideal radius, from the tightest pair - and then whatever the SCREEN
      will actually hold.
 
-     The ideal alone is unbounded: it grows with the item count, and the Edge
-     ring is thirteen tools. At that count it asks for ~192px, which needs a
-     444px-wide viewport before the ring even fits, so on a phone the clamp
-     below had no legal position to clamp to and half the ring hung off the
-     right-hand edge. Squeezing the icons closer together is the lesser
+     The ideal alone is unbounded: it grows with the item count, and before
+     a2.110 the Edge ring was thirteen tools. At that count it asks for
+     ~192px, which needs a 444px-wide viewport before the ring even fits, so
+     on a phone the clamp below had no legal position to clamp to and half
+     the ring hung off the right-hand edge. Doors capped every mode ring at
+     eight, so this is now history rather than a live constraint - but it is
+     the reason the spacing term is a floor and not the answer. Squeezing the icons closer together is the lesser
      problem by a distance - they are still 70px apart at thirteen items on a
      390px screen, and the ring picks by DIRECTION anyway, so you never have
      to land on one. */
@@ -25193,63 +25208,197 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
      in every horizontal direction: the ring could no longer be dismissed by
      aiming out of it at all. They keep the radius their own spacing asks for,
      which is what they always had and is the right size for four items. */
-  const reach = tools.every(t => t.seat !== undefined) ? TOOL_RING_R : 0;
+  const flatR = tools.every(t => t.seat !== undefined) ? TOOL_RING_R : 0;
   const ideal = Math.max(
     TOOL_RING_MIN_R,
-    reach,
+    flatR,
     (TOOL_RING_ITEM + TOOL_RING_GAP) / (2 * Math.sin(gap / 2))
   );
-  /* RING_EDGE_PX, not a literal 14: `place` below only stays sane while
-     margin <= span / 2, and margin is built from this same clearance.
-     Two numbers that must agree should not be written twice. */
+  /* The largest ring the SCREEN holds whole, kept as a ceiling on `ideal`.
+     Since v2.0 it rarely binds - `ideal` is 120 for every seated ring, and
+     the envelope, not this, is what handles a close edge - but a ring asked
+     for by spacing alone (Add geo, Pivot, the empty-scene ring) can still
+     want more than a small window has. */
   const fits = Math.min(rect.width, rect.height) / 2 - TOOL_RING_TIP - RING_EDGE_PX;
   const R = Math.max(TOOL_RING_MIN_R * 0.6, Math.min(ideal, fits));
 
-  /* The shortest the ring may be drawn, and it cannot be a flat number.
-     Seats sit at a fixed ANGLE from each other, so how far apart they are
-     on screen is that angle times the radius - and at fourteen seats and a
-     short radius that is under 20px, with the words on top of each other.
-     The floor is the radius at which neighbours still clear each other by
-     the tightest gap the ring will accept (68px centre to centre, against
-     `ideal`'s comfortable 92), and never less than clear of the dead zone.
+  /* There is no per-press floor any more (v2.0): nothing shrinks, so nothing
+     needs a smallest legal size. The spacing term inside `ideal` above is
+     what keeps the seats apart, and it is the only thing that has to. */
 
-     68 rather than a2.104's 56 since a2.107: a seat carries a 64px WORD
-     now, not a 20px glyph, and two seats at the old floor had labels that
-     overlapped even though their boxes did not. The floor is what the
-     widest thing on a seat needs, plus air. */
-  const seatMinR = Math.max(
-    TOOL_RING_SEAT_MIN_R,
-    Math.min(R, (TOOL_RING_ITEM + 16) / (2 * Math.sin(gap / 2)))
-  );
+  /* ONE SIZE, WHEREVER YOU PRESS (v2.0).
 
-  /* SHRINK FIRST, THEN MOVE (a2.108, replacing a2.104's per-seat clamp).
+     The ring used to give way near a border in two stages: shrink uniformly
+     toward a spacing floor (a2.108), and only then move the centre. Before
+     that it deformed per seat (a2.104), which was worse. All three were
+     answers to the same real constraint - a big ring near an edge does not
+     fit - and the last of them still had the ring drawn at 160 in the middle
+     of the screen and 88.8 near the side.
 
-     a2.104 kept the centre under the finger and pulled any seat that would
-     hang off the edge closer in along its OWN bearing. It reached well, but
-     seats clamped by one edge all landed on the same LINE, so the ring lost
-     its shape near a border - and once a2.107 drew the star through those
-     radii, the whole figure buckled. A menu that changes shape depending on
-     where you happened to press reads as broken, not as adaptive.
+     None of that survives. A marking menu is learned as a SHAPE, and a shape
+     that is a different size depending on where your thumb landed is not one
+     shape. The radius now depends only on the WINDOW - which is to say it is
+     constant for a whole session on a phone, and changes only if you resize a
+     desktop browser. Press anywhere: same ring.
 
-     So the ring is now always REGULAR: one radius for every seat, always.
-     Near an edge it SHRINKS - uniformly, staying a circle and staying under
-     the finger - and only once it has shrunk to `seatMinR`, the smallest
-     ring the words can live in, does the CENTRE move instead.
+     THE RING IS AN ENVELOPE, NOT A CIRCLE (v2.0, Zeghreit's). A diamond
+     where there is room; cut flat against a wall that is too close; a
+     triangle in a corner where two walls cut it. The seats keep their
+     bearings and slide along their own rays to sit on whatever shape that
+     leaves, so the three seats behind a wall come to rest in a straight line
+     ON the cut - which is the difference between this and a2.104.
 
-     Reach is unchanged. The centre starts moving at exactly the distance it
-     did before (RING_EDGE_PX + tip + seatMinR), because that is the point at
-     which a2.104's shortest legal seat also ran out of room; everything
-     nearer the middle now simply keeps its shape instead of losing it. */
-  const room = (v, span) => Math.min(v, span - v) - RING_EDGE_PX - TOOL_RING_TIP;
-  const rFit = Math.min(room(x - rect.left, rect.width),
-                        room(y - rect.top, rect.height));
-  const ringR = THREE.MathUtils.clamp(rFit, Math.min(seatMinR, R), R);
-  const margin = RING_EDGE_PX + TOOL_RING_TIP + ringR;
-  // A viewport too small even for that keeps the ring centred rather than
-  // letting the clamp invert and throw it into a corner.
-  const place = (v, span) => (span < margin * 2 ? span / 2 : THREE.MathUtils.clamp(v, margin, span - margin));
+     a2.104 had the same arithmetic and looked chaotic, and the reason was
+     never the arithmetic: it clamped each seat and then drew a star through
+     the clamped radii, so the figure became an irregular blob and the seats
+     looked scattered against it. Draw the SHAPE the clamp implies, and the
+     same seats read as sitting deliberately on a cut edge. What was missing
+     was never a better clamp. It was the envelope.
+
+     Because the shape gives way, the centre barely has to. It is clamped
+     only far enough to leave a usable flat side - 111px rather than the 171
+     a whole diamond needs - so on a 393px phone the ring blooms exactly
+     under the thumb across 171px of it instead of 51. Aim is still measured
+     from the finger (a2.98) for what is left, and since v2.0 the SEATS are
+     measured from there too, so the pick and the aim line finally agree. */
+  const ringR = R;
+  /* How close the centre may come to the frame. The wall it leaves - this
+     minus the edge clearance and a seat's tip - is the flat side of the
+     triangle, and it has two jobs: stay outside the dead zone, so a seat
+     sitting on it is aimable rather than a cancel; and stay outside the ARM
+     (toolRingArmPx, 72px at R=120) - which 60 does NOT, and does not need
+     to: `dist` is measured from the finger and keeps growing after the seat
+     is reached, so pushing on past a walled seat still crosses the arm. And
+     it sets how much of the seat curve a corner press
+     costs, which is the number that actually binds: measured, a 44px wall
+     leaves 590px of curve and eight 52px seats need 588 - they touch. At 60
+     the curve is 642 and there are 6.7px between them. The price is 32px of
+     the band where the ring blooms exactly under the thumb, which on a 393px
+     phone is 171px rather than 203 - against 51px before v2.0. */
+  const minReach = RING_EDGE_PX + TOOL_RING_TIP + 60;
+  const place = (v, span) => (span < minReach * 2 ? span / 2
+    : THREE.MathUtils.clamp(v, minReach, span - minReach));
   const cx = place(x - rect.left, rect.width);
   const cy = place(y - rect.top, rect.height);
+
+  /* The four walls, in ring-local coordinates with y running UP. Each is how
+     far the envelope may reach that way before a seat's tip would cross the
+     frame. */
+  /* FLOORED, because a viewport narrower than 2*(RING_EDGE_PX +
+     TOOL_RING_TIP) - 101px, which a hidden or mid-relayout element reports
+     as 0 - sends `place` down its span/2 branch and drives these NEGATIVE.
+     A negative wall makes `rho` return a negative radius, which mirrors
+     every seat through the origin, and hands `clip` two contradictory
+     half-planes, which empties the outline entirely. Seats spilling off a
+     101px viewport is a cosmetic problem; seats drawn on the wrong side of
+     the ring with no figure around them is a broken one. */
+  const wallMin = TOOL_RING_DEAD_ZONE_PX;
+  const room = (v) => Math.max(wallMin, v);
+  const wall = {
+    r: room(rect.width - RING_EDGE_PX - TOOL_RING_TIP - cx),
+    l: room(cx - RING_EDGE_PX - TOOL_RING_TIP),
+    u: room(cy - RING_EDGE_PX - TOOL_RING_TIP),
+    d: room(rect.height - RING_EDGE_PX - TOOL_RING_TIP - cy)
+  };
+  /* THE OUTLINE. The diamond, corners at ringR*SQRT2 on the axes so its
+     edges pass through the diagonal seats, then cut by whichever walls are
+     close. One wall leaves a diamond with a flat side; two leave a triangle.
+     Sutherland-Hodgman, once per wall - convex in, convex out. */
+  let poly = [[ringR * Math.SQRT2, 0], [0, ringR * Math.SQRT2],
+              [-ringR * Math.SQRT2, 0], [0, -ringR * Math.SQRT2]];
+  const lerpAt = (a, b, da, db) => {
+    const t = da / (da - db);
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  };
+  const clip = (keep) => {
+    const next = [];
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length];
+      const da = keep(a), db = keep(b);
+      if (da >= 0) next.push(a);
+      if ((da >= 0) !== (db >= 0)) next.push(lerpAt(a, b, da, db));
+    }
+    poly = next;
+  };
+  clip(p => wall.r - p[0]);
+  clip(p => p[0] + wall.l);
+  clip(p => wall.u - p[1]);
+  clip(p => p[1] + wall.d);
+
+  /* THE SEATS RIDE THE OUTLINE (v2.0, Zeghreit's). Not "each seat clamped
+     along its own bearing" - that was v20d, and it was a2.104's mistake
+     wearing a new shape: three seats behind a wall all clamp to the same
+     small radius and land on top of one another. Spacing them along the
+     PERIMETER instead is what "the icons distribute along the triangle"
+     means, and it cannot pile up, because equal steps round an outline are
+     equal steps apart.
+
+     Where there is room this changes NOTHING. Eight equal steps round an
+     uncut circle are the eight fixed bearings, at exactly ringR. The
+     redistribution only ever spends what a wall has already taken.
+
+     Clockwise, starting straight up from the RING'S CENTRE - so seat 0 is
+     due north of the figure wherever you press, which is what makes "flick
+     up" mean one thing. Not straight up from the finger: near a frame those
+     are up to 111px apart, and the pick follows the centre (see
+     updateToolRingHover). */
+  /* The curve is the CIRCLE the seats have always ridden - ringR - cut flat
+     by whichever walls are close. Not the diamond: the diamond's corners
+     deliberately overshoot the four cardinal seats, so walking it would
+     throw those four out to ringR*SQRT2 and leave the ring lopsided in open
+     space. Both are cut by the SAME walls though, so against a wall the
+     flat of the diamond and the flat of this curve are one line, and the
+     seats there sit exactly on the drawn edge. */
+  const rho = (a) => {
+    const ux = Math.cos(a), uy = Math.sin(a);
+    let t = ringR;
+    const cap = (room, u) => { if (u > 1e-6) t = Math.min(t, room / u); };
+    cap(wall.r, ux); cap(wall.l, -ux); cap(wall.u, uy); cap(wall.d, -uy);
+    return t;
+  };
+  /* Walked as a polyline rather than integrated: a cut circle has no arc
+     length worth deriving, and 360 steps is a tenth of a pixel on a 120px
+     curve. Clockwise from due north of the centre, so seat 0 is the seat at
+     the top of the figure at every press point. */
+  const STEPS = 360;
+  const curve = [], cum = [0];
+  for (let i = 0; i <= STEPS; i++) {
+    const a = Math.PI / 2 - (i / STEPS) * Math.PI * 2;
+    const r = rho(a);
+    curve.push([Math.cos(a) * r, Math.sin(a) * r]);
+    if (i) cum.push(cum[i - 1] + Math.hypot(curve[i][0] - curve[i - 1][0],
+                                            curve[i][1] - curve[i - 1][1]));
+  }
+  const total = cum[STEPS];
+  /* `f` is the fraction of the way round, 0 at straight up. Dividing the
+     CURVE evenly rather than the ANGLE evenly is the whole point: it is what
+     stops the three seats behind a wall from piling up on each other, which
+     is what every per-seat clamp from a2.104 onwards did. */
+  const envAt = (f) => {
+    if (!(total > 0)) return [0, ringR];
+    const d = ((f % 1) + 1) % 1 * total;
+    let lo = 0, hi = STEPS;
+    while (hi - lo > 1) {
+      const m = (lo + hi) >> 1;
+      if (cum[m] <= d) lo = m; else hi = m;
+    }
+    const t = (d - cum[lo]) / ((cum[hi] - cum[lo]) || 1);
+    return [curve[lo][0] + (curve[hi][0] - curve[lo][0]) * t,
+            curve[lo][1] + (curve[hi][1] - curve[lo][1]) * t];
+  };
+  /* The outline and the seats travel together, cut by the SAME walls -
+     which is the lesson of a2.104, where a figure drawn through independently
+     clamped radii turned into a blob. They are not the same curve: the
+     figure is the diamond at ringR*SQRT2, the seats ride the circle at
+     ringR, and that gap is deliberate (the edges pass through the diagonal
+     seats, the corners overshoot the cardinal ones). One consequence is
+     visible and accepted: a wall between ringR and ringR*SQRT2 nips a corner
+     off the figure while no seat has had to move yet. The figure gives way
+     first, which is the right way round - it is how you see the edge coming.
+
+     Passed to paintToolRing rather than closed over, since a DOOR repaints
+     through swapToolRing, outside this function entirely. */
+  const env = { at: envAt, poly, rmax: ringR * Math.SQRT2 + 2 };
 
   /* The gesture just happened, so the chip has done its job - and it goes
      whether or not a tool is picked, because backing out of a ring still
@@ -25266,7 +25415,7 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
      case they exist to help. */
   const ox = aim ? (aim.x - rect.left) - cx : 0;
   const oy = aim ? (aim.y - rect.top) - cy : 0;
-  const painted = paintToolRing(tools, ringR, ox, oy, null, 0);
+  const painted = paintToolRing(tools, ringR, ox, oy, null, 0, env);
 
   toolRingActive = { x: cx, y: cy, tools, itemEls: painted.itemEls, hoveredIndex: -1,
                      pointerId, radius: ringR,
@@ -25274,6 +25423,11 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
                      /* The ring the doors hang off, kept so coming back inside
                         the dead zone can restore it (a2.110). */
                      root: tools, door: null,
+                     /* Kept so a door repaints against the SAME envelope -
+                        the walls have not moved, and recomputing them from
+                        the door's own bearing would be a second source of
+                        truth for one shape. */
+                     env,
                      aimX: aim ? aim.x - rect.left : cx,
                      aimY: aim ? aim.y - rect.top : cy };
   if (pointerId !== undefined) {
@@ -25289,7 +25443,7 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
    DOOR swaps the seats without moving the ring, so this happens twice in one
    gesture (a2.110). `tag` names the door you are standing in, or is null at
    the top level. */
-function paintToolRing(tools, ringR, ox, oy, tag, spin) {
+function paintToolRing(tools, ringR, ox, oy, tag, spin, env) {
   /* `spin` is the door's own bearing, in seat steps. A door's ops carry
      seats RELATIVE to it, so turning the whole sub-ring by that much puts the
      first one straight ahead of the finger. Zero at the top level. */
@@ -25299,8 +25453,13 @@ function paintToolRing(tools, ringR, ox, oy, tag, spin) {
 
   const itemEls = [];
   tools.forEach((tool, idx) => {
-    const angle = anglesDeg[idx] * Math.PI / 180;
-    const seatR = ringR;
+    /* The bearing this seat WANTS, turned into a fraction of the way
+       clockwise round the outline. On an open diamond the two are the same
+       thing; against a wall the outline decides. */
+    const f = ((((90 - anglesDeg[idx]) % 360) + 360) % 360) / 360;
+    const p = env.at(f);
+    const angle = Math.atan2(p[1], p[0]);
+    const seatR = Math.hypot(p[0], p[1]) || 1;
     const el = document.createElement('div');
     el.className = 'hub-item';
     /* A toggle has to show which way it is currently set, or you can't tell
@@ -25364,60 +25523,37 @@ function paintToolRing(tools, ringR, ox, oy, tag, spin) {
      edge passes exactly through the centre of the seat between its two
      corners, and the corners become points projecting past the ring.
 
-     The points reach 1.41x the seat radius, further out than the 14px edge
-     clearance guarantees, so a point can run off the side of a large ring
-     bloomed near an edge. Accepted: the diamond is a lattice with no hit area,
-     and a line cropped by the frame reads as a figure continuing past it.
+     The points reached 1.41x the seat radius, further out than the 14px edge
+     clearance guarantees, so until v2.0 a point could run off the side of a
+     ring bloomed near an edge. It cannot now: the figure is cut by the same
+     walls as the seats, which stop 50.8px inside the frame, so what used to
+     be a crop is a drawn edge.
 
      Inserted first, so the seats lay on top of it. Through the ring, not
      behind it - at 80% of --line the model still reads underneath. */
   {
     const NS = 'http://www.w3.org/2000/svg';
-    // The star's points, straight out past each seat. cos45 of this is ringR,
-    // which is what puts every seat on the middle of an edge.
-    const corner = ringR * Math.SQRT2;
-    const rmax = corner + 2;
-    const at = (i) => {
-      const a = i * Math.PI / 4;
-      return (rmax + Math.cos(a) * corner).toFixed(1) + ',' +
-             (rmax - Math.sin(a) * corner).toFixed(1);
-    };
-    /* Which of the eight compass points a seat actually stands on. Only a
-       fixed-bearing ring can answer; the evenly spread ones (Add geo, Pivot)
-       keep the whole star. */
-    const fixed = tools.every(t => Number.isInteger(t.seat) && t.seat >= 0 && t.seat < 8);
-    const live = new Set();
-    /* Seat -> compass index, through the spin: seat 0 is straight up, which
-       is compass index 2, and the seats run clockwise while the compass here
-       runs anticlockwise - hence 2 minus, not 2 plus. */
-    if (fixed) tools.forEach(t => live.add((((2 - t.seat - spin) % 8) + 8) % 8));
-    const has = (i) => !fixed || live.has(i);
+    /* THE STAR IS THE ENVELOPE (v2.0). It used to be a figure drawn near the
+       seats; now it is the outline the seats ride on, so the two cannot
+       disagree - which is the whole lesson of a2.104, where they did.
+
+       The diamond, corners at ringR*SQRT2 along the axes so its edges pass
+       through the diagonal seats, then cut by whichever walls are close. One
+       wall leaves a diamond with a flat side; two leave a triangle. */
+    const poly = env.poly;
+    const rmax = env.rmax;
     const star = document.createElementNS(NS, 'svg');
     star.id = 'ringStar';
     star.setAttribute('width', rmax * 2);
     star.setAttribute('height', rmax * 2);
     star.style.left = (-rmax) + 'px';
     star.style.bottom = (-rmax) + 'px';
-    /* ONE DIAMOND (a2.111a), Zeghreit's call. Two squares was one figure too
-       many: at eight seats they cross eight times, and the lattice started
-       competing with the thing it was meant to frame.
-
-       The one kept is the DIAMOND - the square turned 45 degrees, corners
-       pointing along the axes. Its four edges are the odd i, each crossing a
-       diagonal seat at its own centre. The four cardinal seats then sit inside
-       it, short of its corners, on no line at all; that is the price of one
-       square rather than two, and it is a real one - a chord between two
-       points on a circle cannot pass through a third, so no single square
-       touches more than four of eight.
-
-       The cut still applies, but only where an edge exists to cut: a missing
-       DIAGONAL bearing drops its edge and opens the diamond. A missing
-       cardinal one has no edge to drop, so the figure stays whole and the
-       empty bearing is told only by the seat that is not there. */
-    for (let i = 1; i < 8; i += 2) {
-      if (!has(i)) continue;
+    if (poly.length >= 3) {
       const p = document.createElementNS(NS, 'polyline');
-      p.setAttribute('points', at((i + 7) % 8) + ' ' + at((i + 1) % 8));
+      // Closed by repeating the first point - the CSS styles polyline only,
+      // and one rule for one shape is what keeps `fill: none` unmissable.
+      p.setAttribute('points', poly.concat([poly[0]]).map(
+        q => (rmax + q[0]).toFixed(1) + ',' + (rmax - q[1]).toFixed(1)).join(' '));
       star.appendChild(p);
     }
     touchToolRingEl.insertBefore(star, touchToolRingEl.firstChild);
@@ -25466,8 +25602,8 @@ function paintToolRing(tools, ringR, ox, oy, tag, spin) {
 }
 
 /* A DOOR OPENS IN PLACE (a2.110). The sub-ring keeps the parent's centre AND
-   its radius, so the geometry a2.108 already solved against the screen edge
-   holds for both layers and there is nothing new to clamp - which is what the
+   its envelope, so whatever the screen edge already did to the first layer
+   holds for the second and there is nothing new to clamp - which is what the
    two-layer spec's "re-centre on the finger" could not do: near an edge the
    second layer would have had nowhere legal to open.
 
@@ -25478,7 +25614,7 @@ function swapToolRing(tools, doorTool) {
   if (!t) return;
   const painted = paintToolRing(tools, t.radius, t.aimX - t.x, t.aimY - t.y,
                                 doorTool ? toolLabel(doorTool) : null,
-                                doorTool ? doorTool.seat : 0);
+                                doorTool ? doorTool.seat : 0, t.env);
   t.tools = tools;
   t.itemEls = painted.itemEls;
   t.labelEl = painted.labelEl;
@@ -25503,11 +25639,30 @@ function updateToolRingHover(ev) {
      means "none of these" - and the middle still does too. */
   const outside = toolRingActive.sticky && dist > toolRingActive.radius * 2.2;
   if (dist > TOOL_RING_DEAD_ZONE_PX && !outside) {
-    // Screen Y grows downward; the items were placed using -sin for that
-    // same reason, so the pointer angle needs the same flip to match.
+    // Screen Y grows downward; the seats were placed with +sin as `bottom`,
+    // which is the same flip from the other side, so the pointer's angle
+    // needs it too before the two can be compared.
     const ang = Math.atan2(-dy, dx);
+    /* AGAINST THE SEAT'S BEARING FROM THE RING'S CENTRE, not from the finger.
+       v2.0 tried the finger for one afternoon, on the reasoning that the
+       bearing you are pointing at ought to be measured from where you are
+       pointing. It is wrong, and badly. Near a frame the centre is clamped
+       111px in while the flat it leaves is only 60, so the finger sits
+       OUTSIDE the curve the seats ride - and from a point outside a convex
+       curve the entire boundary folds into a narrow wedge. Measured at a
+       left-edge press: all eight seats inside 110 degrees, the cyclic order
+       broken, and a flick due north selecting seat 7.
+
+       `ang` is the direction the finger has TRAVELLED, not a line drawn to a
+       target, and that is the whole gesture: flick up, get the seat at the
+       top. The layout guarantees exactly that against the centre - seat 0 is
+       due north of it at every press point and the order round it never
+       changes - so the centre is the frame these bearings live in. The aim
+       LINE still starts at the finger, because a line has to touch the
+       finger to look like a line; a direction does not. */
     let best = -1, bestDiff = Infinity;
     toolRingActive.itemEls.forEach((it, i) => {
+      const itAng = it.angle;
       /* The modulo is load-bearing. atan2 returns (-PI, PI], but the halved
          layout places items anywhere in [0, 2PI) - so for a finger below
          the centre and an item near 2PI, |ang - angle| can exceed 2PI, and
@@ -25518,7 +25673,7 @@ function updateToolRingHover(ev) {
 
          Before v1.89 the angles ran 90, 30, -30, -90..., which stayed
          inside atan2's own range and hid the flaw. */
-      let diff = Math.abs(ang - it.angle) % (Math.PI * 2);
+      let diff = Math.abs(ang - itAng) % (Math.PI * 2);
       if (diff > Math.PI) diff = Math.PI * 2 - diff;
       if (diff < bestDiff) { bestDiff = diff; best = i; }
     });

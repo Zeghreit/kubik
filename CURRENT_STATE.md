@@ -4,12 +4,12 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~25,350 lines)
-- Version at time of writing: **a2.113a**
-- **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
-  the pre-2.0 list below. The clean **2.0** is claimed at release and not
-  before. Fixes still take a letter (`a2.0a`); new work takes a number
-  (`a2.1`).
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~26,500 lines)
+- Version at time of writing: **2.0**
+- **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
+  and is finished; everything below that is written `a2.N` is history, and
+  the number is kept because the comments in the code cite it. New work from
+  here takes a number (`2.1`), fixes a letter (`2.0a`).
 - Debug: append `?debug=1`. Tap picks log a `[pick] ...` line explaining why
   a tap resolved as it did, every mesh edit logs a `[winding] ...` line (see
   Winding audit), and `window.__kubik` exposes the live app (see Testing
@@ -35,6 +35,105 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## The ring is an envelope (v2.0)
+
+Zeghreit, on the bloom ring: *"diamond menus is scaling depending on zoom. I
+don't like it... it's better if it would keep its size all the time not
+getting narrower or wider."* Then, having watched it again: *"Maybe it is not
+zoom depending but place depending on — it getting narrower close to the
+border."* Right on both counts about the symptom. A probe at four camera
+distances read 160.0 every time; the same probe at four press points read
+160.0 in the middle of the screen and **88.8** near the side.
+
+Then the idea this whole version is built on: *"What if we make it change to
+triangle instead of diamond if it is near border? Saving functionality and
+style."* And, when the first attempt kept the seats on their own rays:
+*"You get that icons should distribute along this triangle, right?"*
+
+### What it does now
+
+**One size, everywhere.** `TOOL_RING_R` is 120 (down from 160, which no
+longer needed the headroom) and the radius depends only on the window. Press
+anywhere: same ring. A marking menu is learned as a SHAPE, and a shape that
+is a different size depending on where the thumb landed is not one shape.
+
+**The shape gives way instead.** Two curves, cut by the same four walls:
+
+- the **figure** is the diamond, corners at `ringR*SQRT2` on the axes, clipped
+  by Sutherland–Hodgman. One wall leaves a flat side; two leave a triangle.
+  Drawn as one closed `polyline`.
+- the **seat curve** is the circle of `ringR`, cut by the same walls —
+  `rho(a) = min(ringR, wall caps along that ray)` — sampled into 360 points
+  and walked by **arc length**. Seat *i* sits at fraction
+  `((90 - itsBearing) mod 360)/360` of the way round, clockwise from due
+  north of the ring's centre.
+
+Unobstructed, the arc walk reproduces the eight fixed bearings *exactly* — 8
+equal steps round an uncut circle ARE the 45s at `ringR`, and the probe
+measures the spread at 0.01px. Cut, the seats redistribute along what is
+left, so the three behind a wall come to rest evenly spaced in a line ON it.
+
+The two curves are deliberately not the same: the diamond's edges pass
+through the diagonal seats and its corners overshoot the cardinal ones. One
+consequence is visible and accepted — a wall between `ringR` and
+`ringR*SQRT2` nips a corner off the figure while no seat has had to move
+yet. The figure gives way first, which is the right way round.
+
+**The centre barely moves.** `minReach = RING_EDGE_PX + TOOL_RING_TIP + 60`
+≈ 111px, against the 171 a whole diamond needs. On a 393px phone the ring
+blooms exactly under the thumb across **171px** of it, against 51 before.
+
+### Why arc length and not per-seat clamping
+
+a2.104 clamped each seat along its own bearing and drew a star through the
+clamped radii; it looked chaotic and was reverted. v2.0's first attempt did
+the same thing in new clothes and produced the same result: three seats
+behind a wall all clamp to the same small radius and land on top of one
+another. **Equal steps round a curve cannot pile up** — that is the whole
+argument, and it is what *"distribute along this triangle"* means.
+
+Clearance is measured in **L1**, not euclidean: a seat is a 52px square
+turned 45°, so two of them overlap exactly when `|dx| + |dy| < 2*TIP`
+(73.5). This matters because the envelope has right-angle corners, where two
+seats sit at a euclidean distance well under their arc spacing — but their
+L1 separation IS that spacing, because the corner is square and so are they.
+The wall floor of 60 is set by this: at 44 a corner press leaves 590px of
+curve and eight seats need 588, so they touch; at 60 the curve is 642 and
+there are 6.7px between them.
+
+### The pick is a flick DIRECTION
+
+The seats' bearings are compared against the direction the finger has
+travelled, measured **from the ring's centre, not from the finger**. v2.0
+tried the finger for one afternoon on the reasoning that the bearing you are
+pointing at ought to be measured from where you are pointing. It is wrong,
+and badly: near a frame the centre is clamped 111px in while the flat it
+leaves is only 60, so the finger sits OUTSIDE the seat curve — and from a
+point outside a convex curve the entire boundary folds into a narrow wedge.
+Measured at a left-edge press: all eight seats inside 110°, the cyclic order
+broken, and a flick due north selecting seat 7. Every geometric check still
+passed; the seats were drawn correctly and only the pick was wrong.
+
+`_door_probe.js` **section 8** exists because of that hour. It sweeps all 360°
+of flick direction at four press points and asserts eight reachable seats,
+none under 20°. Current worst: 36°.
+
+### Deliberately absent — do not rebuild these
+
+- **A ring that shrinks near an edge** (a2.108). Constant size was the ask.
+- **A per-seat radius clamp** (a2.104, and v2.0's own first draft). Piles
+  seats on top of each other; the arc walk is the answer.
+- **Cropping the ring at the frame.** Tried at v2.0 and reverted: a corner
+  press put 5 of 8 seats off-screen and it read as a menu that had fallen
+  off the edge, not as a triangle.
+- **A second square in the figure** (removed a2.111a) and **per-seat
+  polyline edges** (a2.111, replaced by one closed outline at v2.0).
+- **Picking by bearing from the finger.** See above.
+- **A ring of more than eight seats near an edge.** A corner press leaves
+  ~642px of curve; eight 52px seats need 588. `_ring104_probe.js` keeps a
+  14-seat ceiling probe that reports clearance without asserting it, and the
+  reason it does not assert is written there.
 
 
 
