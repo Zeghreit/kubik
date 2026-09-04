@@ -1,0 +1,298 @@
+
+======================================================================
+EVERY READ OF App.symmetryAxis WITH CONTEXT
+======================================================================
+
+    7043: function opSymmetry(obj) {
+    7044:   if (!App.symmetry) return null;
+>>> 7045:   const pl = symmetryPlane(obj, App.symmetryAxis);
+    7046:   const geo = obj.mesh.geometry;
+    7047:   geo.computeBoundingBox();
+---
+    7053: 
+    7054: function mirrorOfSelection(obj, elements) {
+>>> 7055:   const map = buildSymmetryMap(obj, App.symmetryAxis);
+    7056:   if (!map.size) return null;
+    7057:   const topo = obj.mesh.userData.topo;
+---
+    10742:        the count up and down a preview rather than an accumulation - without
+    10743:        the restore, 3 then 4 would leave twelve. */
+>>> 10744:     /* op.axis, NOT App.symmetryAxis. The axis is set in the drawer, which
+    10745:        stays reachable with this bar open, and the chip there only calls
+    10746:        refreshUI - so reading it live meant tapping Y mid-op changed nothing
+---
+    12492:   if (App.symmetry) {
+    12493:     let map = null;
+>>> 12494:     try { map = buildSymmetryMap(obj, App.symmetryAxis); } catch (e) { map = null; }
+    12495:     if (map) {
+    12496:       const ax = App.symmetryAxis;
+---
+    12494:     try { map = buildSymmetryMap(obj, App.symmetryAxis); } catch (e) { map = null; }
+    12495:     if (map) {
+>>> 12496:       const ax = App.symmetryAxis;
+    12497:       const settled = new Set();
+    12498:       Array.from(byV.keys()).sort((x, y) => x - y).forEach(v => {
+---
+    15081:     // snapshotEdgeMarks.
+    15082:     ctx.marks = snapshotEdgeMarks(obj);
+>>> 15083:     ctx.mirrorMap = App.symmetry ? buildSymmetryMap(obj, App.symmetryAxis) : null;
+    15084:     // Snapshot the plane with the map: it must not move mid-drag.
+    15085:     ctx.mirrorOffset = App.symmetry ? symmetryPlane(obj, App.symmetryAxis).offset : 0;
+---
+    15083:     ctx.mirrorMap = App.symmetry ? buildSymmetryMap(obj, App.symmetryAxis) : null;
+    15084:     // Snapshot the plane with the map: it must not move mid-drag.
+>>> 15085:     ctx.mirrorOffset = App.symmetry ? symmetryPlane(obj, App.symmetryAxis).offset : 0;
+    15086: 
+    15087:     /* THE INVARIANT SYMMETRY RELIES ON: an entry writes ITSELF and its mirror
+---
+    15157:     const topo = obj.mesh.userData.topo;
+    15158:     const pa = obj.mesh.geometry.attributes.position;
+>>> 15159:     const axis = App.symmetryAxis;
+    15160:     const off = dragCtx.mirrorOffset || 0;
+    15161:     const setLocal = (logical, v) => {
+---
+    19681:   // activeMirrorPlane and throw on undefined rather than doing the obvious
+    19682:   // thing - the axis the Symmetry pill is already set to.
+>>> 19683:   axis = axis || App.symmetryAxis || 'y';
+    19684:   if (App.mode !== 'object') { toast('Mirror works in Object mode'); return; }
+    19685:   const ids = Array.from(App.selectedObjectIds);
+---
+    19926:    one paints them all.
+    19927: 
+>>> 19928:    THE AXIS IS App.symmetryAxis - the same one Mirror and Flip read, and they
+    19929:    sit either side of Array in the ring. There is no second axis picker to
+    19930:    keep in sync, and the axis chip in the drawer already says which one is
+---
+    20142:   if (!obj) return;
+    20143:   beginPendingOp('array', obj, {}, {
+>>> 20144:     groupMode: 'line', segments: 3, axis: App.symmetryAxis || 'x'
+    20145:   });
+    20146: }
+---
+    20736: // Delete/Backspace keyboard shortcuts already did too.
+    20737: // Mirror X/Y/Z drawer buttons removed - the fan's Mirror item calls
+>>> 20738: // mirrorSelectedObjects(App.symmetryAxis) directly, using whichever axis is
+    20739: // set. mirrorSelectedObjects itself is untouched and still takes an axis.
+    20740: 
+---
+    20755:     // the geometry it mirrors, and an undo that quietly switched it off was
+    20756:     // the kind of thing you only notice three edits later.
+>>> 20757:     symmetry: { on: !!App.symmetry, axis: App.symmetryAxis },
+    20758:     objects: App.objects.map(o => {
+    20759:       const g = o.mesh.geometry;
+---
+    21079:   if (doc.symmetry && !opts.keepAppearance) {
+    21080:     App.symmetry = !!doc.symmetry.on;
+>>> 21081:     if (doc.symmetry.axis) App.symmetryAxis = doc.symmetry.axis;
+    21082:   }
+    21083:   App.selectedObjectIds = new Set(((sel && sel.objects) || []).filter(id => findObject(id)));
+---
+    23099:      and one step further from the middle, not on a bearing of its own. It
+    23100:      also lands next to Mirror and Flip, which is the right company: those
+>>> 23101:      three are the ops that read App.symmetryAxis. */
+    23102:   { key: 'array', icon: 'array', label: 'Array', seat: 0, ring: 1, run: arraySelection },
+    23103:   { key: 'mirror', icon: 'mirroraction', label: 'Mirror', seat: 2, ring: 0, run: () => showMirrorCho
+---
+    23101:      three are the ops that read App.symmetryAxis. */
+    23102:   { key: 'array', icon: 'array', label: 'Array', seat: 0, ring: 1, run: arraySelection },
+>>> 23103:   { key: 'mirror', icon: 'mirroraction', label: 'Mirror', seat: 2, ring: 0, run: () => showMirrorCho
+    23104:   { key: 'flip', icon: 'flip', label: 'Flip', seat: 3, ring: 0, run: () => flipSelectedObjects(App.s
+    23105:   { key: 'separate', icon: 'separate', label: 'Separate', seat: 4, ring: 1, run: separateSelection }
+---
+    23102:   { key: 'array', icon: 'array', label: 'Array', seat: 0, ring: 1, run: arraySelection },
+    23103:   { key: 'mirror', icon: 'mirroraction', label: 'Mirror', seat: 2, ring: 0, run: () => showMirrorCho
+>>> 23104:   { key: 'flip', icon: 'flip', label: 'Flip', seat: 3, ring: 0, run: () => flipSelectedObjects(App.s
+    23105:   { key: 'separate', icon: 'separate', label: 'Separate', seat: 4, ring: 1, run: separateSelection }
+    23106:   { key: 'centre', icon: 'centre', label: 'Centre', seat: 5, ring: 0, run: centreSelectionToOrigin }
+---
+    24627:     // Switching symmetry on is the capture moment, and the escape hatch when
+    24628:     // the plane has gone stale - so capture, never reuse what is stored.
+>>> 24629:     plane = captureSymmetryPlane(obj, App.symmetryAxis);
+    24630:     const map = buildSymmetryMap(obj, App.symmetryAxis);
+    24631:     pairs = 0;
+---
+    24628:     // the plane has gone stale - so capture, never reuse what is stored.
+    24629:     plane = captureSymmetryPlane(obj, App.symmetryAxis);
+>>> 24630:     const map = buildSymmetryMap(obj, App.symmetryAxis);
+    24631:     pairs = 0;
+    24632:     map.forEach((v, k) => { if (v !== k) pairs++; });
+---
+    24635:   const where = plane && Math.abs(plane.offset) > 1e-4
+    24636:     ? ' = ' + plane.offset.toFixed(2) : '';
+>>> 24637:   toast('Symmetry on (' + App.symmetryAxis.toUpperCase() + where + ') - ' +
+    24638:         (pairs < 0 ? 'no active object'
+    24639:                    : pairs + ' pairs' + (App.mode === 'object' ? ' - switch to a component mode' : '
+---
+    24641: document.querySelectorAll('#symAxisGroup button').forEach(btn => {
+    24642:   btn.addEventListener('click', () => {
+>>> 24643:     App.symmetryAxis = btn.dataset.sym;
+    24644:     refreshUI();
+    24645:     if (App.symmetry) {
+---
+    24646:       // A new axis means a new plane - the other capture moment.
+    24647:       const o = findObject(App.activeObjectId);
+>>> 24648:       const pl = o ? captureSymmetryPlane(o, App.symmetryAxis) : null;
+    24649:       toast('Symmetry axis: ' + App.symmetryAxis.toUpperCase() +
+    24650:             (pl && Math.abs(pl.offset) > 1e-4 ? ' (plane at ' + pl.offset.toFixed(2) + ')' : ''));
+---
+    24647:       const o = findObject(App.activeObjectId);
+    24648:       const pl = o ? captureSymmetryPlane(o, App.symmetryAxis) : null;
+>>> 24649:       toast('Symmetry axis: ' + App.symmetryAxis.toUpperCase() +
+    24650:             (pl && Math.abs(pl.offset) > 1e-4 ? ' (plane at ' + pl.offset.toFixed(2) + ')' : ''));
+    24651:     }
+---
+    24736:      be re-asserted here rather than only when the button is pressed. */
+    24737:   refreshXrayMode();
+>>> 24738:   document.querySelectorAll('#symAxisGroup button').forEach(b => b.classList.toggle('active', b.data
+    24739: 
+    24740:   // object list chips
+---
+    25186:     if (symIc) symIc.innerHTML = icon(App.symmetry ? 'mirror' : 'symoff', 20);
+    25187:     symPillEl.title = App.symmetry
+>>> 25188:       ? 'Symmetry on (' + App.symmetryAxis.toUpperCase() + ') - tap to turn it off'
+    25189:       : 'Symmetry off - tap to mirror edits across ' + App.symmetryAxis.toUpperCase();
+    25190:   }
+---
+    25187:     symPillEl.title = App.symmetry
+    25188:       ? 'Symmetry on (' + App.symmetryAxis.toUpperCase() + ') - tap to turn it off'
+>>> 25189:       : 'Symmetry off - tap to mirror edits across ' + App.symmetryAxis.toUpperCase();
+    25190:   }
+    25191: 
+---
+
+======================================================================
+EVERY READ OF App.symmetry WITH CONTEXT
+======================================================================
+
+    7002: 
+    7003: function runMirrored(obj, fn) {
+>>> 7004:   if (!App.symmetry || App.mode === 'object') { fn(); return; }
+    7005:   ensureHelpers(obj);
+    7006:   const mine = new Set(App.selectedElements);
+---
+    7042:    mirror appears once; set semantics handle that for free. */
+    7043: function opSymmetry(obj) {
+>>> 7044:   if (!App.symmetry) return null;
+    7045:   const pl = symmetryPlane(obj, App.symmetryAxis);
+    7046:   const geo = obj.mesh.geometry;
+---
+    7096:    indistinguishable from symmetry being off. */
+    7097: function expandSelectionToMirror(obj) {
+>>> 7098:   if (!App.symmetry || App.mode === 'object') return 0;
+    7099:   const before = App.selectedElements.size;
+    7100:   const m = mirrorOfSelection(obj, Array.from(App.selectedElements));
+---
+    11943:      someone who selected both halves by hand defeats that, and gets the fold
+    11944:      the check exists to prevent. */
+>>> 11945:   const scatterOk = !App.symmetry;
+    11946:   if (verts.size < 3) {
+    11947:     toast(App.mode === 'face'
+---
+    11959:   }
+    11960:   if (!islands.length) {
+>>> 11961:     toast(App.symmetry
+    11962:       ? 'Those points are not a loop — turn symmetry off to circularize a free selection'
+    11963:       : 'Those points are not a loop');
+---
+    12490:      loop being placed. Lowest logical id wins, so the answer does not depend
+    12491:      on map order. */
+>>> 12492:   if (App.symmetry) {
+    12493:     let map = null;
+    12494:     try { map = buildSymmetryMap(obj, App.symmetryAxis); } catch (e) { map = null; }
+---
+    13297: 
+    13298:   payload.marks = null;
+>>> 13299:   if (App.symmetry) {
+    13300:     const m = mirrorOfSelection(obj, Array.from(App.selectedElements));
+    13301:     // null means no symmetry map at all, which is not the same as "the
+---
+    13413:      preview lied about the result. */
+    13414:   let mpa = null, mpb = null, mflip = false;
+>>> 13415:   if (App.symmetry) {
+    13416:     const m = mirrorOfSelection(obj, [first]);
+    13417:     if (m === null) {
+---
+    19313:      would drag both halves onto one point - so this runs once per side. */
+    19314:   let mirror = null;
+>>> 19315:   if (App.symmetry) {
+    19316:     const ms = mirrorOfSelection(obj, src);
+    19317:     const mt = mirrorOfSelection(obj, [target]);
+---
+    19608:   const n = new THREE.Vector3();
+    19609:   n[axis] = 1;
+>>> 19610:   if (!App.symmetry) return new THREE.Plane(n, 0);
+    19611:   const pl = symmetryPlane(obj, axis);
+    19612:   // Normal matrix, not transformDirection: non-uniform scale skews normals.
+---
+    19758:   refreshGizmoAttachment();
+    19759:   pushHistory();
+>>> 19760:   const where = App.symmetry
+    19761:     ? 'the symmetry plane (' + axis.toUpperCase() + ')'
+    19762:     : 'world ' + axis.toUpperCase() + '=0';
+---
+    19792:   refreshGizmoAttachment();
+    19793:   pushHistory();
+>>> 19794:   toast('Flipped across ' + (App.symmetry
+    19795:     ? 'the symmetry plane (' + axis.toUpperCase() + ')'
+    19796:     : 'world ' + axis.toUpperCase() + '=0'));
+---
+    21078:      and switch symmetry off on every load of an older file. */
+    21079:   if (doc.symmetry && !opts.keepAppearance) {
+>>> 21080:     App.symmetry = !!doc.symmetry.on;
+    21081:     if (doc.symmetry.axis) App.symmetryAxis = doc.symmetry.axis;
+    21082:   }
+---
+    23531: symPillEl.addEventListener('click', (ev) => {
+    23532:   ev.stopPropagation();
+>>> 23533:   setSymmetry(!App.symmetry);
+    23534: });
+    23535: 
+---
+    24608: /* Takes the state it should END in rather than flipping. The two-position
+    24609:    switch that made that necessary went in a2.65 and the only caller now
+>>> 24610:    hands it !App.symmetry, so the equality guard below cannot fire today. It
+    24611:    stays because this is still the safer signature: every entry point this
+    24612:    might grow - a ring seat, a restored file, a keyboard key - knows the
+---
+    24613:    state it WANTS, not the state it is flipping from. */
+    24614: function setSymmetry(on) {
+>>> 24615:   if (App.symmetry === on) { refreshObjComponentBtn(); return; }
+    24616:   App.symmetry = on;
+    24617:   refreshUI();
+---
+    24614: function setSymmetry(on) {
+    24615:   if (App.symmetry === on) { refreshObjComponentBtn(); return; }
+>>> 24616:   App.symmetry = on;
+    24617:   refreshUI();
+    24618:   if (!App.symmetry) { toast('Symmetry off'); return; }
+---
+    24616:   App.symmetry = on;
+    24617:   refreshUI();
+>>> 24618:   if (!App.symmetry) { toast('Symmetry off'); return; }
+    24619:   /* Report how many mirror pairs were actually found, on screen. Symmetry
+    24620:      silently does nothing when the map comes back empty - which happens if
+---
+    24643:     App.symmetryAxis = btn.dataset.sym;
+    24644:     refreshUI();
+>>> 24645:     if (App.symmetry) {
+    24646:       // A new axis means a new plane - the other capture moment.
+    24647:       const o = findObject(App.activeObjectId);
+---
+    25182:        in the accent means symmetry is on; the crossed mirror, dim, means it
+    25183:        is off. Reading it needs no memory of what a tap would do. */
+>>> 25184:     symPillEl.classList.toggle('on', App.symmetry);
+    25185:     const symIc = symPillEl.querySelector('.ic');
+    25186:     if (symIc) symIc.innerHTML = icon(App.symmetry ? 'mirror' : 'symoff', 20);
+---
+    25184:     symPillEl.classList.toggle('on', App.symmetry);
+    25185:     const symIc = symPillEl.querySelector('.ic');
+>>> 25186:     if (symIc) symIc.innerHTML = icon(App.symmetry ? 'mirror' : 'symoff', 20);
+    25187:     symPillEl.title = App.symmetry
+    25188:       ? 'Symmetry on (' + App.symmetryAxis.toUpperCase() + ') - tap to turn it off'
+---
+    25185:     const symIc = symPillEl.querySelector('.ic');
+    25186:     if (symIc) symIc.innerHTML = icon(App.symmetry ? 'mirror' : 'symoff', 20);
+>>> 25187:     symPillEl.title = App.symmetry
+    25188:       ? 'Symmetry on (' + App.symmetryAxis.toUpperCase() + ') - tap to turn it off'
+    25189:       : 'Symmetry off - tap to mirror edits across ' + App.symmetryAxis.toUpperCase();
+---

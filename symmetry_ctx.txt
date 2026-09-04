@@ -1,0 +1,196 @@
+
+============================================================
+ctx initialization and mirror handling (around line 15080)
+============================================================
+
+15071:     const field = softLive ? softWeights(obj, logicalIds, App.softRadius) : null;
+15072:     if (field) {
+15073:       field.forEach((w, l) => {
+15074:         if (logicalIds.has(l)) return;        // already in, at full weight
+15075:         ctx.entries.push({ logical: l, world: at(l), w });
+15076:       });
+15077:     }
+15078:     ctx.soft = !!field;
+15079: 
+15080:     // Marks travel by logical edge for the length of the drag - see
+15081:     // snapshotEdgeMarks.
+15082:     ctx.marks = snapshotEdgeMarks(obj);
+15083:     ctx.mirrorMap = App.symmetry ? buildSymmetryMap(obj, App.symmetryAxis) : null;
+15084:     // Snapshot the plane with the map: it must not move mid-drag.
+15085:     ctx.mirrorOffset = App.symmetry ? symmetryPlane(obj, App.symmetryAxis).offset : 0;
+15086: 
+15087:     /* THE INVARIANT SYMMETRY RELIES ON: an entry writes ITSELF and its mirror
+15088:        partner, so the entries and their partners must be disjoint sets. Every
+15089:        selection satisfied that by accident until soft selection arrived - the
+15090:        field spreads outward in all directions, so the moment it crosses the
+15091:        plane the mirror partner of a selected vertex is ALSO an entry, later in
+15092:        the list and carrying a fraction of the weight.
+15093: 
+15094:        What that did: entry A wrote A at full travel and A' at its mirror;
+15095:        entry A' then overwrote A' with its own weighted move and overwrote A
+15096:        with the mirror of THAT. The vertex under your finger ended up at a
+15097:        fraction of the distance, and on a drag along the mirror axis it went
+15098:        BACKWARDS - measured at -0.25 on a 1.0 drag.
+15099: 
+15100:        So a partner that already has an entry of its own loses that entry: it
+15101:        is written by the vertex it mirrors, which is what symmetry means. The
+15102:        selection is walked first, so it always wins the claim. This also
+15103:        settles the older order-dependent case of selecting a vertex and its own
+15104:        mirror and dragging both.
+15105: 
+15106:        Runs HERE, after ctx.mirrorMap exists - the first attempt sat next to
+15107:        the soft entries a few lines up, where the map is still undefined, so
+15108:        the whole filter quietly skipped and the probe caught it unchanged. */
+15109:     if (ctx.mirrorMap) {
+15110:       const claimed = new Set();
+15111:       const kept = [];
+15112:       ctx.entries.forEach(e => {
+15113:         const p = ctx.mirrorMap.get(e.logical);
+15114:         // A vertex ON the plane is its own partner: it writes only itself
+15115:         // (clamped), so it claims nothing and can never be claimed away.
+15116:         const mirrors = p !== undefined && p !== e.logical;
+15117:         if (mirrors && claimed.has(e.logical)) return;
+15118:         kept.push(e);
+15119:         if (mirrors) claimed.add(p);
+15120:       });
+15121:       ctx.entries = kept;
+15122:     }
+15123:   }
+15124:   return ctx;
+15125: }
+15126: 
+15127: // Applies a world-space delta to the snapshot. Unchanged from the previous
+15128: // gizmo - this part was never the problem.
+15129: /* `deltaMatrix` is normally one Matrix4 for the whole selection. It may also
+15130:    be a FUNCTION of the entry, which is how a2.55's axis scale gives each
+
+============================================================
+All operation definitions (key: patterns)
+============================================================
+
+20477:   { key: 'geocube', icon: 'object', label: 'Cube', run: () => startGeoSetup('cube') },
+20478:   { key: 'geocyl', icon: 'cylinder', label: 'Cylinder', run: () => startGeoSetup('cylinder') },
+20479:   { key: 'geosphere', icon: 'sphere', label: 'Sphere', run: () => startGeoSetup('sphere') },
+20480:   { key: 'geotorus', icon: 'torus', label: 'Torus', run: () => startGeoSetup('torus') },
+20481:   { key: 'geoplane', icon: 'plane', label: 'Plane', run: () => startGeoSetup('plane') }
+20488:   { key: 'pivsel', icon: 'pivot', label: 'To selection', run: pivotToSelection },
+20489:   { key: 'pivobj', icon: 'object', label: 'To object', run: pivotToObjectCentre },
+20490:   { key: 'pivhand', icon: 'move', label: 'By hand', run: beginPivotPlacing },
+20491:   { key: 'pivauto', icon: 'undo', label: 'Auto', run: () => setPivotAuto() }
+22982:   { key: 'connect', icon: 'connect', label: 'Connect', seat: 0, ring: 0, run: connectSelection },
+22983:   { key: 'weld', icon: 'weld', label: 'Weld', seat: 1, ring: 0, run: weldSelection },
+22984:   { key: 'merge', icon: 'merge', label: 'Merge', seat: 2, ring: 0, run: mergeSelection },
+22991:   { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 8, ring: 1, run: setFlowSelection },
+22999:   { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 8.5, ring: 1, run: circularizeSelection },
+23015:   { key: 'slide', icon: 'slide', label: 'Slide', seat: 9, ring: 1, run: slideSelection },
+23016:   { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 0, run: deleteSelection },
+23025:   { key: 'extrude', icon: 'extrude', label: 'Extrude', seat: 0, ring: 0, run: extrudeSelection },
+23026:   { key: 'bevel', icon: 'bevel', label: 'Bevel', seat: 1, ring: 0, run: bevelSelection },
+23033:   { key: 'collapse', icon: 'collapse', label: 'Collapse', seat: 2, ring: 1, run: collapseSelection },
+23034:   { key: 'loopcut', icon: 'loop', label: 'Loop', seat: 9, ring: 0, run: edgeLoopSelection },
+23035:   { key: 'knife', icon: 'knife', label: 'Knife', seat: 3, ring: 1, run: startKnife },
+23036:   { key: 'split', icon: 'split', label: 'Split', seat: 4, ring: 1, run: splitSelection },
+23037:   { key: 'bridge', icon: 'bridge', label: 'Bridge', seat: 5, ring: 1, run: bridgeSelection },
+23038:   { key: 'cap', icon: 'cap', label: 'Cap hole', seat: 6, ring: 1, run: fillHolesSelection },
+23039:   { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 1, run: deleteSelection },
+23047:   { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 8, ring: 1, run: setFlowSelection },
+23048:   { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 8.5, ring: 1, run: circularizeSelection },
+23064:   { key: 'slide', icon: 'slide', label: 'Slide', seat: 9, ring: 1, run: slideSelection },
+23065:   { key: 'sharp', icon: 'sharp', label: 'Mark Sharp', seat: 10, ring: 1, run: markSharpSelection },
+23066:   { key: 'crease', icon: 'crease', label: 'Crease', seat: 11, ring: 1, run: () => creaseSelection() }
+23070:   { key: 'extrude', icon: 'extrude', label: 'Extrude', seat: 0, ring: 0, run: extrudeSelection },
+23071:   { key: 'inset', icon: 'inset', label: 'Inset', seat: 1, ring: 0, run: insetSelection },
+23074:   { key: 'detach', icon: 'detach', label: 'Detach', seat: 4, ring: 1, run: detachFacesSelection },
+23075:   { key: 'knife', icon: 'knife', label: 'Knife', seat: 3, ring: 1, run: startKnife },
+23076:   { key: 'bridge', icon: 'bridge', label: 'Bridge', seat: 5, ring: 0, run: bridgeSelection },
+23077:   { key: 'cap', icon: 'cap', label: 'Cap holes', seat: 6, ring: 1, run: fillHolesSelection },
+23078:   { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 1, run: deleteSelection },
+23082:   { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 8, ring: 1, run: setFlowSelection },
+23083:   { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 8.5, ring: 1, run: circularizeSelection },
+23084:   { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 11, ring: 1, run: toggleShading
+23085:   { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 9, ring: 1, run: flipNormalsSelection }
+23095:   { key: 'duplicate', icon: 'dupe', label: 'Duplicate', seat: 0, ring: 0, run: duplicateSelection },
+23102:   { key: 'array', icon: 'array', label: 'Array', seat: 0, ring: 1, run: arraySelection },
+23103:   { key: 'mirror', icon: 'mirroraction', label: 'Mirror', seat: 2, ring: 0, run: () => showMirrorChooser(App.symmetryAxi
+23104:   { key: 'flip', icon: 'flip', label: 'Flip', seat: 3, ring: 0, run: () => flipSelectedObjects(App.symmetryAxis) },
+23105:   { key: 'separate', icon: 'separate', label: 'Separate', seat: 4, ring: 1, run: separateSelection },
+23106:   { key: 'centre', icon: 'centre', label: 'Centre', seat: 5, ring: 0, run: centreSelectionToOrigin },
+23107:   { key: 'cap', icon: 'cap', label: 'Cap holes', seat: 6, ring: 1, run: fillHolesSelection },
+23108:   { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 0, run: deleteSelection },
+23109:   { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 8, ring: 1, run: toggleShading 
+23110:   { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 9, ring: 1, run: flipNormalsSelection },
+23115:   { key: 'solidify', icon: 'solidify', label: 'Solidify', seat: 9, ring: 0, run: solidifySelection },
+23119:   { key: 'cleanup', icon: 'cleanup', label: 'Clean up', seat: 10, ring: 0, run: cleanupSelection },
+23120:   { key: 'subdivide', icon: 'subdiv', label: 'Subdivide', seat: 10, ring: 1, run: subdivideSelection },
+23124:   { key: 'autosmooth', icon: 'smoothangle', label: 'Smooth by angle', seat: 11, ring: 1, run: autoSmoothSelection }
+23129: const HUB_TOOL_JOIN = { key: 'join', icon: 'join', label: 'Join', seat: 12, ring: 1, run: joinSelection };
+23132:   { key: 'addgeo', icon: 'object', label: 'Add geo', ring: 0, run: openGeoRing },
+23133:   { key: 'save', icon: 'save', label: 'Save', ring: 0, run: saveProjectFile },
+23136:   { key: 'load', icon: 'load', label: 'Load', ring: 0, run: () => document.getElementById('fileLoad').click() },
+23137:   { key: 'export', icon: 'file_export', label: 'Export', ring: 1, run: exportGlbAction }
+23164:   { key: 'addgeo', icon: 'object', label: 'Add geo', half: 'pole', run: openGeoRing },
+23165:   { key: 'pivot', icon: 'pivot', label: 'Pivot', half: 'pole2', run: openPivotRing },
+23167:   { key: 'xray', icon: 'eye', label: 'See-through', half: 'top',
+23169:   { key: 'grid', icon: 'grid', label: 'Floor grid', half: 'top',
+23171:   { key: 'snap', icon: 'snap', label: 'Snap', half: 'top',
+23174:   { key: 'selfree', icon: 'free', label: 'Tap select', half: 'bottom',
+23176:   { key: 'selbox', icon: 'box', label: 'Box select', half: 'bottom',
+23178:   { key: 'sellasso', icon: 'lasso', label: 'Lasso select', half: 'bottom',
+
+============================================================
+runOp definition
+============================================================
+
+
+============================================================
+Calls to runMirrored
+============================================================
+
+6943:    point, connect wires its members together, bridge joins one half to the
+6944:    other. Handing those the union is wrong, not merely imprecise: welding
+6945:    {A,B} together with {A',B'} collapses all four onto the plane. They run
+6946:    ONCE PER SIDE instead, which is what runMirrored does.
+6947: 
+6948:    The second pass cannot reuse element ids - the first pass rebuilds the
+6949:    mesh and renumbers everything - so the mirrored side is remembered as
+---
+13364:   const obj = findObject(App.activeObjectId);
+13365:   if (App.mode !== 'vertex') { toast('Connect works in Vertex mode'); return; }
+13366:   if (!obj || App.selectedElements.size < 2) { toast('Select at least 2 vertices'); return; }
+13367:   runMirrored(obj, connectSelectionOnce);
+13368: }
+13369: 
+13370: // Connect wires its selection together, so four vertices would get the wrong
+---
+19253:   if (App.mode !== 'vertex') { toast('Weld works in Vertex mode'); return; }
+19254:   const obj = findObject(App.activeObjectId);
+19255:   if (!obj || App.selectedElements.size < 2) { toast('Select 2+ vertices to weld'); return; }
+19256:   runMirrored(obj, weldSelectionOnce);
+19257: }
+19258: 
+19259: // Weld melts its selection into ONE point, so the union of a group and its
+---
+19390:   if (App.mode !== 'vertex') { toast('Merge works in Vertex mode'); return; }
+19391:   const obj = findObject(App.activeObjectId);
+19392:   if (!obj || App.selectedElements.size < 2) { toast('Select 2+ vertices to merge'); return; }
+19393:   runMirrored(obj, mergeSelectionOnce);
+19394: }
+19395: 
+19396: // Like Weld, Merge is relational - the union of a group and its mirror must
+---
+19422:   if (App.mode !== 'edge') { toast('Collapse works in Edge mode'); return; }
+19423:   const obj = findObject(App.activeObjectId);
+19424:   if (!obj || !App.selectedElements.size) { toast('Select edges to collapse'); return; }
+19425:   runMirrored(obj, collapseSelectionOnce);
+19426: }
+19427: 
+19428: // Relational, like Weld and Merge: handed a selection and its mirror as one
+---
+25346:     symmetryPlane, captureSymmetryPlane, buildSymmetryMap,
+25347:     bisectObject, mirrorObject, planeSpan, mirrorMatrixForPlane,
+25348:     opSymmetry, mirrorOfSelection, expandSelectionToMirror, extrudeRegionOp,
+25349:     runMirrored, markElements, resolveElements, symExpand,
+25350:     edgeLoopSelection, decideLoopCutFlip, loopCutTrial, applyPendingOp,
+25351:     captureObjectState, restoreObjectState, cancelPendingOp,
+25352:     // Extrude mode, driveable without a pointer: run extrudeSelection, then
+---

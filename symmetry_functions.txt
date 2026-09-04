@@ -1,0 +1,352 @@
+
+============================================================
+captureSymmetryPlane (line 6909)
+============================================================
+
+6909: function captureSymmetryPlane(obj, axis) {
+6910:   const geo = obj.mesh.geometry;
+6911:   geo.computeBoundingBox();
+6912:   const c = geo.boundingBox.getCenter(new THREE.Vector3());
+6913:   const plane = { axis: axis, offset: c[axis] };
+6914:   obj.mesh.userData.symPlane = plane;
+6915:   return plane;
+6916: }
+
+============================================================
+symmetryPlane (line 6930)
+============================================================
+
+6930: function symmetryPlane(obj, axis) {
+6931:   const p = obj.mesh.userData.symPlane;
+6932:   if (p && p.axis === axis) return p;
+6933:   return captureSymmetryPlane(obj, axis);
+6934: }
+
+============================================================
+markElements (line 6954)
+============================================================
+
+6954: function markElements(obj, set) {
+6955:   const topo = obj.mesh.userData.topo;
+6956:   const mode = App.mode;
+6957:   const items = [];
+6958:   set.forEach(e => {
+6959:     if (mode === 'vertex') items.push({ p: logicalPos(obj, e) });
+6960:     else if (mode === 'edge') {
+6961:       const ed = topo.edges[e];
+6962:       if (ed) items.push({ a: logicalPos(obj, ed[0]), b: logicalPos(obj, ed[1]) });
+6963:     } else if (mode === 'face') {
+6964:       const c = faceCentroidLocal(obj, e);
+6965:       if (c) items.push({ c: c });
+6966:     }
+6967:   });
+6968:   return { mode: mode, items: items };
+6969: }
+
+============================================================
+resolveElements (line 6971)
+============================================================
+
+6971: function resolveElements(obj, marks) {
+6972:   const topo = obj.mesh.userData.topo;
+6973:   const out = new Set();
+6974:   if (marks.mode === 'vertex') {
+6975:     marks.items.forEach(it => {
+6976:       const l = findLogicalByPosition(obj, it.p);
+6977:       if (l >= 0) out.add(l);
+6978:     });
+6979:   } else if (marks.mode === 'edge') {
+6980:     marks.items.forEach(it => {
+6981:       const a = findLogicalByPosition(obj, it.a), b = findLogicalByPosition(obj, it.b);
+6982:       if (a < 0 || b < 0) return;
+6983:       const i = topo.edges.findIndex(e => (e[0] === a && e[1] === b) || (e[0] === b && e[1] === a));
+6984:       if (i >= 0) out.add(i);
+6985:     });
+6986:   } else if (marks.mode === 'face') {
+6987:     // Nearest centroid rather than an exact key: the op may have moved the
+6988:     // face slightly, and a face is not identified by one coordinate.
+6989:     marks.items.forEach(it => {
+6990:       let best = -1, bestD = 1e-6;
+6991:       for (let gi = 0; gi < topo.faceGroups.length; gi++) {
+6992:         const c = faceCentroidLocal(obj, gi);
+6993:         if (!c) continue;
+6994:         const d = c.distanceToSquared(it.c);
+6995:         if (d < bestD) { bestD = d; best = gi; }
+6996:       }
+6997:       if (best >= 0) out.add(best);
+6998:     });
+6999:   }
+7000:   return out;
+7001: }
+
+============================================================
+runMirrored (line 7003)
+============================================================
+
+7003: function runMirrored(obj, fn) {
+7004:   if (!App.symmetry || App.mode === 'object') { fn(); return; }
+7005:   ensureHelpers(obj);
+7006:   const mine = new Set(App.selectedElements);
+7007:   const m = mirrorOfSelection(obj, Array.from(mine));
+7008:   if (m === null) {
+7009:     toast('Symmetry found no pairs here - working on one side only');
+7010:     fn();
+7011:     return;
+7012:   }
+7013:   const other = new Set(Array.from(m).filter(e => !mine.has(e)));
+7014:   // The selection is its own mirror: one pass is the whole job.
+7015:   if (!other.size) { fn(); return; }
+7016: 
+7017:   const marks = markElements(obj, other);
+7018:   const objId = obj.id;
+7019:   symQuietHistory = true;
+7020:   try { fn(); } finally { symQuietHistory = false; }
+7021: 
+7022:   const o2 = findObject(objId);
+7023:   if (!o2) { pushHistory(); return; }   // the op removed the object
+7024:   ensureHelpers(o2);
+7025:   const back = resolveElements(o2, marks);
+7026:   if (!back.size) {
+7027:     toast('Symmetry: could not find the mirrored side after the first pass');
+7028:     pushHistory();
+7029:     return;
+7030:   }
+7031:   App.selectedElements = back;
+7032:   fn();
+7033: }
+
+============================================================
+opSymmetry (line 7043)
+============================================================
+
+7043: function opSymmetry(obj) {
+7044:   if (!App.symmetry) return null;
+7045:   const pl = symmetryPlane(obj, App.symmetryAxis);
+7046:   const geo = obj.mesh.geometry;
+7047:   geo.computeBoundingBox();
+7048:   const s = geo.boundingBox.getSize(new THREE.Vector3());
+7049:   // Same relative tolerance buildSymmetryMap pairs with, so "on the plane"
+7050:   // means the same thing to both.
+7051:   return { axis: pl.axis, offset: pl.offset, eps: Math.max(s.x, s.y, s.z, 1) * 1e-3 };
+7052: }
+
+============================================================
+mirrorOfSelection (line 7054)
+============================================================
+
+7054: function mirrorOfSelection(obj, elements) {
+7055:   const map = buildSymmetryMap(obj, App.symmetryAxis);
+7056:   if (!map.size) return null;
+7057:   const topo = obj.mesh.userData.topo;
+7058:   const out = new Set();
+7059:   const mv = l => (map.has(l) ? map.get(l) : -1);
+7060: 
+7061:   if (App.mode === 'vertex') {
+7062:     elements.forEach(l => { const m = mv(l); if (m >= 0) out.add(m); });
+7063:   } else if (App.mode === 'edge') {
+7064:     const key = (a, b) => (a < b ? a + '_' + b : b + '_' + a);
+7065:     const byKey = new Map();
+7066:     topo.edges.forEach((e, i) => byKey.set(key(e[0], e[1]), i));
+7067:     elements.forEach(ei => {
+7068:       const e = topo.edges[ei];
+7069:       if (!e) return;
+7070:       const a = mv(e[0]), b = mv(e[1]);
+7071:       if (a < 0 || b < 0) return;
+7072:       const i = byKey.get(key(a, b));
+7073:       if (i !== undefined) out.add(i);
+7074:     });
+7075:   } else if (App.mode === 'face') {
+7076:     const keyOf = vs => Array.from(vs).sort((x, y) => x - y).join(',');
+7077:     const byKey = new Map();
+7078:     topo.faceGroups.forEach((g, gi) => { if (g) byKey.set(keyOf(g.logicalVerts), gi); });
+7079:     elements.forEach(gi => {
+7080:       const g = topo.faceGroups[gi];
+7081:       if (!g) return;
+7082:       const m = [];
+7083:       let ok = true;
+7084:       Array.from(g.logicalVerts).forEach(l => { const q = mv(l); if (q < 0) ok = false; else m.push(q); });
+7085:       if (!ok) return;
+7086:       const j = byKey.get(keyOf(m));
+7087:       if (j !== undefined) out.add(j);
+7088:     });
+7089:   }
+7090:   return out;
+7091: }
+
+============================================================
+expandSelectionToMirror (line 7097)
+============================================================
+
+7097: function expandSelectionToMirror(obj) {
+7098:   if (!App.symmetry || App.mode === 'object') return 0;
+7099:   const before = App.selectedElements.size;
+7100:   const m = mirrorOfSelection(obj, Array.from(App.selectedElements));
+7101:   if (m === null) return -1;
+7102:   m.forEach(e => App.selectedElements.add(e));
+7103:   return App.selectedElements.size - before;
+7104: }
+
+============================================================
+symExpand (line 7107)
+============================================================
+
+7107: function symExpand(obj) {
+7108:   const added = expandSelectionToMirror(obj);
+7109:   if (added < 0) toast('Symmetry found no pairs here - working on one side only');
+7110:   return added;
+7111: }
+
+============================================================
+buildSymmetryMap (line 7113)
+============================================================
+
+7113: function buildSymmetryMap(obj, axis) {
+7114:   const topo = obj.mesh.userData.topo;
+7115:   if (!topo || !topo.logicalCount) return new Map();
+7116: 
+7117:   /* Nearest-within-tolerance rather than an exact rounded-key lookup. The
+7118:      key version needed two vertices to agree to 0.0001 in every coordinate,
+7119:      so the tiniest drift from an earlier edit silently produced no partners
+7120:      at all - and symmetry then did nothing, with no way to tell it apart
+7121:      from working. Tolerance scales with the object so it holds for large
+7122:      and small models alike. */
+7123:   const pts = [];
+7124:   for (let l = 0; l < topo.logicalCount; l++) pts.push(logicalPos(obj, l));
+7125:   const size = new THREE.Box3().setFromPoints(pts).getSize(new THREE.Vector3());
+7126:   const tol = Math.max(size.x, size.y, size.z, 1) * 1e-3;
+7127:   const tol2 = tol * tol;
+7128: 
+7129:   // Reflect about the captured plane, not local zero: x' = 2*offset - x.
+7130:   const off = symmetryPlane(obj, axis).offset;
+7131:   const map = new Map();
+7132:   const m = new THREE.Vector3();
+7133:   for (let l = 0; l < topo.logicalCount; l++) {
+7134:     m.copy(pts[l]);
+7135:     m[axis] = 2 * off - m[axis];
+7136:     let best = -1, bestD = tol2;
+7137:     for (let k = 0; k < pts.length; k++) {
+7138:       const d = m.distanceToSquared(pts[k]);
+7139:       if (d < bestD) { bestD = d; best = k; }
+7140:     }
+7141:     if (best >= 0) map.set(l, best);
+7142:   }
+7143:   return map;
+7144: }
+
+============================================================
+mirrorMatrixForPlane (line 7518)
+============================================================
+
+7518: function mirrorMatrixForPlane(plane) {
+7519:   const n = plane.normal, d = plane.constant;
+7520:   return new THREE.Matrix4().set(
+7521:     1 - 2 * n.x * n.x, -2 * n.x * n.y, -2 * n.x * n.z, -2 * d * n.x,
+7522:     -2 * n.y * n.x, 1 - 2 * n.y * n.y, -2 * n.y * n.z, -2 * d * n.y,
+7523:     -2 * n.z * n.x, -2 * n.z * n.y, 1 - 2 * n.z * n.z, -2 * d * n.z,
+7524:     0, 0, 0, 1
+7525:   );
+7526: }
+
+============================================================
+planeSpan (line 7530)
+============================================================
+
+7530: function planeSpan(obj, plane) {
+7531:   obj.mesh.updateMatrixWorld();
+7532:   const pa = obj.mesh.geometry.attributes.position;
+7533:   const p = new THREE.Vector3();
+7534:   const d = new Float64Array(pa.count);
+7535:   let lo = Infinity, hi = -Infinity;
+7536:   for (let i = 0; i < pa.count; i++) {
+7537:     p.set(pa.getX(i), pa.getY(i), pa.getZ(i)).applyMatrix4(obj.mesh.matrixWorld);
+7538:     d[i] = plane.distanceToPoint(p);
+7539:     if (d[i] < lo) lo = d[i];
+7540:     if (d[i] > hi) hi = d[i];
+7541:   }
+7542:   const size = new THREE.Box3().setFromObject(obj.mesh).getSize(new THREE.Vector3());
+7543:   return { d: d, lo: lo, hi: hi, eps: Math.max(size.x, size.y, size.z, 1) * 1e-5 };
+7544: }
+
+============================================================
+bisectObject (line 7554)
+============================================================
+
+7554: function bisectObject(obj, plane, keepPositive) {
+7555:   const ed = toEditable(obj.mesh);
+7556:   const span = planeSpan(obj, plane);
+7557:   const eps = span.eps, sign = keepPositive ? 1 : -1;
+7558:   const dist = i => span.d[i] * sign;
+7559: 
+7560:   const pos = ed.positions.slice();
+7561:   const srcMats = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
+7562:   const srcSmooth = obj.mesh.userData.smoothGroups || {};
+7563:   const srcFinish = obj.mesh.userData.finishes || {};
+7564:   const groups = [], mats = [], smooth = {}, finishes = {};
+7565: 
+7566:   // A vertex on the cut, at the exact crossing point of the edge a-b.
+7567:   const cutVertex = (a, b, da, db) => {
+7568:     const t = da / (da - db);
+7569:     const ni = pos.length / 3;
+7570:     for (let k = 0; k < 3; k++) {
+7571:       pos.push(ed.positions[a * 3 + k] + (ed.positions[b * 3 + k] - ed.positions[a * 3 + k]) * t);
+7572:     }
+7573:     return ni;
+7574:   };
+7575: 
+7576:   ed.groups.forEach((g, gi) => {
+7577:     const loop = getGroupBoundaryLoopAttr(ed, gi);
+7578:     if (loop.length < 3) return;
+7579:     const out = [];
+7580:     for (let i = 0; i < loop.length; i++) {
+7581:       const a = loop[i], b = loop[(i + 1) % loop.length];
+7582:       const da = dist(a), db = dist(b);
+7583:       if (da >= -eps) out.push(a);
+7584:       if ((da > eps && db < -eps) || (da < -eps && db > eps)) out.push(cutVertex(a, b, da, db));
+7585:     }
+7586:     if (out.length < 3) return;   // this face was entirely on the far side
+7587:     const ngi = groups.length;
+7588:     groups.push({ triangles: fanTriangles(out) });
+7589:     mats.push((srcMats[gi] || srcMats[0]).clone());
+7590:     if (srcSmooth[gi]) smooth[ngi] = true;
+7591:     if (srcFinish[gi]) finishes[ngi] = srcFinish[gi];
+7592:   });
+7593:   if (!groups.length) return null;
+7594: 
+7595:   // Drop the vertices nothing references any more, or the discarded half
+7596:   // leaves a cloud of orphan dots floating in Vertex mode.
+7597:   const seen = new Map(), compact = [];
+7598:   const remap = v => {
+7599:     if (!seen.has(v)) {
+7600:       seen.set(v, compact.length / 3);
+7601:       compact.push(pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]);
+7602:     }
+7603:     return seen.get(v);
+7604:   };
+7605:   groups.forEach(gr => { gr.triangles = gr.triangles.map(t => t.map(remap)); });
+7606: 
+7607:   const half = createObjectFromEditable(obj.name + ' half', obj.mesh.position.clone(),
+7608:     { positions: compact, groups: groups }, mats, smooth);
+7609:   if (!half) return null;
+7610:   half.mesh.quaternion.copy(obj.mesh.quaternion);
+7611:   half.mesh.scale.copy(obj.mesh.scale);
+7612:   half.mesh.userData.finishes = finishes;
+7613:   return half;
+7614: }
+
+============================================================
+mirrorObject (line 7620)
+============================================================
+
+7620: function mirrorObject(obj, plane) {
+7621:   obj.mesh.updateMatrixWorld();
+7622:   const newMatrix = new THREE.Matrix4().multiplyMatrices(
+7623:     mirrorMatrixForPlane(plane), obj.mesh.matrixWorld);
+7624:   const pos = new THREE.Vector3(), quat = new THREE.Quaternion(), scale = new THREE.Vector3();
+7625:   newMatrix.decompose(pos, quat, scale);
+7626: 
+7627:   const newObj = cloneObjectInto(obj, obj.name + ' mirror');
+7628:   newObj.mesh.position.copy(pos);
+7629:   newObj.mesh.quaternion.copy(quat);
+7630:   newObj.mesh.scale.copy(scale);
+7631:   return newObj;
+7632: }

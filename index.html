@@ -2203,7 +2203,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.107</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.108</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -24675,8 +24675,12 @@ function minAngularGapDeg(anglesDeg) {
    opened it - which put the finger outside the dead zone before it had
    moved at all, highlighted whatever item lay on that bearing, and RAN it
    on a lift-in-place. Drawing and aiming are two different points and the
-   code now says so. Omitted by every canvas caller, where the finger is
-   the centre and the two coincide. */
+   code now says so.
+
+   PASS IT ALWAYS. Since a2.108 the centre is only under the finger while
+   the ring fits; near an edge it moves, so there is no longer any caller
+   for which the two coincide by construction. Both canvas callers do pass
+   it; the `aim ? ... : cx` fallback below is a last resort, not a mode. */
 function bloomToolRing(x, y, tools, pointerId, aim) {
   tools = tools || currentHubTools();
   if (!tools.length) return;
@@ -24718,73 +24722,57 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
     TOOL_RING_MIN_R,
     (TOOL_RING_ITEM + TOOL_RING_GAP) / (2 * Math.sin(gap / 2))
   );
-  const fits = Math.min(rect.width, rect.height) / 2 - TOOL_RING_TIP - 14;
+  /* RING_EDGE_PX, not a literal 14: `place` below only stays sane while
+     margin <= span / 2, and margin is built from this same clearance.
+     Two numbers that must agree should not be written twice. */
+  const fits = Math.min(rect.width, rect.height) / 2 - TOOL_RING_TIP - RING_EDGE_PX;
   const R = Math.max(TOOL_RING_MIN_R * 0.6, Math.min(ideal, fits));
 
-  /* The shortest a clamped seat may be drawn, and it cannot be a flat
-     number. Seats clamped by one edge all land on the SAME line, and
-     along that line their spacing is only what the ANGLE between them
-     buys - which at fourteen seats and a short radius is under 20px, and
-     the icons end up on top of each other. So the floor is the radius at
-     which neighbours still clear each other by the tightest gap the ring
-     will accept (68px centre to centre, against `ideal`'s comfortable
-     92), and never less than clear of the dead zone.
+  /* The shortest the ring may be drawn, and it cannot be a flat number.
+     Seats sit at a fixed ANGLE from each other, so how far apart they are
+     on screen is that angle times the radius - and at fourteen seats and a
+     short radius that is under 20px, with the words on top of each other.
+     The floor is the radius at which neighbours still clear each other by
+     the tightest gap the ring will accept (68px centre to centre, against
+     `ideal`'s comfortable 92), and never less than clear of the dead zone.
 
      68 rather than a2.104's 56 since a2.107: a seat carries a 64px WORD
-     now, not a 20px glyph, and two seats sitting on the floor together
-     had labels that overlapped even though their boxes did not. The floor
-     is what the widest thing on a seat needs, plus air.
-
-     Two seats both sitting on the floor are exactly that 68px apart, and
-     moving either one further out only increases the distance - so the
-     floor alone is enough to guarantee the spacing, whatever the shape
-     the clamp ends up drawing.
-
-     The centre's own margin is built from this same number, so the room
-     in every direction is at least this much: the floor can never fight
-     the edge clearance, and a ring that fits stays a perfect circle. */
+     now, not a 20px glyph, and two seats at the old floor had labels that
+     overlapped even though their boxes did not. The floor is what the
+     widest thing on a seat needs, plus air. */
   const seatMinR = Math.max(
     TOOL_RING_SEAT_MIN_R,
     Math.min(R, (TOOL_RING_ITEM + 16) / (2 * Math.sin(gap / 2)))
   );
 
-  /* THE SEATS GIVE WAY, NOT THE RING (a2.104). This used to hold the whole
-     ring clear of the edge - margin was R + tip + 4 - which on a phone left
-     a legal band about 20px wide for the centre. The ring therefore bloomed
-     near the middle of the screen almost wherever you pressed, and a2.98 had
-     to add a separate aim point to keep the picking honest when it did.
+  /* SHRINK FIRST, THEN MOVE (a2.108, replacing a2.104's per-seat clamp).
 
-     A seat is chosen by DIRECTION, so how far out it sits carries no
-     information - which makes the seat, not the ring, the thing that can
-     move. The centre now stays under the finger and any seat that would hang
-     off the edge is drawn closer in along its OWN bearing. Bearings, sectors
-     and picking are untouched; the ring's edge simply flattens against the
-     side of the screen, since every seat clamped by one edge lands on the
-     same line as the others clamped by it.
+     a2.104 kept the centre under the finger and pulled any seat that would
+     hang off the edge closer in along its OWN bearing. It reached well, but
+     seats clamped by one edge all landed on the same LINE, so the ring lost
+     its shape near a border - and once a2.107 drew the star through those
+     radii, the whole figure buckled. A menu that changes shape depending on
+     where you happened to press reads as broken, not as adaptive.
 
-     The centre still needs SOME room, or a seat aimed straight at a nearby
-     edge would have nowhere legal to go. It needs far less: enough for the
-     shortest seat the ring is allowed to draw. */
-  const margin = RING_EDGE_PX + TOOL_RING_TIP + seatMinR;
+     So the ring is now always REGULAR: one radius for every seat, always.
+     Near an edge it SHRINKS - uniformly, staying a circle and staying under
+     the finger - and only once it has shrunk to `seatMinR`, the smallest
+     ring the words can live in, does the CENTRE move instead.
+
+     Reach is unchanged. The centre starts moving at exactly the distance it
+     did before (RING_EDGE_PX + tip + seatMinR), because that is the point at
+     which a2.104's shortest legal seat also ran out of room; everything
+     nearer the middle now simply keeps its shape instead of losing it. */
+  const room = (v, span) => Math.min(v, span - v) - RING_EDGE_PX - TOOL_RING_TIP;
+  const rFit = Math.min(room(x - rect.left, rect.width),
+                        room(y - rect.top, rect.height));
+  const ringR = THREE.MathUtils.clamp(rFit, Math.min(seatMinR, R), R);
+  const margin = RING_EDGE_PX + TOOL_RING_TIP + ringR;
   // A viewport too small even for that keeps the ring centred rather than
   // letting the clamp invert and throw it into a corner.
   const place = (v, span) => (span < margin * 2 ? span / 2 : THREE.MathUtils.clamp(v, margin, span - margin));
   const cx = place(x - rect.left, rect.width);
   const cy = place(y - rect.top, rect.height);
-
-  /* How far this bearing can reach before the seat's TIP meets the edge.
-     Each side limits only the seats travelling toward it, hence the sign
-     test - a seat running parallel to an edge is not constrained by it. */
-  const seatRadius = (angle) => {
-    const ux = Math.cos(angle), uy = -Math.sin(angle);   // screen y grows down
-    let r = R;
-    const lim = (room, u) => { if (u > 1e-6) r = Math.min(r, room / u); };
-    lim(cx - RING_EDGE_PX - TOOL_RING_TIP, -ux);
-    lim(rect.width - RING_EDGE_PX - TOOL_RING_TIP - cx, ux);
-    lim(cy - RING_EDGE_PX - TOOL_RING_TIP, -uy);
-    lim(rect.height - RING_EDGE_PX - TOOL_RING_TIP - cy, uy);
-    return THREE.MathUtils.clamp(r, Math.min(seatMinR, R), R);
-  };
 
   /* The gesture just happened, so the chip has done its job - and it goes
      whether or not a tool is picked, because backing out of a ring still
@@ -24798,7 +24786,7 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
   const itemEls = [];
   tools.forEach((tool, idx) => {
     const angle = anglesDeg[idx] * Math.PI / 180;
-    const seatR = seatRadius(angle);
+    const seatR = ringR;
     const el = document.createElement('div');
     el.className = 'hub-item';
     // A toggle has to show which way it is currently set, or you can't tell
@@ -24838,19 +24826,18 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
      it is the RING's shape, and the seats sit on its points or between
      them.
 
-     Each point takes seatRadius() at its own bearing, so near an edge the
-     star flattens exactly where the seats do (a2.104) and the two can
-     never come apart.
+     One radius for all eight points (a2.108) - the same one the seats
+     use - so the star is always two true squares, and the seats are always
+     on it.
 
      Inserted first, so the seats lay on top of it. Through the ring, not
      behind it: at 45% the model still reads underneath. */
   {
     const NS = 'http://www.w3.org/2000/svg';
     const bear = [0, 45, 90, 135, 180, 225, 270, 315].map(d => d * Math.PI / 180);
-    const rad = bear.map(seatRadius);
-    const rmax = Math.max.apply(null, rad) + 2;
-    const at = (i) => (rmax + Math.cos(bear[i]) * rad[i]).toFixed(1) + ',' +
-                      (rmax - Math.sin(bear[i]) * rad[i]).toFixed(1);
+    const rmax = ringR + 2;
+    const at = (i) => (rmax + Math.cos(bear[i]) * ringR).toFixed(1) + ',' +
+                      (rmax - Math.sin(bear[i]) * ringR).toFixed(1);
     const star = document.createElementNS(NS, 'svg');
     star.id = 'ringStar';
     star.setAttribute('width', rmax * 2);
@@ -24897,7 +24884,7 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
   aimEl.style.left = ox + 'px'; aimEl.style.bottom = (-oy - 1) + 'px';
   touchToolRingEl.appendChild(reticleEl);
 
-  toolRingActive = { x: cx, y: cy, tools, itemEls, hoveredIndex: -1, pointerId, radius: R, labelEl, aimEl,
+  toolRingActive = { x: cx, y: cy, tools, itemEls, hoveredIndex: -1, pointerId, radius: ringR, labelEl, aimEl,
                      aimX: aim ? aim.x - rect.left : cx,
                      aimY: aim ? aim.y - rect.top : cy };
   if (pointerId !== undefined) {
@@ -24966,7 +24953,7 @@ function placeRingAim(idx) {
   const it = toolRingActive.itemEls[idx];
   const t = toolRingActive;
   // Seat centre relative to the aim point, y up like the seat placement.
-  // a2.104: a seat clamped by an edge sits closer in than the nominal radius.
+  // a2.108: one radius for every seat, so these two always agree.
   const seatR = it.r || t.radius;
   const dx = Math.cos(it.angle) * seatR - (t.aimX - t.x);
   const dy = Math.sin(it.angle) * seatR + (t.aimY - t.y);

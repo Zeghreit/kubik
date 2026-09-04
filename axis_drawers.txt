@@ -1,0 +1,138 @@
+
+============================================================
+All drawer definitions with 'axis' field
+============================================================
+
+
+============================================================
+All 'axis:' field assignments in operations
+============================================================
+
+16303:   if (!raycaster.ray.intersectPlane(plane, hit)) return false;
+16304:   const rect = viewportEl.getBoundingClientRect();
+16305:   pivotDrag = {
+16306:     plane, startHit: hit, origin: App.pivotPoint.clone(),
+16307:     startX: ev.clientX - rect.left, startY: ev.clientY - rect.top,
+16308:     axis: null, decided: App.transformMode !== 'axis',
+16309:     // A tap is a drag that never went anywhere, and it is the documented way
+16310:     // out of placing. handleTap cannot decide that - every press here becomes
+16311:     // a pivot drag and pointerup returns before handleTap is ever reached - so
+16312:     // the distinction has to be made where the gesture actually ends.
+16313:     moved: false
+16314:   };
+16315:   orbit.enabled = false;
+16316:   return true;
+16317: }
+---
+16679:     center,
+16680:     plane,
+16681:     startHit,
+16682:     startX: ev.clientX - rect.left,
+16683:     startY: ev.clientY - rect.top,
+16684:     axis: null,          // null = free across the camera plane
+16685:     startParam: 0,
+16686:     prevScreenAngle: undefined,   // screen-angle tracking for axis rotation
+16687:     totalAngle: 0,
+16688:     freeRotAxis: null,            // committed once from the swipe direction
+16689:     freeScaleDecided: false,      // which axis (if any) a free scale drag chose
+16690:     freeScaleAxis: null,
+16691:     decided: false
+16692:   };
+16693:   orbit.enabled = false;
+---
+16735:      something the user did. */
+16736:   const ref = dragCtx.entries[0].matrix;
+16737:   if (!ref) return GIZMO_AXES;
+16738:   return GIZMO_AXES.map((ax, i) => {
+16739:     const dir = new THREE.Vector3().setFromMatrixColumn(ref, i);
+16740:     /* A zero column is a reference object scaled flat on that axis: it has no
+16741:        direction to offer, so the WORLD axis is what the gesture is measured
+16742:        against and what the guide draws. It is still tagged `local`, and that
+16743:        matters - an untagged axis sends every object in the selection down the
+16744:        world-axis path, so one flattened plate would have sheared every
+16745:        healthy rotated object beside it. The per-entry delta decides what to
+16746:        do about each object's own column, and it already handles this. */
+16747:     if (dir.lengthSq() < 1e-12) return { key: ax.key, color: ax.color, dir: ax.dir.clone(), local: i };
+16748:     return { key: ax.key, color: ax.color, dir: dir.normalize(), local: i };
+16749:   });
+---
+20139:      ids[0] for the same reason. */
+20140:   const ids = Array.from(App.selectedObjectIds);
+20141:   const obj = findObject(ids[0]) || findObject(App.activeObjectId);
+20142:   if (!obj) return;
+20143:   beginPendingOp('array', obj, {}, {
+20144:     groupMode: 'line', segments: 3, axis: App.symmetryAxis || 'x'
+20145:   });
+20146: }
+20147: 
+20148: 
+20149: /* ---------------- Solidify (a2.79) --------------------------------------
+20150: 
+20151:    Gives an OPEN surface a thickness: a plane becomes a slab, an imported
+20152:    single-sided shell becomes something you could print.
+20153: 
+---
+20752:        procedural at all. A shared file arrives lit the way it was made. */
+20753:     environment: { preset: App.env.preset, rotation: App.env.rotation, intensity: App.env.intensity },
+20754:     // Symmetry is a modelling state, not an appearance one: it belongs with
+20755:     // the geometry it mirrors, and an undo that quietly switched it off was
+20756:     // the kind of thing you only notice three edits later.
+20757:     symmetry: { on: !!App.symmetry, axis: App.symmetryAxis },
+20758:     objects: App.objects.map(o => {
+20759:       const g = o.mesh.geometry;
+20760:       const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
+20761:       return {
+20762:         id: o.id,
+20763:         name: o.name,
+20764:         position: o.mesh.position.toArray(),
+20765:         quaternion: o.mesh.quaternion.toArray(),
+20766:         scale: o.mesh.scale.toArray(),
+---
+20801:            the model grows - and then it was thrown away by every save and
+20802:            every undo, which silently recaptured it from the current bounding
+20803:            box. Two numbers to carry the one thing the design says must not be
+20804:            recomputed. */
+20805:         symPlane: o.mesh.userData.symPlane
+20806:           ? { axis: o.mesh.userData.symPlane.axis, offset: o.mesh.userData.symPlane.offset }
+20807:           : undefined
+20808:       };
+20809:     }),
+20810:     // Selection travels with the snapshot so undo/redo doesn't drop you back
+20811:     // into Object mode with nothing picked.
+20812:     selection: {
+20813:       mode: App.mode,
+20814:       activeObjectId: App.activeObjectId,
+20815:       objects: Array.from(App.selectedObjectIds),
+---
+21040:     /* A doc written before a2.18 has no edgeShade at all, which is the
+21041:        signal to convert its per-face flags and shading creases into edge
+21042:        marks. One written after has it, even when empty, and is left alone -
+21043:        an empty map means "everything decided by angle", not "not migrated". */
+21044:     if (od.symPlane && typeof od.symPlane.offset === 'number') {
+21045:       mesh.userData.symPlane = { axis: od.symPlane.axis, offset: od.symPlane.offset };
+21046:     }
+21047:     if (od.edgeShade) mesh.userData.edgeShade = { ...od.edgeShade };
+21048:     else migrateEdgeShade(obj);
+21049:     if (typeof od.autoSmoothAngleDeg === 'number') {
+21050:       const d = Math.min(180, Math.max(0, od.autoSmoothAngleDeg));
+21051:       mesh.userData.autoSmoothAngle = d * Math.PI / 180;
+21052:     }
+21053:     applyShading(obj);
+21054:     scene.add(mesh);
+---
+24644:     refreshUI();
+24645:     if (App.symmetry) {
+24646:       // A new axis means a new plane - the other capture moment.
+24647:       const o = findObject(App.activeObjectId);
+24648:       const pl = o ? captureSymmetryPlane(o, App.symmetryAxis) : null;
+24649:       toast('Symmetry axis: ' + App.symmetryAxis.toUpperCase() +
+24650:             (pl && Math.abs(pl.offset) > 1e-4 ? ' (plane at ' + pl.offset.toFixed(2) + ')' : ''));
+24651:     }
+24652:   });
+24653: });
+24654: document.getElementById('btnInspector').addEventListener('click', (ev) => {
+24655:   App.showInspector = !App.showInspector;
+24656:   ev.target.classList.toggle('active', App.showInspector);
+24657:   refreshInspector();
+24658: });
+---

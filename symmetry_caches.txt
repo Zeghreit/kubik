@@ -1,0 +1,47 @@
+
+============================================================
+symQuietHistory definition and reads
+============================================================
+
+6952: let symQuietHistory = false;
+7019:   symQuietHistory = true;
+7020:   try { fn(); } finally { symQuietHistory = false; }
+21137:   if (symQuietHistory) return;
+
+============================================================
+ctx.mirrorMap and ctx.mirrorOffset
+============================================================
+
+15083:     ctx.mirrorMap = App.symmetry ? buildSymmetryMap(obj, App.symmetryAxis) : null;
+15085:     ctx.mirrorOffset = App.symmetry ? symmetryPlane(obj, App.symmetryAxis).offset : 0;
+15106:        Runs HERE, after ctx.mirrorMap exists - the first attempt sat next to
+15109:     if (ctx.mirrorMap) {
+15113:         const p = ctx.mirrorMap.get(e.logical);
+
+============================================================
+opSketcher operation (look for axis parameter)
+============================================================
+
+
+============================================================
+Drawer definitions with axis
+============================================================
+
+
+============================================================
+activeMirrorPlane definition
+============================================================
+
+19606: function activeMirrorPlane(obj, axis) {
+19607:   obj.mesh.updateMatrixWorld();
+19608:   const n = new THREE.Vector3();
+19609:   n[axis] = 1;
+19610:   if (!App.symmetry) return new THREE.Plane(n, 0);
+19611:   const pl = symmetryPlane(obj, axis);
+19612:   // Normal matrix, not transformDirection: non-uniform scale skews normals.
+19613:   n.applyMatrix3(new THREE.Matrix3().getNormalMatrix(obj.mesh.matrixWorld)).normalize();
+19614:   const pt = new THREE.Vector3();
+19615:   pt[axis] = pl.offset;
+19616:   obj.mesh.localToWorld(pt);
+19617:   return new THREE.Plane().setFromNormalAndCoplanarPoint(n, pt);
+19618: }

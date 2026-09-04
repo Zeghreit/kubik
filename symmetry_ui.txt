@@ -1,0 +1,339 @@
+
+============================================================
+mirrorSelectedObjects (line 19679)
+============================================================
+
+19679: function mirrorSelectedObjects(axis, apart) {
+19680:   // Every UI path passes one, but a missing axis used to reach
+19681:   // activeMirrorPlane and throw on undefined rather than doing the obvious
+19682:   // thing - the axis the Symmetry pill is already set to.
+19683:   axis = axis || App.symmetryAxis || 'y';
+19684:   if (App.mode !== 'object') { toast('Mirror works in Object mode'); return; }
+19685:   const ids = Array.from(App.selectedObjectIds);
+19686:   if (!ids.length) { toast('Select an object to mirror'); return; }
+19687: 
+19688:   const created = [];
+19689:   let cutCount = 0;
+19690:   ids.forEach(id => {
+19691:     const src = findObject(id);
+19692:     if (!src) return;
+19693:     src.mesh.updateMatrixWorld();
+19694: 
+19695:     // One plane, in world space, whichever kind it is - see activeMirrorPlane.
+19696:     const plane = activeMirrorPlane(src, axis);
+19697: 
+19698:     /* If the plane CUTS the object, mirroring the whole thing just lays a
+19699:        second copy over the first - which is what it used to do, and it read
+19700:        as "two cubes inside each other". Bisect instead: keep the half you are
+19701:        looking at, drop the other, and let the mirror rebuild it. The rim of
+19702:        the cut becomes an edge loop lying exactly on the plane. When the plane
+19703:        misses the object entirely, the old whole-object mirror is still the
+19704:        right answer, so nothing changes there. */
+19705:     const sp = planeSpan(src, plane);
+19706:     const cuts = sp.lo < -sp.eps && sp.hi > sp.eps;
+19707:     let keep = src, cut = null;
+19708:     if (cuts) {
+19709:       cut = bisectObject(src, plane, plane.distanceToPoint(camera.position) >= 0);
+19710:       if (cut) { keep = cut; cutCount++; }
+19711:     }
+19712: 
+19713:     /* APART keeps the copy as its own object. It is built by cloning and
+19714:        then baking the reflection in, NOT by mirrorObject's negative scale -
+19715:        a copy you are going to keep and go on editing should not carry the
+19716:        negative-determinant transform that forces DoubleSide rendering
+19717:        forever after. The merged path can still use the cheap version,
+19718:        because combineObjectsInto bakes and re-winds it immediately. */
+19719:     if (apart) {
+19720:       const twin = cloneObjectInto(keep, src.name + ' mirror');
+19721:       twin.mesh.position.copy(keep.mesh.position);
+19722:       twin.mesh.quaternion.copy(keep.mesh.quaternion);
+19723:       twin.mesh.scale.copy(keep.mesh.scale);
+19724:       flipObjectInPlace(twin, plane);
+19725:       /* Baking the reflection leaves the twin's ORIGIN where the original's
+19726:          was, so the inspector would report the position it was reflected
+19727:          FROM - 1.2 for an object plainly sitting at -1.2. Slide the geometry
+19728:          back onto its own centre and move the transform to match, so the
+19729:          object does not budge but its numbers describe where it is. */
+19730:       recentreObjectOrigin(twin);
+19731:       ensureHelpers(twin);
+19732:       if (cut) removeObjects([src]);   // the bisected half replaced it
+19733:       ensureHelpers(keep);
+19734:       created.push(keep.id, twin.id);
+19735:       return;   // cutCount was already counted above if we bisected
+19736:     }
+19737: 
+19738:     const half = mirrorObject(keep, plane);
+19739:     const merged = combineObjectsInto([keep, half], src.name + ' sym', plane);
+19740:     if (merged) {
+19741:       removeObjects(cut ? [src, cut, half] : [src, half]);
+19742:       created.push(merged.id);
+19743:     } else {
+19744:       removeObjects(cut ? [cut, half] : [half]);
+19745:       created.push(src.id);
+19746:     }
+19747:   });
+19748: 
+19749:   App.selectedObjectIds = new Set(created);
+19750:   /* Mirror REPLACES the object with a merged one, so the old id is gone.
+19751:      Leaving activeObjectId pointing at it stranded the app: the merged
+19752:      object was selected but not active, and every component tool refused
+19753:      with "select an object" until you tapped it again. */
+19754:   App.activeObjectId = created.length ? created[0] : null;
+19755:   detachAllGizmos();
+19756:   hideRadialMenu();
+19757:   refreshUI();
+19758:   refreshGizmoAttachment();
+19759:   pushHistory();
+19760:   const where = App.symmetry
+19761:     ? 'the symmetry plane (' + axis.toUpperCase() + ')'
+19762:     : 'world ' + axis.toUpperCase() + '=0';
+19763:   const how = apart ? ' - kept apart' : '';
+19764:   toast(cutCount
+19765:     ? 'Cut at ' + where + ' - kept the half facing you, mirrored it' + how
+19766:     : 'Mirrored across ' + where + how);
+19767: }
+
+============================================================
+flipSelectedObjects (line 19775)
+============================================================
+
+19775: function flipSelectedObjects(axis) {
+19776:   if (App.mode !== 'object') { toast('Flip works in Object mode'); return; }
+19777:   const ids = Array.from(App.selectedObjectIds);
+19778:   if (!ids.length) { toast('Select an object to flip'); return; }
+19779: 
+19780:   let done = 0;
+19781:   ids.forEach(id => {
+19782:     const obj = findObject(id);
+19783:     if (!obj) return;
+19784:     flipObjectInPlace(obj, activeMirrorPlane(obj, axis));
+19785:     ensureHelpers(obj);
+19786:     done++;
+19787:   });
+19788:   if (!done) { toast('Nothing to flip'); return; }
+19789: 
+19790:   hideRadialMenu();
+19791:   refreshUI();
+19792:   refreshGizmoAttachment();
+19793:   pushHistory();
+19794:   toast('Flipped across ' + (App.symmetry
+19795:     ? 'the symmetry plane (' + axis.toUpperCase() + ')'
+19796:     : 'world ' + axis.toUpperCase() + '=0'));
+19797: }
+
+============================================================
+showMirrorChooser (line 19807)
+============================================================
+
+19807: function showMirrorChooser(axis) {
+19808:   const el = document.getElementById('opGrouping');
+19809:   /* Captured NOW. The bar had no exit, so it could sit through any amount of
+19810:      later work, and Joined/Apart then mirrored whatever happened to be
+19811:      selected by the time they were pressed rather than what the chooser was
+19812:      opened for. */
+19813:   mirrorChooser = { axis, ids: Array.from(App.selectedObjectIds) };
+19814:   const opts = [
+19815:     ['joined', 'Joined', 'One object, welded along the seam'],
+19816:     ['apart', 'Apart', 'Two objects, the copy kept separate']
+19817:   ];
+19818:   el.innerHTML = '';
+19819:   el.style.display = 'inline-flex';
+19820:   opts.forEach(([key, label, tip]) => {
+19821:     const b = document.createElement('button');
+19822:     b.textContent = label;
+19823:     b.title = tip;
+19824:     b.addEventListener('click', () => {
+19825:       /* Checked here, not left to mirrorSelectedObjects: its own mode guard
+19826:          fires AFTER this handler has already replaced the live selection with
+19827:          the captured one, so a chooser left open across a mode switch wiped
+19828:          what you had picked and then refused to do anything with it. */
+19829:       if (App.mode !== 'object') { hideOpBar(); toast('Mirror works in Object mode'); return; }
+19830:       const ids = (mirrorChooser && mirrorChooser.ids) || null;
+19831:       hideOpBar();                                   // clears mirrorChooser
+19832:       if (ids) App.selectedObjectIds = new Set(ids.filter(findObject));
+19833:       if (!App.selectedObjectIds.size) { toast('Nothing left to mirror'); return; }
+19834:       mirrorSelectedObjects(axis, key === 'apart');
+19835:     });
+19836:     el.appendChild(b);
+19837:   });
+19838:   document.getElementById('opLabel').textContent = 'Mirror';
+19839:   ['opSlider', 'opValue', 'opSegments', 'opToggleWrap', 'opOk'].forEach(id => {
+19840:     document.getElementById(id).style.display = 'none';
+19841:   });
+19842:   surfaceIn(opBarEl);
+19843: }
+
+============================================================
+serializeDoc / symmetry field (around line 20757)
+============================================================
+
+20751:     /* Fifteen numbers, not twelve megabytes - the reason the environment is
+20752:        procedural at all. A shared file arrives lit the way it was made. */
+20753:     environment: { preset: App.env.preset, rotation: App.env.rotation, intensity: App.env.intensity },
+20754:     // Symmetry is a modelling state, not an appearance one: it belongs with
+20755:     // the geometry it mirrors, and an undo that quietly switched it off was
+20756:     // the kind of thing you only notice three edits later.
+20757:     symmetry: { on: !!App.symmetry, axis: App.symmetryAxis },
+20758:     objects: App.objects.map(o => {
+20759:       const g = o.mesh.geometry;
+20760:       const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
+20761:       return {
+20762:         id: o.id,
+20763:         name: o.name,
+20764:         position: o.mesh.position.toArray(),
+20765:         quaternion: o.mesh.quaternion.toArray(),
+
+============================================================
+restoreDoc / symmetry field (around line 21080)
+============================================================
+
+21076:      Guarded on the field EXISTING, not on its value: a doc written before
+21077:      a2.44 has no symmetry block, and reading `on` off it would read undefined
+21078:      and switch symmetry off on every load of an older file. */
+21079:   if (doc.symmetry && !opts.keepAppearance) {
+21080:     App.symmetry = !!doc.symmetry.on;
+21081:     if (doc.symmetry.axis) App.symmetryAxis = doc.symmetry.axis;
+21082:   }
+21083:   App.selectedObjectIds = new Set(((sel && sel.objects) || []).filter(id => findObject(id)));
+21084: 
+21085:   hideAllHelpers();
+21086:   const active = findObject(App.activeObjectId);
+21087:   if (App.mode !== 'object' && active) {
+21088:     ensureHelpers(active);
+21089:     const topo = active.mesh.userData.topo;
+21090:     const limit = App.mode === 'vertex' ? topo.logicalCount
+
+============================================================
+App.symmetry initial definition (around line 2790)
+============================================================
+
+2786:   pendingOp: null,
+2787:   // The knife's points while a cut is being placed. Not a pendingOp: it
+2788:   // changes no geometry until OK, so there is nothing to re-run.
+2789:   knife: null,
+2790:   symmetry: false,
+2791:   symmetryAxis: 'x',
+2792:   showInspector: false,
+2793:   selectedObjectIds: new Set(),
+2794:   activeObjectId: null,   // used for vertex/edge/face editing
+2795:   selectedElements: new Set(), // logical vertex ids / edge indices / face-group indices, for activeObjectId
+2796:   edgeAnchor: null,      // edge selected by the previous single tap, for path selection
+2797:   edgeAnchorTime: 0,     // when that tap happened - a stale anchor is ignored
+2798:   /* The same idea one component down, for Target weld: what was selected
+2799:      immediately BEFORE the vertex you just tapped. Recorded on every vertex
+2800:      tap, and null the moment you tap something already selected, so a weld
+
+============================================================
+setSymmetry toggle handler (around line 24615)
+============================================================
+
+24606:   toast(App.shadeSmooth ? 'Shaded smooth' : 'Shaded flat');
+24607: }
+24608: /* Takes the state it should END in rather than flipping. The two-position
+24609:    switch that made that necessary went in a2.65 and the only caller now
+24610:    hands it !App.symmetry, so the equality guard below cannot fire today. It
+24611:    stays because this is still the safer signature: every entry point this
+24612:    might grow - a ring seat, a restored file, a keyboard key - knows the
+24613:    state it WANTS, not the state it is flipping from. */
+24614: function setSymmetry(on) {
+24615:   if (App.symmetry === on) { refreshObjComponentBtn(); return; }
+24616:   App.symmetry = on;
+24617:   refreshUI();
+24618:   if (!App.symmetry) { toast('Symmetry off'); return; }
+24619:   /* Report how many mirror pairs were actually found, on screen. Symmetry
+24620:      silently does nothing when the map comes back empty - which happens if
+24621:      the geometry isn't symmetric about the chosen axis in LOCAL space - and
+24622:      without this the toggle looks identical whether it worked or not. */
+24623:   const obj = findObject(App.activeObjectId);
+24624:   let pairs = -1, plane = null;
+24625:   if (obj) {
+24626:     ensureHelpers(obj);
+24627:     // Switching symmetry on is the capture moment, and the escape hatch when
+24628:     // the plane has gone stale - so capture, never reuse what is stored.
+24629:     plane = captureSymmetryPlane(obj, App.symmetryAxis);
+24630:     const map = buildSymmetryMap(obj, App.symmetryAxis);
+24631:     pairs = 0;
+24632:     map.forEach((v, k) => { if (v !== k) pairs++; });
+24633:     pairs = Math.round(pairs / 2);
+24634:   }
+24635:   const where = plane && Math.abs(plane.offset) > 1e-4
+24636:     ? ' = ' + plane.offset.toFixed(2) : '';
+24637:   toast('Symmetry on (' + App.symmetryAxis.toUpperCase() + where + ') - ' +
+24638:         (pairs < 0 ? 'no active object'
+24639:                    : pairs + ' pairs' + (App.mode === 'object' ? ' - switch to a component mode' : '')));
+24640: }
+24641: document.querySelectorAll('#symAxisGroup button').forEach(btn => {
+24642:   btn.addEventListener('click', () => {
+24643:     App.symmetryAxis = btn.dataset.sym;
+24644:     refreshUI();
+24645:     if (App.symmetry) {
+24646:       // A new axis means a new plane - the other capture moment.
+24647:       const o = findObject(App.activeObjectId);
+24648:       const pl = o ? captureSymmetryPlane(o, App.symmetryAxis) : null;
+24649:       toast('Symmetry axis: ' + App.symmetryAxis.toUpperCase() +
+24650:             (pl && Math.abs(pl.offset) > 1e-4 ? ' (plane at ' + pl.offset.toFixed(2) + ')' : ''));
+
+============================================================
+#symAxisGroup handlers (around line 24641)
+============================================================
+
+24636:     ? ' = ' + plane.offset.toFixed(2) : '';
+24637:   toast('Symmetry on (' + App.symmetryAxis.toUpperCase() + where + ') - ' +
+24638:         (pairs < 0 ? 'no active object'
+24639:                    : pairs + ' pairs' + (App.mode === 'object' ? ' - switch to a component mode' : '')));
+24640: }
+24641: document.querySelectorAll('#symAxisGroup button').forEach(btn => {
+24642:   btn.addEventListener('click', () => {
+24643:     App.symmetryAxis = btn.dataset.sym;
+24644:     refreshUI();
+24645:     if (App.symmetry) {
+24646:       // A new axis means a new plane - the other capture moment.
+24647:       const o = findObject(App.activeObjectId);
+24648:       const pl = o ? captureSymmetryPlane(o, App.symmetryAxis) : null;
+24649:       toast('Symmetry axis: ' + App.symmetryAxis.toUpperCase() +
+24650:             (pl && Math.abs(pl.offset) > 1e-4 ? ' (plane at ' + pl.offset.toFixed(2) + ')' : ''));
+24651:     }
+24652:   });
+24653: });
+24654: document.getElementById('btnInspector').addEventListener('click', (ev) => {
+24655:   App.showInspector = !App.showInspector;
+
+============================================================
+#symPill handlers (around line 23530)
+============================================================
+
+23526: 
+23527: /* One tap, one toggle (a2.65). stopPropagation for the same reason #hubBtn
+23528:    does it: a pointerdown that reaches the viewport arms a tap which would
+23529:    clear the selection behind the button. */
+23530: symPillEl.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+23531: symPillEl.addEventListener('click', (ev) => {
+23532:   ev.stopPropagation();
+23533:   setSymmetry(!App.symmetry);
+23534: });
+23535: 
+23536: /* ---------------- Drawer ---------------- */
+23537: 
+23538: const drawerEl = document.getElementById('drawer');
+23539: const scrimEl = document.getElementById('scrim');
+23540: 
+
+============================================================
+#symPill handlers (around line 25180)
+============================================================
+
+25176:           ? 'Soft (' + App.mode + ') - three fingers slide to size it, tap for Object'
+25177:           : 'Component mode (' + App.mode + ') - tap for Soft');
+25178:   }
+25179: 
+25180:   if (symPillEl) {
+25181:     /* One button since a2.65: the glyph is the STATE, not the action. Mirror
+25182:        in the accent means symmetry is on; the crossed mirror, dim, means it
+25183:        is off. Reading it needs no memory of what a tap would do. */
+25184:     symPillEl.classList.toggle('on', App.symmetry);
+25185:     const symIc = symPillEl.querySelector('.ic');
+25186:     if (symIc) symIc.innerHTML = icon(App.symmetry ? 'mirror' : 'symoff', 20);
+25187:     symPillEl.title = App.symmetry
+25188:       ? 'Symmetry on (' + App.symmetryAxis.toUpperCase() + ') - tap to turn it off'
+25189:       : 'Symmetry off - tap to mirror edits across ' + App.symmetryAxis.toUpperCase();
+25190:   }

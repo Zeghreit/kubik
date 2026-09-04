@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~25,350 lines)
-- Version at time of writing: **a2.107**
+- Version at time of writing: **a2.108**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -36,6 +36,95 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+
+
+## The ring never deforms (a2.108)
+
+The complaint: *"when finger taps close to border it adapting and not looks
+good - we have to thought it out, how to keep it structured and not
+chaotic."*
+
+a2.104 kept the ring's centre under the finger and pulled any seat that
+would have hung off the edge closer in **along its own bearing**. It
+reached well and it kept picking honest, but seats clamped by one edge all
+landed on the same LINE, so near a border the ring lost its shape - and
+once a2.107 drew the eight-point star through those same radii, the whole
+figure buckled. A menu whose shape depends on where you happened to press
+reads as broken, not as adaptive.
+
+**The ring is now always regular.** One radius for every seat, at every
+press point. `seatRadius(angle)` is gone; there is a single `ringR`, and
+the seats, the star and `toolRingActive.radius` are all built from it.
+
+Near an edge the ring **shrinks first, and only then moves**:
+
+```
+rFit  = min over both axes of ( min(v, span - v) - RING_EDGE_PX - TIP )
+ringR = clamp(rFit, min(seatMinR, R), R)
+margin = RING_EDGE_PX + TIP + ringR
+cx, cy = clamp(press, margin, span - margin)
+```
+
+- `rFit >= R` - full size, centred on the finger.
+- `seatMinR <= rFit < R` - shrinks uniformly, still centred on the finger.
+  This band is new; a2.104 had no shrink at all.
+- `rFit < seatMinR` - holds at the floor and the CENTRE moves instead.
+
+The threshold at which the centre starts to move is `RING_EDGE_PX + TIP +
+seatMinR`, **exactly what it was at a2.104** - that was the point at which
+a2.104's shortest legal seat also ran out of room. So reach is unchanged
+and only the deformation is gone.
+
+`_ring104_probe.js` gained the invariant that catches a regression here:
+`maxRadiusSpread`, the largest gap between any two seats' radii over nine
+press points including all four corners. a2.104 ran to tens of pixels;
+a2.108 measures 0.04px on the 9-seat world ring and 0.05px on a synthetic
+14-seat ring, against a 1px tolerance for sub-pixel layout. Spill 0.0,
+bearing error 0.01deg, minPitch 68.0 (the floor), both rings.
+
+### Known, not fixed: a crowded ring pins to the middle of a phone
+
+`seatMinR` is derived from the ring's angular gap - the radius at which
+neighbouring seats still clear each other by 68px. `R` is capped by `fits`,
+what the ring can be while centred. When a ring has enough seats that
+`seatMinR` reaches `R`, the shrink band closes, `margin` reaches
+`min(w,h)/2`, and `place()` clamps the centre to a single line - the ring
+blooms in the middle of the short axis wherever you press, and the finger
+can end up outside it.
+
+On a 512-wide layout there is room: the 9-seat world ring leaves a 190px
+centre band, a 14-seat ring 106px. On a real 393px phone the 13/14-seat
+Vertex/Edge/Face rings do not: `fits` is 145, the spacing floor wants 142
+to 153, and the band closes to single digits or nothing. **This is not new
+at a2.108** - `margin` has had the same definition since a2.104 - and it is
+why `placeRingAim`'s "seat is behind the finger" guard is load-bearing
+rather than defensive.
+
+It is not fixable by geometry. Fourteen seats at a 68px pitch need a
+952px circumference, so a 152px radius, so a 406px half-width before the
+edge clearance - wider than the phone. Something has to give, and the
+options rank: a ring that teleports (worst, current), seats that crowd
+(cosmetic - picking is by DIRECTION, so a tight pitch costs legibility and
+nothing else), seats clipped at the edge. **The real fix is fewer seats per
+ring**, which is what the planned category rings are for.
+
+### Deliberately absent - do not rebuild these
+
+- **Clamping seats individually along their own bearing (a2.104).** This is
+  what a2.108 removed. It answers "does every seat stay on screen" and
+  "does every bearing survive" correctly, and still looks wrong, because it
+  answers them one seat at a time.
+- **Making the star a separate, fixed-size figure so it stays square while
+  the seats clamp.** Then the seats stop sitting on it, which is worse than
+  a star that flexes: the star's whole job is to say the seats belong to
+  one ring.
+- **Letting the ring shrink below `seatMinR` to keep the centre under the
+  finger.** Tried on paper: at 14 seats on a phone the pitch falls to about
+  36px against 52px seat boxes, so the seats overlap outright. The seat
+  count is the problem, not the floor.
+- **`RING_EDGE_PX` and the literal `14` in `fits`.** These are the same
+  number by necessity - `place()` only stays sane while `margin <= span/2`
+  - and `fits` now says so.
 
 ## Words on the ring, the star under them (a2.107)
 
@@ -329,6 +418,10 @@ its track with `--text` at 4.6:1 on it · the four `--accent-dim` tints 1.44 /
 
 ## The ring blooms at the finger (a2.104)
 
+> **Partly superseded by a2.108.** The centre placement and `seatMinR` below
+> still stand; the per-seat `seatRadius(angle)` clamp does not - the ring
+> shrinks uniformly instead. Read "The ring never deforms" first.
+
 From the a3.0 spec critique (`claude/a3.0-spec-critique.md`): the ring's
 promise is that it opens under your thumb wherever that is, and the code
 was not keeping it.
@@ -402,8 +495,12 @@ things a screenshot cannot:
 
 ### Deliberately absent - do not rebuild these
 
-- **Shrinking `R` when the ring is near an edge.** Does nothing for the
-  problem: `margin` no longer depends on `R`.
+- ~~**Shrinking `R` when the ring is near an edge.** Does nothing for the
+  problem: `margin` no longer depends on `R`.~~ **SUPERSEDED at a2.108** -
+  shrinking `R` is now exactly what happens, and the per-seat clamp
+  described above is gone. The reasoning was right about `margin` and wrong
+  about the goal: `margin` not depending on `R` is what makes a uniform
+  shrink FREE, not what makes it pointless. See "The ring never deforms".
 - **An elliptical or squashed ring.** Anisotropic scaling moves a seat's
   ANGLE, so the drawn position and the picked bearing stop agreeing. Radial
   clamping is the only shape change that leaves picking alone.
