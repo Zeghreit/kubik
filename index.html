@@ -2203,7 +2203,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.108</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.109a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -21089,9 +21089,15 @@ function showMirrorChooser(axis) {
      selected by the time they were pressed rather than what the chooser was
      opened for. */
   mirrorChooser = { axis, ids: Array.from(App.selectedObjectIds) };
+  /* Flip is the third answer to the same question (a2.109): all three
+     reflect across `axis`, and they differ only in what is left standing.
+     Joined still leads - it is what Mirror has always done and what is
+     usually wanted - and Flip sits last because it is the one that keeps no
+     copy. */
   const opts = [
     ['joined', 'Joined', 'One object, welded along the seam'],
-    ['apart', 'Apart', 'Two objects, the copy kept separate']
+    ['apart', 'Apart', 'Two objects, the copy kept separate'],
+    ['flip', 'Flip', 'No copy - reflect what you already have']
   ];
   el.innerHTML = '';
   el.style.display = 'inline-flex';
@@ -21104,12 +21110,16 @@ function showMirrorChooser(axis) {
          fires AFTER this handler has already replaced the live selection with
          the captured one, so a chooser left open across a mode switch wiped
          what you had picked and then refused to do anything with it. */
-      if (App.mode !== 'object') { hideOpBar(); toast('Mirror works in Object mode'); return; }
+      // a2.109a: the chooser runs two different ops now, so its refusals have
+      // to name the one that was actually pressed.
+      const what = key === 'flip' ? 'Flip' : 'Mirror';
+      if (App.mode !== 'object') { hideOpBar(); toast(what + ' works in Object mode'); return; }
       const ids = (mirrorChooser && mirrorChooser.ids) || null;
       hideOpBar();                                   // clears mirrorChooser
       if (ids) App.selectedObjectIds = new Set(ids.filter(findObject));
-      if (!App.selectedObjectIds.size) { toast('Nothing left to mirror'); return; }
-      mirrorSelectedObjects(axis, key === 'apart');
+      if (!App.selectedObjectIds.size) { toast('Nothing left to ' + what.toLowerCase()); return; }
+      if (key === 'flip') flipSelectedObjects(axis);
+      else mirrorSelectedObjects(axis, key === 'apart');
     });
     el.appendChild(b);
   });
@@ -24423,12 +24433,21 @@ const HUB_TOOLS_OBJECT_BASE = [
      three are the ops that read primarySymAxis() - one plane by their
      nature, so they take the first of the live set. */
   { key: 'array', icon: 'array', label: 'Array', seat: 0, ring: 1, run: arraySelection },
+  /* MIRROR AND FLIP ARE ONE SEAT (a2.109). Both reflect the selection across
+     the same plane - primarySymAxis() - and differ only in what survives:
+     Mirror keeps the original and adds its reflection, Flip replaces it. That
+     is a third option on a chooser that already asks "what should come out of
+     this", not a second bearing. Flip is the third button. */
   { key: 'mirror', icon: 'mirroraction', label: 'Mirror', seat: 2, ring: 0, run: () => showMirrorChooser(primarySymAxis()) },
-  { key: 'flip', icon: 'flip', label: 'Flip', seat: 3, ring: 0, run: () => flipSelectedObjects(primarySymAxis()) },
   { key: 'separate', icon: 'separate', label: 'Separate', seat: 4, ring: 1, run: separateSelection },
   { key: 'centre', icon: 'centre', label: 'Centre', seat: 5, ring: 0, run: centreSelectionToOrigin },
   { key: 'cap', icon: 'cap', label: 'Cap holes', seat: 6, ring: 1, run: fillHolesSelection },
   { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 0, run: deleteSelection },
+  /* `on` since a2.107. Shade's state used to be carried entirely by its
+     icon being a FUNCTION - the only tool in the file whose glyph was
+     evaluated per bloom - and with the seats reading as words there was
+     nothing left to say which way it is set. Every other toggle in the
+     ring already had this predicate. */
   /* `on` since a2.107. Shade's state used to be carried entirely by its
      icon being a FUNCTION - the only tool in the file whose glyph was
      evaluated per bloom - and with the seats reading as words there was
@@ -24448,7 +24467,20 @@ const HUB_TOOLS_OBJECT_BASE = [
   { key: 'subdivide', icon: 'subdiv', label: 'Subdivide', seat: 10, ring: 1, run: subdivideSelection },
   /* Seat 11 is Crease's bearing in the Edge ring, and that is the right
      company: 11 is where the FINER shading control lives, one step past the
-     blunt Shade toggle at 8, in whichever ring you are holding. */
+     blunt Shade toggle at 8, in whichever ring you are holding.
+
+     TRIED AND REVERTED at a2.109a: folding this into the Shade seat, so one
+     tap shaded smooth and then opened the op bar on the angle. It reads well
+     and it is wrong. `applyPendingOp`'s autosmooth branch CLEARS edgeShade -
+     the marks toggleShading has just written - and opens at the op's default
+     33 degrees. A cube's edges are 90, so every one of them stays sharp: the
+     seat lit up, the toast said "Shaded smooth", and the model was
+     pixel-identical to flat. It also wrote two history steps for one tap.
+
+     Smooth by angle keeps its own seat until it goes behind the FINISH door,
+     where it was always headed - see claude/ring-capacity-and-grouping.md.
+     Anything that revives the merge has to open the bar at 180 (which is what
+     "shaded smooth" MEANS) and push history once, not twice. */
   { key: 'autosmooth', icon: 'smoothangle', label: 'Smooth by angle', seat: 11, ring: 1, run: autoSmoothSelection }
 ];
 // Join only means something with more than one object selected, matching
@@ -24461,20 +24493,39 @@ const HUB_TOOL_JOIN = { key: 'join', icon: 'join', label: 'Join', seat: 12, ring
    compass point, one step nearer the middle because Group is the reversible
    one and therefore the one you reach for first.
 
-   Group and Ungroup share the seat and are never both offered - the selection
-   either touches a group or it does not, so the seat reads as one control in
-   two states. */
-const HUB_TOOL_GROUP = { key: 'group', icon: 'group', label: 'Group', seat: 12, ring: 0, run: groupSelection };
-/* SEPARATE'S BEARING, ONE RING IN. Ungroup is to Group what Separate is to
-   Join - the way back out of "these are one thing" - so it takes that compass
-   point rather than sharing Group's.
+   ONE SEAT AGAIN (a2.109), on a rule that keeps what a2.93 fixed. The two
+   shared a seat once and it was wrong: the test was "does the selection touch
+   a group", so Group vanished the moment any part of the selection was
+   grouped, and there was no way to add a fourth part to a group of three.
 
-   It shared it at first, and that was wrong twice over: Group became
-   unreachable the moment anything in the selection was grouped, so there was
-   no way to add a fourth part to a group of three except Ungroup and start
-   again - and the re-parenting `groupSelection` does on the way in, the code
-   that makes adding work, could never run. */
-const HUB_TOOL_UNGROUP = { key: 'ungroup', icon: 'ungroup', label: 'Ungroup', seat: 4, ring: 0, run: ungroupSelection };
+   The test now is whether the selection IS the thing you would ungroup:
+
+     UNGROUP  the selection is exactly one whole group, or it is a single
+              object that belongs to one - in both cases there is one
+              unambiguous group to dissolve
+     GROUP    anything else with two or more selected - including a mixed
+              selection where some parts are already grouped, which is
+              precisely the case a2.93 exists for
+     absent   a lone ungrouped object; neither op means anything
+
+   What that gives up: ungrouping straight from a MIXED selection. It was
+   ambiguous anyway - "which group?" - and selecting the group, or any one of
+   its members, still gets you there. */
+const HUB_TOOL_GROUPING = {
+  key: 'grouping', seat: 12, ring: 0,
+  icon: 'group',
+  label: () => (groupingSeatUngroups() ? 'Ungroup' : 'Group'),
+  run: () => (groupingSeatUngroups() ? ungroupSelection() : groupSelection())
+};
+/* Asked by both the word and the run, so it is one function and the seat
+   cannot say one thing and do the other. */
+function groupingSeatUngroups() {
+  return selectionIsWholeGroup() ||
+         (App.selectedObjectIds.size === 1 && selectionTouchesGroup());
+}
+function groupingSeatApplies() {
+  return groupingSeatUngroups() || App.selectedObjectIds.size > 1;
+}
 
 const HUB_TOOLS_EMPTY = [
   { key: 'addgeo', icon: 'object', label: 'Add geo', ring: 0, run: openGeoRing },
@@ -24485,38 +24536,43 @@ const HUB_TOOLS_EMPTY = [
   { key: 'export', icon: 'file_export', label: 'Export', ring: 1, run: exportGlbAction }
 ];
 
+/* The select gesture, as the one seat that carries it needs to see it: what
+   it is called and what comes next. Two tables rather than two inline objects
+   so the word and the cycle cannot drift apart (a2.109).
+
+   No glyph table: nothing has read a tool's `icon` since a2.107 put WORDS on
+   the seats. The field survives on the older tools; adding a live one here
+   would just be data nobody looks at. */
+const SEL_GESTURE_WORD = { off: 'Tap select', box: 'Box select', lasso: 'Lasso select' };
+const SEL_GESTURE_NEXT = { off: 'box', box: 'lasso', lasso: 'off' };
+
 /* The world ring: what a long press on EMPTY SPACE blooms, in any mode and
    whatever is or isn't selected. It holds everything that used to sit as a
    button around the viewport edge, which is how the edges finally got
    clear.
 
-   The halves are not decoration. The four view toggles lived on the RIGHT
-   rail and the select-gesture choice lived on the LEFT, so they keep those
-   relationships: right-rail items occupy the top half of the ring,
-   left-rail items the bottom half. (Symmetry passed through here in v1.89
-   and left again in v1.90 - it is a persistent MODE you need to watch, not
-   an action, so it earned a switch on the edge instead.) Anyone who built muscle memory
-   for "the eye is on the right" still finds it grouped with what it used to
-   sit beside.
+   IT USED TO BE HALVED (retired a2.109). The four view toggles took the top
+   arc and the three select gestures the bottom, mirroring the rails they came
+   from. Collapsing the select gestures into one cycling seat left four items
+   crowded above and one alone below, which reads as a mistake rather than as
+   two groups - so the world ring joins the component rings on the compass and
+   spreads its seven seats evenly, each still pulling toward the direction it
+   always had. `half` and the halved branch of toolRingAngles stay for whatever
+   wants them next; nothing uses them today.
 
-   Add geo takes the right-hand pole on its own - it belongs to neither group,
-   it is the one item here that MAKES something rather than toggling something.
-
-   The left pole was deliberately left empty for a while so the two arcs read
-   as two arcs. Pivot claims it at a2.39, and the layout is better for it: a
-   pole, an arc, a pole, an arc separates the groups more firmly than an empty
-   side did. Pivot belongs here rather than in the component rings for a
-   practical reason too - it is wanted in EVERY mode, and the Edge ring has no
-   free seat left at all. */
+   Pivot belongs here rather than in the component rings for a practical
+   reason: it is wanted in EVERY mode, and the Edge ring has no free seat left
+   at all. There is no danger seat - the world ring makes and shows, it never
+   destroys - so seat 7, straight down, stays empty. */
 const HUB_TOOLS_WORLD = [
-  { key: 'addgeo', icon: 'object', label: 'Add geo', half: 'pole', run: openGeoRing },
-  { key: 'pivot', icon: 'pivot', label: 'Pivot', half: 'pole2', run: openPivotRing },
+  { key: 'addgeo', icon: 'object', label: 'Add geo', seat: 0, run: openGeoRing },
+  { key: 'pivot', icon: 'pivot', label: 'Pivot', seat: 2, run: openPivotRing },
 
-  { key: 'xray', icon: 'eye', label: 'See-through', half: 'top',
+  { key: 'xray', icon: 'eye', label: 'See-through', seat: 9,
     on: () => App.xraySelection, run: toggleXray },
-  { key: 'grid', icon: 'grid', label: 'Floor grid', half: 'top',
+  { key: 'grid', icon: 'grid', label: 'Floor grid', seat: 5,
     on: () => grid.visible, run: toggleFloorGrid },
-  { key: 'snap', icon: 'snap', label: 'Snap', half: 'top',
+  { key: 'snap', icon: 'snap', label: 'Snap', seat: 3.5,
     on: () => App.snapMode !== 'off', run: toggleSnapping },
   /* PROJECTION JOINS THE VIEW TOGGLES (a2.90b). It is the last of the things
      that "used to sit as a button around the viewport edge", which is what
@@ -24528,16 +24584,22 @@ const HUB_TOOLS_WORLD = [
      a2.61 - the `shade` seat uses the same function-icon trick. Choosing it
      here is a DECISION in a2.87's sense, so it engages the sticky kind that
      a turn does not undo; the cube's own tap is still the glance. */
-  { key: 'proj', icon: () => (orthoView ? 'ortho' : 'persp'), label: 'Flat view', half: 'top',
+  { key: 'proj', icon: () => (orthoView ? 'ortho' : 'persp'), label: 'Flat view', seat: 10.5,
     on: () => !!orthoView,
     run: () => { viewCube.cancel(); if (orthoView) disengageOrtho(); else engageOrtho('pill'); } },
 
-  { key: 'selfree', icon: 'free', label: 'Tap select', half: 'bottom',
-    on: () => App.selectDrag === 'off', run: () => setSelectGesture('off') },
-  { key: 'selbox', icon: 'box', label: 'Box select', half: 'bottom',
-    on: () => App.selectDrag === 'box', run: () => setSelectGesture('box') },
-  { key: 'sellasso', icon: 'lasso', label: 'Lasso select', half: 'bottom',
-    on: () => App.selectDrag === 'lasso', run: () => setSelectGesture('lasso') }
+  /* ONE SEAT, THREE STATES (a2.109). Tap, Box and Lasso are mutually
+     exclusive - exactly one of them is the current gesture at all times - so
+     they were never three buttons. They were one control drawn three times,
+     and two of the three were always telling you what you are NOT doing.
+
+     The seat cycles Tap -> Box -> Lasso -> Tap, its word says where you
+     landed, and `on` lights the seat whenever a DRAG gesture is armed - the
+     one thing worth seeing without reading the word. */
+  { key: 'selmode', seat: 12, icon: 'free',
+    label: () => SEL_GESTURE_WORD[App.selectDrag] || 'Tap select',
+    on: () => App.selectDrag !== 'off',
+    run: () => setSelectGesture(SEL_GESTURE_NEXT[App.selectDrag] || 'box') }
 ];
 
 // The Material cycle op is gone (a2.9) - the materials tray on the right
@@ -24548,12 +24610,9 @@ function currentHubTools() {
     if (App.selectedObjectIds.size === 0) return HUB_TOOLS_EMPTY;
     let tools = App.selectedObjectIds.size > 1
       ? HUB_TOOLS_OBJECT_BASE.concat(HUB_TOOL_JOIN) : HUB_TOOLS_OBJECT_BASE;
-    /* Both, on their own seats, and each only when it would DO something.
-       Group is offered for any selection of two or more that is not already
-       exactly one whole group - which is what makes adding to an existing
-       group possible at all. */
-    if (App.selectedObjectIds.size > 1 && !selectionIsWholeGroup()) tools = tools.concat(HUB_TOOL_GROUP);
-    if (selectionTouchesGroup()) tools = tools.concat(HUB_TOOL_UNGROUP);
+    // One seat, and only when it would DO something. Which of the two it is
+    // is the seat's own business - see HUB_TOOL_GROUPING.
+    if (groupingSeatApplies()) tools = tools.concat(HUB_TOOL_GROUPING);
     return tools;
   }
   if (App.mode === 'vertex') return HUB_TOOLS_VERTEX;
@@ -24655,6 +24714,13 @@ function toolRingAngles(tools) {
     return 0;                             // pole: due right
   });
 }
+
+/* A SEAT'S WORD CAN DEPEND ON STATE (a2.109). Three seats now stand for a
+   pair or a set rather than a single op - Select mode cycles, Shade says
+   which way it is set, Grouping says whether it will group or ungroup - so
+   `label` may be a function, exactly as `icon` already could. The ring reads
+   the word in three places, so the unwrapping happens once, here. */
+function toolLabel(t) { return typeof t.label === 'function' ? t.label() : t.label; }
 
 // The tightest gap between any two items, which is what actually decides
 // how big the ring has to be. Measured rather than assumed, because a
@@ -24808,8 +24874,8 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
        under your own thumb, which is exactly the one the label carries,
        outside the ring, at full size. */
     el.innerHTML = '<span class="tx"></span>';
-    el.querySelector('.tx').textContent = tool.label;
-    el.title = tool.label;
+    el.querySelector('.tx').textContent = toolLabel(tool);
+    el.title = toolLabel(tool);
     itemEls.push({ el, tool, angle, r: seatR });
     touchToolRingEl.appendChild(el);
   });
@@ -24991,7 +25057,7 @@ function placeRingLabel(idx) {
   if (idx < 0) { lab.classList.remove('show'); return; }
 
   const it = toolRingActive.itemEls[idx];
-  lab.textContent = it.tool.label;
+  lab.textContent = toolLabel(it.tool);
   const R = (it.r || toolRingActive.radius) + TOOL_RING_ITEM / 2 + RING_LABEL_GAP_PX;
   const x = Math.cos(it.angle) * R;
   lab.style.left = x + 'px';
@@ -26721,7 +26787,7 @@ const HELP_SECTIONS = [
       [null, 'Ties', 'A vertex beats its own edges. Aim at a corner, get the corner.'],
       [null, 'Type lock', 'The first thing you tap decides whether you are picking vertices, edges or faces. Only that kind can be picked until you clear.'],
       ['free', 'Tap select', 'Plain tapping. The default — and the way back, once one of the other two is on.'],
-      ['box', 'Box select', 'Drag a rectangle. All three live in the ring on empty space.'],
+      ['box', 'Box select', 'Drag a rectangle. One seat in the ring on empty space cycles through all three.'],
       ['lasso', 'Lasso select', 'Draw the shape freehand.'],
       [null, 'Double tap, face', 'A strip of faces. Direction comes from the edge nearest your tap.'],
       [null, 'Double tap, edge', 'The whole loop. Tap one edge, double-tap another within a second and a half for the run between them.'],
@@ -26948,10 +27014,15 @@ document.getElementById('helpClose').addEventListener('click', closeHelp);
 helpOverlayEl.addEventListener('click', (ev) => { if (ev.target === helpOverlayEl) closeHelp(); });
 // btnObjComponent is gone - the hub button itself is the toggle now, wired
 // directly in its own click handler above.
-// Free / Box / Lasso choose the drag gesture, not whether taps add to the
-// selection - that's permanent now. Three explicit choices rather than one
-// control cycling through states; they live in the world ring as of v1.89,
-// where each is still reachable directly.
+/* Free / Box / Lasso choose the drag gesture, not whether taps add to the
+   selection - that's permanent now.
+
+   ONE CYCLING SEAT since a2.109, not three explicit ones. They are mutually
+   exclusive, so two of the three were always telling you what you are NOT
+   doing, and the world ring could not afford three bearings for one control.
+   This function still takes the mode it should END in - the seat works out
+   what comes next - so a keyboard key or a restored file can still name the
+   one it wants. */
 function setSelectGesture(mode) {
   App.selectDrag = mode;
   const name = { off: 'Tap', box: 'Box', lasso: 'Lasso' }[mode];
@@ -27982,6 +28053,9 @@ if (PICK_DEBUG) {
     renderer, applyShading, toEditable, rebuildFromEditable, creaseKeyFor,
     bloomToolRing, updateToolRingHover, closeToolRing, placeRingLabel,
     currentHubTools, HUB_TOOLS_WORLD,
+    // a2.109: a seat's word can be a function now, so anything reading one
+    // from outside needs the same unwrap the ring itself uses.
+    toolLabel,
     /* The pickers, callable with a plain {clientX, clientY}. Driving these
        directly beats dispatching synthetic taps: a BACKGROUNDED TAB reports
        a stale canvas rect, so a tap aimed at a projected point lands

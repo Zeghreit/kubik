@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~25,350 lines)
-- Version at time of writing: **a2.108**
+- Version at time of writing: **a2.109a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -37,6 +37,113 @@ still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
 
+
+
+## Merge before you group (a2.109)
+
+The ring can hold **eight seats**, nine at a squeeze. Measured, not guessed:
+at R=108 with 52px seats the gap between neighbours is `2R x sin(180/n)`,
+and a2.107 fixed the floor at 68px, below which the words touch. Ten seats
+give 66.8. Growing R does not help - R=120 buys the tenth seat but leaves
+only 51px of band for the ring to follow your thumb, and R=132 pins it to
+the middle of the screen, which is what a2.104 and a2.108 were spent
+removing. One of the eight is Delete's or empty, so **seven are for ops**.
+
+Against that: Vertex had 7, World 9, Face 11, Edge 14, Object 17.
+
+The first move is not to push the overflow one layer down. It is to notice
+that some of it is not extra ops at all - it is one control drawn several
+times.
+
+- **Tap / Box / Lasso are one seat** (`selmode`). They are mutually
+  exclusive, so exactly one is the current gesture at all times and the
+  other two were always telling you what you are NOT doing. The seat cycles
+  Tap -> Box -> Lasso -> Tap and its word says where you landed. **World 9 ->
+  7, and the whole world ring now fits.**
+- **Mirror and Flip are one seat.** Both reflect the selection across
+  `primarySymAxis()`; they differ only in what survives. That is a third
+  button on a chooser already asking "what should come out of this", not a
+  second bearing. The chooser reads Joined / Apart / **Flip**.
+- **Group and Ungroup are one seat** (`grouping`) - see below, because the
+  rule matters.
+
+`label` may now be a FUNCTION, exactly as `icon` could. Three seats say
+different words in different states, and the ring reads a seat's word in
+three places, so the unwrapping happens once in **`toolLabel(t)`**, which is
+exported for the probes. Anything new that renders a seat's word must go
+through it or it will print the function source.
+
+### The world ring left the halves
+
+It was halved: four view toggles in the top arc, three select gestures in
+the bottom, mirroring the rails they came from. With the select gestures
+down to one seat that read as four items crowded above and one alone below,
+so the world ring joined the component rings on the compass - seven seats,
+evenly spread, each still pulling toward the direction it always had. Seat 7
+(straight down) stays empty: the world ring makes and shows, it never
+destroys.
+
+Measured: the world ring's radius drops 148.8 -> 106, and the band in which
+it blooms exactly under your thumb goes **190px -> 254px of 512** - half the
+screen instead of a third.
+
+`half` and the halved branch of `toolRingAngles` survive, unused, for
+whatever wants them next.
+
+### The grouping seat, and the a2.93 rule it must not break
+
+Group and Ungroup shared a seat once and it was wrong. The test then was
+"does the selection touch a group", so Group vanished the moment any part of
+the selection was grouped and a group of three could never gain a fourth.
+a2.93 split them onto two seats.
+
+They share a seat again, on a different test - is the selection **the thing
+you would dissolve**:
+
+```
+UNGROUP   exactly one whole group, or a single object that belongs to one
+GROUP     anything else with two or more selected - INCLUDING a mixed
+          selection where some parts are already grouped
+absent    a lone ungrouped object
+```
+
+`groupingSeatUngroups()` is asked by both the word and the run, so the seat
+cannot say one thing and do another. `_out_probe.js` section 36 is the guard:
+a mixed selection must say Group, and running the seat must ADD to the
+existing group rather than start over.
+
+**Given up:** ungrouping straight from a mixed selection. It was ambiguous
+anyway - which group? - and selecting the group, or any one of its members,
+still gets there.
+
+### Deliberately absent - do not rebuild these
+
+- **Folding Smooth by angle into the Shade seat.** Built at a2.109, reviewed,
+  reverted at a2.109a. One tap shaded smooth and then opened the op bar on
+  the angle, which reads beautifully and is wrong twice: `applyPendingOp`'s
+  autosmooth branch CLEARS `edgeShade` - the marks `toggleShading` has just
+  written - and opens at the op's default 33 degrees. A cube's edges are 90,
+  so every one stays sharp: the seat lit up, the toast said "Shaded smooth",
+  and the model was pixel-identical to flat. It also wrote two history steps
+  for one tap. Anything reviving this has to open the bar at **180** - which
+  is what "shaded smooth" MEANS - and push history once. Smooth by angle
+  keeps its own seat until it goes behind the FINISH door, where it was
+  always headed.
+- **Three select seats.** The point of the merge. Two of the three were
+  always inert.
+- **A live `icon` function on a new seat.** Nothing has read a tool's `icon`
+  since a2.107 put words on the seats. The field survives on the older tools;
+  adding a live one is data nobody looks at.
+- **Ungroup on its own bearing.** Its whole job was working around the old
+  shared-seat test. The new test does not need it.
+
+### Where this is going
+
+`claude/ring-capacity-and-grouping.md` in the project has the decided plan:
+after the merge pass the overflow is 0 / 0 / 3 / 6 / 6 across Vertex, World,
+Face, Edge and Object, and the next version puts it behind **doors** - the
+last bearings of the ring opening a four-op sub-ring - rather than behind
+four categories over everything. Seven ops stay one flick away in every mode.
 
 ## The ring never deforms (a2.108)
 
