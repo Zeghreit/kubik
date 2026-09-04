@@ -54,12 +54,12 @@ and the entry stays because the failure it records was real.** Those labels
 were laid out BESIDE the seats, so their width was unbounded and they pushed
 the icons into each other. A word inside the seat cannot be wider than the
 seat. The rule that keeps it true is in the geometry, not in the CSS: the
-ring's clamp floor went from a 56px chord to **64**, because a seat carries a
-60px word now and two seats pulled onto the same line by the a2.104 edge
+ring's clamp floor went from a 56px chord to **68**, because a seat carries a
+64px word now and two seats pulled onto the same line by the a2.104 edge
 clamp had overlapping labels while their boxes did not. `_ring104_probe`
-measures it - `minPitch` is 65.6 at fourteen seats, against 57.4 before.
+measures it - `minPitch` is 69.7 at fourteen seats, against 57.4 before.
 
-- The label is **60px wide inside a 52px box**, on purpose: the seat is that
+- The label is **64px wide inside a 52px box**, on purpose: the seat is that
   box turned 45 degrees, so through its middle the diamond is 73.5 across.
   It wraps at spaces only - `overflow-wrap: anywhere` was breaking EXTRUD/E
   and CIRCULA/RIZE, and a word split across two lines is slower to read than
@@ -121,7 +121,7 @@ z 33 against the cube's 12, so it painted over the faces. Its row is
   the moment the glyph became a word. If a ring tool has a state, it carries
   `on:`.
 - **A label wider than the ring's clamp floor.** The two numbers - `.tx`'s
-  width and `(TOOL_RING_ITEM + 12)` in `seatMinR` - are one decision written
+  width and `(TOOL_RING_ITEM + 16)` in `seatMinR` - are one decision written
   twice. Move either and move both.
 
 
