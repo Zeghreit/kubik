@@ -2284,7 +2284,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.0a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.1a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -4757,6 +4757,61 @@ function maskWantsPatch(d) {
   return !!maskOf(d) || (d && d.bevel > 0);
 }
 
+/* ONE SLOT'S NUMBERS, WRITTEN INTO A SCRATCH (v2.0b). packUniforms builds a
+   uniform set; refresh already HAS one and only wants the values. Both used
+   to carry their own copy of this arithmetic - refresh by calling
+   packUniforms and copying out of the result. One definition of the
+   arithmetic, read by both, and refresh no longer allocates to get at it.
+   The scratch is filled and read on one thread, within one statement, and
+   nothing holds on to it. */
+const _maskSlot = {
+  live: false, color: '#ffffff', amount: 0, scale: 1, blend: 0,
+  colorOn: 0, roughOn: 0, rough: 0.5, source: 0, blur: 0.5, noise: 0, nscale: 1
+};
+function maskSlotValues(list, k) {
+  const mk = list[k];
+  const s = _maskSlot;
+  s.live = !!(mk && mk.on && (mk.colorOn || mk.roughOn));
+  s.color = mk && mk.color ? mk.color : '#ffffff';
+  s.amount = s.live ? mk.amount : 0;
+  /* A shape mask's Width is a FRACTION of the field's reach, so it has to be
+     clamped here and not only by the panel: an older library in localStorage
+     or a hand-edited project can carry a cloth mask's 12, which would sail
+     past the field's range and fill the object. */
+  const cm = mk ? maskCurvMode(mk) : 0;
+  s.scale = cm ? Math.min(1, Math.max(0.001, mk.scale)) : (mk && mk.scale ? mk.scale : 1);
+  s.blend = mk ? Math.max(0, MASK_BLENDS.indexOf(mk.blend || 'normal')) : 0;
+  s.colorOn = s.live && mk.colorOn ? 1 : 0;
+  s.roughOn = s.live && mk.roughOn ? 1 : 0;
+  s.rough = mk && typeof mk.rough === 'number' ? mk.rough : 0.5;
+  // 0 = read the baked cloth texture, 1 = concave edges, 2 = convex.
+  s.source = cm;
+  s.blur = cm && mk ? Math.min(1, Math.max(0, mk.contrast)) : 0.5;
+  s.noise = cm && mk ? Math.min(1, Math.max(0, mk.detail)) : 0;
+  s.nscale = cm && mk && mk.nscale > 0 ? Math.min(8, mk.nscale) : 1;
+  return s;
+}
+
+/* '#rrggbb' -> the three WORKING-SPACE components, remembered. THREE.Color's
+   string parser runs a regular expression and allocates; a material slider
+   drag asks for the same handful of colours thousands of times a second.
+   Parsed by THREE.Color itself, once per string, so the colour management
+   is three's and not ours - `setRGB` with no colour space named writes the
+   working space directly, which is exactly what `.copy` from a parsed Color
+   used to do. Capped, because a project file can carry any number of
+   colours and this must not become a leak. */
+const _maskColorLin = new Map();
+function maskColorLinear(hex) {
+  let v = _maskColorLin.get(hex);
+  if (!v) {
+    const c = new THREE.Color(hex);
+    v = [c.r, c.g, c.b];
+    if (_maskColorLin.size > 512) _maskColorLin.clear();
+    _maskColorLin.set(hex, v);
+  }
+  return v;
+}
+
 function applyMaskPatch(mat, d) {
   // Scrub what clones may have JSON-copied from older builds.
   delete mat.userData.kubikMasked;
@@ -4820,52 +4875,56 @@ function applyMaskPatch(mat, d) {
       uKubikFieldRange: { value: (_matField.get(mat) || {}).range || 1 }
     };
     for (let k = 0; k < MASK_SLOTS; k++) {
-      const mk = list[k];
-      const live = !!(mk && mk.on && (mk.colorOn || mk.roughOn));
-      u.uKubikColor.value.push(new THREE.Color(mk && mk.color ? mk.color : '#ffffff'));
-      u.uKubikAmount.value.push(live ? mk.amount : 0);
-      /* A shape mask's Width is a FRACTION of the field's reach, so it has
-         to be clamped here and not only by the panel: an older library in
-         localStorage or a hand-edited project can carry a cloth mask's 12,
-         which would sail past the field's range and fill the object. */
-      const cmw = mk ? maskCurvMode(mk) : 0;
-      u.uKubikScale.value.push(cmw ? Math.min(1, Math.max(0.001, mk.scale))
-                                   : (mk && mk.scale ? mk.scale : 1));
-      u.uKubikBlend.value.push(mk ? Math.max(0, MASK_BLENDS.indexOf(mk.blend || 'normal')) : 0);
-      u.uKubikColorOn.value.push(live && mk.colorOn ? 1 : 0);
-      u.uKubikRoughOn.value.push(live && mk.roughOn ? 1 : 0);
-      u.uKubikRough.value.push(mk && typeof mk.rough === 'number' ? mk.rough : 0.5);
-      // 0 = read the baked cloth texture, 1 = concave edges, 2 = convex.
-      const cm = cmw;
-      u.uKubikSource.value.push(cm);
-      u.uKubikBlur.value.push(cm && mk ? Math.min(1, Math.max(0, mk.contrast)) : 0.5);
-      u.uKubikNoise.value.push(cm && mk ? Math.min(1, Math.max(0, mk.detail)) : 0);
-      u.uKubikNScale.value.push(cm && mk && mk.nscale > 0 ? Math.min(8, mk.nscale) : 1);
-      if (live) u.uKubikCount.value = k + 1;   // highest live slot, so the loop can stop
+      const s = maskSlotValues(list, k);
+      u.uKubikColor.value.push(new THREE.Color(s.color));
+      u.uKubikAmount.value.push(s.amount);
+      u.uKubikScale.value.push(s.scale);
+      u.uKubikBlend.value.push(s.blend);
+      u.uKubikColorOn.value.push(s.colorOn);
+      u.uKubikRoughOn.value.push(s.roughOn);
+      u.uKubikRough.value.push(s.rough);
+      u.uKubikSource.value.push(s.source);
+      u.uKubikBlur.value.push(s.blur);
+      u.uKubikNoise.value.push(s.noise);
+      u.uKubikNScale.value.push(s.nscale);
+      if (s.live) u.uKubikCount.value = k + 1;   // highest live slot, so the loop can stop
     }
     return u;
   };
 
+  /* NO SECOND UNIFORM SET, JUST TO COPY OUT OF IT (v2.0b). This used to call
+     packUniforms() and copy the answer across: a whole fresh uniform set -
+     4 THREE.Color, eleven arrays, four Vector3, a Vector2 and a Matrix3 -
+     per material, per call. updateMaterialEverywhere reaches every material
+     of every object on every `input` event, and a subdivided model holds
+     over a thousand of them, so one second of dragging a material slider
+     minted tens of thousands of objects the garbage collector then had to
+     take back. Same arithmetic, read from the same helper packUniforms
+     reads; only the allocation is gone. */
   const refresh = (u) => {
-    const fresh = packUniforms();
+    const list = maskList(d);
     // Written INTO the existing uniform objects - replacing them would
     // orphan the ones the compiled program is holding.
     u.uKubikMask.value = tex;
-    u.uKubikCount.value = fresh.uKubikCount.value;
     if (u.uKubikBevel) u.uKubikBevel.value = Math.min(1, Math.max(0, d.bevel || 0));
+    let count = 0;
     for (let k = 0; k < MASK_SLOTS; k++) {
-      u.uKubikColor.value[k].copy(fresh.uKubikColor.value[k]);
-      u.uKubikAmount.value[k] = fresh.uKubikAmount.value[k];
-      u.uKubikScale.value[k] = fresh.uKubikScale.value[k];
-      u.uKubikBlend.value[k] = fresh.uKubikBlend.value[k];
-      u.uKubikColorOn.value[k] = fresh.uKubikColorOn.value[k];
-      u.uKubikRoughOn.value[k] = fresh.uKubikRoughOn.value[k];
-      u.uKubikRough.value[k] = fresh.uKubikRough.value[k];
-      u.uKubikSource.value[k] = fresh.uKubikSource.value[k];
-      u.uKubikBlur.value[k] = fresh.uKubikBlur.value[k];
-      u.uKubikNoise.value[k] = fresh.uKubikNoise.value[k];
-      u.uKubikNScale.value[k] = fresh.uKubikNScale.value[k];
+      const s = maskSlotValues(list, k);
+      const c = maskColorLinear(s.color);
+      u.uKubikColor.value[k].setRGB(c[0], c[1], c[2]);
+      u.uKubikAmount.value[k] = s.amount;
+      u.uKubikScale.value[k] = s.scale;
+      u.uKubikBlend.value[k] = s.blend;
+      u.uKubikColorOn.value[k] = s.colorOn;
+      u.uKubikRoughOn.value[k] = s.roughOn;
+      u.uKubikRough.value[k] = s.rough;
+      u.uKubikSource.value[k] = s.source;
+      u.uKubikBlur.value[k] = s.blur;
+      u.uKubikNoise.value[k] = s.noise;
+      u.uKubikNScale.value[k] = s.nscale;
+      if (s.live) count = k + 1;
     }
+    u.uKubikCount.value = count;
   };
 
   if (!d.maskGen) bumpMaskGen(d);   // first wearer of a never-patched definition
@@ -5883,12 +5942,22 @@ function ensureEdgeField(mesh) {
      8Hz strobe between correct and fully worn, and into a solidly wrong
      render for any drag with a finger down.
 
-     The consequence is pre-existing and stays: rebuildFromEditable installs a
-     NEW geometry, so `f` is absent on every frame of an op-slider drag and
-     the bake is not throttled there at all. Carrying the field across the
-     rebuild is the real fix; it belongs with that rebuild rather than here,
-     and it is on the list for the structural pass. */
-  if (f && typeof activePointers !== 'undefined' && activePointers.size) return f;
+     That used to have a consequence this function could not fix:
+     rebuildFromEditable installed a NEW geometry, so `f` was absent on
+     every frame of an op-slider drag and the bake was not throttled there
+     at all. FIXED AT v2.0b, where it belongs - rebuildFromEditable now
+     carries the old field onto the new geometry, so `f` is present, stale,
+     and throttled. Do not "tidy up" that carry: without it this function
+     silently loses its throttle on the one path that needs it most. */
+  /* Bounded the way renderWanted and renderScaleWanted bound their own reads
+     of these trackers, and for the same reason: a leaked entry must not be
+     able to switch an optimisation off - or here, ON - for the rest of the
+     session. Before v2.0b this guard could not bite on the op path at all,
+     because there was never an `f` to hand back; now that the field rides
+     across the rebuild it can, and a stranded pointer would have frozen the
+     wear band at whatever shape the model had when it stranded. (v2.1a) */
+  if (f && typeof activePointers !== 'undefined' && activePointers.size &&
+      now - lastPointerAt < POINTER_LIVE_MS) return f;
   if (f && now - th.at < EDGE_FIELD_MS) return f;
   let built = null;
   try { built = bakeEdgeField(geo); } catch (err) { console.error('edge field bake failed', err); }
@@ -7152,9 +7221,31 @@ function rebuildFromEditable(obj, edIn) {
   geo.computeBoundingBox();
 
   disposeHelpersOnly(obj);
+  /* THE FIELD RIDES ACROSS THE REBUILD (v2.0b). Every op in the app funnels
+     through here and an op-slider drag runs it once a frame, so this line
+     used to throw the distance field away sixty times a second and hand
+     ensureEdgeField a geometry with no field on it at all. Both of that
+     function's throttles test `f` FIRST - deliberately, because a throttle
+     may hand back a STALE field but never NO field - so an absent field
+     meant no throttle, and the bake behind it is up to 2.5M distToSegment
+     calls plus a 1 MB texture upload, INSIDE renderer.render, on any object
+     wearing a shape mask or rounded edges. That is the largest per-frame
+     cost the app had left and it ran on exactly the gesture the phone was
+     getting hot during. ensureEdgeField has said this was the real fix
+     since it was written; this is it.
+
+     What carries over is STALE by construction - it describes the shape
+     before this frame's edit - and that is the point. `kubikEdges.gen` is a
+     monotonic counter, so the carried field never matches the new geometry
+     and ensureEdgeField always wants to re-bake; it is the throttle, not
+     the staleness, that decides when. During the drag the wear band lags
+     the shape; the frame after the finger lifts it is right again. */
+  const carriedField = obj.mesh.geometry.userData && obj.mesh.geometry.userData.kubikField;
+  if (carriedField) obj.mesh.geometry.userData.kubikField = null;   // so the dispose below leaves it alone
   disposeEdgeField(obj.mesh.geometry);
   obj.mesh.geometry.dispose();
   obj.mesh.geometry = geo;
+  if (carriedField) geo.userData.kubikField = carriedField;
   // Every op in the app funnels through here, which is the only place that
   // sees the finished group list and the finished material array together.
   reconcileFinishes(obj);
@@ -11525,8 +11616,12 @@ function beginPendingOp(kind, obj, payload, init) {
    harness (virtual time) and noisy on a phone; counting how many times the
    expensive things RUN is stable, and it is what the optimisations here
    actually change. Read via __kubik.PERF. */
+/* `tick` counts how many times animate RUNS, which since v2.1 is a different
+   number from `render`: the loop used to wake sixty times a second whether or
+   not it drew, and now it sleeps. The gap between tick and render is the
+   whole of what a2.46 bought; the size of tick itself is what v2.1 bought. */
 const PERF = { applyOp: 0, topo: 0, shade: 0, shadeTopo: 0, selRebuild: 0,
-               matClone: 0, render: 0, bake: 0, rescale: 0 };
+               matClone: 0, render: 0, bake: 0, rescale: 0, tick: 0 };
 
 function applyPendingOp() {
   invalidate();   // see On-demand rendering
@@ -12141,10 +12236,29 @@ function hideOpBar() {
    Deferred ONLY on the pointer-driven paths. Everything discrete - a stepper,
    a toggle, the keyboard, a probe - still applies synchronously, because the
    caller after it expects the mesh to be correct. */
+/* AND THE SAME CAP AS THE RENDER, ON A SUSTAINED GESTURE (v2.1a). One apply
+   per frame is right when every frame is drawn. Since v2.1 a sustained touch
+   gesture draws thirty a second, and running this pipeline sixty times to
+   feed thirty paints is the CPU half of exactly the waste the render cap
+   removes - on a subdivided mesh it is the expensive half. RE-ARMED rather
+   than dropped, so the last value the finger set is always applied, within
+   LIVE_FRAME_MS of being set and immediately when the bar is accepted. A
+   mouse never qualifies, so nothing on a desktop changes. */
 let opApplyFrame = 0;
+let opApplyAt = -1e9;
+function opApplyTick() {
+  const now = performance.now();
+  if (liveFrameCapped(now) && now - opApplyAt < LIVE_FRAME_MS) {
+    opApplyFrame = requestAnimationFrame(opApplyTick);
+    return;
+  }
+  opApplyFrame = 0;
+  opApplyAt = now;
+  applyPendingOp();
+}
 function schedulePendingApply() {
   if (opApplyFrame) return;
-  opApplyFrame = requestAnimationFrame(() => { opApplyFrame = 0; applyPendingOp(); });
+  opApplyFrame = requestAnimationFrame(opApplyTick);
 }
 /* Anything that needs the mesh right NOW - accepting, cancelling, reading the
    geometry back - runs the outstanding apply first rather than racing it. */
@@ -12152,6 +12266,7 @@ function flushPendingApply() {
   if (!opApplyFrame) return;
   cancelAnimationFrame(opApplyFrame);
   opApplyFrame = 0;
+  opApplyAt = performance.now();
   applyPendingOp();
 }
 
@@ -28328,6 +28443,53 @@ const POINTER_LIVE_MS = 4000;
 let renderUntil = 0;
 let lastRenderAt = -1e9;
 let lastPointerAt = -1e9;
+/* THE LOOP SLEEPS (v2.1). a2.46 stopped the app DRAWING when nothing
+   happens; it did not stop it WAKING. requestAnimationFrame(animate) was
+   unconditional, so a phone sitting in a hand while its owner looked at the
+   model still ran sixty callbacks a second - sixty orbit.update()s, sixty
+   render decisions - and, more to the point, kept the display link and the
+   compositor out of their idle states for the whole time. A modelling
+   session is mostly looking; that is a lot of seconds.
+
+   Now the loop schedules its own next tick and simply stops when
+   renderWanted says there is nothing to do, leaving a setTimeout to bring it
+   back for the heartbeat. Every path that can change the picture already
+   ends at invalidate() - that is a2.46's whole design and the document-level
+   capture listeners are its backstop - so invalidate() is also the wake.
+
+   What has NOT changed: the worst case. If some path forgets to invalidate,
+   the heartbeat still repaints once a second, exactly as before. The timer
+   is clamped to about a second in a background tab, which is the heartbeat's
+   own period, and rAF does not run there at all - so a hidden tab draws
+   nothing and comes back on the first frame after it is shown.
+
+   loopStarted exists because invalidate() is called several times during
+   init, long before the scene is ready to be drawn; without it the first
+   applyEnvironment would start the loop underneath the code still building
+   the thing it draws. */
+let rafPending = 0;
+let heartTimer = 0;
+let loopStarted = false;
+function wakeLoop() {
+  if (!loopStarted || rafPending) return;
+  if (heartTimer) { clearTimeout(heartTimer); heartTimer = 0; }
+  rafPending = requestAnimationFrame(animate);
+}
+function scheduleNextFrame(now) {
+  /* Something inside the frame already re-armed us - an invalidate from a
+     handler, or the render-scale restore. Do not arm it twice. */
+  if (rafPending || heartTimer) return;
+  if (renderWanted(now)) { rafPending = requestAnimationFrame(animate); return; }
+  const due = Math.max(0, RENDER_HEARTBEAT_MS - (now - lastRenderAt));
+  heartTimer = setTimeout(() => {
+    heartTimer = 0;
+    rafPending = requestAnimationFrame(animate);
+  }, due);
+}
+function startLoop() {
+  loopStarted = true;
+  animate();          // the first frame, synchronously, exactly as before
+}
 
 /* GESTURE-TIME RENDER SCALE (a2.96). A phone got hot after ten minutes of
    modelling. The loop above already draws nothing when nothing happens, so
@@ -28368,8 +28530,33 @@ let lastPointerAt = -1e9;
    (1.25/2 and its inverse round-trip bit-exactly). The Line2 strokes need
    nothing - LineMaterial works in CSS pixels through `resolution`, which
    is the viewport's CSS size and does not move. */
-const LIVE_PIXEL_RATIO = 1.25;
+/* 1.0, NOT 1.25 (v2.1). a2.96 named this as the first lever to pull if the
+   phone was still warm, and it was: 25-40 minutes instead of 5-10, but warm.
+   One CSS pixel per pixel is 25% of the fragments of the shipped 2x and 64%
+   of a2.96's 1.25. It is the floor for two reasons, and neither is the
+   screen's own pixel count - an iPhone reports 3 and this file has capped it
+   at 2 since long before either lever. It is where the ratio-of-ratios
+   carry-across for Points sizes round-trips exactly (1/2 and 2 both, in
+   binary, exactly); and it is where the softness is still only visible on
+   something that is moving. Below it you would see it standing still. */
+const LIVE_PIXEL_RATIO = 1.0;
 const LIVE_TOUCH_PX = 8;
+/* AND HALF THE FRAMES, BUT NOT STRAIGHT AWAY (v2.1). a2.96's second named
+   lever was a 30fps cap on the drag loop - iOS itself throttles rAF to 30
+   under Low Power Mode, so 30 is Apple-sanctioned. Applied to every gesture
+   it would be felt: a flick is the one place 60 reads as 60, because the
+   picture is moving fast enough for the eye to see each step.
+
+   So the cap waits. The first LIVE_FPS_AFTER_MS of a gesture run at full
+   rate; a gesture still going after that is a SUSTAINED one - a slow orbit,
+   a long drag, a finger holding a slider - and those are both the ones
+   where 30 is hard to see and the ones that actually make heat, because
+   they last. A flick is over before the cap arrives.
+
+   It rides on the same tracker as the render scale, so it is touch-only by
+   construction: a mouse is on a machine with a fan and never qualifies. */
+const LIVE_FPS_AFTER_MS = 600;
+const LIVE_FRAME_MS = 32;      // one frame per 32ms is 30fps at 60Hz and at 120Hz
 const liveTouches = new Map();   // pointerId -> { x, y, moved, at }
 document.addEventListener('pointerdown', (ev) => {
   if (ev.pointerType !== 'touch') return;
@@ -28377,13 +28564,17 @@ document.addEventListener('pointerdown', (ev) => {
   const qualifies = t === renderer.domElement ||
     (t && t.matches && t.matches('input[type="range"]'));
   if (!qualifies) return;
-  liveTouches.set(ev.pointerId, { x: ev.clientX, y: ev.clientY, moved: 0, at: performance.now() });
+  liveTouches.set(ev.pointerId, { x: ev.clientX, y: ev.clientY, moved: 0, at: performance.now(), q: 0 });
 }, { capture: true, passive: true });
 document.addEventListener('pointermove', (ev) => {
   const p = liveTouches.get(ev.pointerId);
   if (!p) return;
   p.moved = Math.max(p.moved, Math.hypot(ev.clientX - p.x, ev.clientY - p.y));
   p.at = performance.now();
+  // The moment this touch stopped being a tap. `q` is what the frame cap
+  // ages: a gesture is only sustained relative to when it BEGAN moving,
+  // not to when the finger first landed.
+  if (!p.q && p.moved > LIVE_TOUCH_PX) p.q = p.at;
 }, { capture: true, passive: true });
 ['pointerup', 'pointercancel'].forEach(t =>
   document.addEventListener(t, (ev) => { liveTouches.delete(ev.pointerId); },
@@ -28412,7 +28603,19 @@ function renderScaleWanted(now) {
   }
   return false;
 }
-function invalidate() { renderUntil = performance.now() + RENDER_LINGER_MS; }
+/* Has SOME live gesture been going long enough to be capped? Same staleness
+   bound as above, for the same reason: a leaked entry must not be able to
+   halve the frame rate for the rest of the session. (v2.1) */
+function liveFrameCapped(now) {
+  for (const p of liveTouches.values()) {
+    if (p.q && now - p.at < POINTER_LIVE_MS && now - p.q >= LIVE_FPS_AFTER_MS) return true;
+  }
+  return false;
+}
+function invalidate() {
+  renderUntil = performance.now() + RENDER_LINGER_MS;
+  wakeLoop();
+}
 
 function renderWanted(now) {
   /* A finger down, or anything animating, is drawn every frame as before.
@@ -28424,7 +28627,14 @@ function renderWanted(now) {
      real gesture streams pointer events continuously, so four seconds of
      silence means the entry is stale, not that a finger is resting. */
   if (activePointers.size > 0 && now - lastPointerAt < POINTER_LIVE_MS) return true;
-  if (camAnim || viewCube.animating) return true;
+  /* And the one state that ADVANCES inside the loop with neither of those
+     true: the cube nulls its animation on the frame it finishes and leaves
+     engageOrtho for the NEXT tick. A swing that moves the camera gets that
+     tick for free, because orbit fires 'change'; a swing that moves nothing -
+     tapping the face you are already looking at - has nothing to fire it, and
+     since v2.1 the loop would go to sleep with the engage still pending and
+     do it a second later. (v2.1a, caught in review) */
+  if (camAnim || viewCube.animating || cubeAligning) return true;
   if (now <= renderUntil) return true;
   return now - lastRenderAt >= RENDER_HEARTBEAT_MS;
 }
@@ -28441,13 +28651,51 @@ orbit.addEventListener('change', invalidate);
     { capture: true, passive: true }));
 window.addEventListener('resize', invalidate);
 window.addEventListener('visibilitychange', invalidate);
+/* COMING BACK FROM THE BACKGROUND IS WHERE A rAF CHAIN GOES TO DIE, and
+   since v2.1 the loop IS a rAF chain with a latch: wakeLoop refuses to arm a
+   second frame while `rafPending` says one is already coming. If the browser
+   dropped that queued callback while the tab was hidden - which is exactly
+   the moment a mobile browser might - the latch would be stuck set and
+   nothing, not even invalidate, could restart the loop. So the one event
+   that marks that moment clears the latch itself.
+
+   Double-arming is self-healing, not a leak: if the queued callback DOES
+   arrive as well, both run, each clears `rafPending` on entry, and the first
+   one to reach scheduleNextFrame arms the single next frame while the other
+   finds it already armed and returns. One chain again, one frame later. */
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  rafPending = 0;
+  wakeLoop();
+});
 
 // The view cube only moves when the camera's ORIENTATION does.
 const camQuatSeen = new THREE.Quaternion(0, 0, 0, 0);
 
 function animate() {
-  requestAnimationFrame(animate);
-  const now = performance.now();
+  rafPending = 0;
+  PERF.tick++;
+  /* THE RE-ARM IS IN A `finally`, and that is not defensive dressing. Until
+     v2.1 the next frame was requested by the FIRST statement of this
+     function, so a throw anywhere below still left a running loop and the
+     heartbeat kept repainting - which is the guarantee the block above
+     claims. Scheduling at the END gives that guarantee back only if the
+     schedule cannot be skipped. Without this, one throw would freeze the
+     viewport until the user happened to touch the glass, and a throw on the
+     very first frame - startLoop calls this synchronously from init - would
+     leave the loop unstarted altogether, in an app that has no reload button
+     on a Home Screen. (v2.1a, caught in review) */
+  try {
+    stepFrame(performance.now());
+  } finally {
+    /* Read the clock AGAIN: the frame can take milliseconds, and arming the
+       heartbeat off a stale `now` would ask for a frame that is already due
+       and turn the sleep into a spin. */
+    scheduleNextFrame(performance.now());
+  }
+}
+
+function stepFrame(now) {
   const delta = Math.min((now - lastFrameTime) / 1000, 0.1);
   lastFrameTime = now;
 
@@ -28471,6 +28719,14 @@ function animate() {
   // ALWAYS - it is what advances the damping, and it fires 'change' while it
   // is still settling, which is what keeps the frames coming during a flick.
   orbit.update();
+  /* orbit.update's own lookAt recomposes matrixWorld from the PREVIOUS
+     quaternion before assigning the new one, so at this point the camera
+     carries this frame's position with last frame's orientation. Everything
+     the drag below does is a projection or an unprojection through that
+     matrix, so on any frame where the camera is still coasting the drag was
+     being solved against an orientation one frame old. Costs a matrix
+     compose; removes the whole class. (v2.0b) */
+  camera.updateMatrixWorld();
   // The parked pointermove, applied once per frame (a2.96) - before the
   // render decision, so the frame that follows shows it.
   flushDirectDrag();
@@ -28480,25 +28736,33 @@ function animate() {
   const scaleLive = renderScaleWanted(now);
   if (renderScaleLive && !scaleLive) invalidate();
 
-  if (!renderWanted(now)) return;
-  setRenderScale(scaleLive);
-  const heartbeat = now - lastRenderAt >= RENDER_HEARTBEAT_MS;
-  lastRenderAt = now;
-  PERF.render++;
-  renderer.render(scene, camera);
-  /* Separate renderer - cannot affect the main viewport above. Its picture is
-     a pure function of the camera's DIRECTION - cubeSync reads nothing
-     else, and the cube has no hover state - so panning and dollying
-     correctly cost it nothing.
+  /* THE CAP, and it is the only place a frame that IS wanted gets skipped.
+     A sustained touch gesture draws every other frame; everything else -
+     every mouse, every flick under LIVE_FPS_AFTER_MS, the heartbeat, a
+     camera flight - is untouched. lastRenderAt is not moved by a skip, so
+     the gap grows and the next frame draws: 32ms is one frame at 60Hz and
+     three at 120Hz, which is 30fps on either. (v2.1) */
+  const capped = scaleLive && liveFrameCapped(now) && now - lastRenderAt < LIVE_FRAME_MS;
+  if (renderWanted(now) && !capped) {
+    setRenderScale(scaleLive);
+    const heartbeat = now - lastRenderAt >= RENDER_HEARTBEAT_MS;
+    lastRenderAt = now;
+    PERF.render++;
+    renderer.render(scene, camera);
+    /* Separate renderer - cannot affect the main viewport above. Its picture is
+       a pure function of the camera's DIRECTION - cubeSync reads nothing
+       else, and the cube has no hover state - so panning and dollying
+       correctly cost it nothing.
 
-     ...but it gets the heartbeat too. renderer.render repaints everything
-     from current state once a second whatever happens; the cube had no such
-     backstop, so anything that blanked its canvas without turning the camera
-     - a lost-and-restored WebGL context, which backgrounding a tab on mobile
-     does routinely - stayed blank until the user happened to orbit. */
-  if (viewCube.animating || heartbeat || !camQuatSeen.equals(camera.quaternion)) {
-    camQuatSeen.copy(camera.quaternion);
-    viewCube.render(cubeRenderer);
+       ...but it gets the heartbeat too. renderer.render repaints everything
+       from current state once a second whatever happens; the cube had no such
+       backstop, so anything that blanked its canvas without turning the camera
+       - a lost-and-restored WebGL context, which backgrounding a tab on mobile
+       does routinely - stayed blank until the user happened to orbit. */
+    if (viewCube.animating || heartbeat || !camQuatSeen.equals(camera.quaternion)) {
+      camQuatSeen.copy(camera.quaternion);
+      viewCube.render(cubeRenderer);
+    }
   }
 }
 let lastFrameTime = performance.now();
@@ -28619,7 +28883,7 @@ function init() {
   refreshUI();
   refreshGizmoAttachment();
   pushHistory();
-  animate();
+  startLoop();
   /* LAST, and gated on the FLAG alone (a2.66). It was gated on "no autosave
      came back" as well, which sounds stronger and is strictly worse:
      init's own pushHistory schedules an autosave 900ms in, so by the second
@@ -28650,6 +28914,11 @@ if (PICK_DEBUG) {
     hemi, dir, rimLight, fill, applyEnvRig, applyEnvLive, cameraTurnDeg,
     // a2.96: the gesture-time render scale and the drag coalescer
     renderScaleWanted, setRenderScale, flushDirectDrag, LIVE_PIXEL_RATIO,
+    // v2.1: the frame cap and the sleeping loop, so a probe can ask both
+    // rather than infer them from a frame count.
+    liveFrameCapped, LIVE_FPS_AFTER_MS, LIVE_FRAME_MS, wakeLoop, scheduleNextFrame,
+    get rafPending() { return rafPending; },
+    get heartTimer() { return heartTimer; },
     // a2.102: drag-anywhere amount
     amountDragEligible, endAmountDrag,
     get amountDrag() { return amountDrag; }, get amountCandidate() { return amountCandidate; },

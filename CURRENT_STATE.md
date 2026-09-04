@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~26,500 lines)
-- Version at time of writing: **2.0a**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~29,200 lines)
+- Version at time of writing: **2.1a**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -35,6 +35,184 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Cool running, part two — the loop sleeps and the field stops re-baking (v2.0b / v2.1 / v2.1a)
+
+a2.96 was the first pass at the phone getting hot: it capped the gesture-time
+render scale at 1.25 and coalesced direct drags to one apply per frame. It
+moved the symptom from **five to ten minutes** of modelling to **twenty-five
+to forty**. This is the second pass, and it is four separate things — one of
+them much larger than the other three.
+
+### The one that mattered: the distance field was baking sixty times a second
+
+`ensureEdgeField` has two throttles and both of them test `f` first — the
+existing field — deliberately, because a throttle here may hand back a STALE
+field but must never hand back NO field (with no field the shader substitutes
+a 1x1 black texture, black is distance zero, and the object renders fully
+worn; dropping the `f &&` once turned a slow-but-correct drag into an 8Hz
+strobe between correct and wrong).
+
+`rebuildFromEditable` installed a NEW `BufferGeometry` and disposed the old
+field. **Every op in the app funnels through it, and an op-slider drag runs
+it once a frame.** So `f` was absent on exactly the path the throttle was
+written for, both guards short-circuited, and the bake behind them — up to
+2.5M `distToSegment` calls plus a 1 MB texture upload, **inside
+`renderer.render`** — ran on every frame, for any object wearing a shape
+mask or rounded edges. The function's own comment had said since it was
+written that carrying the field across the rebuild was the real fix and that
+it belonged with the rebuild. v2.0b does that.
+
+Measured by `_field_probe`, twenty frames of an op-slider drag:
+
+| | before | after |
+|---|---|---|
+| finger down (touch drag) | 20 bakes / 20 frames | **0** |
+| mouse on the slider | 20 bakes / 20 frames | **3** (one per 120ms) |
+| bakes over the whole probe | 41 | **6** |
+
+What you see: during the drag the wear band lags the shape, because the field
+describes the geometry from before this frame's edit. On the frame after the
+finger lifts it is right again. `kubikEdges.gen` is a monotonic counter, so a
+carried field can never match the new geometry and can never go permanently
+stale; and `EDGE_FIELD_MS` (120) is shorter than `RENDER_LINGER_MS` (260), so
+the linger window after any gesture always contains a frame in which the
+re-bake fires.
+
+### The loop sleeps (v2.1)
+
+a2.46 stopped the app **drawing** when nothing happens. It did not stop it
+**waking**: `requestAnimationFrame(animate)` was unconditional, so a phone
+sitting in a hand while its owner looked at the model still ran sixty
+callbacks a second and kept the display link and the compositor out of their
+idle states the whole time. A modelling session is mostly looking.
+
+`animate` now schedules its own next tick: a rAF if `renderWanted` says so,
+otherwise a `setTimeout` for the heartbeat. `invalidate()` is the wake —
+which costs nothing to arrange, because a2.46 already made every path that
+changes the picture end there, with the document-level capture listeners as
+its backstop. Measured idle: **1 loop run per second instead of 60**
+(`PERF.tick`, which is new and exists to say exactly this).
+
+Three things this needed, two of them found in review:
+
+- **`startLoop()`, and `loopStarted`.** `invalidate()` is called several
+  times during `init`; without the flag the first `applyEnvironment` would
+  start the loop underneath the code still building what it draws.
+- **The re-arm is in a `finally`.** Until v2.1 the next frame was requested
+  by the FIRST statement of `animate`, so a throw anywhere in the body still
+  left a running loop and the heartbeat kept repainting. Scheduling at the
+  end gives that guarantee back only if the schedule cannot be skipped — and
+  a throw on the very first frame would otherwise have left the loop
+  unstarted, in an app with no reload button on a Home Screen.
+- **`cubeAligning` joined `renderWanted`.** It is a state that only the loop
+  advances, and the cube leaves it pending for the tick after its animation
+  ends. A swing that MOVES the camera gets that tick free from orbit's
+  `change` event; tapping the cube face you are already looking at moves
+  nothing, so the loop would have slept with the engage still pending.
+- **Coming back from the background clears the latch.** `wakeLoop` refuses to
+  arm while `rafPending` says a frame is coming; if the browser dropped that
+  queued callback while the tab was hidden, nothing could have restarted the
+  loop. `visibilitychange` clears it. Double-arming is self-healing.
+
+### Half the frames, but not straight away (v2.1)
+
+a2.96's second named lever was a 30fps cap on the drag loop. Applied to every
+gesture it would be felt — a flick is the one place 60 reads as 60, because
+the picture moves fast enough for the eye to see each step. So the cap waits:
+the first `LIVE_FPS_AFTER_MS` (600) of a gesture run at full rate, and a
+gesture still going after that is a SUSTAINED one — a slow orbit, a long
+drag, a finger on a slider. Those are both the ones where 30 is hard to see
+and the ones that actually make heat, because they last. A flick is over
+before the cap arrives.
+
+`LIVE_FRAME_MS` is 32: one frame at 60Hz and three at 120Hz, so it is 30fps
+on either. `lastRenderAt` is not moved by a skip, so the gap grows and the
+next frame always draws. `capped` can never suppress the heartbeat (32 < 1000
+by construction) and can never suppress the full-resolution restore.
+
+It rides the same `liveTouches` tracker as the render scale, so it is
+touch-only: a mouse is on a machine with a fan and never qualifies.
+
+**And the op pipeline got the same cap (v2.1a).** One apply per frame is
+right when every frame is drawn; running the whole pipeline — snapshot copy,
+re-run the op, rebuild, topology, shade, overlays — sixty times to feed
+thirty paints is the CPU half of the same waste. `schedulePendingApply`
+re-arms rather than drops, so the last value the finger set is always
+applied.
+
+Measured by `_loop_probe` at a forced DPR of 2: gesture under 600ms **59.8
+fps**, the same gesture past 600ms **30.4 fps**, pixel ratio 2 → 1 during the
+gesture and back to 2 on the frame after the finger lifts.
+
+### LIVE_PIXEL_RATIO is 1.0 (v2.1)
+
+a2.96's first named lever. 25% of the fragments of the shipped 2x and 64% of
+a2.96's 1.25. It is the floor for two reasons and neither is the screen's own
+pixel count (an iPhone reports 3 and this file has capped it at 2 since long
+before either lever): it is where the ratio-of-ratios carry-across for Points
+sizes round-trips exactly, and it is where the softness is still only visible
+on something that is moving.
+
+### The small ones (v2.0b)
+
+- **`applyMaskPatch`'s `refresh` stopped allocating.** It called
+  `packUniforms()` purely to copy out of the result — a whole fresh uniform
+  set (4 `THREE.Color`, eleven arrays, four `Vector3`, a `Vector2`, a
+  `Matrix3`) per material per call, and `updateMaterialEverywhere` reaches
+  every material of every object on every `input` event. A subdivided model
+  holds over a thousand materials. Both callers now read `maskSlotValues`,
+  one definition of the arithmetic, writing into a shared scratch;
+  `maskColorLinear` memoises parsed hex. Same numbers, no allocation.
+- **`camera.updateMatrixWorld()` before `flushDirectDrag`.** `lookAt`
+  recomposes `matrixWorld` from the PREVIOUS quaternion before assigning the
+  new one, so the drag was projecting through an orientation one frame old
+  whenever the camera was coasting. It is now REQUIRED rather than tidy: on a
+  capped frame `renderer.render` never runs, and the render was what used to
+  refresh the matrix.
+
+### Two probes that need a real clock and a real GPU
+
+Neither is in `_runprobes.py`, and neither can be: the suite runs under
+SwiftShader with Chrome's virtual clock, where `requestAnimationFrame` never
+fires and `performance.now()` reads zero — which is precisely the two things
+everything above is measured in. Both serve the folder themselves, run
+headless Chrome with `--use-angle=d3d11` and no time budget, and have the
+page POST its own answer back (`--dump-dom` fires at load, far too early).
+
+- **`_field_probe.py [target.html]`** — bakes per frame of an op-slider drag.
+  Takes a filename, so it runs against a `_bak_*.html` for a before number.
+- **`_loop_probe.py [target.html]`** — idle frames and idle loop runs, whether
+  `invalidate` wakes it, frames per second inside and past the cap window,
+  and the pixel ratio through a gesture. Forces `--force-device-scale-factor=2`
+  because a DPR-1 box can never exercise the render scale at all.
+
+### What is still on the list, in order
+
+Found by review this session, none of it done:
+
+1. **The `#N` program fork.** `applyMaskPatch` appends `'#' + (_maskGen++)`
+   when a material returns to a key it has already compiled under, and
+   `_maskGen` is global, so the suffix is unique per MATERIAL. Painting A,
+   then B, then A again over a subdivided object mints one distinct
+   `WebGLProgram` per material — thousands, and shader linking is the
+   expensive half on Apple GPUs. `applyFinishToSelection`'s comment claims it
+   bumps a fresh generation to prevent exactly this; its body does not.
+2. **`renderMatPreviews` costs N renders and N synchronous `toDataURL`
+   readbacks**, on every material-editor slider RELEASE, for the whole
+   library. Only the card whose definition changed needs redrawing.
+3. **`_maskTex` and the preview rig's materials are never pruned** for
+   definitions minted by a file open or an import, so a session that opens
+   several files grows all three sets and never shrinks them.
+4. The remaining two contributors a2.96 listed and left: `backdrop-filter`
+   on the inspector and menu panels composited over a live canvas, and
+   `antialias: true` on the main context (fixed at creation, so it cannot be
+   traded per gesture — and turning it off once caused a blank canvas on some
+   mobile GPUs, which is why it is still on).
+
+**Whether any of this worked is a ten-minute session with the phone in your
+hand.** Nothing on a Windows box has an iPhone's thermal envelope, and the
+numbers above are frame counts and bake counts, not degrees.
 
 ## The help card follows the rings (v2.0a)
 
