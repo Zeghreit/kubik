@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~25,350 lines)
-- Version at time of writing: **a2.103**
+- Version at time of writing: **a2.104**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -35,6 +35,94 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+
+## The ring blooms at the finger (a2.104)
+
+From the a3.0 spec critique (`claude/a3.0-spec-critique.md`): the ring's
+promise is that it opens under your thumb wherever that is, and the code
+was not keeping it.
+
+`margin` used to be `R + TOOL_RING_TIP + 4` - the whole ring held clear of
+the edge. On a 393px viewport that leaves a legal band about **13px wide**
+for the centre, so the ring bloomed in the middle of the screen almost
+wherever you pressed. a2.98 added the separate aim point precisely to keep
+picking honest when it did; that patch is still right and still needed, but
+it was treating the symptom.
+
+**A seat is picked by DIRECTION, so how far out it sits carries no
+information.** That makes the seat, not the ring, the thing that can give
+way:
+
+- `RING_EDGE_PX` (14) is the clearance every seat keeps from the viewport
+  edge.
+- **`seatMinR` - the floor - cannot be a flat number, and review caught this
+  before it shipped.** Seats clamped by one edge all land on the SAME line,
+  and along that line their spacing is only what the ANGLE between them
+  buys. At fourteen seats and a 69px floor that is ~18px, and the icons sit
+  on top of each other. So the floor is computed per ring, from the ring's
+  own tightest angular gap, as the radius at which neighbours still clear
+  each other by 56px centre to centre (against `ideal`'s comfortable 92) -
+  never below `TOOL_RING_SEAT_MIN_R` (dead zone + tip + 6 = 69), which keeps
+  a pulled-in seat outside the dead zone so it is never read as a cancel.
+  Two seats both on the floor are exactly 56px apart and moving either one
+  further out only increases that, so the floor alone guarantees the
+  spacing whatever shape the clamp draws.
+- `margin` is `RING_EDGE_PX + TOOL_RING_TIP + seatMinR`, which depends on
+  the shortest SEAT and not on `R` at all - and because the two are built
+  from the same number, the room in every direction is at least `seatMinR`,
+  so the floor can never fight the edge clearance. A ring that fits is a
+  perfect circle again. On a 393px screen the legal band for the centre
+  goes 13px -> **~40px for the 14-seat Edge ring** and much wider for the
+  smaller rings (the 9-seat world ring measures 45% of the viewport).
+- `seatRadius(angle)` inside `bloomToolRing` returns that bearing's own
+  radius: start at `R`, then for each of the four sides limit `r` to
+  `room / component` for the seats travelling toward it. A seat parallel to
+  an edge is not constrained by it, hence the sign test.
+- Every seat carries its radius: `itemEls.push({ el, tool, angle, r })`.
+  `placeRingAim` and `placeRingLabel` read `it.r`, not `toolRingActive.radius`.
+  `toolRingActive.radius` stays the NOMINAL radius and is still what the
+  sticky ring's `dist > radius * 2.2` "none of these" test uses. That test
+  is the one latent gap: it would be wrong for a STICKY ring bloomed off
+  centre, and both sticky callers bloom at the viewport centre today.
+- **The aim line is never drawn backwards.** With the centre pushed off the
+  finger, a seat on that side can end up BEHIND the finger relative to its
+  own bearing - you slide right to light a seat drawn to your left. The
+  highlight is still right, but the line read as a drawing fault, so
+  `placeRingAim` bails when `cos(bearing - it.angle) <= 0`.
+
+What this looks like: near an edge the ring's outline flattens against that
+side, because every seat clamped by one edge lands on the same line. It
+reads as the ring meeting the wall rather than fleeing it.
+
+Verified by `_ring104_probe.py` (`_ring104_out.txt`), which blooms both the
+9-seat world ring and a synthetic 14-seat ring (the densest the app draws)
+at the centre, the four edges and the four corners, and checks the four
+things a screenshot cannot:
+
+- **max spill past the 14px margin = 0.0px**
+- **max bearing error vs the unclamped reference = 0.01 deg** - clamping is
+  purely radial, so picking is untouched
+- **min drawn distance between any two seats = 57.4px** at 14 seats, against
+  the 54px floor and the ring's own 91.3px at rest. This is the check that
+  would have caught the flat-floor bug, and it is why the probe carries a
+  dense ring it never sees in normal use.
+- the legal band for the centre, measured by blooming across the viewport
+  rather than derived
+
+### Deliberately absent - do not rebuild these
+
+- **Shrinking `R` when the ring is near an edge.** Does nothing for the
+  problem: `margin` no longer depends on `R`.
+- **An elliptical or squashed ring.** Anisotropic scaling moves a seat's
+  ANGLE, so the drawn position and the picked bearing stop agreeing. Radial
+  clamping is the only shape change that leaves picking alone.
+- **Dropping or re-ordering seats that do not fit.** The ring's shape is
+  what the hand learns; a seat that moves closer is still the same seat in
+  the same direction.
+- **A flat pixel floor for `seatMinR`.** Tried, reviewed, replaced before it
+  shipped - see above. Any future change to the floor has to stay a function
+  of the angular gap, or the dense rings overlap again.
 
 
 ## The rail, and the deck on the bottom row (a2.103)
