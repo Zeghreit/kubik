@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~25,350 lines)
-- Version at time of writing: **a2.105**
+- Version at time of writing: **a2.106**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -35,6 +35,124 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+
+## The a3.0 frame - one row, two corners, two edges (a2.106)
+
+Step 2 of the a3.0 visual pass, and the big one: section 6.1 of the spec is a
+list of layout constants, and this version makes the app match them. Measured
+by `_a30_probe.py` (`_a30_out.txt`), which reads every one of them off the
+live DOM and prints the delta - the numbers below are its output, not
+intentions.
+
+| 6.1 | where it is now |
+|---|---|
+| hue strip `top 59 . h 3` | `#modeBar`, at the safe-area top |
+| drawer frame `14, 66 . 44x44` | `#btnMenu`, FIRST in the row |
+| mode block `60, 66 . h 44 . cut 10` | `#hdrMode`, glyph + word |
+| axis locks `right 14, 66 . 3x44 gap 2` | `#symAxes`, each with the 6px square |
+| readout `14, 118 . mono 10` | `#toolChip` |
+| view cube `right 14, 130 . 56x56` | under the locks |
+| edge tabs `top 300 . 26x64` | outliner LEFT, materials RIGHT |
+| undo/redo `14, bottom 38 . 56x44` | `#quickRow`, bottom LEFT |
+| hub `right 14, bottom 34 . 64` | `#hubBtn`, bottom RIGHT, a rhomb |
+
+### A ROW, NOT A BAR
+
+a2.100 brought a top bar back on Zeghreit's direction and it paid for
+itself; 6.1 takes the bar away again and keeps everything it carried. The
+three controls float on one 44px line with the viewport behind them, so
+a2.48's original complaint - a band that costs the model 7.2% of the screen -
+is answered outright: there is no band, only the controls.
+
+- `#hdr` is `pointer-events: none` with its children taking events back. A
+  transparent flex row spanning the screen would otherwise swallow every tap
+  in the gap between the mode block and the locks - a 44px dead stripe across
+  the model. **A tap in that gap now deselects, like any other tap on empty
+  space.** That is 4.1's grammar and it is deliberate.
+- The mode block wears the GLYPH, not the word "Mode" (a3.0 1.3: five
+  glyphs, plus square-in-square for Soft). It says what the caption said in
+  the space of a square, which is what buys the word room to be 15px inside a
+  44px block.
+- `--hdr-h` is 73 and no longer means "the bar's height": it is the DEPTH OF
+  THE STRIP from the safe-area top - the row runs 7..51 and the readout
+  59..73. The view cube hangs below that on the right (71..127) and is the
+  one thing `--edge` does not clear, which is why the readout carries its own
+  max-width.
+- `--rail-top` is gone. The two tabs are opposite each other at 241, not
+  stacked on one rail, so there is no first seat for a second to follow.
+
+### THE TWO CORNERS SWAPPED
+
+a3.0 1.5's thumb map is the whole argument. The hub is pressed many times a
+minute and belongs in EASY - bottom right, where a right thumb reaches
+without moving the hand. Undo is found low-left by the other hand.
+
+The hub is a **64px rhomb with a double line**: `::before` is the clipped
+fill, `::after` is a square turned 45 degrees whose border draws the outer
+diamond with no path maths (side 53.7 puts its tips 38 from the centre, 6px
+outside the fill's 32). Soft mode adds an `outline` on that ring - a third
+diamond line, not the inset shadow it used to wear.
+
+`#btnHelp` left the lower-right corner - "the one corner nothing else has
+claimed" - because the hub claims it now, and is a row in the drawer, which
+is where a3.0's screen 09 puts it.
+
+### What the probe caught that the eye did not
+
+- The cube's canvas stayed **128px inside a 56px box**. `setSize` writes
+  inline width/height, and an inline style beats the stylesheet's
+  `width: 100%`, so the picture hung 72px off the right of the screen. It
+  reads the element now, and `_a30_probe` has a `cube_canvas` line because a
+  box is not a picture.
+- Rotating the hub's box made its bounding rect **90.5px**, so it sat at
+  `right: 14` while its actual point was 1px off the glass and its bottom
+  point hung 13px past the bottom. Clipping instead of turning fixes it at
+  the root.
+
+### What review caught that the probe did not
+
+Every one of these is something that measured itself against where the hub
+used to be, and none of them is subtle once named:
+
+- The hub kept a2.99's **cut-corner clip-path**, which shaved all four points
+  of the new rhomb flat and cut the outer ring into four pieces. The clip is
+  still there and still doing its other job - keeping the empty corners of
+  the box from taking taps meant for the model - but as a rhomb at 110%, so
+  the ring's tips stay inside it.
+- `.soft`'s **inset shadow follows the border BOX**, which is a square: it
+  drew a square halo floating around a diamond.
+- The op deck, the geo bar and the pivot bar sat at `--edge-b + 56`, which
+  was exact when the hub was 56 tall. **72** is a 64px rhomb plus the 6px its
+  ring stands off; the first-run chip moved with them.
+- Both shelves' `max-height` were derived from tab tops of 98 and 162. The
+  tabs are at 241, so a full shelf ran **past the bottom of the screen** and
+  over the hub and the undo row. Both are `100vh - 321px` now - 241 of tab
+  plus 80 of clearance - derived from the tab's own top so the two cannot
+  drift apart again.
+- `_theme`'s `4.*` lines read `#hubBtn`'s own `backgroundColor`, which is
+  transparent now that the fill lives on `::before`: all four hues measured
+  1.2:1. **The same blind spot the delete seat had at a2.105** - a probe that
+  reads one layer and a control that paints on another.
+
+### Deliberately absent - do not rebuild these
+
+- **The 44px touch slop on the edge tabs.** It was a pseudo-element hanging
+  outside the tab, and the tab carries a clip-path for its cut corner - which
+  clips HIT TESTING as well as paint, so the overhang never existed.
+  Deleted rather than left as a rule that looks like it does something. What
+  remains is 6.1's 26px, under the 44px floor 1.4 sets: the one place the two
+  halves of the spec disagree. The tab is the one control where the edge
+  helps - a thumb entering from the bezel is already on the line and only has
+  to stop - and widening it means moving the cut off the element, which is
+  its own change.
+- **A screenshot at 430px.** `_uishot97.py` shoots at 512 since a2.106:
+  headless Chrome clamps the WINDOW to about 500 but lays the page out at its
+  own minimum, so a 430 capture was the left 430 of a 512-wide page. The last
+  axis lock and the whole view cube were cropped out of every shot, which
+  reads as a layout bug and is not one. (The rounded dark badge in the
+  bottom-right of every capture is Chrome's own overlay, not ours - nothing
+  in this app has a corner radius.)
 
 
 ## The a3.0 palette - warm goes cool, Face goes violet (a2.105)

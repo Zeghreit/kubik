@@ -136,14 +136,21 @@
        has recorded twice already. */
     /* THE RAIL (a2.103): the left edge under the readout carries every
        shelf - the outliner tab first, the material tab under it - so the
-       right edge holds only the view cube. --rail-top is where the first
-       tab sits; each tab is 56 tall with 8 between. */
-    --rail-top: calc(var(--hdr-h) + 40px + env(safe-area-inset-top, 0px));
-    /* THE HEADER IS PART OF THE TOP INSET (a2.100). Everything keyed to
-       --edge - the readout, the HUDs, the inspector, the toast - stacks
-       under the bar without knowing it exists. --hdr-h is the bar's
-       height including its bottom rule. */
-    --hdr-h: 58px;
+       right edge holds only the view cube.
+
+       --rail-top went with a2.106: a3.0 6.1 puts the two tabs opposite
+       each other at 241, not stacked on one rail, so there is no first
+       seat for a second to follow. Both tabs now name their own top, and
+       both shelves derive their height from it. */
+    /* THE TOP STRIP IS PART OF THE TOP INSET (a2.100, retuned a2.106).
+       Everything keyed to --edge - the HUDs, the inspector, the toast -
+       stacks under the strip without knowing it exists. There is no bar
+       any more, so --hdr-h is the DEPTH OF THE STRIP measured from the
+       safe-area top: the row runs 7..51 and the readout 59..73, so 73 is
+       the last pixel the strip owns. The view cube hangs below that on
+       the right (71..127) and is the one thing --edge does not clear -
+       which is why the readout carries its own max-width. */
+    --hdr-h: 73px;
     --edge: calc(14px + var(--hdr-h) + env(safe-area-inset-top));
     --edge-l: calc(14px + env(safe-area-inset-left));
     --edge-r: calc(14px + env(safe-area-inset-right));
@@ -222,7 +229,11 @@
   #modeBar {
     position: absolute; z-index: 16;
     left: env(safe-area-inset-left, 0px); right: env(safe-area-inset-right, 0px);
-    top: calc(var(--hdr-h) - 2px + env(safe-area-inset-top, 0px));   /* over the header's rule (a2.100) */
+    /* a3.0 6.1 puts the strip at 59 - the safe-area top - so it is the
+       FIRST thing under the status bar rather than the last thing under
+       a bar. It reads before anything else on the screen, which is what
+       a full-width line in the mode's colour is for. */
+    top: env(safe-area-inset-top, 0px);
     height: 3px; pointer-events: none;
     background: var(--accent); opacity: 0; transition: opacity .12s ease;
   }
@@ -277,35 +288,67 @@
      already took. The slab on the left is the mode, in the mode's colour,
      with the cut edge every mode slab in the app now wears; it is also a
      second way to cycle the mode, the same tap as #hubBtn. */
+  /* a2.106: A ROW, NOT A BAR. a3.0 6.1 gives no bar at all - the drawer
+     frame, the mode block and the axis locks are three controls floating
+     on one 44px line at y 66, with the viewport behind them. a2.48's
+     original complaint is answered outright: the band costs the model
+     nothing now, because there is no band, only the controls.
+
+     `pointer-events: none` on the container is load-bearing: a
+     transparent flex row spanning the screen would otherwise swallow
+     every tap that lands in the gap between the mode block and the
+     locks - a 44px dead stripe across the model. The children take
+     their events back. */
   #hdr {
-    position: absolute; left: 0; right: 0; top: 0; z-index: 15;
-    height: calc(var(--hdr-h) + env(safe-area-inset-top, 0px));
-    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
-    display: flex; align-items: stretch;
-    background: var(--panel); border-bottom: var(--rule) solid var(--line);
+    position: absolute; z-index: 15; pointer-events: none;
+    left: calc(14px + env(safe-area-inset-left, 0px));
+    right: calc(14px + env(safe-area-inset-right, 0px));
+    top: calc(7px + env(safe-area-inset-top, 0px));
+    height: 44px; display: flex; align-items: stretch; gap: 2px;
   }
+  #hdr > * { pointer-events: auto; }
+  /* a2.106: x 60 falls out of the layout rather than being set - the row
+     starts at 14, the drawer frame is 44 wide and the gap is 2. The cut
+     is 10px on the OUTWARD corner (a3.0 1.4), not the 22px slant a2.100
+     wore: at 44px tall a 22px slant eats half the block's height. */
   #hdrMode {
     flex: 0 1 auto; min-width: 0; overflow: hidden; margin-right: auto; min-height: 0; border: none; border-radius: 0;
     font-family: inherit;
-    padding: 0 36px 0 14px; display: flex; flex-direction: column; justify-content: center;
-    align-items: flex-start; gap: 2px; text-align: left;
+    padding: 0 20px 0 14px; display: flex; flex-direction: row; justify-content: center;
+    align-items: center; gap: 8px; text-align: left;
     background: var(--accent-mode); color: var(--on-accent);
-    clip-path: polygon(0 0, 100% 0, calc(100% - 22px) 100%, 0 100%);
+    clip-path: polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%);
     touch-action: none;
   }
   #hdrMode:hover, #hdrMode:active { background: var(--accent-mode); }
-  #hdrMode .hdr-cap {
-    font-family: var(--mono); font-size: 9px; font-weight: 600; letter-spacing: .18em;
-    text-transform: uppercase; opacity: .8; line-height: 1;
+  /* a2.106: THE GLYPH, not the word "Mode". a3.0 1.3 gives exactly five
+     glyphs - the four modes and danger - plus a square-in-square for
+     Soft, and the block wears the one that matches its hue. It says what
+     the caption said in the space of a square, which is what buys the
+     word room to be 15px inside a 44px block. */
+  #hdrMode .hdr-glyph {
+    flex: 0 0 auto; width: 8px; height: 8px; background: var(--on-accent);
   }
+  /* Square in square (a3.0 1.3). Hollow, so it reads as the same glyph
+     with something inside it rather than as a different one. */
+  #hdrMode .hdr-glyph.soft {
+    background: transparent; box-shadow: inset 0 0 0 2px var(--on-accent);
+  }
+  /* a3.0 1.2's WORD: 800 at 15px with +1.6px of tracking - a label
+     stamped on hardware, not a heading. 22px could not share a 44px box
+     with the cap above it. */
   #hdrModeName {
-    font-size: 22px; font-weight: 800; letter-spacing: .01em; line-height: 1;
+    font-size: 15px; font-weight: 800; letter-spacing: .107em; line-height: 1;
     text-transform: uppercase; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  /* a3.0 6.1 puts the drawer at the START of the row, at 14 - the first
+     thing on the line, ahead of the mode block. FRAMED, not filled: it
+     opens a place you set things once, which is a state, and the one
+     filled thing on this row has to stay the mode. */
   #btnMenu {
-    flex: 0 0 56px; width: 56px; min-height: 0; padding: 0; justify-content: center;
-    font-size: 17px; border-radius: 0; border: none; border-left: var(--rule) solid var(--line);
-    background: transparent;
+    flex: 0 0 44px; width: 44px; min-height: 0; padding: 0; justify-content: center;
+    font-size: 17px; border-radius: 0;
+    border: var(--rule) solid var(--line); background: var(--panel);
   }
   /* The brand is the caps word with the signal's full stop (a2.101), and the
      version beside it is a mono readout. checkForUpdate reads `.brand span`. */
@@ -326,25 +369,43 @@
      56px hub beside three 44px ones it was judged on screen and the shared
      bottom edge reads better, so that is what it uses. All four now take a
      plain `bottom: var(--edge-b)`. */
+  /* THE RHOMB, IN THE EASY CORNER (a3.0 2.2, a2.106). 64px, turned 45
+     degrees, bottom RIGHT - the one thing you press many times a minute,
+     in the one corner a right thumb reaches without moving the hand.
+     It swapped places with undo/redo, which are found by the other hand.
+
+     A rhomb, because 2.5's seats are rhombs and the hub is the one that
+     is never a seat: a DOUBLE line (the ::before ring below) is what
+     keeps the silhouette unambiguous when a ring is open around it. The
+     glyph inside turns back, or the mode icon would sit on its corner. */
   #hubBtn {
     position: absolute; z-index: 16;
-    left: var(--edge-l); bottom: var(--edge-b);
-    width: 56px; height: 56px; min-height: 56px; padding: 0 4px 0 0;
+    left: auto; right: var(--edge-r);
+    /* 6.1's 34 IS the safe-area inset, so on a phone this is the spec
+       exactly. On anything without one it would be zero and the rhomb's
+       tip would sit on the edge of the glass, so 4 is the floor. */
+    bottom: max(4px, env(safe-area-inset-bottom, 0px));
+    width: 64px; height: 64px; min-height: 64px; padding: 0;
     border-radius: 0; justify-content: center;
     /* Kept from a2.3's press-and-hold experiment: it stops the browser
        claiming a touch on this button as a scroll or a double-tap zoom,
        which is worth having on a plain tap target too. */
     touch-action: none;
-    background: var(--accent); color: var(--on-accent); border: none;
+    background: transparent; color: var(--on-accent); border: none;
     /* THE CUT CORNER (a2.99, the canvas's mode slab). A square with its
        right edge run at a diagonal - the one silhouette in the row that is
        neither a seat nor a cell, so it can only be the mode. The clip
        takes any outer shadow with it, which is why .soft below rings the
-       button from the inside. 88%, not the canvas's 82%: the cut is empty
-       hit area, and a thumb that lands on it falls through to the
-       canvas. The 4px right padding recentres the glyph in what is
-       left. */
-    clip-path: polygon(0 0, 100% 0, 88% 100%, 0 100%);
+       button from the inside. a2.106: the hub is a RHOMB, so the cut
+       corner it wore as a slab is gone - and left in place it clipped
+       the new shape, shaving all four points flat and cutting the outer
+       ring into four pieces.
+
+       The clip is still doing a job, the other one it always did: it is
+       what stops the empty corners of the box taking taps meant for the
+       model. 110% rather than 100% so the ring's tips, which reach 59%
+       of the box from centre, stay inside it. */
+    clip-path: polygon(50% -10%, 110% 50%, 50% 110%, -10% 50%);
   }
 
   /* WHY THE TOP-LEFT COLUMN IS NOT COMING BACK (a2.65, still true).
@@ -376,19 +437,33 @@
   /* Three cells in the header (a2.100), divided by rules. A lit axis is
      symmetry on, in the accent and its tint - the state shown, not the
      action (a2.65's rule). */
-  #symAxes { display: flex; align-items: stretch; gap: 0; }
+  /* a3.0 6.1: three 44px cells with a 2px gap, flush right on the mode
+     strip. They were one continuous 56px strip divided by rules, which
+     is what a bar allows; without a bar each lock is its own framed
+     cell, and the 2px gap is the same 2px the rest of the row uses. */
+  #symAxes { display: flex; align-items: stretch; gap: 2px; }
   #symAxes button {
-    width: 56px; min-height: 0; padding: 0;
-    border-radius: 0; border: none; border-left: var(--rule) solid var(--line);
-    background: transparent; color: var(--text-dim);
+    position: relative;
+    width: 44px; min-height: 0; padding: 0;
+    border-radius: 0; border: var(--rule) solid var(--line);
+    background: var(--panel); color: var(--text-dim);
     display: flex; align-items: center; justify-content: center;
     font-family: var(--mono); font-size: 14px; font-weight: 700; letter-spacing: 0.02em;
     touch-action: none; -webkit-user-select: none; user-select: none;
   }
-  #symAxes button.active {
-    color: var(--accent-mode); background: var(--accent-mode-dim);
-    box-shadow: inset 0 -3px 0 var(--accent-mode);   /* reads at any hue, in any mode */
+  /* THE 6px SQUARE (a3.0 1.4, a2.106): hollow off, filled on, and the
+     same square wherever the app has a toggle. It replaces the tint and
+     the underline: a tint says "different", a filled square says WHICH
+     WAY, and it says it the same way in the world ring and the drawer. */
+  #symAxes button::after {
+    content: ''; position: absolute; right: 7px; bottom: 7px;
+    width: 6px; height: 6px;
+    box-shadow: inset 0 0 0 1.5px var(--text-dim);
   }
+  #symAxes button.active {
+    color: var(--accent-mode); border-color: var(--accent-mode); background: var(--panel);
+  }
+  #symAxes button.active::after { background: var(--accent-mode); box-shadow: none; }
 
   /* THE ONE THING THE APP SAYS UNASKED (a2.66). It sits above the bottom
      row rather than beside the hub, because the gesture it describes works
@@ -401,7 +476,8 @@
      it stopped being true. */
   #firstHint {
     position: absolute; left: 50%; transform: translateX(-50%);
-    bottom: calc(var(--edge-b) + 62px); z-index: 17;
+    /* 78, not 62: clears the hub's ring tip, which a2.106 raised. */
+    bottom: calc(var(--edge-b) + 78px); z-index: 17;
     display: flex; align-items: center; gap: 6px;
     padding: 9px 8px 9px 14px; border-radius: var(--r-md);
     background: var(--panel2); border: var(--rule) solid var(--line);
@@ -617,17 +693,40 @@
   /* ONE BLOCK OF TWO CELLS (a2.99): the row carries the rule and the
      buttons share it, so Undo and Redo read as one instrument with two
      positions rather than two floating buttons. */
+  /* The fill. It is POSITIONED, and a positioned descendant at z-index
+     auto paints after the element's inline content - so without the -1
+     this covers the glyph and the hub comes up empty. */
+  #hubBtn::before {
+    content: ''; position: absolute; inset: 0; background: var(--accent);
+    clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); z-index: -1;
+  }
+  /* And the glyph takes a layer of its own, so it cannot be reached by
+     anything that later wants to paint over the fill. */
+  #hubBtn > svg { position: relative; z-index: 1; }
+  /* The second line. A square turned 45 degrees IS a diamond outline, so
+     a border draws it with no path maths: side 53.7 puts its tips 38 from
+     the centre, 6px outside the fill's 32. */
+  #hubBtn::after {
+    content: ''; position: absolute; inset: 5px;
+    border: var(--rule) solid var(--accent); transform: rotate(45deg);
+    pointer-events: none;
+  }
+
+  /* a3.0 6.1: 14, bottom 38, two 56x44 cells - LOW LEFT, which is where
+     1.5's thumb map puts it: the other thumb finds undo without looking,
+     and the corner it used to share with the hub is now the hub's alone.
+     Centred was the compromise while the hub sat low-left. */
   #quickRow {
-    position: absolute; left: 50%; transform: translateX(-50%);
-    bottom: var(--edge-b);
-    display: flex; gap: 0; z-index: 13;
-    border: var(--rule) solid var(--line); background: var(--panel2);
+    position: absolute; left: var(--edge-l); transform: none;
+    bottom: calc(4px + env(safe-area-inset-bottom, 0px));
+    display: flex; gap: 2px; z-index: 13;
+    border: none; background: transparent;
   }
   #quickRow button {
-    width: 44px; height: 44px; min-height: 44px; padding: 0; justify-content: center;
-    font-size: 17px; border-radius: 0; border: none; background: var(--panel2);
+    width: 56px; height: 44px; min-height: 44px; padding: 0; justify-content: center;
+    font-size: 17px; border-radius: 0;
+    border: var(--rule) solid var(--line); background: var(--panel);
   }
-  #btnRedo { border-left: var(--rule) solid var(--line); }
 
   /* Which transform a drag will perform, and in which mode. The only thing
      telling you what a drag will do, and everything now depends on that -
@@ -639,16 +738,19 @@
      same top offset and height, content centred by flexbox. */
   #toolChip {
     position: absolute; left: calc(14px + env(safe-area-inset-left, 0px));
-    top: calc(var(--hdr-h) + env(safe-area-inset-top, 0px)); height: 32px; z-index: 13;
-    /* Stops short of the cube, and clips rather than crossing it. */
-    max-width: calc(100% - 14px - 136px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+    /* a3.0 6.1: 14, 118 - eight pixels under the row, which puts it at
+       +59 from the safe-area top. */
+    top: calc(59px + env(safe-area-inset-top, 0px)); height: 14px; z-index: 13;
+    /* Stops short of the cube, and clips rather than crossing it: the
+       cube is 56 wide at right 14, so 70 of margin plus 10 of air. */
+    max-width: calc(100% - 14px - 80px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
     overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
     display: flex; align-items: center;
     /* Mono caps at 11px with wide tracking (a2.99): a readout, not a label.
        Still --text: the a2.57a rule that a thing you cannot read is not
        a thing politely out of the way. */
-    color: var(--text-dim); font-family: var(--mono); font-size: 11px; font-weight: 600;
-    letter-spacing: .1em; text-transform: uppercase; pointer-events: none;
+    color: var(--text-dim); font-family: var(--mono); font-size: 10px; font-weight: 600;
+    letter-spacing: .12em; text-transform: uppercase; pointer-events: none;
   }
   #toolChip .mode { color: var(--text-dim); font-weight: 500; margin-left: 8px; }
   #toolChip .mode::before { content: '\00b7'; margin-right: 8px; }
@@ -699,9 +801,13 @@
        the symmetry strip that used to sit below the cube is in the header. */
     /* ON THE RAIL (a2.103): the second seat, under the outliner's tab, on
        the LEFT. Everything below that said "right" is mirrored. */
-    position: absolute; left: env(safe-area-inset-left, 0px);
-    top: calc(var(--rail-top) + 64px);
-    z-index: 25; display: flex; flex-direction: column; align-items: flex-start;
+    /* a3.0 6.1 and 6.3: the RIGHT edge, opposite the outliner, level with
+       it. a2.103 stacked both on the left rail because the right edge
+       still held a 128px view cube; the cube is 56 and up in the strip
+       now, so the edge is free and the two shelves stop competing. */
+    position: absolute; left: auto; right: env(safe-area-inset-right, 0px);
+    top: calc(241px + env(safe-area-inset-top, 0px));
+    z-index: 25; display: flex; flex-direction: column; align-items: flex-end;
     /* HOW TALL THE SHELF MAY GET. It used to be a flat 60vh, which on a
        laptop is about five cards - so the "+", the one control that makes a
        new material, sat below the fold and the panel ended in the middle of
@@ -717,8 +823,12 @@
        266 since a2.65, back up from 204: the tab moved down 62px to clear the
        symmetry/projection pair, and the shelf starts level with the tab, so
        it gives back exactly what the tab travelled. */
-    /* Its top is hdr-h + 104 = 162; 72 of clearance above the bottom row. */
-    --mat-max: calc(100vh - 234px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
+    /* a2.106: the tab is at 241 now, not 162, and the bottom row is 16px
+       taller. 321 = 241 of tab plus 80 of clearance, which is the hub's
+       64 plus its ring plus air - so a full shelf ends ABOVE the hub
+       instead of covering it. Derived from the tab's own top, so the two
+       cannot drift apart again. */
+    --mat-max: calc(100vh - 321px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
   }
 
   /* SHORT VIEWPORTS: THE PAIR STEPS ASIDE (a2.65). The 44px strip under the
@@ -756,29 +866,49 @@
      that clears it with air to spare. Its z-index is under the drawer's, so
      opening the drawer covers the shelf rather than fighting it. ---- */
   #outFly {
+    /* a3.0 6.1: top 300, at the left edge. Off the rail and down the
+       screen, into 1.5's STRETCH band - a panel you open now and then
+       does not belong in the row your eye reads first. */
     position: absolute; left: env(safe-area-inset-left, 0px);
-    top: var(--rail-top);   /* the rail's first seat (a2.103) */
+    top: calc(241px + env(safe-area-inset-top, 0px));
     z-index: 25; display: flex; flex-direction: column; align-items: flex-start;
   }
   /* Open, the list sits BESIDE the tab (a2.103), not under it - under it
      would cover the material tab, which is the next seat on the rail. */
+  #outFly, #matFly { pointer-events: none; }
+  #outFly > *, #matFly > * { pointer-events: auto; }
   #outFly.open { flex-direction: row; align-items: flex-start; z-index: 26; }
   #outFly.open #outTab { border-right: none; background: var(--panel); }
   #outTab {
-    /* The mirror of #matTab: 44 wide, edge-tucked, rounded on the side that
-       faces the viewport and borderless against the screen edge. */
-    width: 44px; height: 56px; min-height: 0; padding: 0;
-    border-radius: 0 var(--r-md) var(--r-md) 0; border-left: none;
+    /* a3.0 6.1: 26 x 64, edge-tucked, with the 10px cut on the corner
+       that faces the viewport - the cut is what says pull. */
+    width: 26px; height: 64px; min-height: 0; padding: 0;
+    border-radius: 0; border-left: none;
+    clip-path: polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%);
     justify-content: center; font-size: 20px; color: var(--text-dim);
     background: var(--panel2);
   }
+  /* THE 44px SLOP WAS NEVER THERE (a2.106). It was a pseudo-element
+     hanging outside the tab - and the tab carries a clip-path for its cut
+     corner, which clips HIT TESTING as well as paint, so the overhang was
+     removed before it could catch anything. Deleted rather than left as a
+     rule that looks like it does something.
+
+     What is left is 6.1's 26px, which is under the 44px floor 1.4 sets.
+     It is the one place the two halves of the spec disagree, and the tab
+     is the one control where the edge helps: a thumb entering from the
+     bezel is already on the right line and only has to stop. Widening it
+     means moving the cut off the element, which is its own change. */
+  #outTab, #matTab { position: relative; }
   #outTray {
     display: none; flex-direction: column; gap: 4px;
     width: min(232px, 66vw);
     /* From just under the tab to clear of the bottom button row - the same
        reasoning #matFly uses, so a long list ends where the list ends rather
-       than in the middle of nowhere. */
-    max-height: calc(100vh - 200px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
+       than in the middle of nowhere. 321 is that number, retuned with the
+       tab's move to 241 (a2.106); at 200 the list ran past the bottom of
+       the screen and over the undo row. */
+    max-height: calc(100vh - 321px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
     overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
     margin-top: 0; padding: 8px;
     background: var(--panel); border: var(--rule) solid var(--line); border-left: none;
@@ -887,11 +1017,13 @@
   .outRow.is-hidden .outEye { opacity: 1; color: var(--accent-mode); }
 
   #matTab {
-    /* 44 wide. It was 30 - the narrowest target in the app, on the edge of
-       the screen where a thumb is least accurate. The two margins below CENTRE
-       the tab over the tray it opens, so both are derived from this width. */
-    width: 44px; height: 56px; min-height: 0; padding: 0;
-    border-radius: 0 var(--r-md) var(--r-md) 0; border-left: none;
+    /* a3.0 6.1: 26 x 64 on the RIGHT edge, so its cut and its borderless
+       side are the outliner tab's mirror. 26 is narrow for a thumb - the
+       reason it went from 30 to 44 once - so the touch slop below gives
+       it back the 44 it needs without drawing it. */
+    width: 26px; height: 64px; min-height: 0; padding: 0;
+    border-radius: 0; border-right: none; border-left: var(--rule) solid var(--line);
+    clip-path: polygon(10px 0, 100% 0, 100% 100%, 0 100%, 0 10px);
     justify-content: center; font-size: 20px; color: var(--text-dim);
     background: var(--panel2);
   }
@@ -905,7 +1037,7 @@
      Closed it is the only target there and wants the full 44; open, the
      whole tray is the target and the tab only has to be grabbable - 32 with
      56 of height still clears what a thumb needs. */
-  #matFly.open { flex-direction: row; align-items: flex-start; }
+  #matFly.open { flex-direction: row-reverse; align-items: flex-start; }
   #matFly.open #matTab {
     width: 32px; font-size: 15px;
     /* The width and the fill are part of the same movement as the tray, so
@@ -917,11 +1049,13 @@
   #matTray {
     width: 96px; max-height: 0; opacity: 0; overflow: hidden; margin-top: 6px;
     transition: max-height .22s ease, opacity .22s ease;
-    background: var(--panel); border: var(--rule) solid var(--line); border-left: none;
-    border-radius: 0 var(--r-md) var(--r-md) 0;
+    /* a2.106: the tab is the tray's RIGHT shoulder now (a2.103 mirrored
+       a2.63 to the left; the right edge is where a3.0 6.1 puts it back). */
+    background: var(--panel); border: var(--rule) solid var(--line); border-right: none;
+    border-radius: 0;
   }
-  /* No left border: the tab is the tray's left shoulder (a2.103 mirrors a2.63). */
-  #matFly.open #matTray { margin-top: 0; border-left: none; border-radius: 0; }
+  /* No right border: the tab is the tray's right shoulder. */
+  #matFly.open #matTray { margin-top: 0; border-right: none; border-radius: 0; }
   /* CLOSING KEEPS THE LAYOUT AND DROPS THE TRAY (a2.63a). Removing .open in
      one frame flipped the flyout back to a column instantly while the tray
      was still 220ms into collapsing, so the still-opaque shelf visibly
@@ -1108,7 +1242,13 @@
      icon still has to say WHICH component type you are picking, because soft
      is a way of dragging and not a way of selecting. A halo around a point is
      also, literally, the thing the mode does. */
-  #hubBtn.soft { box-shadow: inset 0 0 0 3px var(--accent), inset 0 0 0 6px var(--on-accent); }
+  /* a2.106: an OUTLINE on the ring, not an inset shadow on the button.
+     An inset shadow follows the border BOX, which is a square - against
+     a diamond it drew a square halo floating around it. `outline` on the
+     turned square follows the same turn, so Soft is simply a third
+     diamond line, which is what "a halo around a point" should look
+     like. */
+  #hubBtn.soft::after { outline: var(--rule) solid var(--accent); outline-offset: 4px; }
 
   /* THE ONE THING THAT MAKES ISOLATE SAFE. Hiding most of a scene with a
      gesture is only reversible if you can tell it happened - otherwise a
@@ -1117,7 +1257,10 @@
      because it is a state the app is IN, not a thing you can ignore. */
   #pivotBar {
     position: absolute; left: calc(10px + env(safe-area-inset-left)); right: calc(10px + env(safe-area-inset-right));
-    bottom: calc(var(--edge-b) + 66px);
+    /* 82, not 66: the bottom row is 16px taller since the hub became a
+       64px rhomb with a ring outside it (a2.106). It keeps its old 10px
+       of clearance over the deck. */
+    bottom: calc(var(--edge-b) + 82px);
     /* Above the op and geo bars, which share this slot. They cannot be open at
        the same time any more, but the one that carries the only way out of a
        mode should not be the one that loses a paint order argument. */
@@ -1380,8 +1523,19 @@
        the top of the screen now, so the notch is the cube's own problem - and
        ONLY the notch: the cube leaves its own margin inside this square, so
        no --edge goes here or the inset reads as double. */
-    position: absolute; top: calc(var(--hdr-h) + env(safe-area-inset-top, 0px)); right: 0;
-    width: 128px; height: 128px;
+    /* a3.0 6.1: right 14, 130, 56x56 - DIRECTLY UNDER THE LOCKS, so mode,
+       lock state and camera read as one column on the right of the strip.
+       It used to be a 128px square pinned to the corner with its own
+       margin inside; at 56 the box IS the cube, so the 14px margin is
+       the layout's, like every other control on this strip.
+
+       circle(40%) still clears the cube: the ratio is scale-invariant -
+       22.4px against the silhouette's 21.2px at this size - and 44.8px
+       across, so the hit area still clears the 44px floor even though
+       one FACE of it does not. */
+    position: absolute; right: calc(14px + env(safe-area-inset-right, 0px));
+    top: calc(71px + env(safe-area-inset-top, 0px));
+    width: 56px; height: 56px;
     z-index: 12; cursor: pointer; touch-action: none;
     /* A ROUND HIT AREA (a2.64). The box is square and the cube is not: at
        any angle its silhouette is a hexagon covering about a third of the
@@ -1451,9 +1605,11 @@
   #opBar {
     /* Sits just above the thumb controls so both stay usable at once. */
     position: absolute; left: 0; right: 0;
-    /* ON THE BOTTOM ROW (a2.103): its lower rule meets the hub's top edge,
-       so the deck and the row read as one instrument. */
-    bottom: calc(var(--edge-b) + 56px);
+    /* ON THE BOTTOM ROW (a2.103, retuned a2.106): its lower rule meets the
+       hub's top point, so the deck and the row read as one instrument.
+       72 = a 64px rhomb plus the 6px its outer ring stands off, rounded
+       up. At 56 the deck painted over the top of the hub. */
+    bottom: calc(var(--edge-b) + 72px);
     z-index: 17; display: none; flex-direction: column; align-items: stretch;
     /* Tighter than it was (8px padding and gap), because the controls inside
        grew to 44 and the bar should not grow with them. The gap between rows
@@ -1615,7 +1771,7 @@
      that still reads when five of them share a phone's width. */
   #geoBar {
     position: absolute; left: 0; right: 0;
-    bottom: calc(var(--edge-b) + 56px);
+    bottom: calc(var(--edge-b) + 72px);   /* the op deck's slot (a2.106) */
     z-index: 17; display: none; align-items: flex-end; justify-content: flex-start;
     flex-wrap: wrap; gap: 8px;
     background: var(--panel); border: var(--rule) solid var(--line); border-left: none; border-right: none;
@@ -1662,10 +1818,15 @@
 
   /* Lower-right - the one corner nothing else on screen has claimed, and a
      secondary weight (panel-coloured, not accent-filled) so it doesn't
-     compete with the hub for "primary button" status. */
+     compete with the hub for "primary button" status. Since a2.106 it is
+     a row in the drawer rather than a button in a corner, and the hub is
+     what claims that corner. */
   #btnHelp {
-    position: absolute; right: var(--edge-r); bottom: var(--edge-b); z-index: 13;
-    width: 44px; height: 44px; min-height: 44px; padding: 0; border-radius: 0;
+    /* a2.106: a drawer row, not a floating button. It was in the
+       lower-right corner - "the one corner nothing else has claimed" -
+       and a3.0 6.1 claims it for the hub. */
+    width: 100%; min-height: 44px; padding: 0 12px; border-radius: 0;
+    justify-content: flex-start;
     /* Quiet by WEIGHT, not by contrast (a2.57a): panel-coloured with a
        hairline border, so it never reads as a primary action - but the
        glyph itself is --text. At --text-dim it measured 3.6:1 on the
@@ -1733,8 +1894,11 @@
          in one bar; the tool readout hangs under it. See #hdr in the
          stylesheet for why a top bar is back. -->
     <div id="hdr">
+      <!-- a3.0 6.1 opens the row with the drawer, at 14, before the mode
+           block. It was the last cell on the right until a2.106. -->
+      <button id="btnMenu" title="Tools, files and settings">&#9776;</button>
       <button id="hdrMode" title="Object/Component - tap to switch">
-        <span class="hdr-cap">Mode</span><span id="hdrModeName">Object</span>
+        <span class="hdr-glyph"></span><span id="hdrModeName">Object</span>
       </button>
       <!-- SYMMETRY (a2.90; in the header since a2.100). No on/off: a lit
            axis IS symmetry on, none lit is off. -->
@@ -1743,7 +1907,6 @@
         <button data-sym="y" title="Mirror edits across Y">Y</button>
         <button data-sym="z" title="Mirror edits across Z">Z</button>
       </div>
-      <button id="btnMenu" title="Tools, files and settings">☰</button>
     </div>
     <div id="toast"></div>
     <div id="viewCube"></div>
@@ -1880,8 +2043,6 @@
       <button id="geoDone" class="ok">✓ Done</button>
     </div>
 
-    <!-- Lower-right is the one corner nothing else has claimed. -->
-    <button id="btnHelp" title="Help">?</button>
 
     <!-- The outliner: the mirror of the materials tab, on the left border.
          What is IN the scene, consulted while working - so a shelf, not a
@@ -1988,7 +2149,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.105</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.106</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -2093,6 +2254,15 @@
         <div class="drawer-note">.glb, .gltf, .obj or .stl. A model comes back
           as faces, not triangles, so it edits like something you built here.
           For an .obj's colours, pick its .mtl at the same time.</div>
+      </div>
+
+      <!-- a3.0's drawer section 04 (screen 09). The card itself is
+           unchanged; only the way in moved. -->
+      <div class="drawer-sec">
+        <div class="drawer-title">Help</div>
+        <div class="drawer-row">
+          <button id="btnHelp" title="Help">Gestures and tools</button>
+        </div>
       </div>
 
     </div>
@@ -2767,7 +2937,12 @@ const viewCubeEl = document.getElementById('viewCube');
    from the main viewport - sharing one caused blank frames on iPhone. */
 const cubeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 cubeRenderer.setPixelRatio(pixelRatio);
-cubeRenderer.setSize(128, 128);
+/* a2.106: from the ELEMENT, not a literal. setSize writes inline width
+   and height, which beat the stylesheet's `width: 100%` - so a2.106's
+   56px box kept a 128px picture hanging off the screen. The CSS decides
+   the size; this reads it. The fallback covers a display:none start. */
+const cubeBox = Math.round(viewCubeEl.getBoundingClientRect().width) || 56;
+cubeRenderer.setSize(cubeBox, cubeBox);
 viewCubeEl.appendChild(cubeRenderer.domElement);
 
 /* ---------------- The view cube (a2.60) ----------------
@@ -27421,9 +27596,10 @@ function refreshObjComponentBtn() {
     // The header's slab says the same thing in a word (a2.100).
     const hn = document.getElementById('hdrModeName');
     if (hn) hn.textContent = isObj ? 'Object' : App.mode;
-    // Soft is the small line, not a longer word - the slab must not grow.
-    const hc = document.querySelector('#hdrMode .hdr-cap');
-    if (hc) hc.textContent = (!isObj && App.soft) ? 'Soft' : 'Mode';
+    // Soft is the glyph gaining a hollow centre (a2.106), not a longer
+    // word - the block must not grow with the state it reports.
+    const hc = document.querySelector('#hdrMode .hdr-glyph');
+    if (hc) hc.classList.toggle('soft', !isObj && App.soft);
     // Soft keeps the component icon and grows a ring - the icon still has to
     // say which type you are picking.
     hubBtnEl.classList.toggle('soft', !isObj && App.soft);
