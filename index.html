@@ -661,6 +661,51 @@
   .hub-item.on .tx { color: var(--accent-mode); }
   .hub-item.active { background: var(--accent-mode); color: var(--on-accent); border-color: var(--accent-mode); }
   .hub-item.active .tx { color: var(--on-accent); opacity: .85; }
+  /* A DOOR HAS DEPTH, AND SAYS SO ONCE PER SEAT (a2.110). The two-layer
+     spec drew this as a hatched PLATE over the whole ring with the next
+     layer's ops ghosted underneath it. That reads as clutter where the
+     clutter was the problem, it sits exactly where the thumb travels, and
+     what it showed depended on which door you opened last - so the depth cue
+     moves onto the seats that actually have depth: a second outline, 6px
+     inside the first.
+
+     A child rather than a pseudo-element, deliberately. `.hub-item` is a
+     square turned 45 degrees, so a child inset by 6px is a smaller diamond
+     for free - and a2.106 already learned that a positioned pseudo-element
+     paints AFTER the inline content, which would put this line over the
+     words. */
+  .hub-item.door > .dr {
+    position: absolute; inset: 6px;
+    border: var(--rule) solid var(--line);
+    pointer-events: none;
+  }
+  /* THE SECOND WORD IS NOT DECORATION. Lifting on a door runs its first op,
+     so a seat that said only CUT would run Knife without ever having shown
+     you the word - the exact surprise a marking menu cannot afford. Dim and
+     one step smaller: it is what would happen, not what you are choosing. */
+  .hub-item.door .dx {
+    transform: rotate(-45deg);
+    width: 64px; max-height: 12px; overflow: hidden;
+    font-size: 8px; font-weight: 600; letter-spacing: .02em; line-height: 1.15;
+    text-transform: uppercase; text-align: center; color: var(--text-dim);
+    overflow-wrap: normal; word-break: normal; hyphens: none;
+  }
+  .hub-item.door.active > .dr { border-color: var(--on-accent); }
+  .hub-item.door.active .dx { color: var(--on-accent); opacity: .6; }
+  .hub-item.door.on > .dr { border-color: var(--accent-mode); }
+  /* WHICH LAYER YOU ARE ON, at the ring's own centre. The finger already has
+     the aimed seat's word beside it; the one thing it cannot tell you is
+     which door it is standing in. Nothing is drawn at the top level - the
+     absence IS the answer, so there is no state to read, only one to notice. */
+  #ringDoorTag {
+    position: absolute; transform: translate(-50%, 50%);
+    padding: 2px 7px; background: var(--bg);
+    border: var(--rule) solid var(--line);
+    font-size: 9px; font-weight: 700; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--text-dim);
+    white-space: nowrap; pointer-events: none;
+  }
+
   /* A PLATE UNDER THE ONE WORD YOU MUST NOT MISREAD (a2.107). The hazard
      stripe has a 5px period, so every 9px glyph of DELETE crossed a band
      boundary - 11.2:1 on the dark stripe and 4.4:1 on the light one. That
@@ -688,7 +733,11 @@
   #ringStar {
     position: absolute; overflow: visible; pointer-events: none;
   }
-  #ringStar polygon {
+  /* POLYLINE TOO (a2.110). A square missing a corner is drawn open, and an
+     open polyline still FILLS by default in SVG - a black wedge across the
+     model, over the exact hole the cut was meant to show. Both shapes, one
+     rule, so a third can never be added without its fill. */
+  #ringStar polygon, #ringStar polyline {
     fill: none; stroke: var(--line); stroke-width: var(--rule);
     opacity: .8; stroke-linejoin: miter;
   }
@@ -2203,7 +2252,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.109a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.110a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -24306,187 +24355,116 @@ const hubBtnEl = document.getElementById('hubBtn');
    functions stay: the keyboard keys ] and [ still call them, and the slide
    runs the same step. */
 const HUB_TOOLS_VERTEX = [
-  { key: 'connect', icon: 'connect', label: 'Connect', seat: 0, ring: 0, run: connectSelection },
-  { key: 'weld', icon: 'weld', label: 'Weld', seat: 1, ring: 0, run: weldSelection },
-  { key: 'merge', icon: 'merge', label: 'Merge', seat: 2, ring: 0, run: mergeSelection },
-  /* Set flow holds seat 8 in all three component rings. Seat 8 was Shade's
-     bearing and reads as "how the surface behaves"; Set flow is that idea
-     with topology behind it instead of normals. The Edge ring had exactly
-     one seat free and this was it, so the choice was between one bearing
-     everywhere for Set flow or one for Shade - and Shade is the older, less
-     used of the two in Face mode, so it moves to 11 there. */
-  { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 8, ring: 1, run: setFlowSelection },
-  /* Circularize takes the FRACTIONAL seat 8.5 in all three component
-     rings - beside Set flow, because they are the same kind of thing:
-     reshaping a loop rather than adding to it. toolRingAngles sorts by
-     seat and spreads evenly, so a fraction is a legal bearing and this
-     one buys Circularize a single position everywhere without moving
-     anything. The Edge ring was FULL at 14 seats; without the fraction
-     something would have had to be evicted to make room. */
-  { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 8.5, ring: 1, run: circularizeSelection },
-  /* SEAT 9 in both component rings that have Slide. In the Edge ring that is
-     LOOP'S OWN SEAT, which is the pairing worth having: Loop cut makes a
-     loop, Slide moves one, and they sit side by side. It also lands in the
-     same arc as Set flow (8) and Circularize (8.5), and those three are one
-     family - reshaping a loop rather than adding to it.
-
-     `ring` is carried for consistency with every other entry but nothing
-     reads it: toolRingAngles lays every tool on ONE circle sorted by seat,
-     so two tools sharing a seat come out as neighbours in declaration order
-     rather than one behind the other. An earlier draft of this note said
-     "outboard of Loop", which is a layout the code does not produce.
-
-     Seat 9 is Flip normals in the Face ring, which is no loss - Slide is not
-     offered there anyway, because sliding a face patch's rim is what Inset
-     already does better. See slideSelection. */
-  { key: 'slide', icon: 'slide', label: 'Slide', seat: 9, ring: 1, run: slideSelection },
-  { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 0, run: deleteSelection },
+  { key: 'merge', icon: 'merge', label: 'Merge', seat: 0, run: mergeSelection },
+  { key: 'weld', icon: 'weld', label: 'Weld', seat: 1, run: weldSelection },
+  { key: 'connect', icon: 'connect', label: 'Connect', seat: 2, run: connectSelection },
+  { key: 'slide', icon: 'slide', label: 'Slide', seat: 3, run: slideSelection },
+  { key: 'delete', icon: 'del', label: 'Delete', seat: 4, run: deleteSelection },
+  { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 5, run: setFlowSelection },
+  { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 6, run: circularizeSelection }
+  // Seat 7 (NW) is empty and stays empty. Vertex mode has six ops and a
+  // Delete; there is nothing to put there and nothing behind a door.
 ];
 
 const HUB_TOOLS_EDGE = [
-  // Seats replace the a2.7e declaration-order ergonomics: the "four
-  // basics" hold the seats around straight-up (Extrude 0, Bevel 1; Inset
-  // takes 1 in the Face ring). Delete owns straight-down (7) in EVERY ring,
-  // and every tool shared with another ring keeps the same bearing there. Seat 2 was Loop until
-  // Collapse claimed it as Merge's "melt together" bearing.
-  { key: 'extrude', icon: 'extrude', label: 'Extrude', seat: 0, ring: 0, run: extrudeSelection },
-  { key: 'bevel', icon: 'bevel', label: 'Bevel', seat: 1, ring: 0, run: bevelSelection },
-  /* Collapse takes seat 2 because that is MERGE's bearing in the Vertex
-     ring, and collapsing an edge run is the same gesture one component up -
-     several things melting into one point. Loop moves to 9, the seat the
-     Edge ring had spare. Seat 9 is Flip normals in the Face and Object
-     rings, which has no meaning on edges, so nothing shares a ring with it
-     here. */
-  { key: 'collapse', icon: 'collapse', label: 'Collapse', seat: 2, ring: 1, run: collapseSelection },
-  { key: 'loopcut', icon: 'loop', label: 'Loop', seat: 9, ring: 0, run: edgeLoopSelection },
-  { key: 'knife', icon: 'knife', label: 'Knife', seat: 3, ring: 1, run: startKnife },
-  { key: 'split', icon: 'split', label: 'Split', seat: 4, ring: 1, run: splitSelection },
-  { key: 'bridge', icon: 'bridge', label: 'Bridge', seat: 5, ring: 1, run: bridgeSelection },
-  { key: 'cap', icon: 'cap', label: 'Cap hole', seat: 6, ring: 1, run: fillHolesSelection },
-  { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 1, run: deleteSelection },
-  /* Shade is gone from THIS ring: in Edge mode it did what Mark Sharp does,
-     and two controls for one thing is how the old shading model got
-     confusing. It keeps seat 8 in the Face and Object rings.
-     Uncrease is gone too - both marks are toggles now, so the second tap is
-     the "off", which is what freed a seat for a second mark in the first
-     place. Sharp inherits Crease's old seat because it inherits the meaning
-     the glyph always had; Crease moves one along. */
-  { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 8, ring: 1, run: setFlowSelection },
-  { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 8.5, ring: 1, run: circularizeSelection },
-  /* SEAT 9 in both component rings that have Slide. In the Edge ring that is
-     LOOP'S OWN SEAT, which is the pairing worth having: Loop cut makes a
-     loop, Slide moves one, and they sit side by side. It also lands in the
-     same arc as Set flow (8) and Circularize (8.5), and those three are one
-     family - reshaping a loop rather than adding to it.
+  { key: 'extrude', icon: 'extrude', label: 'Extrude', seat: 0, run: extrudeSelection },
+  { key: 'bevel', icon: 'bevel', label: 'Bevel', seat: 1, run: bevelSelection },
+  { key: 'loopcut', icon: 'loop', label: 'Loop', seat: 2, run: edgeLoopSelection },
+  { key: 'slide', icon: 'slide', label: 'Slide', seat: 3, run: slideSelection },
+  { key: 'delete', icon: 'del', label: 'Delete', seat: 4, run: deleteSelection },
+  { key: 'bridge', icon: 'bridge', label: 'Bridge', seat: 5, run: bridgeSelection },
+  /* Thirteen ops and seven bearings, so the six least reached go behind two
+     doors. Both are named for what the ops DO to an edge run, not for where
+     they came from: CUT takes it apart, FLOW changes how it runs.
 
-     `ring` is carried for consistency with every other entry but nothing
-     reads it: toolRingAngles lays every tool on ONE circle sorted by seat,
-     so two tools sharing a seat come out as neighbours in declaration order
-     rather than one behind the other. An earlier draft of this note said
-     "outboard of Loop", which is a layout the code does not produce.
+     A DOOR'S OPS ARE PLACED RELATIVE TO THE DOOR (a2.110b), and this is the
+     hinge the whole gesture turns on. Their `seat` counts STEPS CLOCKWISE
+     FROM THE DOOR'S OWN BEARING, not from straight up:
 
-     Seat 9 is Flip normals in the Face ring, which is no loss - Slide is not
-     offered there anyway, because sliding a face patch's rim is what Inset
-     already does better. See slideSelection. */
-  { key: 'slide', icon: 'slide', label: 'Slide', seat: 9, ring: 1, run: slideSelection },
-  { key: 'sharp', icon: 'sharp', label: 'Mark Sharp', seat: 10, ring: 1, run: markSharpSelection },
-  { key: 'crease', icon: 'crease', label: 'Crease', seat: 11, ring: 1, run: () => creaseSelection() }
+       0  straight on   1  one step clockwise   7  one step back
+       2  two clockwise 6  two back
+
+     so the first op always lands exactly where the finger was already going.
+     Pull west toward CUT and keep pulling: the seats swap under you at 70px
+     and Knife - the word the door was already showing underneath CUT - is
+     straight ahead at 110. The second flick is a small correction, not a
+     journey back to the top of the ring.
+
+     Placed absolutely, it was worse than untidy: the arm (70) is INSIDE the
+     ring radius (107), so the door always opens before the finger reaches the
+     seat, and whatever the sub-ring put on that bearing is what a lift would
+     run. Every door promised its first op in the seat's second word and
+     delivered a different one - Knife promised, Collapse run. */
+  { key: 'cut', label: 'Cut', seat: 6, door: [
+    { key: 'knife', icon: 'knife', label: 'Knife', seat: 0, run: startKnife },
+    { key: 'split', icon: 'split', label: 'Split', seat: 1, run: splitSelection },
+    { key: 'collapse', icon: 'collapse', label: 'Collapse', seat: 7, run: collapseSelection },
+    { key: 'cap', icon: 'cap', label: 'Cap hole', seat: 2, run: fillHolesSelection }
+  ] },
+  { key: 'flow', label: 'Flow', seat: 7, door: [
+    { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 0, run: setFlowSelection },
+    { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 1, run: circularizeSelection },
+    { key: 'sharp', icon: 'sharp', label: 'Mark Sharp', seat: 7, run: markSharpSelection },
+    { key: 'crease', icon: 'crease', label: 'Crease', seat: 2, run: () => creaseSelection() }
+  ] }
 ];
 
 const HUB_TOOLS_FACE = [
-  { key: 'extrude', icon: 'extrude', label: 'Extrude', seat: 0, ring: 0, run: extrudeSelection },
-  { key: 'inset', icon: 'inset', label: 'Inset', seat: 1, ring: 0, run: insetSelection },
-  // Detach rides the same compass bearing as Split and Separate - seat 4
-  // is the "comes apart" direction across all rings.
-  { key: 'detach', icon: 'detach', label: 'Detach', seat: 4, ring: 1, run: detachFacesSelection },
-  { key: 'knife', icon: 'knife', label: 'Knife', seat: 3, ring: 1, run: startKnife },
-  { key: 'bridge', icon: 'bridge', label: 'Bridge', seat: 5, ring: 0, run: bridgeSelection },
-  { key: 'cap', icon: 'cap', label: 'Cap holes', seat: 6, ring: 1, run: fillHolesSelection },
-  { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 1, run: deleteSelection },
-  // Shade gives up seat 8 to Set flow here so Set flow can hold one bearing
-  // in all three component rings; it keeps 8 in the Object ring, which is
-  // where shading a whole model belongs anyway.
-  { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 8, ring: 1, run: setFlowSelection },
-  { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 8.5, ring: 1, run: circularizeSelection },
-  /* `on` since a2.107. Shade's state used to be carried entirely by its
-     icon being a FUNCTION - the only tool in the file whose glyph was
-     evaluated per bloom - and with the seats reading as words there was
-     nothing left to say which way it is set. Every other toggle in the
-     ring already had this predicate. */
-  { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 11, ring: 1, on: () => App.shadeSmooth, run: toggleShading },
-  { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 9, ring: 1, run: flipNormalsSelection }
+  { key: 'extrude', icon: 'extrude', label: 'Extrude', seat: 0, run: extrudeSelection },
+  { key: 'inset', icon: 'inset', label: 'Inset', seat: 1, run: insetSelection },
+  { key: 'knife', icon: 'knife', label: 'Knife', seat: 2, run: startKnife },
+  { key: 'cap', icon: 'cap', label: 'Cap holes', seat: 3, run: fillHolesSelection },
+  { key: 'delete', icon: 'del', label: 'Delete', seat: 4, run: deleteSelection },
+  // Seat 5 in the Edge ring too - one of the four bearings an op does hold
+  // in every ring that has it.
+  { key: 'bridge', icon: 'bridge', label: 'Bridge', seat: 5, run: bridgeSelection },
+  { key: 'detach', icon: 'detach', label: 'Detach', seat: 6, run: detachFacesSelection },
+  /* Ten ops, seven bearings, so the four that are about how the surface
+     READS rather than what shape it is go one layer down. */
+  { key: 'surface', label: 'Surface', seat: 7, door: [
+    { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 0,
+      on: () => App.shadeSmooth, run: toggleShading },
+    { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 1, run: flipNormalsSelection },
+    { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 7, run: setFlowSelection },
+    { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 2, run: circularizeSelection }
+  ] }
 ];
 
 const HUB_TOOLS_OBJECT_BASE = [
-  /* SEAT 1 IS FREE. It was Fillet's - Bevel's bearing, one ring over, the
-     same corner op - until a2.50 took the preview out. Whatever rebuilds it
-     should take this seat back, because the pairing was the good part.
-     Separate takes Split's bearing (4) by the same logic. Cap (6), Delete
-     (7), Shade (8) and Flip normals (9) keep their compass seats from the
-     component rings. */
-  { key: 'duplicate', icon: 'dupe', label: 'Duplicate', seat: 0, ring: 0, run: duplicateSelection },
-  /* DUPLICATE'S BEARING, ONE RING OUT - the same pairing the note above
-     reserves seat 1 for (Fillet beside Bevel). Array is what Duplicate is
-     when you want more than one, so it belongs on the same compass point
-     and one step further from the middle, not on a bearing of its own. It
-     also lands next to Mirror and Flip, which is the right company: those
-     three are the ops that read primarySymAxis() - one plane by their
-     nature, so they take the first of the live set. */
-  { key: 'array', icon: 'array', label: 'Array', seat: 0, ring: 1, run: arraySelection },
-  /* MIRROR AND FLIP ARE ONE SEAT (a2.109). Both reflect the selection across
-     the same plane - primarySymAxis() - and differ only in what survives:
-     Mirror keeps the original and adds its reflection, Flip replaces it. That
-     is a third option on a chooser that already asks "what should come out of
-     this", not a second bearing. Flip is the third button. */
-  { key: 'mirror', icon: 'mirroraction', label: 'Mirror', seat: 2, ring: 0, run: () => showMirrorChooser(primarySymAxis()) },
-  { key: 'separate', icon: 'separate', label: 'Separate', seat: 4, ring: 1, run: separateSelection },
-  { key: 'centre', icon: 'centre', label: 'Centre', seat: 5, ring: 0, run: centreSelectionToOrigin },
-  { key: 'cap', icon: 'cap', label: 'Cap holes', seat: 6, ring: 1, run: fillHolesSelection },
-  { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 0, run: deleteSelection },
-  /* `on` since a2.107. Shade's state used to be carried entirely by its
-     icon being a FUNCTION - the only tool in the file whose glyph was
-     evaluated per bloom - and with the seats reading as words there was
-     nothing left to say which way it is set. Every other toggle in the
-     ring already had this predicate. */
-  /* `on` since a2.107. Shade's state used to be carried entirely by its
-     icon being a FUNCTION - the only tool in the file whose glyph was
-     evaluated per bloom - and with the seats reading as words there was
-     nothing left to say which way it is set. Every other toggle in the
-     ring already had this predicate. */
-  { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 8, ring: 1, on: () => App.shadeSmooth, run: toggleShading },
-  { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 9, ring: 1, run: flipNormalsSelection },
-  /* INBOARD OF FLIP NORMALS, and that is the pairing. Both ops are about a
-     surface having only one side: Flip normals answers "it is facing the
-     wrong way", Solidify answers "it has no back at all". Seat 9 is the
-     one-sidedness bearing in this ring, so they share it. */
-  { key: 'solidify', icon: 'solidify', label: 'Solidify', seat: 9, ring: 0, run: solidifySelection },
-  /* SUBDIVIDE'S SEAT, and the pairing is the point: Subdivide multiplies
-     faces, Clean up rationalises them. They are the two ops that change how
-     much mesh there is without changing what shape it is. */
-  { key: 'cleanup', icon: 'cleanup', label: 'Clean up', seat: 10, ring: 0, run: cleanupSelection },
-  { key: 'subdivide', icon: 'subdiv', label: 'Subdivide', seat: 10, ring: 1, run: subdivideSelection },
-  /* Seat 11 is Crease's bearing in the Edge ring, and that is the right
-     company: 11 is where the FINER shading control lives, one step past the
-     blunt Shade toggle at 8, in whichever ring you are holding.
-
-     TRIED AND REVERTED at a2.109a: folding this into the Shade seat, so one
-     tap shaded smooth and then opened the op bar on the angle. It reads well
-     and it is wrong. `applyPendingOp`'s autosmooth branch CLEARS edgeShade -
-     the marks toggleShading has just written - and opens at the op's default
-     33 degrees. A cube's edges are 90, so every one of them stays sharp: the
-     seat lit up, the toast said "Shaded smooth", and the model was
-     pixel-identical to flat. It also wrote two history steps for one tap.
-
-     Smooth by angle keeps its own seat until it goes behind the FINISH door,
-     where it was always headed - see claude/ring-capacity-and-grouping.md.
-     Anything that revives the merge has to open the bar at 180 (which is what
-     "shaded smooth" MEANS) and push history once, not twice. */
-  { key: 'autosmooth', icon: 'smoothangle', label: 'Smooth by angle', seat: 11, ring: 1, run: autoSmoothSelection }
+  { key: 'duplicate', icon: 'dupe', label: 'Duplicate', seat: 0, run: duplicateSelection },
+  { key: 'array', icon: 'array', label: 'Array', seat: 1, run: arraySelection },
+  /* Mirror asks Joined / Apart / Flip on the op bar (a2.109) - all three
+     reflect across primarySymAxis() and differ only in what survives. */
+  { key: 'mirror', icon: 'mirroraction', label: 'Mirror', seat: 2, run: () => showMirrorChooser(primarySymAxis()) },
+  { key: 'subdivide', icon: 'subdiv', label: 'Subdivide', seat: 3, run: subdivideSelection },
+  { key: 'delete', icon: 'del', label: 'Delete', seat: 4, run: deleteSelection },
+  /* Seat 5 is the grouping seat, appended live by currentHubTools because it
+     only means something for some selections. When it is absent the bearing
+     is simply empty - the shape of the ring does not change. */
+  /* MESH changes what the object IS made of; FINISH changes how it reads and
+     where it sits. Join rides in MESH unconditionally now: it used to be
+     withheld for a single selection, but one layer down a seat that answers
+     "select two things first" costs nothing and keeps the door's contents
+     fixed for life. */
+  { key: 'mesh', label: 'Mesh', seat: 6, door: [
+    { key: 'solidify', icon: 'solidify', label: 'Solidify', seat: 0, run: solidifySelection },
+    { key: 'cap', icon: 'cap', label: 'Cap holes', seat: 1, run: fillHolesSelection },
+    { key: 'join', icon: 'join', label: 'Join', seat: 7, run: joinSelection },
+    { key: 'separate', icon: 'separate', label: 'Separate', seat: 2, run: separateSelection }
+  ] },
+  { key: 'finish', label: 'Finish', seat: 7, door: [
+    { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 0,
+      on: () => App.shadeSmooth, run: toggleShading },
+    { key: 'autosmooth', icon: 'smoothangle', label: 'Smooth by angle', seat: 1, run: autoSmoothSelection },
+    { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 7, run: flipNormalsSelection },
+    { key: 'cleanup', icon: 'cleanup', label: 'Clean up', seat: 2, run: cleanupSelection },
+    { key: 'centre', icon: 'centre', label: 'Centre', seat: 6, run: centreSelectionToOrigin }
+  ] }
 ];
-// Join only means something with more than one object selected, matching
-// the old radial menu's own condition for showing it - appended live rather
-// than baked into the base array.
-const HUB_TOOL_JOIN = { key: 'join', icon: 'join', label: 'Join', seat: 12, ring: 1, run: joinSelection };
+// Join rode a seat of its own, appended live for selections of two or more,
+// until a2.110 put it inside the MESH door where it is always present. One
+// layer down, a seat that answers "select two things first" costs nothing,
+// and a door whose contents never change is a door you can learn.
 /* JOIN'S BEARING, ONE RING IN (a2.93). Join and Group are the two answers to
    "treat these as one thing": Join makes them one MESH and cannot be undone
    except by Separate, Group makes them one SELECTION and lets go again. Same
@@ -24512,7 +24490,7 @@ const HUB_TOOL_JOIN = { key: 'join', icon: 'join', label: 'Join', seat: 12, ring
    ambiguous anyway - "which group?" - and selecting the group, or any one of
    its members, still gets you there. */
 const HUB_TOOL_GROUPING = {
-  key: 'grouping', seat: 12, ring: 0,
+  key: 'grouping', seat: 5,
   icon: 'group',
   label: () => (groupingSeatUngroups() ? 'Ungroup' : 'Group'),
   run: () => (groupingSeatUngroups() ? ungroupSelection() : groupSelection())
@@ -24566,37 +24544,28 @@ const SEL_GESTURE_NEXT = { off: 'box', box: 'lasso', lasso: 'off' };
    destroys - so seat 7, straight down, stays empty. */
 const HUB_TOOLS_WORLD = [
   { key: 'addgeo', icon: 'object', label: 'Add geo', seat: 0, run: openGeoRing },
-  { key: 'pivot', icon: 'pivot', label: 'Pivot', seat: 2, run: openPivotRing },
-
-  { key: 'xray', icon: 'eye', label: 'See-through', seat: 9,
-    on: () => App.xraySelection, run: toggleXray },
-  { key: 'grid', icon: 'grid', label: 'Floor grid', seat: 5,
-    on: () => grid.visible, run: toggleFloorGrid },
-  { key: 'snap', icon: 'snap', label: 'Snap', seat: 3.5,
+  { key: 'pivot', icon: 'pivot', label: 'Pivot', seat: 1, run: openPivotRing },
+  { key: 'snap', icon: 'snap', label: 'Snap', seat: 2,
     on: () => App.snapMode !== 'off', run: toggleSnapping },
-  /* PROJECTION JOINS THE VIEW TOGGLES (a2.90b). It is the last of the things
-     that "used to sit as a button around the viewport edge", which is what
-     this half of the ring is for - and it belongs beside See-through, Floor
-     grid and Snap because it is the same kind of thing: a view state you set
-     and forget, not an action on the model.
-
-     The glyph still says which projection you are IN, the way it has since
-     a2.61 - the `shade` seat uses the same function-icon trick. Choosing it
-     here is a DECISION in a2.87's sense, so it engages the sticky kind that
-     a turn does not undo; the cube's own tap is still the glance. */
-  { key: 'proj', icon: () => (orthoView ? 'ortho' : 'persp'), label: 'Flat view', seat: 10.5,
+  { key: 'grid', icon: 'grid', label: 'Floor grid', seat: 3,
+    on: () => grid.visible, run: toggleFloorGrid },
+  // Seat 4 is straight down, and straight down destroys. The world ring makes
+  // and shows; it has nothing to put there, so bearing 4 stays empty and the
+  // star is cut across it.
+  { key: 'xray', icon: 'eye', label: 'See-through', seat: 5,
+    on: () => App.xraySelection, run: toggleXray },
+  /* The glyph still says which projection you are IN, the way it has since
+     a2.61. Choosing it here is a DECISION in a2.87's sense, so it engages the
+     sticky kind that a turn does not undo; the cube's own tap is the glance. */
+  { key: 'proj', icon: () => (orthoView ? 'ortho' : 'persp'), label: 'Flat view', seat: 6,
     on: () => !!orthoView,
     run: () => { viewCube.cancel(); if (orthoView) disengageOrtho(); else engageOrtho('pill'); } },
-
   /* ONE SEAT, THREE STATES (a2.109). Tap, Box and Lasso are mutually
-     exclusive - exactly one of them is the current gesture at all times - so
-     they were never three buttons. They were one control drawn three times,
-     and two of the three were always telling you what you are NOT doing.
-
-     The seat cycles Tap -> Box -> Lasso -> Tap, its word says where you
-     landed, and `on` lights the seat whenever a DRAG gesture is armed - the
-     one thing worth seeing without reading the word. */
-  { key: 'selmode', seat: 12, icon: 'free',
+     exclusive - exactly one is the current gesture at all times - so they were
+     never three buttons. The seat cycles Tap -> Box -> Lasso -> Tap, its word
+     says where you landed, and `on` lights it whenever a DRAG gesture is
+     armed. */
+  { key: 'selmode', seat: 7, icon: 'free',
     label: () => SEL_GESTURE_WORD[App.selectDrag] || 'Tap select',
     on: () => App.selectDrag !== 'off',
     run: () => setSelectGesture(SEL_GESTURE_NEXT[App.selectDrag] || 'box') }
@@ -24608,12 +24577,13 @@ const HUB_TOOLS_WORLD = [
 function currentHubTools() {
   if (App.mode === 'object') {
     if (App.selectedObjectIds.size === 0) return HUB_TOOLS_EMPTY;
-    let tools = App.selectedObjectIds.size > 1
-      ? HUB_TOOLS_OBJECT_BASE.concat(HUB_TOOL_JOIN) : HUB_TOOLS_OBJECT_BASE;
-    // One seat, and only when it would DO something. Which of the two it is
-    // is the seat's own business - see HUB_TOOL_GROUPING.
-    if (groupingSeatApplies()) tools = tools.concat(HUB_TOOL_GROUPING);
-    return tools;
+    /* Bearing 5, and only when it would DO something. Which of the two ops it
+       is is the seat's own business - see HUB_TOOL_GROUPING. When it does not
+       apply the bearing is empty, and the other seven do not move: that is
+       what fixed bearings buy. */
+    return groupingSeatApplies()
+      ? HUB_TOOLS_OBJECT_BASE.concat(HUB_TOOL_GROUPING)
+      : HUB_TOOLS_OBJECT_BASE;
   }
   if (App.mode === 'vertex') return HUB_TOOLS_VERTEX;
   if (App.mode === 'edge') return HUB_TOOLS_EDGE;
@@ -24651,7 +24621,16 @@ const RING_MOVE_CANCEL_PX = 8;   // travel this far and it was never a hold
 const TOOL_RING_DEAD_ZONE_PX = 26;   // release this close to centre = cancel
 const TOOL_RING_ITEM = 52;           // width of a single tool icon
 const TOOL_RING_TIP = TOOL_RING_ITEM * Math.SQRT1_2;   // a2.98: the diamond's half-diagonal, 37px
-const TOOL_RING_GAP = 40;            // minimum clear space between icons
+/* 30 since a2.110, from 40. Eight seats at a 40px gap ask for a 120px
+   radius, which leaves a 393px phone only 51px of band to bloom the ring
+   exactly under the thumb. 30 puts the radius at 108 and the band at 59,
+   and the seats still sit 82.6px apart against a 68px floor. */
+const TOOL_RING_GAP = 30;            // minimum clear space between icons
+/* THE ARM (a2.110). Pull a door this far and it opens, before the finger has
+   reached the seat - the same "commit on the way, not on arrival" the two
+   layer spec asks for. Between the dead zone (26) and here you are only
+   aiming, and a lift runs the door's first op. */
+const TOOL_RING_ARM_PX = 70;
 const TOOL_RING_MIN_R = 80;          // floor, so small sets don't crowd the finger
 const RING_EDGE_PX = 14;             // a2.104: every seat keeps this clear of the edge
 /* a2.104: the ABSOLUTE floor for a clamped seat - clear of the dead zone
@@ -24678,28 +24657,33 @@ function clearToolRingTimer() {
 function toolRingAngles(tools) {
   const halved = tools.some(t => t.half);
   if (!halved) {
-    /* Component rings share one compass: a tool's `seat` (0 = straight
-       up, clockwise, 7 = straight down) names the DIRECTION it should pull
-       toward in every ring it appears in. The ring itself stays a complete
-       circle - tools spread evenly with no gaps (a2.8 left the empty seats
-       as holes; a2.10 closes them) - laid out in seat order, and the whole
-       circle is rotated to the phase that minimises deviation from those
-       bearings. Same direction, not same place: Delete is always the
-       downward pull even though its exact angle shifts a little with the
-       ring's item count. A set without seat fields (the empty-scene ring)
-       keeps the plain even spread. */
-    if (tools.every(t => t.seat !== undefined)) {
-      const spacing = 360 / tools.length;
-      const order = tools.slice().sort((a, b) => a.seat - b.seat);
-      let sx = 0, sy = 0;
-      order.forEach((t, i) => {
-        const a = ((90 - (t.seat / 14) * 360) + i * spacing) * Math.PI / 180;
-        sx += Math.cos(a); sy += Math.sin(a);
-      });
-      const phase = Math.atan2(sy, sx) * 180 / Math.PI;
-      const angleOf = new Map(order.map((t, i) => [t, phase - i * spacing]));
-      return tools.map(t => angleOf.get(t));
+    /* EIGHT BEARINGS, FIXED FOR LIFE (a2.110). A seat is 0..7 clockwise from
+       straight up and that IS the direction the tool sits in - not a
+       preference the layout honours while spreading everything evenly.
+
+       The even spread was right while a ring could hold thirteen tools: the
+       exact angle had to shift with the count, so a seat could only ever name
+       a direction to pull TOWARD. Now that every ring fits in eight, the
+       bearing can be literal, and that is the point of the rework - within a
+       ring, "Bevel is up-and-right" is true at every item count, forever, and
+       a bearing whose tool is conditional (Object's grouping seat) simply
+       stands empty instead of rotating the other seven.
+
+       ACROSS rings it is weaker, and the code should not pretend otherwise.
+       Delete holds seat 4 everywhere. Extrude holds 0 in both rings that have
+       it, Bridge 5, Knife 2. But an op that is top-level in one ring and
+       behind a door in another cannot hold one bearing in both - Cap, Set
+       flow and Circularize are all in that position - and no arrangement of
+       eight seats fixes that. The promise is per ring. */
+    if (tools.every(t => Number.isInteger(t.seat) && t.seat >= 0 && t.seat < 8)) {
+      return tools.map(t => 90 - t.seat * 45);
     }
+    /* Everything else - Add geo, Pivot, the empty-scene ring - carries no
+       seat at all and spreads evenly from straight up. The a2.10 phase-fit
+       that sorted by a 0..13 seat and rotated the circle to the best match is
+       gone with a2.110: it existed because an exact bearing was impossible
+       while a ring could hold thirteen tools, and every ring that has bearings
+       now has literal ones. */
     return tools.map((t, i) => 90 - (i / tools.length) * 360);
   }
 
@@ -24845,9 +24829,46 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
      means you found it (a2.66). */
   dismissFirstHint(true);
 
-  touchToolRingEl.innerHTML = '';
   touchToolRingEl.style.left = cx + 'px';
   touchToolRingEl.style.top = cy + 'px';
+
+  /* AT THE AIM POINT, NOT THE RING'S CENTRE. Near an edge the clamp above
+     moves the ring but not the finger, and the bearing is measured from
+     the finger (aimX/aimY) - so that is where the dead zone is and where
+     the line has to start, or the two graphics would lie in exactly the
+     case they exist to help. */
+  const ox = aim ? (aim.x - rect.left) - cx : 0;
+  const oy = aim ? (aim.y - rect.top) - cy : 0;
+  const painted = paintToolRing(tools, ringR, ox, oy, null, 0);
+
+  toolRingActive = { x: cx, y: cy, tools, itemEls: painted.itemEls, hoveredIndex: -1,
+                     pointerId, radius: ringR,
+                     labelEl: painted.labelEl, aimEl: painted.aimEl,
+                     /* The ring the doors hang off, kept so coming back inside
+                        the dead zone can restore it (a2.110). */
+                     root: tools, door: null,
+                     aimX: aim ? aim.x - rect.left : cx,
+                     aimY: aim ? aim.y - rect.top : cy };
+  if (pointerId !== undefined) {
+    try { renderer.domElement.setPointerCapture(pointerId); } catch (e) { /* fine without it */ }
+  }
+  orbit.enabled = false;
+  directCandidate = null;   // committed to the ring now, not to a drag
+}
+
+/* EVERYTHING INSIDE THE RING, drawn into a container that is already in the
+   right place: the star, one seat per tool, and the three overlays that
+   follow the finger. A function rather than a run of statements because a
+   DOOR swaps the seats without moving the ring, so this happens twice in one
+   gesture (a2.110). `tag` names the door you are standing in, or is null at
+   the top level. */
+function paintToolRing(tools, ringR, ox, oy, tag, spin) {
+  /* `spin` is the door's own bearing, in seat steps. A door's ops carry
+     seats RELATIVE to it, so turning the whole sub-ring by that much puts the
+     first one straight ahead of the finger. Zero at the top level. */
+  spin = spin || 0;
+  const anglesDeg = toolRingAngles(tools).map(a => a - spin * 45);
+  touchToolRingEl.innerHTML = '';
 
   const itemEls = [];
   tools.forEach((tool, idx) => {
@@ -24855,9 +24876,13 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
     const seatR = ringR;
     const el = document.createElement('div');
     el.className = 'hub-item';
-    // A toggle has to show which way it is currently set, or you can't tell
-    // whether you're about to turn the grid on or off.
-    if (tool.on && tool.on()) el.classList.add('on');
+    /* A toggle has to show which way it is currently set, or you can't tell
+       whether you're about to turn the grid on or off - and a DOOR shows the
+       state of the op a lift would run, which is the same op its second word
+       names. Shade lives behind SURFACE and FINISH; a door that showed
+       nothing would have hidden the one thing those seats exist to report. */
+    const shown = tool.door ? tool.door[0] : tool;
+    if (shown.on && shown.on()) el.classList.add('on');
     // The one seat in the ring that takes something away rather than
     // adding to it. Marked by key so the four rings that carry Delete
     // cannot disagree about it.
@@ -24873,9 +24898,20 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
        aimed seat. The one thing the ring cannot show you is the word
        under your own thumb, which is exactly the one the label carries,
        outside the ring, at full size. */
-    el.innerHTML = '<span class="tx"></span>';
+    /* A DOOR IS NOT AN OP (a2.110), and it must not look like one - lifting
+       on a seat you thought was Bevel and getting Knife is the whole failure
+       this avoids. It gets a second outline 6px inside the first, and it says
+       BOTH words: its own, and the op a lift would actually run. */
+    if (tool.door) {
+      el.classList.add('door');
+      el.innerHTML = '<i class="dr"></i><span class="tx"></span><span class="dx"></span>';
+      el.querySelector('.dx').textContent = toolLabel(tool.door[0]);
+      el.title = toolLabel(tool) + ': ' + tool.door.map(toolLabel).join(', ');
+    } else {
+      el.innerHTML = '<span class="tx"></span>';
+      el.title = toolLabel(tool);
+    }
     el.querySelector('.tx').textContent = toolLabel(tool);
-    el.title = toolLabel(tool);
     itemEls.push({ el, tool, angle, r: seatR });
     touchToolRingEl.appendChild(el);
   });
@@ -24896,6 +24932,14 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
      use - so the star is always two true squares, and the seats are always
      on it.
 
+     AND IT IS CUT WHERE A SEAT IS MISSING (a2.110). With bearings fixed for
+     life, a ring can legitimately have an empty one - Vertex has no seventh
+     op, the world ring has nothing destructive to put straight down - and a
+     star drawn straight through the gap says the seat is merely absent today.
+     Breaking the line there says it is not coming: the shape you learn has a
+     hole in it, deliberately. Runs of two or more surviving points are drawn
+     as open polylines; an isolated corner draws nothing.
+
      Inserted first, so the seats lay on top of it. Through the ring, not
      behind it: at 45% the model still reads underneath. */
   {
@@ -24904,6 +24948,16 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
     const rmax = ringR + 2;
     const at = (i) => (rmax + Math.cos(bear[i]) * ringR).toFixed(1) + ',' +
                       (rmax - Math.sin(bear[i]) * ringR).toFixed(1);
+    /* Which of the eight compass points a seat actually stands on. Only a
+       fixed-bearing ring can answer; the evenly spread ones (Add geo, Pivot)
+       keep the whole star. */
+    const fixed = tools.every(t => Number.isInteger(t.seat) && t.seat >= 0 && t.seat < 8);
+    const live = new Set();
+    /* Seat -> compass index, through the spin: seat 0 is straight up, which
+       is `bear` index 2, and the seats run clockwise while `bear` runs
+       anticlockwise - hence 2 minus, not 2 plus. */
+    if (fixed) tools.forEach(t => live.add((((2 - t.seat - spin) % 8) + 8) % 8));
+    const has = (i) => !fixed || live.has(i);
     const star = document.createElementNS(NS, 'svg');
     star.id = 'ringStar';
     star.setAttribute('width', rmax * 2);
@@ -24912,9 +24966,28 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
     star.style.bottom = (-rmax) + 'px';
     // [E N W S] is the turned square, the rhomb; [NE NW SW SE] the flat one.
     [[0, 2, 4, 6], [1, 3, 5, 7]].forEach((idx) => {
-      const p = document.createElementNS(NS, 'polygon');
-      p.setAttribute('points', idx.map(at).join(' '));
-      star.appendChild(p);
+      if (idx.every(has)) {
+        const p = document.createElementNS(NS, 'polygon');
+        p.setAttribute('points', idx.map(at).join(' '));
+        star.appendChild(p);
+        return;
+      }
+      /* Rotate the square so it STARTS on a gap, then every surviving run is
+         one unbroken stroke and no run is split across the wrap. */
+      const gap = idx.findIndex(i => !has(i));
+      if (gap < 0) return;
+      const order = idx.slice(gap).concat(idx.slice(0, gap));
+      let run = [];
+      const flush = () => {
+        if (run.length > 1) {
+          const p = document.createElementNS(NS, 'polyline');
+          p.setAttribute('points', run.map(at).join(' '));
+          star.appendChild(p);
+        }
+        run = [];
+      };
+      order.forEach(i => { if (has(i)) run.push(i); else flush(); });
+      flush();
     });
     touchToolRingEl.insertBefore(star, touchToolRingEl.firstChild);
   }
@@ -24939,25 +25012,48 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
   touchToolRingEl.appendChild(aimEl);
   const reticleEl = document.createElement('div');
   reticleEl.id = 'ringReticle';
-  /* AT THE AIM POINT, NOT THE RING'S CENTRE. Near an edge the clamp above
-     moves the ring but not the finger, and the bearing is measured from
-     the finger (aimX/aimY) - so that is where the dead zone is and where
-     the line has to start, or the two new graphics would lie in exactly
-     the case they exist to help. */
-  const ox = aim ? (aim.x - rect.left) - cx : 0;
-  const oy = aim ? (aim.y - rect.top) - cy : 0;
   reticleEl.style.left = ox + 'px'; reticleEl.style.bottom = (-oy) + 'px';
   aimEl.style.left = ox + 'px'; aimEl.style.bottom = (-oy - 1) + 'px';
   touchToolRingEl.appendChild(reticleEl);
 
-  toolRingActive = { x: cx, y: cy, tools, itemEls, hoveredIndex: -1, pointerId, radius: ringR, labelEl, aimEl,
-                     aimX: aim ? aim.x - rect.left : cx,
-                     aimY: aim ? aim.y - rect.top : cy };
-  if (pointerId !== undefined) {
-    try { renderer.domElement.setPointerCapture(pointerId); } catch (e) { /* fine without it */ }
+  /* WHICH DOOR YOU ARE STANDING IN, at the ring's own centre rather than at
+     the finger: the finger already has the aimed seat's word beside it, and
+     the one thing it cannot tell you is which of the two layers you are on.
+     Nothing is drawn at the top level - the absence IS the answer. */
+  if (tag) {
+    const tagEl = document.createElement('div');
+    tagEl.id = 'ringDoorTag';
+    tagEl.textContent = tag;
+    // At the RING's centre, not the finger's - ox/oy are the aim point, and
+    // using them here put the tag on top of the reticle and made it follow
+    // the finger, which is exactly what the line above says it must not do.
+    tagEl.style.left = '0px';
+    tagEl.style.bottom = '-34px';
+    touchToolRingEl.appendChild(tagEl);
   }
-  orbit.enabled = false;
-  directCandidate = null;   // committed to the ring now, not to a drag
+  return { itemEls, labelEl, aimEl };
+}
+
+/* A DOOR OPENS IN PLACE (a2.110). The sub-ring keeps the parent's centre AND
+   its radius, so the geometry a2.108 already solved against the screen edge
+   holds for both layers and there is nothing new to clamp - which is what the
+   two-layer spec's "re-centre on the finger" could not do: near an edge the
+   second layer would have had nowhere legal to open.
+
+   Only the seats change. The pointer capture, the aim point, the centre and
+   the radius all survive, so the gesture never breaks. */
+function swapToolRing(tools, doorTool) {
+  const t = toolRingActive;
+  if (!t) return;
+  const painted = paintToolRing(tools, t.radius, t.aimX - t.x, t.aimY - t.y,
+                                doorTool ? toolLabel(doorTool) : null,
+                                doorTool ? doorTool.seat : 0);
+  t.tools = tools;
+  t.itemEls = painted.itemEls;
+  t.labelEl = painted.labelEl;
+  t.aimEl = painted.aimEl;
+  t.hoveredIndex = -1;
+  t.door = doorTool || null;
 }
 
 function updateToolRingHover(ev) {
@@ -24996,6 +25092,30 @@ function updateToolRingHover(ev) {
       if (diff < bestDiff) { bestDiff = diff; best = i; }
     });
     hovered = best;
+  }
+
+  /* THE ARM AND THE WAY BACK (a2.110). Both are decided before the
+     highlight, because opening a door replaces every seat including the one
+     the finger is on - highlighting first would light a seat that is about to
+     stop existing.
+
+     Committing on the ARM rather than on arrival is what makes a door feel
+     like part of one stroke: the seats are already swapped by the time the
+     finger gets out there, so the second flick continues instead of starting.
+     The recursive call re-reads the hover against the NEW seats, so a finger
+     that crosses the arm and stops still lights something. It cannot loop: a
+     door is only opened when none is open, and only closed when one is. */
+  const rt = toolRingActive;
+  if (rt.door && dist <= TOOL_RING_DEAD_ZONE_PX) {
+    swapToolRing(rt.root, null);
+    return updateToolRingHover(ev);
+  }
+  if (!rt.door && hovered >= 0 && dist >= TOOL_RING_ARM_PX) {
+    const aimed = rt.itemEls[hovered];
+    if (aimed && aimed.tool.door) {
+      swapToolRing(aimed.tool.door, aimed.tool);
+      return updateToolRingHover(ev);
+    }
   }
 
   if (hovered !== toolRingActive.hoveredIndex) {
@@ -25048,7 +25168,14 @@ function placeRingAim(idx) {
    on an item near the left or right pole would run off screen. Measure the
    placed element and slide it back inside rather than guessing at text
    width, which is what the earlier label attempt got wrong. */
-const RING_LABEL_GAP_PX = 27;   // a2.98: 16 + the diamond's extra 11px of tip
+/* a2.110a: the CLEAR AIR between the seat's edge and the label's edge, not
+   between two centre points. It used to be measured centre to centre, with a
+   flat 26 standing in for the seat's half-width - which is right at the top
+   and bottom of the ring and wrong at the sides, where a diamond reaches 37px
+   and a two-word label reaches another 30 of its own. "CAP HOLE" on the
+   western seat sat ON the seat it was naming. Both extents are now measured
+   along the bearing and added. */
+const RING_LABEL_GAP_PX = 16;
 
 function placeRingLabel(idx) {
   if (!toolRingActive) return;
@@ -25058,11 +25185,24 @@ function placeRingLabel(idx) {
 
   const it = toolRingActive.itemEls[idx];
   lab.textContent = toolLabel(it.tool);
-  const R = (it.r || toolRingActive.radius) + TOOL_RING_ITEM / 2 + RING_LABEL_GAP_PX;
+  /* Both half-extents along this bearing. The seat is a diamond, so how far
+     it reaches depends on the direction - 37px at a tip, 26 at a flat side -
+     and the label is a box, so its own reach is the projection of its width
+     and height. Measured before it is placed, which needs it LAID OUT:
+     `.show` flips #ringLabel from display:none to block, and reading a rect
+     straight after forces the style and layout pass that makes the numbers
+     real. That forced reflow is the point - do not "optimise" it away, or the
+     label measures zero and lands back on the seat it is naming. It costs two
+     layouts per hover CHANGE, not per move. */
+  lab.classList.add('show');
+  const lb = lab.getBoundingClientRect();
+  const ca = Math.abs(Math.cos(it.angle)), sa = Math.abs(Math.sin(it.angle));
+  const seatReach = TOOL_RING_TIP / (ca + sa);
+  const labReach = (ca * lb.width + sa * lb.height) / 2;
+  const R = (it.r || toolRingActive.radius) + seatReach + RING_LABEL_GAP_PX + labReach;
   const x = Math.cos(it.angle) * R;
   lab.style.left = x + 'px';
   lab.style.bottom = Math.sin(it.angle) * R + 'px';
-  lab.classList.add('show');
 
   const vp = viewportEl.getBoundingClientRect();
   const lr = lab.getBoundingClientRect();
@@ -25089,7 +25229,12 @@ function closeToolRing(run) {
     toolRingActive.stickyGuard = null;
   }
   if (run && toolRingActive.hoveredIndex >= 0) {
-    toolRingActive.itemEls[toolRingActive.hoveredIndex].tool.run();
+    /* LIFTING ON A DOOR RUNS ITS FIRST OP (a2.110), which is why the seat
+       carries that op's word as well as its own. It is what keeps the common
+       move one flick: the door is a shortcut to the thing behind it and an
+       entrance to the rest, not a menu you have to walk through. */
+    const picked = toolRingActive.itemEls[toolRingActive.hoveredIndex].tool;
+    (picked.door ? picked.door[0] : picked).run();
   }
   touchToolRingEl.innerHTML = '';
   toolRingActive = null;

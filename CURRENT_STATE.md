@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~25,350 lines)
-- Version at time of writing: **a2.109a**
+- Version at time of writing: **a2.110a**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -38,6 +38,126 @@ v1.85d.
 
 
 
+
+
+## Eight bearings, and doors (a2.110)
+
+The plan is `claude/ring-capacity-and-grouping.md` in the project. This is
+what shipped.
+
+### A seat is a DIRECTION now, not a preference
+
+`seat` was 0..13 and only a hint: the ring spread its tools evenly and
+rotated the whole circle to the phase that best matched the seats, so a
+tool's real angle shifted with the item count. That was the right answer
+while a ring could hold thirteen tools - an exact bearing was impossible.
+
+**`seat` is 0..7 now and the angle is literally `90 - seat * 45`.** 0 is
+straight up, clockwise, 4 is straight down. A bearing whose tool is
+conditional - Object's grouping seat - simply stands empty; the other seven
+do not move. That is the whole promise, and `_door_probe.js` section 2
+measures it: adding the grouping seat shifts nothing by more than 0.00deg.
+
+The promise is **per ring**. Delete holds seat 4 everywhere, and Extrude,
+Bridge and Knife hold one bearing in every ring that has them, but an op
+that is top-level in one ring and behind a door in another cannot - Cap,
+Set flow and Circularize are all in that position. The code says so rather
+than claiming more.
+
+`TOOL_RING_GAP` drops 40 -> 30, which puts eight seats at R=107 with 82.6px
+between them against the 68px floor - and leaves a 59px band on a 393px
+phone for the ring to bloom exactly under the thumb.
+
+### Doors
+
+A seat with a `door: [...]` array. Pull past **`TOOL_RING_ARM_PX` (70)**
+while aiming one and `swapToolRing` repaints the seats **at the same centre
+and the same radius**, so a2.108's edge solution holds for both layers and
+there is nothing new to clamp. Come back inside the dead zone (26) and the
+parent ring returns. The pointer capture, the aim point and the radius all
+survive, so the gesture never breaks.
+
+**A door's ops are placed RELATIVE to the door.** Their `seat` counts steps
+clockwise from the door's own bearing: 0 straight on, 1 one step clockwise,
+7 one step back, 2 two clockwise. `paintToolRing` takes a `spin` and turns
+the whole sub-ring onto the door's bearing.
+
+That is the hinge the gesture turns on, and review caught it the hard way.
+Placed absolutely, the first op sat at the top of the ring - and since the
+arm (70) is INSIDE the ring radius (107), the door always opened before the
+finger reached the seat, so whatever the sub-ring happened to put on that
+bearing is what a lift ran. Every door promised its first op in its own
+second word and delivered a different one: **Knife promised, Collapse run.**
+Placed relatively, pulling west toward CUT and simply continuing lands on
+Knife, which is the word the closed seat was already showing.
+
+**A door is not an op, and must not look like one.** It draws a second
+outline 6px inside the first - a child `<i class="dr">`, not a
+pseudo-element, because a2.106 already learned those paint over the inline
+content - and it carries TWO words: its own, and the op a lift would run.
+It also reports that op's toggle state, which is how Shade still says which
+way it is set from behind SURFACE and FINISH.
+
+### The star is cut
+
+With bearings fixed, a ring can legitimately have an empty one. A star drawn
+straight through the gap says the seat is merely absent today; breaking the
+line says it is not coming. Runs of two or more surviving points are drawn as
+open **polylines**, an isolated corner draws nothing.
+
+`#ringStar polygon, #ringStar polyline` share one rule. They must: an open
+polyline still FILLS by default in SVG, and the first version painted a black
+wedge across the model over the exact hole the cut existed to show.
+
+### The maps
+
+```
+VERTEX   0 merge  1 weld  2 connect  3 slide  4 DELETE  5 set flow
+         6 circularize   [7 empty]
+WORLD    0 add geo  1 pivot  2 snap  3 floor grid  [4 empty]
+         5 see-through  6 flat view  7 select mode
+FACE     0 extrude  1 inset  2 knife  3 cap holes  4 DELETE  5 bridge
+         6 detach   7 SURFACE {shade, flip normals, set flow, circularize}
+EDGE     0 extrude  1 bevel  2 loop  3 slide  4 DELETE  5 bridge
+         6 CUT  {knife, split, collapse, cap hole}
+         7 FLOW {set flow, circularize, mark sharp, crease}
+OBJECT   0 duplicate  1 array  2 mirror  3 subdivide  4 DELETE
+         5 grouping (conditional)
+         6 MESH   {solidify, cap holes, join, separate}
+         7 FINISH {shade, smooth by angle, flip normals, clean up, centre}
+```
+
+Seven ops are one flick away in every mode - the five or six direct seats
+plus each door's first op, which a lift runs. Nothing was lost: `_door_probe`
+section 6 checks every key that had a seat before a2.110 against where it
+lives now.
+
+Join lost its conditional seat and rides in MESH unconditionally. One layer
+down, a seat that answers "select two things first" costs nothing, and a door
+whose contents never change is a door you can learn.
+
+### Deliberately absent - do not rebuild these
+
+- **Four categories over the whole ring** (TRANSFORM / BUILD / REMOVE /
+  SELECT), which is what the two-layer design doc asked for. It charges every
+  op two flicks to solve an overflow of three to six ops in three modes, and
+  leaves most sub-rings five-eighths empty. See
+  `claude/bloom-two-layer-critique.md` for the numbers.
+- **Re-centring the sub-ring on the finger.** The doc asks for it and it
+  cannot be clamped: layer 2 opens an arm-length from the origin, so near an
+  edge it has nowhere legal to go. Opening at the parent's own centre and
+  radius makes the problem vanish.
+- **The surface plate and the sunken ghost layer.** Ghosted ops at 24% sit
+  exactly where the thumb travels, and showing the LAST door's contents made
+  the depth cue depend on history - the opposite of what fixed bearings are
+  for. The depth cue lives on the seats that have depth instead.
+- **Absolute bearings inside a door.** See above: it made every door lie.
+- **The a2.10 phase-fit spread.** Sorted by a 0..13 seat and rotated the
+  circle to the best match. It existed because exact bearings were impossible
+  at thirteen tools; every ring that has bearings now has literal ones. Add
+  geo, Pivot and the empty-scene ring carry no seat at all and still spread
+  evenly from straight up.
+- **A `polygon`-only rule for the star.** See the black wedge above.
 
 ## Merge before you group (a2.109)
 
