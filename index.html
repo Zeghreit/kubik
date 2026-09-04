@@ -2326,7 +2326,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.2</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.2a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -3102,6 +3102,21 @@ function cameraTurnDeg() {
    and red-vs-green is exactly the pair that collapses for the most common
    kind of colour blindness. Dropping green solves both at once - the axes
    now separate by warmth and lightness, not just hue. */
+/* THE THREE COMPONENT HUES, IN ONE PLACE (v2.2a). Acid, cyan and violet are
+   what this app colours a COMPONENT with - a selected vertex, edge or face,
+   and the mode chrome that goes with it. They were written down twice, as
+   MODE_SELECT below and as the --accent-mode rules in the stylesheet, and
+   the view cube now wants them a third time. The stylesheet cannot read
+   this, so that copy stays and its comment says so; everything on this side
+   of the file reads these.
+
+   They are STRINGS because two of the three readers want CSS colours - the
+   cube bakes its labels through a 2D canvas - and only MODE_SELECT wants a
+   number. Converting one way is a parse; the other way is a padStart and a
+   template. */
+const COMPONENT_HUE = { vertex: '#D9FF3D', edge: '#46E1FF', face: '#B48CFF' };
+const hexToInt = (s) => parseInt(s.slice(1), 16);
+
 const GIZMO_AXES = [
   { key: 'x', dir: new THREE.Vector3(1, 0, 0), color: 0xC85A47 },
   { key: 'y', dir: new THREE.Vector3(0, 1, 0), color: 0xE8C87A },
@@ -3145,37 +3160,44 @@ viewCubeEl.appendChild(cubeRenderer.domElement);
    system - MeshBasicMaterial with an sRGB texture on a renderer that has
    no tone mapping draws exactly the colours written below. */
 
-/* SIX FACES, SIX COLOURS (v2.2, Zeghreit's).
+/* THREE PAIRS, IN THE COMPONENT COLOURS (v2.2a, Zeghreit's).
 
-   a2.107 made every label grey. Its argument: the axis triad means X, Y and
-   Z during a drag, and a face of this cube means look-DOWN-this-axis, which
-   is a different statement, so wearing the same colours claimed the two were
-   one. That is reversed here by request, and what goes back is sharper than
-   what came out. Before a2.107 a PAIR of opposite faces wore one colour, so
-   the cube said "X" twice and never said which end of it you were looking
-   at. Now each face has its own tone: the colour is the axis, and the tone
-   is the sign - the near face lifted toward --text, the far face the axis
-   colour itself. No two faces of this cube read the same.
+   The history in one line: a2.107 made every label grey, on the argument
+   that the AXIS triad means X, Y and Z during a drag while a face of this
+   cube means look-DOWN-this-axis, so sharing those colours claimed the two
+   statements were one. v2.2 put colour back as six tones of the axis triad.
+   v2.2a keeps the colour and drops the borrowing: the cube wears the
+   COMPONENT hues instead - the three this app colours a selected vertex,
+   edge and face with, and the only three-colour vocabulary it has that is
+   not already spoken for by the drag guides. a2.107's objection is answered
+   rather than overruled: the axis colours still say only what they said.
 
-   The lifted tones are the axis hues moved toward --text, not new hues, so
-   the cube still carries three colours rather than six. Every one clears 3:1
-   on --panel2, the AA floor for text at this size and weight; the darkest of
-   the six is Z's own 4.1:1 and clears it with room.
+   AN AXIS IS A PAIR, SO A PAIR IS A COLOUR. Three hues over six faces, and
+   opposite faces are the same axis seen from either end - so they share, and
+   the cube reads as three pairs rather than as six unrelated squares. Which
+   end you are looking at is what the WORD says; the colour says which axis.
 
-   BoxGeometry's own face order: +X, -X, +Y, -Y, +Z, -Z - which is RIGHT,
-   LEFT, TOP, BTM, FRONT, BACK, and the positive face of each pair is the
-   lifted one. GIZMO_AXES is where the three base hues come from and is
-   still the only place they are decided. */
+   The pairing is the two orders this file already keeps, read together:
+   GIZMO_AXES is x, y, z and the component modes are vertex, edge, face. So
+   X takes acid, Y takes cyan, Z takes violet. There is nothing deeper in it
+   than that, and pretending otherwise would be the mistake a2.107 named.
+
+   BoxGeometry's own face order is +X, -X, +Y, -Y, +Z, -Z, which is RIGHT,
+   LEFT, TOP, BTM, FRONT, BACK. All three are far clear of 3:1 on --panel2,
+   the AA floor for text at this size and weight: acid 14.6:1, cyan 10.5:1,
+   violet 6.5:1. They are brighter than what they replace, which is the one
+   thing to watch - these are SELECTION colours, tuned to be seen against a
+   dark model, and the cube is the only chrome now wearing them. */
 const CUBE_FACE_BG = '#1b1f25';    // --panel2
 const CUBE_FACE_LINE = '#454d56';  // --line
 const CUBE_LABEL = '#8b939c';      // --text-dim, kept: the fallback tone
 const CUBE_FACES = [
-  { label: 'RIGHT', color: '#E08A78' },   // +X, coral lifted
-  { label: 'LEFT',  color: '#C85A47' },   // -X, GIZMO_AXES x
-  { label: 'TOP',   color: '#F2DCA6' },   // +Y, amber lifted
-  { label: 'BTM',   color: '#E8C87A' },   // -Y, GIZMO_AXES y
-  { label: 'FRONT', color: '#7FAEDC' },   // +Z, dusty blue lifted
-  { label: 'BACK',  color: '#4A82B8' }    // -Z, GIZMO_AXES z
+  { label: 'RIGHT', color: COMPONENT_HUE.vertex },   // +X
+  { label: 'LEFT',  color: COMPONENT_HUE.vertex },   // -X
+  { label: 'TOP',   color: COMPONENT_HUE.edge },     // +Y
+  { label: 'BTM',   color: COMPONENT_HUE.edge },     // -Y
+  { label: 'FRONT', color: COMPONENT_HUE.face },     // +Z
+  { label: 'BACK',  color: COMPONENT_HUE.face }      // -Z
 ];
 
 function cubeFaceTexture(label, color) {
@@ -3766,9 +3788,9 @@ const THEME = {
    the axis guides (X #C85A47, Y #E8C87A, Z #4A82B8) are all darker and
    greyer than these, and the crease/sharp marks are orange, not gold. */
 const MODE_SELECT = {
-  vertex: 0xD9FF3D,   // acid  (a2.105: the chrome's mode hues, exactly)
-  edge:   0x46E1FF,   // cyan
-  face:   0xB48CFF    // violet
+  vertex: hexToInt(COMPONENT_HUE.vertex),   // acid  (a2.105: the chrome's
+  edge:   hexToInt(COMPONENT_HUE.edge),     // cyan   mode hues, exactly -
+  face:   hexToInt(COMPONENT_HUE.face)      // violet and since v2.2a, once)
 };
 
 let SELECT_COLOR = THEME.select;

@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~29,200 lines)
-- Version at time of writing: **2.2**
+- Version at time of writing: **2.2a**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -85,30 +85,45 @@ wide, edge-tucked, the cut on the viewport-facing corner. The open/closed
 chevron swap is gone from both `setOutlinerOpen` and `setMatTrayOpen`; the
 name does not change, so nothing does.
 
-### Six faces, six colours
+### Three pairs, in the component colours (v2.2a)
 
 a2.107 made every cube label grey, arguing that the axis triad means X, Y and
-Z during a drag while a face means look-DOWN-this-axis, so sharing the colours
-claimed the two were one statement. Reversed by request — and what goes back
-is sharper than what came out. Before a2.107 a PAIR of opposite faces wore one
-colour, so the cube said "X" twice and never said which end you were looking
-at. Now the colour is the axis and the TONE is the sign: the positive face is
-the axis hue lifted toward `--text`, the negative face is the axis hue itself.
-No two faces read the same, and the cube still carries three colours rather
-than six.
+Z during a drag while a face means look-DOWN-this-axis, so sharing those
+colours claimed the two statements were one. v2.2 put colour back as six tones
+of the axis triad — which was the borrowing a2.107 objected to, in a new
+coat. **v2.2a keeps the colour and drops the borrowing.** The cube wears the
+COMPONENT hues: the three this app colours a selected vertex, edge and face
+with, and the only three-colour vocabulary it has that the drag guides have
+not already spoken for. a2.107's objection is answered rather than overruled
+— the axis colours still say only what they said.
 
-| face | axis | colour |
+**An axis is a pair, so a pair is a colour.** Three hues over six faces, and
+opposite faces are the same axis seen from either end, so they share and the
+cube reads as three pairs rather than six unrelated squares. Which end you are
+looking at is what the WORD says; the colour says which axis.
+
+| pair | axis | colour |
 |---|---|---|
-| RIGHT | +X | `#E08A78` coral lifted |
-| LEFT | −X | `#C85A47` `GIZMO_AXES` x |
-| TOP | +Y | `#F2DCA6` amber lifted |
-| BTM | −Y | `#E8C87A` `GIZMO_AXES` y |
-| FRONT | +Z | `#7FAEDC` dusty blue lifted |
-| BACK | −Z | `#4A82B8` `GIZMO_AXES` z |
+| RIGHT / LEFT | ±X | `#D9FF3D` acid — the Vertex hue |
+| TOP / BTM | ±Y | `#46E1FF` cyan — the Edge hue |
+| FRONT / BACK | ±Z | `#B48CFF` violet — the Face hue |
 
-`GIZMO_AXES` is still the only place the three base hues are decided. The
-darkest of the six clears 4.1:1 on `--panel2`; the AA floor for text this size
-and weight is 3:1.
+The pairing is the two orders this file already keeps, read together:
+`GIZMO_AXES` is x, y, z and the component modes are vertex, edge, face. There
+is nothing deeper in it than that, and pretending otherwise would be the
+mistake a2.107 named.
+
+**The three hues are written down once now.** `COMPONENT_HUE` sits above
+`GIZMO_AXES`, and `MODE_SELECT` reads it through `hexToInt`. They are strings
+because two of the three readers want CSS colours — the cube bakes its labels
+through a 2D canvas — and only `MODE_SELECT` wants a number. The stylesheet's
+`--accent-mode` rules are the one copy that has to stay, because CSS cannot
+read this side of the file; its comment says so.
+
+Contrast on `--panel2`, against a 3:1 floor for text this size and weight:
+acid 14.6:1, cyan 10.5:1, violet 6.5:1. They are brighter than what they
+replace, which is the one thing to watch — these are SELECTION colours, tuned
+to be seen against a dark model, and the cube is the only chrome wearing them.
 
 ### One rule per edge, at --rule
 
