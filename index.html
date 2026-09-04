@@ -148,7 +148,8 @@
        any more, so --hdr-h is the DEPTH OF THE STRIP measured from the
        safe-area top: the row runs 7..51 and the readout 59..73, so 73 is
        the last pixel the strip owns. The view cube hangs below that on
-       the right (71..127) and is the one thing --edge does not clear -
+       the right (71..199, back to 128 at a2.107) and is the one thing
+       --edge does not clear -
        which is why the readout carries its own max-width. */
     --hdr-h: 73px;
     --edge: calc(14px + var(--hdr-h) + env(safe-area-inset-top));
@@ -551,7 +552,6 @@
     justify-content: center; gap: 1px; cursor: pointer; user-select: none;
     transform: rotate(45deg);
   }
-  .hub-item .ic { font-size: 17px; line-height: 1; transform: rotate(-45deg); }
   /* THE FLOOR OF THE RING IS DESTRUCTIVE, and it should look it (a2.57a).
      Delete owns straight-down - the seat nearest the thumb - and wore
      exactly the border every constructive tool wears, so eleven identical
@@ -623,7 +623,25 @@
   }
   .help-row .term { font-weight: 600; color: var(--text); margin-right: 6px; }
   .help-row .desc { flex: 1 1 auto; color: var(--text-dim); line-height: 1.45; }
-  .hub-item .tx { font-size: 8px; color: var(--text-dim); letter-spacing: .02em; }
+  /* THE SEAT IS A WORD NOW (a2.107, a3.0 2.5). 9px is 1.2's 11 scaled to
+     a 52px seat rather than the spec's 64, and it is the floor 1.4 sets.
+     Two lines at most, clipped to the seat: what makes this safe where
+     a2.4's labels were not is that the word can never be wider than the
+     thing it names. */
+  .hub-item .tx {
+    transform: rotate(-45deg);
+    /* 66, wider than the 52px box on purpose: the seat is that box turned
+       45 degrees, so through its middle the diamond is 73.5 across. The
+       label takes the room the shape actually has and overflows the box
+       evenly on both sides. */
+    width: 60px; max-height: 40px; overflow: hidden;
+    font-size: 9px; font-weight: 700; letter-spacing: .03em; line-height: 1.15;
+    text-transform: uppercase; text-align: center; color: var(--text);
+    /* At spaces only. A word broken across two lines is slower to read
+       than the glyph it replaced, which is the whole reason for the
+       change - so a two-word tool wraps and a long single word clips. */
+    overflow-wrap: normal; word-break: normal; hyphens: none;
+  }
   /* Two different things, deliberately different looks: .on means the
      toggle is currently switched on, .active means your finger is over it
      right now and lifting would run it. */
@@ -633,8 +651,20 @@
      gains a second, non-colour cue: a heavier ring. A toggle must not
      depend on hue alone to say it is switched on. */
   .hub-item.on { background: var(--accent-mode-dim); color: var(--accent-mode); border-width: 4px; }
+  /* The word carries its own colour (a2.107), and a declaration that
+     matches the span beats anything inherited from the seat - so the line
+     above stopped reaching it the moment the icon became text. `.active`
+     was given this override when it was written; `.on` needs the same. */
+  .hub-item.on .tx { color: var(--accent-mode); }
   .hub-item.active { background: var(--accent-mode); color: var(--on-accent); border-color: var(--accent-mode); }
   .hub-item.active .tx { color: var(--on-accent); opacity: .85; }
+  /* A PLATE UNDER THE ONE WORD YOU MUST NOT MISREAD (a2.107). The hazard
+     stripe has a 5px period, so every 9px glyph of DELETE crossed a band
+     boundary - 11.2:1 on the dark stripe and 4.4:1 on the light one. That
+     was invisible behind a 20px icon and is not behind a word. The plate
+     is the panel, so the stripe still frames it and still says danger. */
+  .hub-item.danger .tx { background: var(--panel); padding: 1px 4px; }
+  .hub-item.danger.active .tx { background: rgb(11 13 16 / .78); color: var(--text); opacity: 1; }
 
   /* ONE label, for the highlighted item only.
 
@@ -649,6 +679,17 @@
      pointer-events: none for the same load-bearing reason the ring itself
      has it - the ring picks by ANGLE, and anything here that could take a
      pointer would break the release. */
+  /* The lattice. Stroked in the mode's hue at 45% - present enough to
+     read as one instrument, quiet enough that the model shows through
+     it. No fill, or it would be a plate rather than a lattice. */
+  #ringStar {
+    position: absolute; overflow: visible; pointer-events: none;
+  }
+  #ringStar polygon {
+    fill: none; stroke: var(--accent-mode); stroke-width: var(--rule);
+    opacity: .45; stroke-linejoin: miter;
+  }
+
   #ringLabel {
     position: absolute; transform: translate(-50%, 50%);
     padding: 5px 10px; border-radius: var(--r-pill);
@@ -742,8 +783,8 @@
        +59 from the safe-area top. */
     top: calc(59px + env(safe-area-inset-top, 0px)); height: 14px; z-index: 13;
     /* Stops short of the cube, and clips rather than crossing it: the
-       cube is 56 wide at right 14, so 70 of margin plus 10 of air. */
-    max-width: calc(100% - 14px - 80px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+       cube is 128 wide at right 14, so 142 of margin plus 10 of air. */
+    max-width: calc(100% - 14px - 152px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
     overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
     display: flex; align-items: center;
     /* Mono caps at 11px with wide tracking (a2.99): a readout, not a label.
@@ -764,7 +805,6 @@
 
 
   .ic-svg { display: block; }
-  .hub-item .ic { display: flex; align-items: center; justify-content: center; }
 
   #quickRow { transition: opacity .15s ease; }
 
@@ -1357,7 +1397,12 @@
        `transform: translateX(-50%)` the shared scale would be applied about
        the pre-centring origin and the toast would slide sideways as it
        grew. */
-    position: absolute; left: 50%; top: calc(var(--edge) + 44px + 6px); translate: -50%;
+    /* 118, not 50 (a2.107): the view cube is 128 tall again and reaches
+       y 199, while this row was 141. The toast is centred with no width
+       cap, so anything over about 22 characters ran into the cube's disc
+       - and it paints at z 33 against the cube's 12, so the message went
+       OVER the faces. Its own row again, under the cube. */
+    position: absolute; left: 50%; top: calc(var(--edge) + 118px); translate: -50%;
     /* ABOVE THE DRAWER (a2.66). It had no z-index at all, so every toast
        raised by a drawer action - and the object list raises one - was
        painted behind a 340px opaque panel on a 390px phone. Harmless while
@@ -1533,9 +1578,15 @@
        22.4px against the silhouette's 21.2px at this size - and 44.8px
        across, so the hit area still clears the 44px floor even though
        one FACE of it does not. */
+    /* 128 again (a2.107), at 6.1's PLACE. 56 is the spec's size and it is
+       the one number in 6.1 that fights 1.4: three faces in 56px is a
+       24px tap target against a 44px floor, and the baked labels stop
+       being readable at all. The position is what the spec is really
+       saying - under the locks, so mode, lock state and camera read as
+       one column - and that survives at any size. */
     position: absolute; right: calc(14px + env(safe-area-inset-right, 0px));
     top: calc(71px + env(safe-area-inset-top, 0px));
-    width: 56px; height: 56px;
+    width: 128px; height: 128px;
     z-index: 12; cursor: pointer; touch-action: none;
     /* A ROUND HIT AREA (a2.64). The box is square and the cube is not: at
        any angle its silhouette is a hexagon covering about a third of the
@@ -2149,7 +2200,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.106</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">a2.107</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -2968,18 +3019,27 @@ viewCubeEl.appendChild(cubeRenderer.domElement);
    system - MeshBasicMaterial with an sRGB texture on a renderer that has
    no tone mapping draws exactly the colours written below. */
 
-const CUBE_FACE_BG = '#22262c';   // a2.105: --panel2's family, cooled with it
-const CUBE_FACE_LINE = '#454d56';
-/* BoxGeometry's own face order: +X, -X, +Y, -Y, +Z, -Z. Labels are coloured
+/* a2.107: THE CUBE IS CHROME, and now says so. Its faces were the panel's
+   family already; its LABELS were the axis colours - coral, gold and blue
+   - which made a 128px control the only place in the chrome carrying the
+   viewport's vocabulary. Those three colours mean X, Y and Z during a
+   drag, and a face of this cube means look-down-this-axis, which is a
+   different statement; wearing the same colours claimed they were the
+   same one. The cube is grey like every other frame now, and the axis
+   colours are left to say the one thing they say. */
+const CUBE_FACE_BG = '#1b1f25';    // --panel2
+const CUBE_FACE_LINE = '#454d56';  // --line
+const CUBE_LABEL = '#8b939c';      // --text-dim
+/* BoxGeometry's own face order: +X, -X, +Y, -Y, +Z, -Z. Labels were coloured
    by AXIS, matching GIZMO_AXES exactly - so the pair of faces you can see
    for a given axis is the colour that axis's guide line will be. */
 const CUBE_FACES = [
-  { label: 'RIGHT', color: '#C85A47' },
-  { label: 'LEFT',  color: '#C85A47' },
-  { label: 'TOP',   color: '#E8C87A' },
-  { label: 'BTM',   color: '#E8C87A' },
-  { label: 'FRONT', color: '#4A82B8' },
-  { label: 'BACK',  color: '#4A82B8' }
+  { label: 'RIGHT', color: CUBE_LABEL },
+  { label: 'LEFT',  color: CUBE_LABEL },
+  { label: 'TOP',   color: CUBE_LABEL },
+  { label: 'BTM',   color: CUBE_LABEL },
+  { label: 'FRONT', color: CUBE_LABEL },
+  { label: 'BACK',  color: CUBE_LABEL }
 ];
 
 function cubeFaceTexture(label, color) {
@@ -24335,7 +24395,12 @@ const HUB_TOOLS_FACE = [
   // where shading a whole model belongs anyway.
   { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 8, ring: 1, run: setFlowSelection },
   { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 8.5, ring: 1, run: circularizeSelection },
-  { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 11, ring: 1, run: toggleShading },
+  /* `on` since a2.107. Shade's state used to be carried entirely by its
+     icon being a FUNCTION - the only tool in the file whose glyph was
+     evaluated per bloom - and with the seats reading as words there was
+     nothing left to say which way it is set. Every other toggle in the
+     ring already had this predicate. */
+  { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 11, ring: 1, on: () => App.shadeSmooth, run: toggleShading },
   { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 9, ring: 1, run: flipNormalsSelection }
 ];
 
@@ -24361,7 +24426,12 @@ const HUB_TOOLS_OBJECT_BASE = [
   { key: 'centre', icon: 'centre', label: 'Centre', seat: 5, ring: 0, run: centreSelectionToOrigin },
   { key: 'cap', icon: 'cap', label: 'Cap holes', seat: 6, ring: 1, run: fillHolesSelection },
   { key: 'delete', icon: 'del', label: 'Delete', seat: 7, ring: 0, run: deleteSelection },
-  { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 8, ring: 1, run: toggleShading },
+  /* `on` since a2.107. Shade's state used to be carried entirely by its
+     icon being a FUNCTION - the only tool in the file whose glyph was
+     evaluated per bloom - and with the seats reading as words there was
+     nothing left to say which way it is set. Every other toggle in the
+     ring already had this predicate. */
+  { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 8, ring: 1, on: () => App.shadeSmooth, run: toggleShading },
   { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 9, ring: 1, run: flipNormalsSelection },
   /* INBOARD OF FLIP NORMALS, and that is the pairing. Both ops are about a
      surface having only one side: Flip normals answers "it is facing the
@@ -24654,10 +24724,15 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
      buys - which at fourteen seats and a short radius is under 20px, and
      the icons end up on top of each other. So the floor is the radius at
      which neighbours still clear each other by the tightest gap the ring
-     will accept (56px centre to centre, against `ideal`'s comfortable
+     will accept (64px centre to centre, against `ideal`'s comfortable
      92), and never less than clear of the dead zone.
 
-     Two seats both sitting on the floor are exactly that 56px apart, and
+     64 rather than a2.104's 56 since a2.107: a seat carries a 60px WORD
+     now, not a 20px glyph, and two seats sitting on the floor together
+     had labels that overlapped even though their boxes did not. The floor
+     is what the widest thing on a seat needs, plus air.
+
+     Two seats both sitting on the floor are exactly that 64px apart, and
      moving either one further out only increases the distance - so the
      floor alone is enough to guarantee the spacing, whatever the shape
      the clamp ends up drawing.
@@ -24667,7 +24742,7 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
      the edge clearance, and a ring that fits stays a perfect circle. */
   const seatMinR = Math.max(
     TOOL_RING_SEAT_MIN_R,
-    Math.min(R, (TOOL_RING_ITEM + 4) / (2 * Math.sin(gap / 2)))
+    Math.min(R, (TOOL_RING_ITEM + 12) / (2 * Math.sin(gap / 2)))
   );
 
   /* THE SEATS GIVE WAY, NOT THE RING (a2.104). This used to hold the whole
@@ -24733,20 +24808,58 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
     el.dataset.key = tool.key;
     el.style.left = Math.cos(angle) * seatR + 'px';
     el.style.bottom = Math.sin(angle) * seatR + 'px';
-    // Icon only - a label at this size is what made items read wider than
-    // they measured and caused an earlier overlap; the icon set is already
-    // legible on its own since it doubled as the drawer's icons.
-    el.innerHTML = '<span class="ic"></span>';
-    // Shade's icon reflects current App.shadeSmooth rather than staying
-    // fixed, the same way the old corner button showed which state a tap
-    // would leave you in - so its icon is a function, evaluated fresh
-    // every time the ring blooms rather than a static name like the rest.
-    const iconName = typeof tool.icon === 'function' ? tool.icon() : tool.icon;
-    el.querySelector('.ic').innerHTML = icon(iconName, 20);
+    /* a2.107: the WORD, not the glyph. A seat is read at arm's length in
+       the middle of a gesture, and at that moment "BEVEL" is faster than
+       a shape you have to recognise.
+
+       #ringLabel stays, and is not a duplicate: your FINGER is on the
+       aimed seat. The one thing the ring cannot show you is the word
+       under your own thumb, which is exactly the one the label carries,
+       outside the ring, at full size. */
+    el.innerHTML = '<span class="tx"></span>';
+    el.querySelector('.tx').textContent = tool.label;
     el.title = tool.label;
     itemEls.push({ el, tool, angle, r: seatR });
     touchToolRingEl.appendChild(el);
   });
+
+  /* THE LATTICE (a2.107, a3.0 2.5). Two closed paths through alternate
+     seat centres - which at eight seats IS the spec's "two squares, 0 and
+     45 degrees, through all 8 centres", and at any other count is the
+     same construction: every second seat, twice round. Drawn from the
+     MEASURED centres, so a seat the edge clamp pulled in takes the
+     lattice with it and the seats keep sitting on their own corners.
+
+     Inserted first, so the seats lay on top of it. Through the ring, not
+     behind it: at 45% the model still reads underneath. */
+  {
+    const NS = 'http://www.w3.org/2000/svg';
+    const rmax = Math.max.apply(null, itemEls.map(i => i.r)) + 2;
+    const star = document.createElementNS(NS, 'svg');
+    star.id = 'ringStar';
+    star.setAttribute('width', rmax * 2);
+    star.setAttribute('height', rmax * 2);
+    star.style.left = (-rmax) + 'px';
+    star.style.bottom = (-rmax) + 'px';
+    const order = itemEls.slice().sort((a, b) => a.angle - b.angle);
+    const at = (it) => (rmax + Math.cos(it.angle) * it.r).toFixed(1) + ',' +
+                       (rmax - Math.sin(it.angle) * it.r).toFixed(1);
+    /* Every second seat, starting at 0 and at 1. With an odd count the
+       first walk visits them all and the second repeats it, which is a
+       harmless duplicate rather than a special case. */
+    const walks = order.length >= 6 ? [0, 1] : [0];
+    walks.forEach((start) => {
+      const pts = [];
+      for (let i = start; pts.length < Math.ceil((order.length - start) / (walks.length)); i += walks.length) {
+        pts.push(at(order[i % order.length]));
+      }
+      if (pts.length < 3) return;
+      const p = document.createElementNS(NS, 'polygon');
+      p.setAttribute('points', pts.join(' '));
+      star.appendChild(p);
+    });
+    touchToolRingEl.insertBefore(star, touchToolRingEl.firstChild);
+  }
 
   /* Capture the pointer on the canvas for the life of the ring. The icons
      are already inert (see the CSS), but the ring can also open over the

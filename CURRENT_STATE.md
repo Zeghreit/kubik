@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~25,350 lines)
-- Version at time of writing: **a2.106**
+- Version at time of writing: **a2.107**
 - **Versions are now named `a2.0`** — alpha 2.0 — and stay that way through
   the pre-2.0 list below. The clean **2.0** is claimed at release and not
   before. Fixes still take a letter (`a2.0a`); new work takes a number
@@ -35,6 +35,94 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+
+## Words on the ring, the star under them (a2.107)
+
+Zeghreit's direction: the seats say what the op IS, the ring gets the
+lattice the canvas draws under it, and the view cube goes back to the size
+it was but in the chrome's own greys.
+
+### The seat is a word
+
+a3.0 2.5: *"Words, never icons: at this size a word is faster."* Every seat
+carries `tool.label` in a `.tx` span at 9px/700 - 1.2's 11px scaled to a 52px
+seat rather than the spec's 64, and exactly the floor 1.4 sets.
+
+**This reverses "Tool labels in the ring" in the deliberately-absent list,
+and the entry stays because the failure it records was real.** Those labels
+were laid out BESIDE the seats, so their width was unbounded and they pushed
+the icons into each other. A word inside the seat cannot be wider than the
+seat. The rule that keeps it true is in the geometry, not in the CSS: the
+ring's clamp floor went from a 56px chord to **64**, because a seat carries a
+60px word now and two seats pulled onto the same line by the a2.104 edge
+clamp had overlapping labels while their boxes did not. `_ring104_probe`
+measures it - `minPitch` is 65.6 at fourteen seats, against 57.4 before.
+
+- The label is **60px wide inside a 52px box**, on purpose: the seat is that
+  box turned 45 degrees, so through its middle the diamond is 73.5 across.
+  It wraps at spaces only - `overflow-wrap: anywhere` was breaking EXTRUD/E
+  and CIRCULA/RIZE, and a word split across two lines is slower to read than
+  the glyph it replaced, which is the whole reason for the change.
+- **`#ringLabel` stays** and is not a duplicate: your finger is ON the aimed
+  seat. The one word the ring cannot show you is the one under your own
+  thumb, and that is the one the label carries, outside the ring, at size.
+- **DELETE gets a plate.** The hazard stripe has a 5px period, so every 9px
+  glyph crossed a band boundary - 11.2:1 on the dark stripe, 4.4:1 on the
+  light one. Invisible behind a 20px icon, not behind a word.
+- Two states had leaned on the glyph and had to be given words' equivalents:
+  `.hub-item.on` set `color` on the SEAT, which a declaration on the span
+  beats, so an "on" toggle silently lost half its cue; and **Shade** carried
+  its state entirely by its icon being a function - the only tool in the file
+  whose glyph was evaluated per bloom - so it now has the `on:` predicate
+  every other toggle already had.
+
+`tool.icon` is dead data now and is kept deliberately: it is the only record
+of which glyph belongs to which op, and the ring may want one beside the word
+later. `icon()` itself is still the drawer's and the help card's.
+
+### The lattice
+
+`#ringStar` is an inline SVG inserted as the ring's FIRST child, so the seats
+lay on it. Two closed polygons through alternate seat centres - which at
+eight seats is the spec's *"two 210px squares, 0 and 45 degrees, through all
+8 centres"*, and at any other count is the same construction: every second
+seat, twice round. Below six seats it is one polygon through all of them.
+
+Drawn from the MEASURED centres, so a seat the edge clamp pulled in takes the
+lattice with it and the seats keep sitting on their own corners. Stroked in
+the mode's hue at 45%: through the ring, not behind it, so the model still
+reads. `closeToolRing`'s `innerHTML = ''` takes it with everything else.
+
+### The view cube is chrome
+
+**128 again, at 6.1's place.** 56 is the spec's size and it is the one number
+in 6.1 that fights 1.4: three faces in 56px is a 24px tap target against a
+44px floor, and the baked labels stop being readable at all. What the spec is
+really saying is the POSITION - under the locks, so mode, lock state and
+camera read as one column - and that survives at any size.
+
+Its labels were the AXIS colours, which made a 128px control the only place
+in the chrome carrying the viewport's vocabulary. Those three colours mean X,
+Y and Z during a drag; a face of this cube means look-down-this-axis. Wearing
+the same colours claimed they were the same statement. Faces are `--panel2`,
+lines `--line`, labels `--text-dim`, and the axis colours are left to say the
+one thing they say.
+
+Two things moved out of the bigger cube's way: the readout's max-width (152
+of margin, not 80) and **the toast**, which is centred with no width cap and
+was crossing the cube's disc for any message over about 22 characters - at
+z 33 against the cube's 12, so it painted over the faces. Its row is
+`--edge + 118` now, under the cube.
+
+### Deliberately absent - do not rebuild these
+
+- **A glyph as a tool's only state cue.** Shade was the last one and it broke
+  the moment the glyph became a word. If a ring tool has a state, it carries
+  `on:`.
+- **A label wider than the ring's clamp floor.** The two numbers - `.tx`'s
+  width and `(TOOL_RING_ITEM + 12)` in `seatMinR` - are one decision written
+  twice. Move either and move both.
 
 
 ## The a3.0 frame - one row, two corners, two edges (a2.106)
