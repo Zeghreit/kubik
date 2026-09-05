@@ -2350,7 +2350,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.3</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.3a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -28524,8 +28524,40 @@ function focusOnAll() {
 
 /* ---------------- Resize / render loop ---------------- */
 
+/* THE VIEWPORT'S SIZE IS WATCHED, NOT ANNOUNCED (v2.3a).
+
+   This used to run on `window`'s resize event alone, and take whatever
+   clientWidth and clientHeight said at that instant as the truth for the
+   rest of the session. Turning an iPhone breaks both halves of that. Safari
+   fires resize while the layout viewport is still moving - the safe-area
+   insets, the URL bar and the window itself do not land on the same tick -
+   so the numbers read here are the ones from a frame that no longer exists,
+   and they were then baked into perspCam.aspect and the drawing buffer with
+   nothing left to correct them. Turning the phone BACK fires resize again
+   and reads the wrong size again, which is why the picture stayed wrong the
+   right way up: two bad reads, no third chance.
+
+   A ResizeObserver has no such problem. It fires when the ELEMENT's box has
+   actually changed, after layout, however it changed - rotation, split
+   view, the keyboard, a container - and it fires again for every settling
+   step, so the last one it delivers is the size the viewport really ended
+   at. window's event stays as well: it costs nothing now that the function
+   is idempotent, and it covers a browser without the observer.
+
+   And a backstop, once a second, off the heartbeat: see stepFrame. Reading
+   clientWidth forces a style flush, which is not a thing to do sixty times
+   a second - but once, on a frame that was going to draw anyway, it makes
+   "the viewport changed size and nothing told us" a state that lasts a
+   second rather than a session. */
+let lastViewW = 0, lastViewH = 0;
 function onResize() {
   const w = viewportEl.clientWidth, h = viewportEl.clientHeight;
+  /* Zero is a viewport mid-rotation or display:none, not a viewport that is
+     zero wide. Laying out for it would divide by nothing and bake a NaN
+     aspect; the observer fires again when it has a size. */
+  if (!w || !h) return;
+  if (w === lastViewW && h === lastViewH) return;
+  lastViewW = w; lastViewH = h;
   perspCam.aspect = w / h;
   perspCam.updateProjectionMatrix();
   // The flat view keeps its vertical extent and re-derives the horizontal.
@@ -28533,8 +28565,14 @@ function onResize() {
   renderer.setSize(w, h);
   updateStrokeResolution();
   refreshToolIndicator();
+  /* The size changed, so the picture did. On-demand rendering will not
+     notice on its own, and since v2.1 the loop may be asleep. */
+  invalidate();
 }
 window.addEventListener('resize', onResize);
+if (typeof ResizeObserver === 'function') {
+  new ResizeObserver(onResize).observe(viewportEl);
+}
 
 // Losing a pointer (leaving the window, an interrupting call) must clear the
 // tracker, or activePointers stays non-empty and every later gesture is
@@ -28915,9 +28953,16 @@ function animate() {
   }
 }
 
+let lastSizeCheck = -1e9;
 function stepFrame(now) {
   const delta = Math.min((now - lastFrameTime) / 1000, 0.1);
   lastFrameTime = now;
+  /* See onResize: the backstop, not the mechanism. Once a second, on a tick
+     that was going to happen anyway, ask the element what size it is - so a
+     resize that reached neither the window event nor the observer is a
+     second of a wrong picture instead of a session of one. onResize returns
+     on its first line when nothing moved, which is every time but one. */
+  if (now - lastSizeCheck >= RENDER_HEARTBEAT_MS) { lastSizeCheck = now; onResize(); }
 
   if (camAnim) {
     const t = Math.min(1, (performance.now() - camAnim.start) / camAnim.duration);
@@ -29163,6 +29208,10 @@ if (PICK_DEBUG) {
        exported so a probe can measure them rather than infer them
        from what the picture looks like. */
     worldPerPixel, frameBox, viewportEl,
+    // v2.3a: the resize path, so a probe can drive it and read what it laid
+    // the viewport out for rather than infer it from the picture.
+    onResize,
+    get lastViewSize() { return { w: lastViewW, h: lastViewH }; },
     // A getter, not a value - camAnim is replaced rather than mutated, and
     // a harness needs to see that it was SET even when the tab is hidden
     // and requestAnimationFrame never runs to apply it.

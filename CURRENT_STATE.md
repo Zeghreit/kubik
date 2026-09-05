@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~29,200 lines)
-- Version at time of writing: **2.3**
+- Version at time of writing: **2.3a**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -35,6 +35,61 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Turning the phone stretched the model, and it stayed stretched (v2.3a)
+
+Reported from the phone: rotate to landscape and the model renders wrong;
+rotate back and it is still wrong.
+
+**One event, read once, believed forever.** `onResize` ran on `window`'s
+resize event alone and took whatever `clientWidth`/`clientHeight` said at
+that instant as the truth for the rest of the session. Turning an iPhone
+breaks both halves of that. Safari fires resize while the layout viewport is
+still moving — the safe-area insets, the URL bar and the window itself do
+not land on the same tick — so the numbers read are from a frame that no
+longer exists, and they were baked into `perspCam.aspect` and the drawing
+buffer with nothing left to correct them. Turning the phone BACK fires resize
+again and reads the wrong size again, which is why it stayed wrong the right
+way up: two bad reads, no third chance.
+
+Reproduced exactly, by firing the event before moving the layout — which is
+what iOS does:
+
+```
+before                    viewport      canvas        aspect
+portrait, as loaded       878x746       878x746       1.177  ok
+to landscape, +1.7s       852x393       878x746       1.177  *** STRETCHED
+back to portrait, +1.7s   393x852       852x393       2.168  *** STRETCHED
+no window event at all    700x500       852x393       2.168  *** STRETCHED
+```
+
+Note the second line of that: back in portrait it was laid out for the
+LANDSCAPE size — one step behind, which is exactly the squashed model in the
+report.
+
+**A ResizeObserver has no such problem.** It fires when the ELEMENT's box has
+actually changed, after layout, however it changed — rotation, split view,
+the keyboard, a container — and it fires again for every settling step, so
+the last one it delivers is the size the viewport really ended at. `window`'s
+event stays as well: it costs nothing now that the function is idempotent,
+and it covers a browser without the observer.
+
+Three things went with it:
+
+- **`onResize` records what it laid out for** and returns on its first line
+  when nothing moved, so firing it from three places costs nothing.
+- **Zero is not a size.** A viewport mid-rotation or `display: none` reads 0;
+  laying out for it would bake a NaN aspect. It is skipped, and the observer
+  fires again when there is a box.
+- **A backstop, once a second, off the heartbeat**, at the top of
+  `stepFrame`. Reading `clientWidth` forces a style flush, which is not a
+  thing to do sixty times a second — but once, on a tick that was going to
+  happen anyway, it makes "the viewport changed size and nothing told us" a
+  state that lasts a second rather than a session.
+
+After, every case lands correct within 60ms, including the one with no window
+event at all. `_rotchk.py` is the probe; it needs a real clock, because the
+recovery paths are an observer and the render loop.
 
 ## The view cube lights the face you are looking down (v2.3)
 
