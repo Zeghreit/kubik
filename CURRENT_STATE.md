@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~29,200 lines)
-- Version at time of writing: **2.3b**
+- Version at time of writing: **2.3c**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -35,6 +35,66 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Two pieces of work nobody could see (v2.3c)
+
+Both found by the same review pass as v2.3b. Neither changes anything on
+screen; both were being paid on paths you are on constantly.
+
+### The material editor re-rendered the whole library into a hidden panel
+
+`#matFly.editing #matTrayInner { display: none }` — while the editor is open,
+the card column is not on screen. `meCommit` nevertheless nulled the whole
+preview cache and called `buildMatTray`, which re-renders **every** material
+in the library (a GPU draw and a synchronous `toDataURL` — a readback off a
+`preserveDrawingBuffer` canvas, then a PNG encode, on the main thread) and
+then rebuilds the card column from scratch. The only pixel that changes is
+`meImg`, one thumbnail.
+
+All eleven editor controls commit through there, on `change`. So a normal
+tuning session — nudge roughness, nudge metal, nudge a mask amount — paid the
+whole library per release.
+
+`renderMatPreviews(onlyId)` now renders one definition and leaves the rest of
+the cache alone, and `meCommit` writes the result into both places it shows:
+the editor's image, and the card underneath, so the column is already correct
+when the editor closes. The full path stays for the cases that need it — a
+new material, a deleted one, a changed environment — all of which null the
+cache and go through `buildMatTray` as before.
+
+**The one branch that must not be dropped** is `if (!_matPreviews)`. A partial
+cache is truthy, and `setMatTrayOpen` decides whether to build the tray at all
+by testing exactly that.
+
+### The two mask predicates allocated, once per material slot, per refreshUI
+
+`maskOf` and `defWantsField` both went through `maskList`, which does
+`d.masks.slice(0, MASK_SLOTS)`. `ensureMaskPatches` asks both once per
+material slot and `refreshUI` runs it on every call — so on a subdivided model
+(the file's own figure is **1536 materials**) that was around three thousand
+short-lived arrays per selection tap, for two booleans that do not need an
+array at all. Both walk the live array now.
+
+**Deliberately not a cache.** Caching the answers would mean a new invariant —
+something has to invalidate it — and these are read from paths that mutate a
+definition in place. Iterating costs nothing and cannot go stale.
+
+### Measured
+
+`_matperf.py`, 20 objects / 120 material slots, a 3-material library:
+
+| | before | after |
+|---|---|---|
+| `toDataURL` per slider release | 3.0 | **1.0** |
+| `refreshUI` | 0.059 ms | **0.046 ms** |
+
+The readback count is the one that matters and it is the library size: three
+materials, three renders per nudge; a library of fifteen was fifteen. It is
+one now, whatever the library holds. `refreshUI`'s 22% is at 120 slots — a
+subdivided model has 1536, and the walk is what scales.
+
+Guard: `_matperf.py` also checks every card still carries a picture after the
+editor closes, which is what a partial cache would break.
 
 ## Four things that were quietly wrong (v2.3b)
 

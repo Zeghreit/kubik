@@ -2350,7 +2350,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.3b</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.3c</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -4607,11 +4607,27 @@ function maskList(d) {
   return d.masks.slice(0, MASK_SLOTS);
 }
 
+/* THE STACK, WITHOUT A COPY OF IT (v2.3c). maskList exists to hand callers a
+   safe, capped array and most of them want exactly that. These two do not -
+   they walk it once and answer a boolean - and they are asked once per
+   MATERIAL SLOT by ensureMaskPatches, which refreshUI runs on every call. On
+   a subdivided model that is 1536 slots, so `d.masks.slice(...)` was minting
+   around three thousand short-lived arrays per selection tap for two answers
+   that do not need an array at all.
+
+   Deliberately NOT a cache. Caching the answers would mean a new invariant -
+   something must invalidate it - and these are read from paths that mutate a
+   definition in place. Iterating the live array costs nothing and cannot go
+   stale. Same bound, same order, same answer as maskList's copy. */
+function maskCount(d) {
+  return (d && Array.isArray(d.masks)) ? Math.min(d.masks.length, MASK_SLOTS) : 0;
+}
+
 // Does this definition need the shader patch at all?
 function maskOf(d) {
-  const list = maskList(d);
-  for (let i = 0; i < list.length; i++) {
-    const mk = list[i];
+  const n = maskCount(d);
+  for (let i = 0; i < n; i++) {
+    const mk = d.masks[i];
     if (mk && mk.on && (mk.colorOn || mk.roughOn)) return mk;
   }
   return null;
@@ -4950,8 +4966,15 @@ function bumpMaskGen(d) {
    all - so it needs a name and exactly one definition. A material wearing
    nothing but Clouds has no use for either. */
 function defWantsField(d) {
-  return !!d && ((d.bevel > 0) ||
-    maskList(d).some(m => m && m.on && maskCurvMode(m) && (m.colorOn || m.roughOn)));
+  if (!d) return false;
+  if (d.bevel > 0) return true;
+  // See maskOf: walked rather than copied, for the same reason.
+  const n = maskCount(d);
+  for (let i = 0; i < n; i++) {
+    const m = d.masks[i];
+    if (m && m.on && maskCurvMode(m) && (m.colorOn || m.roughOn)) return true;
+  }
+  return false;
 }
 
 /* Whether a definition needs the shader patch at all. This existed in two
@@ -26307,11 +26330,17 @@ function matPreviewRig() {
    program map, so onBeforeCompile always runs and the uniforms are always
    this definition's. The compiled GLSL itself is still shared: three caches
    programs by key across materials, so this costs an object, not a compile. */
-function renderMatPreviews() {
+/* `onlyId` renders ONE definition and leaves the rest of the cache alone
+   (v2.3c). Every render here is a GPU draw plus a synchronous toDataURL -
+   a readback off a preserveDrawingBuffer canvas, then a PNG encode, on the
+   main thread - so the difference between one and the whole library is the
+   difference between a slider release you do not notice and one you do. */
+function renderMatPreviews(onlyId) {
   const rig = matPreviewRig();
   syncPreviewEnv();   // the thumbnails and the viewport must agree
-  const out = {};
+  const out = (onlyId !== undefined && _matPreviews) ? _matPreviews : {};
   MATERIALS.forEach((_d, k) => {
+    if (onlyId !== undefined && k !== onlyId) return;
     let m = rig.mats.get(k);
     if (!m) { m = new THREE.MeshStandardMaterial({ color: 0x9AA0A8 }); rig.mats.set(k, m); }
     rig.ball.material = applyFinish(m, k);
@@ -27434,15 +27463,45 @@ function meApplyLive() {
   updateMaterialEverywhere(matEditingId);
 }
 
+/* ONE CARD, AND THE COLUMN IT SITS IN IS NOT EVEN ON SCREEN (v2.3c).
+
+   This used to null the whole preview cache and call buildMatTray, which
+   re-renders EVERY material in the library - a GPU draw and a synchronous
+   toDataURL each - and then rebuilds the card column from scratch. While the
+   editor is open that column is `display: none` (see #matFly.editing
+   #matTrayInner), so every one of those renders and every one of those
+   elements was for something nobody could see. The only pixel that changes
+   is meImg, one thumbnail.
+
+   All eleven editor controls commit through here, on `change` - so a normal
+   tuning session, nudge roughness, nudge metal, nudge a mask, was paying the
+   whole library per release. Now it renders the one definition it edited and
+   writes it into both places it shows: the editor's own image, and the card
+   underneath, so the column is already right when the editor closes and
+   nothing has to be rebuilt to make it so.
+
+   The full path stays for the cases that need it - a new material, a deleted
+   one, a changed environment - all of which null the cache and go through
+   buildMatTray as before. The `!_matPreviews` branch is the one that must
+   not be dropped: a partial cache is truthy, and setMatTrayOpen decides
+   whether to build the tray at all by testing exactly that. */
 function meCommit() {
   if (!matEditingId) return;
   saveMaterialLibrary();
   const keep = matEditingId;
-  _matPreviews = null;
-  buildMatTray();
+  if (!_matPreviews) {
+    buildMatTray();
+  } else {
+    _matPreviews = renderMatPreviews(keep);
+    matTrayInnerEl.querySelectorAll('.mat-card').forEach(el => {
+      if (el.dataset.finish !== keep) return;
+      const im = el.querySelector('img');
+      if (im) im.src = _matPreviews[keep] || '';
+    });
+  }
   refreshMatTray();
   matEditingId = keep;
-  meImg.src = _matPreviews[keep] || '';
+  meImg.src = (_matPreviews && _matPreviews[keep]) || '';
 }
 
 [meColor, meMetal, meRough, meBevel].forEach(el => {
@@ -29412,6 +29471,10 @@ if (PICK_DEBUG) {
     get outLift() { return _outLift; },
     hideObject,
     get modeViewSuspended() { return modeViewSuspended; },
+    /* v2.3c: the editor's own two doors, so a probe can measure what a
+       slider release costs rather than drive it through a card's pencil. */
+    openMatEditor, closeMatEditor, meCommit, renderMatPreviews,
+    get matPreviews() { return _matPreviews; },
     MATERIALS, getMaterialDef, updateMaterialEverywhere, saveMaterialLibrary,
     harvestLegacyMaterials, applyFinishToSelection,
     applyMaskPatch, ensureMaskPatches, rebakeMaskTexture,
