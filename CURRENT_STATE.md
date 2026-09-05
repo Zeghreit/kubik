@@ -115,11 +115,14 @@ object being deleted (which retires only the instances that were its own).
 
 ### Measured
 
-- `_poolchk.py` - the pool's own probe, real clock: a mesh borrows rather
-  than owns, painting one face still paints one face, 22 groups hold 2
-  instances, a shared material outlives the mesh that dropped it, the x-ray
-  side rides in the key, the appearance survives a save and back, and a
-  shape-masked definition is NOT shared between two objects.
+- `_poolchk.py` - the pool's own probe, real clock, **25 checks**: a mesh
+  borrows rather than owns, painting one face still paints one face, a
+  shared material outlives the mesh that dropped it, the x-ray side rides in
+  the key, the appearance survives a save and back, and a shape-masked
+  definition is NOT shared between two objects while a plain one is.
+  Verified against `_bak_v27.html`, where **10 of the 25 fail** and the
+  headline number is in the failure text: 22 groups, 22 distinct materials
+  before, 22 groups and 2 after.
 - The suite: `_array`'s section 8 was rewritten - it asserted that two copies
   held different material OBJECTS, which the pool deliberately breaks; it now
   asserts the consequence that still has to hold, that painting one copy
@@ -10268,6 +10271,29 @@ will not.**
 **Verify generated assets end to end.** The help card's QR is checked twice:
 its matrix against segno's own, and OpenCV decoding the URL back out of the
 rendered screenshot. A QR that does not scan is worse than no QR.
+
+**A PROBE IS CODE TOO, and a broken one is SILENT.** Three separate traps
+cost most of an afternoon on `_poolchk` at v2.8, and every one of them looked
+identical from the outside - "NO OUTPUT", which reads exactly like a build
+that will not load:
+
+- **A syntax error in the probe's own JS.** One stray `\\'` inside a
+  single-quoted string ended the string early; the appended `<script>` never
+  parsed, so not one line of it ran - not even the watchdog. **Run
+  `node --check` on the probe file**, the same way `_verify.py` does on the
+  app. `_verify.py` only looks at index.html.
+- **`start "" /b` swallowed the run.** Backgrounding the probe from cmd so the
+  session could poll it produced no output file at all; run it in the
+  foreground and wait.
+- **Waiting for `load` never fires if the module graph stalls.** The probe now
+  starts on a plain three-second timer instead. If the app is not up,
+  `__kubik` is undefined and the report says SO, which is a fact; silence is
+  not.
+
+The fix that ends the whole class: **a running mark**. `_poolchk` POSTs its
+lines so far to `/mark` after every section, and the runner prints the last
+mark when no report arrives - so a stall names the section it stalled in
+rather than saying nothing. Copy that into any new probe that does real work.
 
 Three traps, all of which cost real time:
 
