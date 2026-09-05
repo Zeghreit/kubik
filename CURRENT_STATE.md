@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~30,200 lines)
-- Version at time of writing: **2.8c**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~30,400 lines)
+- Version at time of writing: **2.8d**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -35,6 +35,42 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Cloth the bake already made (v2.8d)
+
+`mkStructural` is the funnel every shape change in the material sheet goes
+through, and it re-baked the packed mask texture on all of them. Most of them
+cannot change a single byte of it: ticking Colour or Roughness on, picking a
+blend mode, switching a mask off, adding a second mask beside the first. Each
+re-bake runs `bakeNoiseField` over 16,384 texels for every live mask and
+writes 65,536 bytes.
+
+| | before | after |
+|---|---|---|
+| cloth bakes over 20 toggles of one component | 20 | 1 |
+| cloth bakes for a new seed and a new detail | 2 | 2 |
+
+The second row is the one that matters: the guard must not make a real change
+free. It is a signature of exactly the fields `bakeMaskPacked` reads - `on`,
+type, detail, contrast, seed, per mask, plus the count - compared with the
+last one baked. `on` is in it because an off mask's channel is zeroed rather
+than left alone. A picture mask opts out (`maskClothSig` returns null):
+comparing data URLs would cost more than the bake it saves.
+
+**The signature lives in a side map, not on the definition.** A `_clothSig`
+key written onto `d` would ride into `materialDefSig` and into every saved
+file, and a material carrying a key an older one does not is a material that
+stops matching itself across a file - the absent-versus-present trap v2.7's
+bump depth was designed around. It is a `Map` keyed by definition id, cleared
+by `dropMaskTexture` and by the single-channel branch of `rebakeMaskTexture`,
+which writes one channel by hand and so leaves the whole-buffer signature
+stale.
+
+`mkStructural` still calls `rebakeMaskTexture` unconditionally, which is the
+right shape - one funnel, one decision - and `rebakeMaskTexture` decides.
+
+Suite: **35 of 35 identical** to v2.8c. `_gpuchk.py` section 2b is the check,
+and `PERF.clothBake` is the counter it reads.
 
 ## What a long session leaves on the GPU (v2.8c)
 
@@ -10904,98 +10940,102 @@ one re-run (4 cubes, Euler 8 → 4).
 
 ## Open threads
 
+**Audited line by line at v2.8d**, against the code as it is now rather than
+against memory. Of the nine live items, three had already been fixed by later
+work, one was overstated, and one turned out to be much bigger than it said.
+Do the same before believing any of these again - this file's own history is
+that a note gets believed for a year.
+
+### Still open
+
+- **Masks do not survive an export.** A .glb, .obj or .stl carries the base
+  colour and roughness and nothing else: `buildExportGroup` wipes `userData`
+  and clones the materials, and a clone loses `onBeforeCompile`, so the cloth
+  and the bump exist only inside this app. Baking them into a texture is not
+  a small job - **there is no UV attribute anywhere in the file**, on purpose,
+  which is why the whole mask system is triplanar - so it would need an
+  unwrap first. Say that plainly when it is reported as a bug.
+- **A shape mask's bump does not show in the tray thumbnail.** The preview rig
+  never goes through `applyShading`, so it draws with `edgeFieldNone`, a 1x1
+  texture, and the shape masks - which read the edge field - come back flat
+  there. Cloth masks preview correctly. The thumbnail is honest about
+  everything except this one class.
+- **Every export toasts before the share sheet has been answered.** All five
+  of them - .glb, .obj, .stl, the JSON and the picture - say "Exported" or
+  "saved" synchronously, so cancelling the iOS sheet still reads as success.
+  The fix belongs in `downloadBlob` (return a promise, toast on the outcome),
+  which is one change for all five call sites rather than five.
+- **The whole test harness is untracked, not just `_verify.py`.** This is the
+  item that grew. `git ls-files "_*"` returns **nothing**, against 984
+  `_*.py` files in the repo root: every probe, every harness, `_verify.py`,
+  `_runprobes.py`, `_cmpdirs.py`, the 35 suites and each version's baseline
+  outputs. The `_` prefix is in `.gitignore` by convention, and the convention
+  ate the evidence. **Losing this machine loses the ability to check any claim
+  in this file.** It is a public repo, so committing it is the owner's call,
+  not Claude's - but it is the largest single risk on this list and it had
+  never been written down as one.
 - **Moving the pivot / re-origining an object.** Deferred. Capturing the
   symmetry plane from geometry buys most of what it would have.
-- New cubes should spawn at world centre even if they overlap. Currently
-  they offset in a grid pattern.
-- Gesture-driven modelling tools (extrude on two-finger tap, etc.).
-- `_verify.py` is gitignored, matching the `_`-prefix convention, so it
-  lives on one machine only. Consider committing it. Note it CANNOT catch an
-  undefined reference — a name that does not exist passes `node --check` and
-  throws at runtime. Grep for any identifier you introduce.
-- The op sweep and the picking harness that produced the numbers above live
-  only in a browser console. Turning them into a committed self-test is the
-  obvious way to make "flawless" checkable rather than hoped for.
-- ~~**Masks added to a PRESET material do not survive a project file.**~~
-  **NOT TRUE, retested at a2.65a.** Measured twice - once by hand in the live
-  app with a real reload and a cleared localStorage, once by `_mat_probe`,
-  which now guards it. A mask put on Metal is written into the JSON, and
-  opening that file in a library that has never seen it brings the mask back
-  as **"Metal (imported)"**, with every face repointed onto it. Nothing is
-  dropped, and the preset stays plain, which is the policy the note said
-  nobody had chosen: **import under a new id**, decided by the code.
-  What made it true once and false now is `materialDefSig` learning to
-  include `masks` - the file's masked Metal stopped matching the local plain
-  one, so the import path adopted it instead of recognising it. The note was
-  never re-measured after that.
-- **Normals from the masks** is the agreed next feature - a cloth mask is a
-  greyscale field and a normal is its slope, so every noise type already
-  built becomes a bump for free, as a third checkbox beside Colour and
-  Roughness. Triplanar, so the no-UV policy survives.
-- ~~**`material.envMapIntensity` has been inert**~~ **- RETIRED at a2.65a.**
-  The note was right; the reason it gave was not, and the mechanism matters
-  because it decides the fix. three does not "overwrite" the value: in r184
-  a material's `envMapIntensity` applies **only when the material owns an
-  `envMap`**. The environment here is `scene.environment`, scaled by
-  `scene.environmentIntensity` alone, and nothing in the file ever assigns
-  `material.envMap` - so the per-material value could never have applied.
-  Measured in the live app with a forced render: 6 -> 0.05 on a metal cube is
-  pixel-identical; `scene.environmentIntensity` 1 -> 8 is plainly different;
-  the same 0.05 **with `mat.envMap` bound** crushes the cube to black.
-
-  It was never exposed in the UI either - no slider, no readout - so "drop it
-  or make it multiply" was a smaller choice than it looked. Making it
-  multiply would have meant binding `scene.environment` per material and
-  would have changed how every existing model looks, because the presets were
-  written around it (Solid 0.5, Plastic 0.7, Metal 1.0) and none of that had
-  ever reached the screen. Dropped.
-
-  The one thing it really did was ride in `materialDefSig`, where a number
-  with no effect could make two identical materials read as two and mint a
-  spurious "(imported)" copy. Removing it from the signature **changed the
-  signature's format**, which is the part that needed care: `srcSig` is a
-  stored signature string, persisted into localStorage and into every saved
-  file, so every material imported before a2.65a holds a string the current
-  code can no longer produce. Left alone, each would have minted one more
-  copy of itself on the next open - the exact failure `srcSig` exists to
-  prevent. `migrateSig()` strips the retired key from a stored signature and
-  restates it, on every path a signature arrives by, and heals it in place so
-  the library stops being in the old format. Guarded by `_mat_probe`
-  section 5. **Any future change to the signature has to do the same.**
-- **`_mat_probe` (suite 23, a2.65a)** is the material library across a file:
-  a mask on a preset reaching the JSON, coming back into a library that has
-  never seen it, the preset left alone, faces repointed, reopening the same
-  file minting nothing, the retired field gone from definitions / signature /
-  file, and a pre-a2.65a signature still matching. It exists because a note
-  in this file was believed for a year without being retested.
-
-  Its first run reported the app losing a mask it had never been given:
-  `serializeDoc`'s `materialLib` is `Array.from(MATERIALS.values())
-  .map(normaliseDefMasks)`, and `normaliseDefMasks` returns its ARGUMENT when
-  `masks` is already an array - so the "file" aliases the live definitions,
-  and clearing the local mask emptied the file too. Harmless in the app,
-  where a save stringifies immediately; fatal to any test that holds a doc
-  and then edits state. **Deep-copy a serialised doc before touching
-  anything.**
-- ~~Two probe lines are known to FLAKE.~~ **NEITHER DOES ANY MORE.** See
-  "The suite is deterministic now" below. `slider_coalescing` printed a
-  number this harness could not know and it was deleted; `8.palette` was
-  counting tones off a cube that has had three colour schemes since the note
-  was written, and it has read the same value on every run since v2.3. **Two
-  consecutive full runs are now byte-identical across all 35 files** - which
-  is the state the note above was written in the absence of. If a line moves,
-  it moved because the app moved.
-- **Every export toasts before the share sheet has been answered.** All
-  four of them - .glb, .obj, .stl, the JSON, and now the picture - say
-  "Exported"/"saved" synchronously, so cancelling the iOS sheet still reads
-  as success. The fix belongs in `downloadBlob` (return a promise, toast on
-  the outcome), which is one change for all five call sites rather than five.
-- **Named saves already exist** and have since well before v2.4 - the
-  drawer's "Models" section, `#projName` / `#btnProjSave` / `#projList`, kept
-  in localStorage with the last state restored automatically. It was proposed
-  again at v2.4 as if it were new. Read the drawer markup before proposing a
-  feature that stores something.
-- Unmeasured on a phone: the environment's full-float DataTexture
+- **Gesture-driven modelling tools** - extrude on a two-finger tap, and the
+  like. Unstarted.
+- **Unmeasured on a phone:** the environment's full-float DataTexture
   (`OES_texture_float_linear` is missing on many mobile GPUs), the atlas's
   two-tap slice interpolation, and the four extra field fetches a2.29c and
   a2.29e added per pixel.
+
+### Retired by the audit
+
+- ~~New cubes should spawn at world centre instead of offsetting in a grid.~~
+  They already do; the spawn position is a plain `(0, 0, 0)`. The grid offset
+  was removed and the note was not.
+- ~~The op sweep and the picking harness live only in a browser console.~~
+  They are 35 committed probe suites now, run by `_runprobes.py` and compared
+  byte for byte by `_cmpdirs.py`. This thread asked for exactly that and got
+  it; the tracking problem above is all that is left of it.
+- ~~`removeTriangles` renumbers faces and the per-face maps shift under it.~~
+  Both consumers are neutral to it. `reconcileFinishes` re-derives `finishes`
+  from the `kubikDef` stamp on each group rather than by index, and
+  `smoothGroups` has exactly one reader, `migrateEdgeShade`, called once at
+  load. The comment in the code that claimed otherwise now says this instead.
+- ~~`mkStructural` re-bakes the mask texture on every structural change.~~
+  Fixed at v2.8d, above.
+- ~~Normals from the masks is the agreed next feature.~~ Shipped at v2.6, and
+  signed at v2.7 so it carves as well as bumps.
+- **Overstated, now narrowed:** "`refreshOutliner` rebuilds the whole list on
+  every state change". Its caller checks `outlinerIsOpen()` and two hold flags
+  first, so a closed outliner costs a boolean. It does rebuild fully while it
+  is open - a real cost, a much smaller one than the note implied.
+
+### Rules these threads left behind
+
+- **A stored signature is a file format.** `srcSig` is persisted into
+  localStorage and into every saved file, so changing what `materialDefSig`
+  produces leaves every material saved before the change unable to match
+  itself, and each mints one more copy of itself on the next open - the exact
+  failure `srcSig` exists to prevent. `migrateSig()` restates an old signature
+  on every path one arrives by and heals it in place. **Any future change to
+  the signature has to do the same.** (Learned retiring `envMapIntensity` at
+  a2.65a: it was inert because in r184 a material's `envMapIntensity` applies
+  only when that material owns an `envMap`, and nothing here ever assigns one.
+  The presets were written around a number that had never reached the screen.)
+- **Deep-copy a serialised doc before touching anything.** `serializeDoc`'s
+  `materialLib` used to alias the live definitions - `normaliseDefMasks`
+  returns its argument when `masks` is already an array - so clearing a local
+  mask emptied the "file" too. Harmless in the app, where a save stringifies
+  immediately; fatal to any test that holds a doc and then edits state. Fixed
+  at v2.8b, and easy to rebuild.
+- **Read the drawer markup before proposing a feature that stores something.**
+  Named saves already exist and have since well before v2.4 - `#projName`,
+  `#btnProjSave`, `#projList`, kept in localStorage with the last state
+  restored automatically - and were proposed again at v2.4 as if new.
+- **Masks on a preset material do survive a project file**, and have since
+  `materialDefSig` learned to include `masks`. One comes back under a new id
+  as "Metal (imported)" with every face repointed, and the preset stays plain.
+  Guarded by `_mat_probe` section 5. The note that said otherwise stood for a
+  year without being retested - which is why every item above now says which
+  version measured what.
+- **The suite is deterministic.** Two consecutive full runs are byte-identical
+  across all 35 files. The two lines that used to flake are gone:
+  `slider_coalescing` printed a number the harness could not know, and
+  `8.palette` counted tones off a cube that has had three colour schemes since
+  the note was written. **If a line moves, it moved because the app moved.**

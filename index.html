@@ -2360,7 +2360,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.8c</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.8d</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -4943,11 +4943,41 @@ function getMaskTexture(d) {
    taking it off again left the bake behind. Measured at 640 KB held after
    ten tried-and-dropped masks. */
 function dropMaskTexture(id) {
+  _clothSig.delete(id);
   const t = _maskTex.get(id);
   if (!t) return false;
   t.dispose();
   _maskTex.delete(id);
   return true;
+}
+
+/* WHAT THE BAKE ACTUALLY READS (v2.8d). mkStructural re-bakes on every
+   structural change, and most of them - a component ticked, a blend mode
+   picked, a mask switched off - change nothing in the buffer: bakeMaskPacked
+   fills 65,536 bytes by running bakeNoiseField over 16,384 texels for each
+   live mask, and the result comes out byte for byte what it already was.
+
+   This is the list of fields that DO reach the bake, taken from
+   bakeMaskPacked itself and from mkLive's own rebake list. `on` is in it
+   because an off mask's channel is zeroed rather than left alone. A picture
+   opts out: comparing data URLs would cost more than the bake.
+
+   KEPT IN A SIDE MAP, NOT ON THE DEFINITION. A `_clothSig` key written onto
+   `d` would ride into materialDefSig and into every saved file, and a
+   material carrying a key an older one does not is a material that stops
+   matching itself across a file - the absent-versus-present trap that v2.7's
+   bump depth was designed around. */
+const _clothSig = new Map();
+function maskClothSig(d) {
+  const list = maskList(d);
+  for (let i = 0; i < list.length; i++) if (list[i] && list[i].type === 'image') return null;
+  let sig = String(list.length);
+  for (let i = 0; i < list.length; i++) {
+    const m = list[i] || {};
+    sig += '|' + (m.on ? 1 : 0) + ',' + (m.type || '') + ',' + (m.detail || 0) +
+           ',' + (m.contrast || 0) + ',' + (m.seed || 0);
+  }
+  return sig;
 }
 
 /* Re-bake IN PLACE: every wearer and every preview sees the new cloth with
@@ -4963,6 +4993,8 @@ function rebakeMaskTexture(d, only) {
   const t = _maskTex.get(d.id);
   if (!t) return;
   if (typeof only === 'number' && only >= 0 && only < MASK_SLOTS) {
+    // One channel written by hand leaves the whole-buffer signature stale.
+    _clothSig.delete(d.id);
     const mk = maskList(d)[only];
     const f = (mk && mk.on) ? bakeNoiseField(mk, MASK_SIZE) : null;
     const data = t.image.data;
@@ -4970,7 +5002,11 @@ function rebakeMaskTexture(d, only) {
       data[p * 4 + only] = f ? Math.round(f[p] * 255) : 0;
     }
   } else {
+    const sig = maskClothSig(d);
+    if (sig !== null && _clothSig.get(d.id) === sig) return;   // identical buffer
+    PERF.clothBake++;
     t.image.data.set(bakeMaskPacked(d));
+    if (sig !== null) _clothSig.set(d.id, sig); else _clothSig.delete(d.id);
   }
   t.needsUpdate = true;
 }
@@ -7984,10 +8020,26 @@ function removeTriangles(ed, mats, predicate) {
    groups vanished ahead of them.
 
    Collapse melts whole rings of quads at once, so it cannot use the
-   two-of-three version. Weld, Merge and the delete paths still call
-   removeTriangles directly and still have that shift latent in them -
-   recorded rather than fixed here, because that is a different change with
-   its own testing. */
+   two-of-three version.
+
+   AND THE NOTE THIS COMMENT USED TO CARRY IS RETIRED (v2.8d). It said Weld,
+   Merge and the delete paths still call removeTriangles directly and "still
+   have that shift latent in them". They do still call it, and the shift no
+   longer reaches anything:
+
+   - `finishes` is not trusted by anyone. reconcileFinishes reads the
+     material's own `kubikDef` stamp per group and only falls back to the map
+     for a pre-stamp material, then overwrites the map with what it derived -
+     and removeTriangles carries the material array correctly. A shifted map
+     is thrown away and rebuilt from the materials on the next rebuild, which
+     every op funnels through.
+   - `smoothGroups` has no consumer left. Every remaining read carries it
+     through a renumber or serialises it; the one place that acts on it is
+     migrateEdgeShade, which runs once at LOAD for a file written before
+     a2.18 and clears the map afterwards. Shading has been per-EDGE since
+     then.
+
+   Audited against the code rather than believed. */
 function removeTrianglesCarrying(obj, ed, mats, predicate) {
   const smoothIn = obj.mesh.userData.smoothGroups || {};
   const finIn = obj.mesh.userData.finishes || {};
@@ -12329,7 +12381,7 @@ function beginPendingOp(kind, obj, payload, init) {
    not it drew, and now it sleeps. The gap between tick and render is the
    whole of what a2.46 bought; the size of tick itself is what v2.1 bought. */
 const PERF = { applyOp: 0, topo: 0, shade: 0, shadeTopo: 0, selRebuild: 0,
-               matClone: 0, render: 0, bake: 0, rescale: 0, tick: 0 };
+               matClone: 0, render: 0, bake: 0, rescale: 0, tick: 0, clothBake: 0 };
 
 /* EXCEPTION-SAFE, FROM THE OUTSIDE (v2.8b). The body below is three hundred
    lines with a dozen early returns and it calls every mesh operation in the
