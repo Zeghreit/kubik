@@ -2360,7 +2360,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.8</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.8b</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -12286,13 +12286,48 @@ function beginPendingOp(kind, obj, payload, init) {
 const PERF = { applyOp: 0, topo: 0, shade: 0, shadeTopo: 0, selRebuild: 0,
                matClone: 0, render: 0, bake: 0, rescale: 0, tick: 0 };
 
+/* EXCEPTION-SAFE, FROM THE OUTSIDE (v2.8b). The body below is three hundred
+   lines with a dozen early returns and it calls every mesh operation in the
+   app; wrapping it internally would have meant threading a try through all of
+   them. Wrapped as a whole instead, which costs one function.
+
+   What a throw used to leave behind: the mesh half-changed, the bar still
+   open over it, App.pendingOp still set - so the next nudge of the slider
+   re-ran from the snapshot and quietly healed it, but pressing the tick
+   COMMITTED the half-built shape and pushed a history step for it. The
+   silence was the worst part: the tool simply looked broken.
+
+   The snapshot is the way back, and it is the same one every re-run starts
+   from - so restoring it puts the shape exactly where the user was looking
+   before the nudge that threw. */
 function applyPendingOp() {
+  try {
+    applyPendingOpInner();
+  } catch (err) {
+    console.error(err);
+    const op = App.pendingOp;
+    const obj = op && findObject(op.objId);
+    if (obj && op.state) { try { restoreObjectState(obj, op.state); } catch (_) {} }
+    App.pendingOp = null;
+    hideOpBar();
+    flushMatBin();
+    try { refreshUI(); } catch (_) {}
+    toast('That operation could not finish - the shape is back as it was');
+    invalidate();
+  }
+}
+
+function applyPendingOpInner() {
   invalidate();   // see On-demand rendering
   const op = App.pendingOp;
   if (!op) return;
   PERF.applyOp++;
   const obj = findObject(op.objId);
-  if (!obj) { App.pendingOp = null; hideOpBar(); return; }
+  /* AND THE BIN (v2.8b). Every other way out of an op empties it - confirm,
+     cancel, a restore - and this one did not, so an object deleted from under
+     an open bar left the materials its re-runs had set aside held for the
+     life of the session. */
+  if (!obj) { App.pendingOp = null; hideOpBar(); flushMatBin(); return; }
 
   restoreObjectState(obj, op.state);
   ensureHelpers(obj);
@@ -14427,6 +14462,12 @@ function slideSelection() {
   // Per-element, like Set flow, so the union with the mirror is the right
   // way to be symmetric about it.
   symExpand(obj);
+  /* CLEARED FIRST (v2.8b). `opRefusal` is a one-shot note left by whichever
+     worker last refused, and applyPendingOp is the only thing that ever
+     cleared it - so a Slide that found nothing to do reported the reason the
+     PREVIOUS op had given, which is worse than no reason at all: it is a
+     confident wrong answer about the shape under your finger. */
+  opRefusal = null;
   const items = orientedSlideItems(obj);
   if (!items.length) {
     toast(opRefusal || 'Nothing to slide — a loop needs mesh on both sides of it');
@@ -23233,7 +23274,15 @@ function serializeDoc() {
     // The material definitions this scene references, so a shared file
     // brings its palette along. The receiving library keeps its own
     // version of ids it already knows.
-    materialLib: Array.from(MATERIALS.values()).map(normaliseDefMasks),
+    /* DEEP-COPIED (v2.8b). normaliseDefMasks returns its ARGUMENT when
+       `masks` is already an array, so the doc used to hold the live
+       definitions themselves - editing a mask after a save reached back into
+       every history step and every doc anyone was still holding. Harmless in
+       the app, where a save stringifies immediately; fatal to anything that
+       keeps a doc and then edits state, which is why "deep-copy a serialised
+       doc before touching anything" was a rule people had to remember. It is
+       the code's job now. */
+    materialLib: JSON.parse(JSON.stringify(Array.from(MATERIALS.values()).map(normaliseDefMasks))),
     /* Fifteen numbers, not twelve megabytes - the reason the environment is
        procedural at all. A shared file arrives lit the way it was made. */
     environment: { preset: App.env.preset, rotation: App.env.rotation, intensity: App.env.intensity },
@@ -24019,8 +24068,7 @@ document.getElementById('projName').addEventListener('keydown', (ev) => {
 
 function saveProjectFile() {
   const doc = serializeDoc();
-  downloadBlob([JSON.stringify(doc)], 'kubik-project.json', 'application/json');
-  toast('Project saved');
+  downloadBlob([JSON.stringify(doc)], 'kubik-project.json', 'application/json', 'Project saved');
 }
 document.getElementById('btnSave').addEventListener('click', saveProjectFile);
 
@@ -24073,23 +24121,31 @@ function saveBlobAsDownload(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
-function downloadBlob(parts, filename, mime) {
+/* AND IT OWNS THE TOAST (v2.8b). Every caller used to say "Exported .glb"
+   on the line after this one, synchronously - so on a phone the message
+   appeared while the share sheet was still open, and cancelling the sheet
+   left "saved" on screen for a file that went nowhere. The outcome is only
+   known when the promise settles, so the message belongs here. */
+function downloadBlob(parts, filename, mime, okMsg) {
   const blob = new Blob(parts, { type: mime });
+  const said = () => { if (okMsg) toast(okMsg); };
   if (wantsShareSheet()) {
     try {
       const file = new File([blob], filename, { type: mime });
       /* canShare with the actual file, not a guess: iOS refuses some types
          outright, and asking is the only way to know before offering. */
       if (navigator.canShare({ files: [file] })) {
-        navigator.share({ files: [file], title: filename }).catch(err => {
+        navigator.share({ files: [file], title: filename }).then(said).catch(err => {
           /* CANCEL IS NOT A FAILURE. AbortError means the sheet opened and
              the user closed it; handing them a download of the file they
              just declined would be the app arguing with them. Anything else
              is the sheet refusing - most likely the glTF path, which awaits
              its exporter over the network and can lose the tap's transient
              activation on the way - and there the download is the answer. */
+          // Cancelled: nothing was saved, so nothing is claimed.
           if (err && err.name === 'AbortError') return;
           saveBlobAsDownload(blob, filename);
+          said();
         });
         return;
       }
@@ -24098,6 +24154,7 @@ function downloadBlob(parts, filename, mime) {
     }
   }
   saveBlobAsDownload(blob, filename);
+  said();
 }
 
 
@@ -25410,8 +25467,7 @@ async function exportGlbAction() {
   const exporter = new GLTFExporter();
   try {
     const result = await exporter.parseAsync(group, { binary: true });
-    downloadBlob([result], 'kubik-export.glb', 'model/gltf-binary');
-    toast('Exported .glb');
+    downloadBlob([result], 'kubik-export.glb', 'model/gltf-binary', 'Exported .glb');
   } catch (err) {
     console.error(err);
     toast('glTF export failed');
@@ -25424,8 +25480,7 @@ document.getElementById('btnExportObj').addEventListener('click', () => {
   const group = buildExportGroup();
   const exporter = new OBJExporter();
   const data = exporter.parse(group);
-  downloadBlob([data], 'kubik-export.obj', 'text/plain');
-  toast('Exported .obj (geometry only)');
+  downloadBlob([data], 'kubik-export.obj', 'text/plain', 'Exported .obj (geometry only)');
 });
 
 document.getElementById('btnExportStl').addEventListener('click', () => {
@@ -25434,8 +25489,7 @@ document.getElementById('btnExportStl').addEventListener('click', () => {
   const exporter = new STLExporter();
   const data = exporter.parse(group, { binary: true });
   const buf = data.buffer ? data.buffer : data;
-  downloadBlob([buf], 'kubik-export.stl', 'application/octet-stream');
-  toast('Exported .stl');
+  downloadBlob([buf], 'kubik-export.stl', 'application/octet-stream', 'Exported .stl');
 });
 
 /* ---------------- A picture of the view (v2.5) ----------------
@@ -25527,8 +25581,7 @@ function savePictureAction() {
      picture of an empty background - nothing can - which is exactly why the
      read is on the line after the render and not a tick later. */
   if (url.indexOf('data:image/png') !== 0 || url.length < 1000) { toast('Picture failed'); return; }
-  downloadBlob([dataUrlBytes(url)], 'kubik-picture.png', 'image/png');
-  toast('Picture saved');
+  downloadBlob([dataUrlBytes(url)], 'kubik-picture.png', 'image/png', 'Picture saved');
 }
 document.getElementById('btnShot').addEventListener('click', savePictureAction);
 

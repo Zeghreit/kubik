@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~30,200 lines)
-- Version at time of writing: **2.8**
+- Version at time of writing: **2.8b**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -35,6 +35,69 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Five that could cost you work (v2.8b)
+
+A correctness sweep. Nothing new; five things that were wrong. The suite is
+**35 of 35 identical** to v2.8 across the change, which is what a sweep
+should look like - `_sweepchk.py` is where the evidence lives, 16 checks,
+each with the sequence that broke it.
+
+### A thrown op left the bar open over a half-built mesh
+
+`applyPendingOp` is three hundred lines that call every mesh operation in the
+app, and nothing caught a throw. What it left behind: the mesh half-changed,
+`App.pendingOp` still set, the bar still over it. The next nudge of the
+slider quietly healed it - every re-run starts by restoring the snapshot -
+but **pressing the tick committed the half-built shape and pushed a history
+step for it**, and nothing was said either way, so the tool just looked
+broken.
+
+Wrapped from the outside, which costs one function rather than threading a
+`try` through a dozen early returns. On a throw the snapshot goes back - the
+same one every re-run starts from, so the shape lands exactly where the user
+was looking - the bar closes, the bin is emptied and it says so.
+
+### The object-gone branch never emptied the bin
+
+Every other way out of an op empties `opMatBin`; deleting the object from
+under an open bar did not, so the materials its re-runs had set aside were
+held for the life of the session.
+
+### Slide explained itself with somebody else's reason
+
+`opRefusal` is a one-shot note left by whichever worker last refused, and
+`applyPendingOp` was the only thing that ever cleared it. A Slide that found
+nothing to do reported the reason the PREVIOUS op had given - a confident
+wrong answer about the shape under your finger, which is worse than no answer.
+
+### Every export said "saved" before the share sheet was answered
+
+All five - .glb, .obj, .stl, the project JSON and the picture - toasted
+synchronously on the line after `downloadBlob`, so on a phone the message
+appeared while the sheet was still open and **cancelling still read as
+success**. `downloadBlob` takes the message now and owns the outcome: the
+download path says it immediately, an accepted share says it when the promise
+settles, a cancelled one says nothing at all, and a refused one falls back to
+the download and then says it.
+
+### A serialised doc aliased the live material library
+
+`normaliseDefMasks` returns its ARGUMENT when `masks` is already an array, so
+`serializeDoc`'s `materialLib` held the live definitions themselves - editing
+a mask after a save reached back into every history step and every doc anyone
+was still holding. Harmless in the app, where a save stringifies
+immediately, and fatal to anything that keeps a doc and then edits state,
+which is why "deep-copy a serialised doc before touching anything" was a rule
+people had to remember. It is the code's job now.
+
+### And one more probe lesson
+
+**A throw is a FAILURE, not a short report.** Run against `_bak_v28.html`,
+where the exception this sweep catches escapes into the caller, `_sweepchk`
+first came back saying `VERDICT=PASS (2 checks)` - it had stopped after two
+and counted no failures. The catch now records a failed check before it
+reports, so a probe that cannot finish says so in its verdict. Worth copying.
 
 ## One material per definition (v2.8)
 
