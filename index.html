@@ -2360,7 +2360,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.9</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.10</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -5500,6 +5500,22 @@ function applyMaskPatch(mat, d) {
         '  vec2 inTile = (g * (uKubikFieldDim.xy - 1.0) + 0.5) / uKubikFieldDim.xy;',
         '  return texture2D(uKubikField, (vec2(tx, ty) + inTile) / uKubikFieldTiles).rg;',
         '}',
+        /* LINEAR, AND SMOOTHSTEP WAS TRIED AND IS WORSE (v2.10). Linear
+           reconstruction is continuous in value and kinked in slope, so the
+           textbook next move is Perlin's `f*f*(3-2f)` fade, which costs no
+           extra taps if you move the sample position rather than blend the
+           corners by hand. It was written, measured and removed: the fade
+           swings the reconstructed gradient between zero at a cell face and
+           1.5x at the centre, and for a DISTANCE field - which is very
+           nearly linear already - trading a kink for that ripple measured
+           WORSE, 6.15 to 6.95 on the facet number, at a resolution where a
+           kink would actually have shown.
+
+           The premise was wrong anyway. The stepping this was aimed at is
+           PIXEL scale, not lattice scale - see the preview tile below. If a
+           genuine lattice crease ever does turn up, the answer is a cubic
+           B-spline, which reproduces a linear function exactly and so has no
+           ripple to trade for; it costs four taps a slice instead of one. */
         'vec2 kubikField(vec3 p) {',
         '  vec3 g = clamp((p - uKubikFieldMin) * uKubikFieldInv, 0.0, 1.0);',
         '  float z = g.z * (uKubikFieldDim.z - 1.0);',
@@ -27079,6 +27095,7 @@ let _matPreviewRig = null;
    field's range, which is what gives the bump a slope worth reading. So the
    only thing segments cost is the bake, once: 20 leaves the ring 0.008 off a
    true circle, three percent of the range and under a pixel at 104px. */
+const PREVIEW_TILE = 208;   // drawn size; the card shows it at 50 CSS px
 const PREVIEW_RING_SEGS = 20;
 /* WHERE THE CAMERA SITS, ONCE. The rings are aimed down the axis this
    defines, and the rig places the camera from the same vector - written
@@ -27145,7 +27162,26 @@ function previewBallEdges(radius) {
 function matPreviewRig() {
   if (_matPreviewRig) return _matPreviewRig;
   const r = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
-  r.setSize(104, 104);
+  /* THE TILE IS SHOWN AT 50 CSS PIXELS, AND WAS DRAWN AT 104 (v2.10). That
+     is 2.08x on a desktop and a good deal LESS than 1x on the phone this app
+     is built for: at devicePixelRatio 3 the card wants 150 device pixels and
+     was handed 104 to stretch. The v2.9 bump came out visibly stepped for
+     that reason and no other - the steps are the 2x2 quad dFdx differences
+     over, a band about ten pixels wide, and then an upscale on top.
+
+     PROVED BY SCALE, not by argument. The same ball drawn at 416 is a smooth
+     ring: a lattice facet would have grown with the render and stayed just as
+     hard, while pixel-scale stepping vanishes, which is what happened. The
+     viewport never had this - it draws the same masks across hundreds of
+     pixels - so nothing outside this tile needed changing.
+
+     208 covers devicePixelRatio 3 at 1.4x and DPR 2 at 2x, so the tile is
+     always downsampled and never stretched. It costs four times the
+     fragments on a 208px square, which is nothing, and four times the
+     toDataURL readback, which is the part that is not nothing - see
+     renderMatPreviews, where `onlyId` already exists to keep that off the
+     slider. Measured at a full library rebuild rather than assumed. */
+  r.setSize(PREVIEW_TILE, PREVIEW_TILE);
   r.setPixelRatio(1);
   const sc = new THREE.Scene();
   /* No environment yet - applyEnvToPreviews fills it in, from the same

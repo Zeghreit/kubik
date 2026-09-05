@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~30,400 lines)
-- Version at time of writing: **2.9**
+- Version at time of writing: **2.10**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -35,6 +35,86 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## The stepped bump was a stretched picture (v2.10)
+
+v2.9's thumbnails came out with the relief in visible plates, and the note
+this file carried about it was **wrong in both halves**: it blamed the
+distance field's voxel grid, and it said the viewport had always had the same
+problem. Neither is true. The tile was drawn at 104 pixels for a card that
+shows it at 50 CSS pixels - **150 device pixels on the phone this app is for**
+- so the card was handed a picture to STRETCH. That is the whole of it.
+
+`PREVIEW_TILE` is 208 now: at least 1.4x what any current device asks for, so
+the tile is always downsampled and never blown up.
+
+|  | v2.9 | v2.10 |
+|---|---|---|
+| tile drawn / shown at DPR 3 | 104 / 150 px | 208 / 150 px |
+| ridge wobble | 3.20 | 2.77 |
+| a plain ball, for scale | 0.10 | 0.11 |
+| full tray rebuild, per definition | 8.6 ms | 18.3 ms |
+
+The cost is the honest half of that table. A bigger tile is four times the
+fragments, which is nothing, and four times the `toDataURL` readback, which
+is not - it lands at 2.15x rather than 4x because much of the per-thumbnail
+cost is fixed. A slider RELEASE re-renders one definition, so it pays 18ms
+rather than 165ms; that is what `onlyId` has been for since v2.3c.
+
+### The metric had to be replaced before it could answer
+
+The first one was a Laplacian over the ball, which answers to any hard line -
+and a bump ridge IS a hard line, so a crisp ridge and a stepped one both
+scored high. It read 11 on a ridge that was plainly smooth. **A metric that
+cannot tell the defect from the feature cannot tell you whether you fixed
+anything.**
+
+What replaced it uses the geometry as ground truth: both rings are circles
+about the axis the ball is viewed down, so a correct render varies around
+them only as smoothly as the light does. Walk each radius in polar
+coordinates and take the mean absolute SECOND difference in the angle -
+smooth lighting differences away to nothing, a step does not. And take it at
+**150 pixels**, the size the eye gets, not the size the renderer made.
+
+### Four suspects, measured and cleared
+
+Written down because each one is a plausible half-hour that nobody should
+spend twice:
+
+- **The field's trilinear reconstruction.** Linear interpolation is kinked in
+  slope at every cell face and a bump is that slope, so Perlin's
+  `f*f*(3-2f)` fade is the textbook move - and it costs no extra taps if you
+  shift the sample position instead of blending corners by hand. Written,
+  measured, **removed: 6.15 to 6.95, worse.** The fade swings the
+  reconstructed gradient from zero at a cell face to 1.5x at the centre, and
+  a distance field is very nearly linear already, so that trades a kink for a
+  ripple. If a real lattice crease ever turns up, a cubic B-spline is the
+  answer - it reproduces a linear function exactly - at four taps a slice.
+- **The lattice itself.** A 128-cubed grid at 100 steps with the bake budget
+  lifted 250x: 2.77 to 2.61. Not it.
+- **The preview ball's own tessellation.** `vKubikPos` is interpolated across
+  a triangle, so the field is sampled on the flat facet rather than the
+  sphere - a periodic error at exactly the frequency this metric answers to.
+  16x12 measured 2.68 and 192x128 measured 2.94, i.e. the coarse ball was
+  *better*. Not it.
+- **The ring's own chords.** This one is real but saturates: 8 segments 3.91,
+  20 segments 2.77, 40 segments 2.71. Twenty is already past the knee.
+
+And about a third of what remains is **the room**. A ridge is a curved
+mirror and `scene.environment` is a room with windows in it; removing it
+takes 2.77 to 1.77. That is not a defect and must not be "fixed".
+
+### What was believed and should not have been
+
+The v2.9 note said the viewport shared this. It does not, and the evidence
+was already on disk: `_bumpchk` has shot an Edges-driven bump on a cube since
+v2.6, and the bands in it are clean. A cube is drawn across hundreds of
+pixels; the tray card is fifty. **Two pictures were sitting in the repo that
+would have said so before any of the above was written.**
+
+Guarded by `_thumbchk` sections 2 and 3b - the upscale check and the wobble -
+both verified against the v2.9 build, which fails all three. Suite: **35 of 35
+identical** to v2.9.
 
 ## The tray stops lying about shape masks (v2.9)
 
@@ -11047,16 +11127,6 @@ that a note gets believed for a year.
   a small job - **there is no UV attribute anywhere in the file**, on purpose,
   which is why the whole mask system is triplanar - so it would need an
   unwrap first. Say that plainly when it is reported as a bug.
-- **The bump facets on the field's own grid.** Visible in the v2.9 thumbnails
-  as a stepped ridge rather than a smooth one, and NOT a preview problem: the
-  bump takes screen-space derivatives of a field reconstructed trilinearly,
-  so the C0 seams between voxels come through as flat facets in the normal.
-  The ball resolves the field's range six voxels deep, which is as good as it
-  gets - `EDGE_FIELD_STEPS` caps the grid at 40 a side and `EDGE_FIELD_DIM`
-  at 64, and a real model is coarser relative to its own features than the
-  ball is. The viewport has always had this; the thumbnail is just the first
-  place it was looked at squarely. A fix is a smoother reconstruction, not a
-  bigger grid - 64 cubed RGBA is already 1 MB.
 - **Moving the pivot / re-origining an object.** Deferred. Capturing the
   symmetry plane from geometry buys most of what it would have.
 - **Gesture-driven modelling tools** - extrude on a two-finger tap, and the
@@ -11093,6 +11163,12 @@ that a note gets believed for a year.
 - ~~A shape mask's bump does not show in the tray thumbnail.~~ **Fixed at
   v2.9**, above, by giving the preview ball edges of its own rather than by
   changing anything the masks do.
+- ~~The bump facets on the field's own grid, in the viewport as well.~~ **Both
+  halves of that were wrong** - measured at v2.10, above. The stepping was the
+  tray tile being drawn at 104 pixels and stretched to the 150 a phone asks
+  for, the field's grid had nothing to do with it, and the viewport never had
+  it at all. Written here at v2.9 from reasoning, with two pictures already in
+  the repo that contradicted it.
 - ~~Every export toasts before the share sheet has been answered.~~ **Fixed at
   v2.8b**, in exactly the place the note proposed: `downloadBlob` owns the
   toast, all five callers pass it a message instead of saying one, and an

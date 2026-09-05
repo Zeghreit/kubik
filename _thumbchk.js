@@ -45,17 +45,27 @@
     nscale: 1, seed: 1
   }, o || {});
 
-  // Decode a data URL into pixels, once, so every measure below is on bytes.
+  /* WHAT THE EYE GETS, NOT WHAT THE RENDERER MADE. The card shows the tile
+     at 50 CSS pixels, so on the phone this app is for - devicePixelRatio 3 -
+     it lands on 150 device pixels, and every measure below has to be taken
+     there or it is measuring a picture nobody sees. Drawn through the same
+     smoothing the browser uses for the <img>, so a tile rendered LARGER than
+     150 is judged after its downsample, and one rendered smaller is judged
+     after its stretch. That distinction is the whole of v2.10. */
+  const SEEN = 150;
   function pixels(url) {
     return new Promise((res, rej) => {
       const im = new Image();
       im.onload = () => {
         const c = document.createElement('canvas');
-        c.width = im.naturalWidth; c.height = im.naturalHeight;
+        c.width = SEEN; c.height = SEEN;
         const g = c.getContext('2d');
-        g.clearRect(0, 0, c.width, c.height);
-        g.drawImage(im, 0, 0);
-        res({ d: g.getImageData(0, 0, c.width, c.height).data, w: c.width, h: c.height });
+        g.imageSmoothingEnabled = true;
+        g.imageSmoothingQuality = 'high';
+        g.clearRect(0, 0, SEEN, SEEN);
+        g.drawImage(im, 0, 0, SEEN, SEEN);
+        res({ d: g.getImageData(0, 0, SEEN, SEEN).data, w: SEEN, h: SEEN,
+              drawn: im.naturalWidth });
       };
       im.onerror = () => rej(new Error('thumbnail did not decode'));
       im.src = url;
@@ -82,6 +92,50 @@
     }
     return { set: set, n: n };
   }
+  /* HOW STEPPED THE RIDGE IS, as a number - and the first version of this
+     could not tell. It was a Laplacian over the ball, which answers to any
+     hard line, and a bump ridge IS a hard line: a crisp ridge and a stepped
+     one both scored high, so the metric could not say whether a change had
+     helped. It read 11 on a ridge I could see was smooth.
+
+     THE GROUND TRUTH IS THE GEOMETRY. Both rings are circles about the axis
+     the ball is viewed down, so a correct render varies around them only as
+     smoothly as the light does - every abrupt change AROUND the circle is
+     defect and nothing else. So: walk each radius in polar coordinates,
+     bilinearly, and take the mean absolute SECOND difference in the angle.
+     Smooth lighting differences away to nearly nothing; a facet does not.
+
+     Radii 20 to 65 of the 150px tile: the ball overflows the square and is
+     clipped at the sides, and the two bands sit at about 25 and 57. */
+  function ridgeWobble(p) {
+    const c = p.w / 2;
+    const at = (x, y) => {
+      const x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0;
+      const L = (xx, yy) => {
+        if (xx < 0 || yy < 0 || xx >= p.w || yy >= p.h) return 0;
+        const i = (yy * p.w + xx) * 4;
+        if (p.d[i + 3] < 127) return 0;
+        return (p.d[i] * 299 + p.d[i + 1] * 587 + p.d[i + 2] * 114) / 1000;
+      };
+      return (L(x0, y0) * (1 - fx) + L(x0 + 1, y0) * fx) * (1 - fy) +
+             (L(x0, y0 + 1) * (1 - fx) + L(x0 + 1, y0 + 1) * fx) * fy;
+    };
+    const N = 360;
+    let sum = 0, n = 0;
+    for (let r = 20; r <= 65; r++) {
+      const ring = new Float64Array(N);
+      for (let k = 0; k < N; k++) {
+        const a = k / N * Math.PI * 2;
+        ring[k] = at(c + Math.cos(a) * r, c + Math.sin(a) * r);
+      }
+      for (let k = 0; k < N; k++) {
+        sum += Math.abs(ring[(k + N - 1) % N] - 2 * ring[k] + ring[(k + 1) % N]);
+        n++;
+      }
+    }
+    return n ? sum / n : 0;
+  }
+
   // Mean absolute luminance difference over the ball, in 0-255.
   function lumaDiff(a, b) {
     let sum = 0, n = 0;
@@ -153,6 +207,10 @@
 
     const ball = ballCount(plain);
     ok('the ball fills a good part of the tile', ball > 1500, ball + ' px');
+    /* Drawn at least as big as it is shown, or the card stretches it and no
+       amount of care in the shader survives the upscale. */
+    ok('the tile is not upscaled to fit the card', plain.drawn >= SEEN,
+       'drawn ' + plain.drawn + 'px, shown ' + SEEN + 'px');
     const rp = reddish(plain), re = reddish(edges), rc = reddish(cav);
     ok('a plain finish has no mask on it', rp.n === 0, rp.n + ' px');
     const fe = re.n / ball, fc = rc.n / ball;
@@ -197,6 +255,32 @@
     ok('carving is not the same picture as bumping', dC > 1.5, 'mean luma diff ' + dC.toFixed(2));
 
     say('');
+    say('3b. and the relief is SMOOTH, not stepped');
+    mark('3b');
+    /* MEASURED, because the eye and the mean disagree here. The bump was
+       visibly stepped at v2.9 and every number in section 3 was healthy -
+       a facet is a change in the SECOND derivative, which nothing above
+       looks at.
+
+       What it turned out to be was the TILE, not the shading: 104 pixels
+       drawn for a card that asks for 150 on a phone, so the card stretched
+       it. Every other suspect was measured and cleared - see CURRENT_STATE.
+       The viewport was never affected, because it draws the same masks
+       across hundreds of pixels rather than fifty. */
+    const fB = ridgeWobble(b1), fC = ridgeWobble(bc), fP = ridgeWobble(plain);
+    ok('a plain ball barely wobbles', fP < 0.2, 'wobble ' + fP.toFixed(3));
+    /* THE NUMBER v2.10 MOVED, and the threshold sits BETWEEN THE TWO BUILDS
+       rather than at a round figure: 3.20 on the stretched 104px tile, 2.77
+       on the drawn-at-208 one, so 3.0 is a regression guard and nothing more.
+       It is deliberately not an aspiration. What is left at 2.77 was chased
+       and is largely not a defect - about a third of it is the ROOM, which a
+       ridge reflects like a curved mirror and should; the rest survived a
+       128-cubed field, a 192x128 ball and twice the ring segments unchanged.
+       Read the v2.10 section of CURRENT_STATE before trying to move it. */
+    ok('and the bump ridge is smooth round the circle', fB < 3.0, 'wobble ' + fB.toFixed(3));
+    ok('so is the carve', fC < 3.0, 'wobble ' + fC.toFixed(3));
+
+    say('');
     say('4. and it costs one bake');
     mark('4');
     /* The field is baked from the ball ONCE for the life of the page - the
@@ -204,9 +288,19 @@
        definition. That is 40 segments x the grid, inside a render, on every
        tray rebuild. */
     const before = K.PERF.bake;
+    const t0 = performance.now();
     K.renderMatPreviews();
+    const ms = performance.now() - t0;
     const spent = K.PERF.bake - before;
     ok('a full tray rebuild bakes no field at all', spent === 0, spent + ' bake(s)');
+    /* THE PART THAT IS NOT FREE. A bigger tile is four times the readback,
+       and the readback - a synchronous toDataURL off a preserveDrawingBuffer
+       canvas, then a PNG encode, on the main thread - is why renderMatPreviews
+       grew an `onlyId` in the first place. Eight definitions here; the budget
+       is per definition so it does not drift as this probe gains materials. */
+    const each = ms / K.MATERIALS.size;
+    ok('and costs a sane amount per definition', each < 60,
+       each.toFixed(1) + ' ms each, ' + ms.toFixed(0) + ' ms for ' + K.MATERIALS.size);
 
     ok('the probe ran to the end', true);
     finish();
