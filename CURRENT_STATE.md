@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~30,400 lines)
-- Version at time of writing: **2.8d**
+- Version at time of writing: **2.9**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -35,6 +35,83 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## The tray stops lying about shape masks (v2.9)
+
+A Cavity or Edges thumbnail used to be a flat recolour, and a bump one was
+the plain ball. The tray could not show the two things those materials do.
+
+**A sphere has no edges.** The shape masks read the model's own edge field,
+`ensureEdgeField` returns null for a geometry with no `kubikEdges`, and the
+shader's fallback is `edgeFieldNone` - a 1x1 BLACK texture, distance zero,
+which means *everywhere is an edge*. So the mask painted the whole ball at
+full strength. Colour and roughness at least showed their colour. **The v2.6
+bump showed nothing at all: a bump is the SLOPE of the mask, and a flood has
+no slope.** Measured on the build without the fix: 100% of the ball painted,
+Cavity and Edges identical to each other, and a bump-only material against
+the same material at depth zero differing by a mean luma of **0.00**.
+
+**So the ball is given two rings of its own** - `previewBallEdges`, an outer
+convex one at 32 degrees for Edges and an inner concave one at 13 for
+Cavity, stamped onto the geometry as a `kubikEdges` exactly like a real
+model's. Nothing downstream knows the difference: `bakeEdgeField` reads it,
+`ensureEdgeField` caches it, `onBeforeRender` collects it. They are not a
+claim about the sphere. They are the feature a thumbnail is for - a rim and a
+dimple, to show what this finish does to a rim and a dimple.
+
+| | before | after |
+|---|---|---|
+| of the ball an Edges mask paints | 100% | 14.9% |
+| of the ball a Cavity mask paints | 100% | 8.5% |
+| overlap between the two | 100% | 0% |
+| bump-only vs depth zero, mean luma | 0.00 | 8.85 |
+| carve vs bump, mean luma | 0.00 | 11.16 |
+
+### sin(theta) is not where the ring lands
+
+The first two attempts put the convex ring at 58 degrees and then 46, and
+both drew a HALO round the rim instead of wear on a feature - the bump
+legible only as a slightly crisper outline. The camera is 3.5 radii out, so
+perspective magnifies what is nearer to it and the silhouette is both the
+widest ring and the one pushed furthest out. What matters is the ratio:
+
+    r(t) = R sin t / (camDist - R cos t),   against r(73), the silhouette
+
+46 degrees reads as 72% of the way out by sin and lands at 86% on the screen.
+That gap is the whole reason two tries were needed, and it was the PICTURE
+that showed it - the numbers were healthy at 46. **A picture, not only a
+mean**, again.
+
+### Two things that also moved
+
+- **Round edges now shows in its own thumbnail.** `defWantsField` is true for
+  `bevel > 0` too, and with the black texture `kubikBevelN`'s four taps all
+  read zero, summed to nothing and returned the normal untouched - so the
+  slider changed its own preview by not one pixel. It draws a bevel band
+  along the outer ring now. Only the outer one: the bevel reads the convex
+  channel alone, which is correct and looks asymmetric beside a Cavity mask.
+- **`edgeFieldNone` has no legitimate user left.** The ball was the reason it
+  existed, and two comments said so. What still reaches it is the FAILURE
+  paths - an object whose shade has not run yet, a clone before its refill -
+  and this file has twice had to stop one of them rendering fully worn. It
+  stays because fully worn is the loud wrong answer and blank is the silent
+  one. Both comments now say that instead.
+
+### What it cost, measured
+
+The bake is 136,260 `distToSegment` calls **once**, on the first tray open -
+not at startup - and holds a 424x371 atlas, 629 KB, for the life of the page.
+`gen` never moves again, so a full tray rebuild bakes nothing: measured at 0.
+The per-thumbnail fragment shader got *cheaper*, because most of the ball now
+saturates and exits at `if (d > 0.99)` instead of paying two extra field
+taps. The main viewport never sees the ball at all.
+
+Guarded by `_thumbchk.py` - 15 checks that read the data URLs the tray puts
+in its `<img>` tags. Verified against two broken copies: one with the rings
+removed, which fails at the first check, and one that keeps them and starves
+`ensureEdgeField` instead, which reaches the checks that matter and fails
+exactly the five describing the old behaviour. Suite: **35 of 35 identical**
+to v2.8d.
 
 ## Cloth the bake already made (v2.8d)
 
@@ -10970,11 +11047,16 @@ that a note gets believed for a year.
   a small job - **there is no UV attribute anywhere in the file**, on purpose,
   which is why the whole mask system is triplanar - so it would need an
   unwrap first. Say that plainly when it is reported as a bug.
-- **A shape mask's bump does not show in the tray thumbnail.** The preview rig
-  never goes through `applyShading`, so it draws with `edgeFieldNone`, a 1x1
-  texture, and the shape masks - which read the edge field - come back flat
-  there. Cloth masks preview correctly. The thumbnail is honest about
-  everything except this one class.
+- **The bump facets on the field's own grid.** Visible in the v2.9 thumbnails
+  as a stepped ridge rather than a smooth one, and NOT a preview problem: the
+  bump takes screen-space derivatives of a field reconstructed trilinearly,
+  so the C0 seams between voxels come through as flat facets in the normal.
+  The ball resolves the field's range six voxels deep, which is as good as it
+  gets - `EDGE_FIELD_STEPS` caps the grid at 40 a side and `EDGE_FIELD_DIM`
+  at 64, and a real model is coarser relative to its own features than the
+  ball is. The viewport has always had this; the thumbnail is just the first
+  place it was looked at squarely. A fix is a smoother reconstruction, not a
+  bigger grid - 64 cubed RGBA is already 1 MB.
 - **Moving the pivot / re-origining an object.** Deferred. Capturing the
   symmetry plane from geometry buys most of what it would have.
 - **Gesture-driven modelling tools** - extrude on a two-finger tap, and the
@@ -11008,6 +11090,9 @@ that a note gets believed for a year.
   disposable patch scripts had swallowed the suite with them.
 - ~~Normals from the masks is the agreed next feature.~~ Shipped at v2.6, and
   signed at v2.7 so it carves as well as bumps.
+- ~~A shape mask's bump does not show in the tray thumbnail.~~ **Fixed at
+  v2.9**, above, by giving the preview ball edges of its own rather than by
+  changing anything the masks do.
 - ~~Every export toasts before the share sheet has been answered.~~ **Fixed at
   v2.8b**, in exactly the place the note proposed: `downloadBlob` owns the
   toast, all five callers pass it a message instead of saying one, and an

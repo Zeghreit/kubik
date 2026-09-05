@@ -2360,7 +2360,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.8d</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.9</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -5588,10 +5588,13 @@ function applyMaskPatch(mat, d) {
         '  if (behind > 0.7) return 0.0;',
         '  float other = (src == 2 ? kubikF0.g : kubikF0.r);',
         '  float bar = max(0.05, 0.35 * width);',
-        /* Both channels EXACTLY zero is the no-field default - the material
-           preview ball, whose 1x1 black texture means "everywhere is an edge"
-           so a thumbnail can show what the mask does. Cross-masking a tie
-           halves it, and every thumbnail in the tray went pale. */
+        /* Both channels EXACTLY zero is the no-field default, and a tie
+           cross-masked is a tie halved - which turned every thumbnail in the
+           tray pale when this was missing. The preview ball was the case that
+           found it; since v2.9 the ball has a real field and it is the
+           failure paths that land here (see edgeFieldNone). The guard is not
+           theirs to lose: an object waiting for its first shade must come out
+           loudly worn, not half worn. */
         '  float occ = (d + other > 0.0) ? smoothstep(-bar, bar, other - d) : 1.0;',
         '  occ *= 1.0 - smoothstep(0.35, 0.7, behind);',
         '  if (occ <= 0.0) return 0.0;',
@@ -6520,9 +6523,18 @@ const EDGE_FIELD_STEPS = 40;    // grid steps across the longest side
 let _edgeFieldNone = null;
 function edgeFieldNone() {
   if (!_edgeFieldNone) {
-    /* Black is distance ZERO - everywhere is an edge. That is deliberately
-       the answer for a mesh with no field at all, which is the material
-       preview ball: a thumbnail has to show what the mask does. */
+    /* Black is distance ZERO - everywhere is an edge, so a mesh with no
+       field paints fully worn.
+
+       THIS NO LONGER HAS A LEGITIMATE USER (v2.9). It was the material
+       preview ball's answer, deliberately, so a thumbnail showed SOMETHING
+       of what a shape mask does - and a flood is what made the tray unable
+       to show the v2.6 bump at all. The ball carries its own rings now and
+       reaches a real field. What is left here is the FAILURE paths, and this
+       file has twice had to stop one of them rendering an object fully worn:
+       see cloneObjectInto and ensureWearLists. Fully worn is the loud, wrong
+       answer; it stays because a blank one would be the silent wrong answer.
+       Do not restore this as anything's intended path. */
     _edgeFieldNone = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1, THREE.RGBAFormat);
     _edgeFieldNone.needsUpdate = true;
   }
@@ -27033,6 +27045,103 @@ let _matPreviews = null;
    is the only thing that actually hands the context back. */
 let _matPreviewRig = null;
 
+/* THE BALL NEEDS EDGES OF ITS OWN, OR THE SHAPE MASKS CANNOT DRAW (v2.9).
+
+   A sphere has no outline edges, so ensureEdgeField returns null for it and
+   the shader falls back to edgeFieldNone - a 1x1 BLACK texture, distance
+   zero, which reads as "everywhere is an edge" and floods the ball with the
+   mask at full strength. Colour and roughness still showed something. The
+   v2.6 BUMP showed nothing at all, because a bump is the SLOPE of the mask
+   and a flood has no slope: dFdx of a constant is zero. Every Cavity and
+   Edges material in the tray was drawn as a flat recolour, indistinguishable
+   from a plain colour change, and that is what the thumbnail exists not to
+   be.
+
+   So the ball is given two rings, both centred on the axis it is viewed
+   down - an outer CONVEX one, which is what Edges marks, and an inner
+   CONCAVE one, which is what Cavity fills. Centred rather than laid round
+   the equator so they land where the eye already is; a seam round the back
+   of the ball is a truthful edge and a useless thumbnail.
+
+   THEY ARE NOT A CLAIM ABOUT THE SPHERE. Nothing measures this geometry to
+   produce them and nothing downstream can tell: bakeEdgeField reads
+   `userData.kubikEdges` here exactly as it reads a real model's, and
+   onBeforeRender collects the result through ensureEdgeField without knowing
+   the difference. The rings are the FEATURE A THUMBNAIL IS FOR - a rim and a
+   dimple to show what this finish does to a rim and a dimple.
+
+   TWENTY SEGMENTS buys a round enough ring for free. The first note here
+   said it was a trade against grid resolution, because bakeEdgeField spends
+   a budget of edges x voxels - and that was reasoning rather than measuring.
+   MEASURED: at this size the budget loop breaks on its first pass (cost
+   2.1e5 against a ceiling of 2.5e6), so the grid stays at the full 40 steps
+   whatever the segment count, and lands on 53 cubed - six voxels across the
+   field's range, which is what gives the bump a slope worth reading. So the
+   only thing segments cost is the bake, once: 20 leaves the ring 0.008 off a
+   true circle, three percent of the range and under a pixel at 104px. */
+const PREVIEW_RING_SEGS = 20;
+/* WHERE THE CAMERA SITS, ONCE. The rings are aimed down the axis this
+   defines, and the rig places the camera from the same vector - written
+   twice, a reframe of the thumbnail would tilt the view without moving the
+   rings, and they would slide off centre toward the silhouette with nothing
+   to show for it but Cavity and Edges quietly going back to looking like
+   flat recolours. */
+const PREVIEW_CAM = new THREE.Vector3(0, 0.5, 2.8);
+function previewBallEdges(radius) {
+  /* The axis the camera looks down, and any two directions across it. `u`
+     needs no orthogonalising while the camera sits at x = 0, so it is
+     checked rather than assumed: off the YZ plane, take Y instead. */
+  const a = PREVIEW_CAM.clone().normalize();
+  const u = Math.abs(a.x) < 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+  u.addScaledVector(a, -a.dot(u)).normalize();
+  const v = new THREE.Vector3().crossVectors(a, u);
+  const pos = [], kind = [];
+  const ring = (deg, k) => {
+    const t = deg * Math.PI / 180;
+    const c = Math.cos(t) * radius, sr = Math.sin(t) * radius;
+    const at = (i) => {
+      const p = (i % PREVIEW_RING_SEGS) / PREVIEW_RING_SEGS * Math.PI * 2;
+      const cp = Math.cos(p) * sr, sp = Math.sin(p) * sr;
+      return [c * a.x + cp * u.x + sp * v.x,
+              c * a.y + cp * u.y + sp * v.y,
+              c * a.z + cp * u.z + sp * v.z];
+    };
+    for (let i = 0; i < PREVIEW_RING_SEGS; i++) {
+      const A = at(i), B = at(i + 1);
+      pos.push(A[0], A[1], A[2], B[0], B[1], B[2]);
+      kind.push(k);
+    }
+  };
+  /* ANGLES CHOSEN FROM THE PICTURE, and then from the RIGHT arithmetic.
+
+     A ring at angle t does NOT land at sin(t) of the tile's radius. The
+     camera is 3.5 radii out with the ball filling the frame, so perspective
+     magnifies whatever is nearer to it, and the silhouette - at 73 degrees,
+     where the surface turns away - is both the widest ring AND the one
+     pushed furthest out. What matters is the ratio against that:
+
+         r(t) = R sin t / (camDist - R cos t),  as a fraction of r(73)
+
+     58 degrees, the first try, is 88% of the way out by that measure though
+     sin says 89% - either way it is on the rim, and it drew a halo round the
+     tile rather than wear on a feature; the bump, which is the whole reason
+     for this, showed only as a slightly crisper outline. 46 read as 72% by
+     sin and still came out at 86% on the screen, which is how this was found.
+     32 and 13 put the two rings at 67% and 30%: two clearly separate circles
+     on the face of the ball, turned toward the light, with room for a slope
+     between them.
+
+     Their SPACING only has to keep the two BANDS apart, not the rings - the
+     cross-mask compares each kind's distance against the other's, and at 19
+     degrees (0.27 across the surface) a pixel in one band reads the other as
+     most of a field-range away, which leaves it alone. Wound all the way out
+     to width 1.0 the bands do meet and fade into each other, and that is the
+     honest answer rather than a bug. */
+  ring(32, 1);   // convex: the outer rim, what Edges wears
+  ring(13, 2);   // concave: the inner dimple, what Cavity fills
+  return { pos: new Float32Array(pos), kind: new Uint8Array(kind), gen: ++_wearGen };
+}
+
 function matPreviewRig() {
   if (_matPreviewRig) return _matPreviewRig;
   const r = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
@@ -27042,13 +27151,18 @@ function matPreviewRig() {
   /* No environment yet - applyEnvToPreviews fills it in, from the same
      equirect the scene uses. Building one here would only be thrown away. */
   const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 10);
-  cam.position.set(0, 0.5, 2.8);
+  cam.position.copy(PREVIEW_CAM);   // and previewBallEdges aims the rings down it
   cam.lookAt(0, 0, 0);
   const key = new THREE.DirectionalLight(0xffffff, 0.9);   // aimed and tinted by applyEnvRig
   key.position.set(3, 4, 2);
   sc.add(key);
   const mat = new THREE.MeshStandardMaterial({ color: 0x9AA0A8 });
-  const ball = new THREE.Mesh(new THREE.SphereGeometry(0.8, 48, 32), mat);
+  const ballGeo = new THREE.SphereGeometry(0.8, 48, 32);
+  /* Stamped on the GEOMETRY, which is where ensureEdgeField looks, and once
+     for the life of the page: `gen` never moves again, so the field is baked
+     on the first thumbnail that asks for one and cached from then on. */
+  ballGeo.userData.kubikEdges = previewBallEdges(0.8);
+  const ball = new THREE.Mesh(ballGeo, mat);
   sc.add(ball);
   _matPreviewRig = { r, sc, cam, mat, ball, mats: new Map(), pmrem: null, envRT: null, envDirty: true, key };
   applyEnvLive();     // the rig missed every earlier call; it exists now
@@ -30255,6 +30369,13 @@ if (PICK_DEBUG) {
     /* v2.3c: the editor's own two doors, so a probe can measure what a
        slider release costs rather than drive it through a card's pencil. */
     openMatEditor, closeMatEditor, meCommit, renderMatPreviews,
+    /* v2.9: the rig itself, so a probe can read the rings the preview ball
+       carries rather than infer them from the picture they produce. Calling
+       it BUILDS one - a second GL context, the field bake and an env pass -
+       so the question "has the tray ever been opened" gets its own answer
+       that does not change it. */
+    matPreviewRig,
+    get matPreviewRigBuilt() { return !!_matPreviewRig; },
     get matPreviews() { return _matPreviews; },
     /* v2.8c: the two things that grow. A program count and a texture count
        are the only honest way to ask whether a session leaks GPU memory -
