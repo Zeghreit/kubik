@@ -2360,7 +2360,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.7</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.8</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -4071,10 +4071,20 @@ function applyTheme() {
 
   // Face overlays bake the selection colour into their material, so retint
   // them rather than waiting for the next rebuild.
+  /* The POOL, not every slot (v2.8). Every material wearing a definition IS
+     the pooled one now, so retinting the pool retints the model - and it is
+     six objects rather than fifteen hundred. */
+  _matPool.forEach(m => { if (m.userData && m.userData.themedDefault) m.color.setHex(t.material); });
   App.objects.forEach(o => {
+    /* AND ANYTHING THE POOL NEVER TOOK. dressFromPool leaves a group's own
+       material in place when it has no finish at all - a surface restored
+       straight from an old file - and those still follow the theme, as they
+       always did. Pooled ones are skipped: the walk above already did them,
+       and there are six of those against fifteen hundred of these. */
     (Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material])
-      .forEach(m => { if (m.userData.themedDefault) m.color.setHex(t.material); });
-
+      .forEach(m => {
+        if (m && !_pooledMats.has(m) && m.userData.themedDefault) m.color.setHex(t.material);
+      });
     const ov = o.mesh.userData.faceOverlay;
     if (ov) ov.material.color.setHex(SELECT_COLOR);
 
@@ -4412,10 +4422,29 @@ function saveMaterialLibrary() {
 }
 loadMaterialLibrary();
 
+/* THE POOL (v2.8). Declared up here rather than beside the rest of it,
+   because applyFinish below is the guard and a `const` in the temporal dead
+   zone cannot even be asked about. See dressFromPool for what they are. */
+const _matPool = new Map();
+const _pooledMats = new WeakSet();
+
 // The name is historical - it now applies the WHOLE definition, colour
 // included, since colour lives in the material as of a2.13.
 function applyFinish(mat, id) {
   const d = getMaterialDef(id);
+  /* A POOLED MATERIAL IS ITS DEFINITION, and may never be re-dressed as
+     another one: it is the single instance every group in the scene wearing
+     that definition is drawn with, so one such call repaints all of them at
+     once. Anything that wants a different definition asks the pool for a
+     different INSTANCE - that is what dressFromPool does.
+
+     A guard rather than a comment, because the two places that got this
+     wrong were both old code doing the obviously right thing for a material
+     it owned: applyFinishToSelection painting the material at a group, and
+     reconcileFinishes dressing a clone it thought it had. Re-applying the
+     SAME definition is still allowed - that is how the material editor
+     updates the pool. */
+  if (_pooledMats.has(mat) && mat.userData.kubikDef && mat.userData.kubikDef !== d.id) return mat;
   /* THE MATERIAL REMEMBERS WHICH DEFINITION IT IS WEARING, and this is the
      one thing that SHOULD live in userData: Material.clone JSON-copies it,
      so when an op grows new faces by cloning the material of the face they
@@ -4501,11 +4530,13 @@ function stampFinishesOnMaterials() {
 // The live-asset half: after a definition changes, everything wearing it
 // follows. An absent finishes entry means 'standard', as everywhere.
 function updateMaterialEverywhere(id) {
-  App.objects.forEach(o => {
-    const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
-    const fin = o.mesh.userData.finishes || {};
-    mats.forEach((m, gi) => { if ((fin[gi] || 'standard') === id) applyFinish(m, id); });
-  });
+  /* THE POOL IS THE MODEL NOW (v2.8). This used to walk every face group of
+     every object and call applyFinish on each - 1536 calls per tick of a
+     material slider on a subdivided cube, each one re-reading the definition
+     and re-asserting the mask patch. There are at most two materials wearing
+     a definition now, one per side, so the same drag is two calls. */
+  const pre = id + '|';
+  _matPool.forEach((m, key) => { if (key.indexOf(pre) === 0) applyFinish(m, id); });
   /* This is reached from an image mask's `onload`, which is the one path that
      repaints the model with NO event behind it - the file input's `change`
      fired before the decode began, and a phone photo takes long enough to
@@ -5712,7 +5743,28 @@ function applyMaskPatch(mat, d) {
    compile patch - Material.clone does not carry onBeforeCompile. This
    cheap walk re-asserts patches wherever the definition says one
    belongs; refreshUI runs it after every committed op. */
+/* AND WHERE EVERYTHING ELSE GETS POOLED (v2.8). An op reaches the pool
+   through reconcileFinishes; an object that was CREATED - a new cube, a
+   primitive, an import, a clone, a document being loaded - has not been
+   through a rebuild yet and still wears the materials its maker made.
+
+   Late on purpose. restoreDoc builds its materials from the file's stored
+   surface values, which may not match any definition yet, and
+   harvestLegacyMaterials is what mints definitions for those - so dressing
+   from the pool DURING a load would replace a file's look with a definition
+   that had not been written yet. refreshUI calls this after the restore is
+   finished and harvested, which is exactly late enough.
+
+   `matSide` is the mark: dressFromPool sets it, so an object carrying one has
+   been through the pool and an object without one never has. */
+let _dressingPool = false;
 function ensureMaskPatches() {
+  if (_dressingPool) return;   // reconcileFinishes calls back into here
+  App.objects.forEach(o => {
+    if (o.mesh.userData.matSide !== undefined) return;
+    _dressingPool = true;
+    try { reconcileFinishes(o); } finally { _dressingPool = false; }
+  });
   App.objects.forEach(o => {
     const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
     const fin = o.mesh.userData.finishes || {};
@@ -5766,6 +5818,159 @@ function makeMaterialSet(count, hex, finish) {
     mats.push(m);
   }
   return mats;
+}
+
+
+/* ---------------- ONE MATERIAL PER DEFINITION (v2.8) ----------------
+
+   Until now every FACE GROUP carried its own MeshStandardMaterial. A cube
+   subdivided twice has 1536 of them, six definitions between the lot, and
+   every one was a separate JS object with its own uniform set, its own entry
+   in three's per-material property map and its own upload on every draw.
+   Dragging a material slider ran applyFinish 1536 times a tick; every frame
+   of an op-slider drag cloned 1536 materials and threw 1536 away.
+
+   They are POOLED now, keyed by definition and by side. Everything that can
+   make two materials differ lives in the definition already - colour,
+   roughness, metalness, the mask stack, the bevel - so two groups wearing the
+   same definition have nothing to disagree about. The one thing that is NOT
+   the definition's is `side`: a mirrored object has reversed winding and must
+   stay DoubleSide while everything else culls, so the side is part of the KEY
+   rather than something written onto a shared instance. Two entries per
+   definition, not fifteen hundred.
+
+   THE OPS ARE UNTOUCHED, and that is the whole trick. All thirty of them
+   still clone the material of the face their new faces grew from, and that
+   clone is still what says which definition the new group wears - it is read
+   by reconcileFinishes and then dropped on the floor. Pooling happens at the
+   END of that one function, which rebuildFromEditable calls and every op
+   funnels through. Not one op site had to learn anything.
+
+   A POOLED MATERIAL CANNOT BE DISPOSED. There are a dozen places that
+   dispose a material array - object delete, primitive swap, the op bin, an
+   import's throwaway cube - and any one of them would take the shared
+   instance out from under every other mesh wearing it. Rather than teach all
+   twelve, the pooled instance's own `dispose` is replaced with a no-op and
+   the real one kept as `__dispose`. It is blunt, it is one line, and it
+   cannot be forgotten by the next op somebody writes. */
+/* WHEN ONE INSTANCE FOR THE WHOLE SCENE IS TOO FEW.
+
+   applyMaskPatch hangs an onBeforeRender on a material that needs per-MESH
+   uniforms - the object's distance field and its normal matrix - and three
+   calls that hook once per drawn object, so it looks safe to share. It is
+   not. three uploads a material's custom uniforms only when `refreshMaterial`
+   is set in setProgram, and that is skipped when the material is the same one
+   as the last draw - which, since the opaque sort puts same-material draws
+   next to each other, is exactly the second object. It would render with the
+   FIRST object's field: wear and rounded edges taken from the wrong shape.
+
+   So a definition that hangs that hook gets one instance PER OBJECT. It is
+   still the whole win - a subdivided cube goes from 1536 materials to one -
+   and the definitions that carry no per-object state (which is most of them,
+   every plain colour and every cloth mask) stay shared across the scene.
+
+   The test is the same one applyMaskPatch uses to decide whether to hang the
+   hook at all, so the two cannot drift apart. */
+function defNeedsOwn(d) { return defWantsField(d) || defWantsBump(d); }
+
+function pooledMaterial(id, side, own) {
+  const key = id + '|' + side + '|' + (own || '');
+  let m = _matPool.get(key);
+  if (!m) {
+    m = new THREE.MeshStandardMaterial({ side: side });
+    _pooledMats.add(m);
+    m.__dispose = m.dispose;
+    m.dispose = function () {};
+    applyFinish(m, id);
+    _matPool.set(key, m);
+  }
+  return m;
+}
+
+/* THE ONE PLACE A POOLED MATERIAL REALLY DIES, and the reason `__dispose`
+   is kept at all. Two things retire an entry: a definition being deleted,
+   and an object being deleted (which retires only the instances that were
+   its own - see defNeedsOwn). Without this the pool is a leak with the
+   session's lifetime, and worse: a definition deleted and then RE-DECLARED
+   by a file carrying the same id would find the stale instance still sitting
+   there wearing the old colour. */
+function prunePool(prefix, suffix) {
+  const dead = [];
+  _matPool.forEach((m, key) => {
+    if (prefix !== null && key.indexOf(prefix) !== 0) return;
+    if (suffix !== null && key.slice(-suffix.length) !== suffix) return;
+    dead.push(key);
+  });
+  dead.forEach(key => {
+    const m = _matPool.get(key);
+    _matPool.delete(key);
+    if (m && m.__dispose) m.__dispose();
+  });
+  return dead.length;
+}
+
+/* Which way this object's faces are drawn. refreshXrayMode owns the rule -
+   the x-ray toggle, and a mirrored object that must not cull - and this is
+   the same question asked one object at a time, so the two cannot drift. */
+function objectSide(mesh) {
+  mesh.updateMatrixWorld();
+  const mirrored = mesh.matrixWorld.determinant() < 0;
+  return (App.xraySelection || mirrored) ? THREE.DoubleSide : THREE.FrontSide;
+}
+
+/* Re-dress a mesh from the pool. Pointer writes into an array the mesh
+   already has, so it is cheap enough to run on every rebuild - which is
+   exactly where it does run. */
+function dressFromPool(obj) {
+  const mesh = obj.mesh;
+  const fin = mesh.userData.finishes || {};
+  // One lookup per DEFINITION, not per group - a subdivided mesh asks this
+  // question fifteen hundred times and the answer only has two inputs.
+  const ownOf = new Map();
+  const ownFor = (id) => {
+    if (!ownOf.has(id)) ownOf.set(id, defNeedsOwn(getMaterialDef(id)) ? String(obj.id) : '');
+    return ownOf.get(id);
+  };
+  const n = mesh.geometry.groups.length || 1;
+  const side = objectSide(mesh);
+  const old = Array.isArray(mesh.material) ? mesh.material
+            : (mesh.material ? [mesh.material] : []);
+  const out = [];
+  const kept = new Set();
+  for (let gi = 0; gi < n; gi++) {
+    /* A GROUP WITH NO DERIVED FINISH KEEPS WHAT IT HAD. reconcileFinishes
+       leaves an entry out when the material at that group carries no stamp it
+       recognises - a surface restored straight from a file's stored colour, a
+       clone of one, anything older than the stamp - and forcing those onto
+       Solid would repaint them. Before the pool they simply kept the material
+       they already had, and they still do; they join the pool the moment
+       something gives them a definition. */
+    const id = fin[gi];
+    if (MATERIALS.has(id)) out.push(pooledMaterial(id, side, ownFor(id)));
+    /* A finish NAMING a definition the library no longer has is a custom
+       that was deleted while this face wore it. It must land on Solid - the
+       entry below is for a group with no finish at all, which is a different
+       thing and keeps what it had. Getting these two the same way round was
+       what left a deleted material still drawn on the model, because the
+       old repaint path is refused on a pooled instance now. */
+    else if (id !== undefined) out.push(pooledMaterial('standard', side, ''));
+    else if (old[gi]) { out.push(old[gi]); kept.add(old[gi]); }
+    else out.push(pooledMaterial('standard', side, ''));
+  }
+  // Single material for a single group, array otherwise - the shape the rest
+  // of the file has always tested for.
+  mesh.material = out.length > 1 ? out : out[0];
+  mesh.userData.matSide = side;
+  /* The ops' clones are rubbish the moment their definition has been read off
+     them. Binned while an op is live for binMaterials' own reason - a dispose
+     mid-drag costs a relink - and disposed on the spot otherwise. */
+  const stray = [];
+  for (let i = 0; i < old.length; i++) {
+    if (old[i] && !_pooledMats.has(old[i]) && !kept.has(old[i])) stray.push(old[i]);
+  }
+  if (!stray.length) return;
+  if (App.pendingOp) binMaterials(stray);
+  else for (let i = 0; i < stray.length; i++) stray[i].dispose();
 }
 
 function createCubeObject(name, position) {
@@ -5980,6 +6185,8 @@ function primParams(kind, p) {
 function disposeObject(obj) {
 
   scene.remove(obj.mesh);
+  // Its own pooled instances go with it; the shared ones stay for everyone else.
+  prunePool(null, '|' + obj.id);
   disposeHelpersOnly(obj);
   disposeEdgeField(obj.mesh.geometry);
   obj.mesh.geometry.dispose();
@@ -7509,11 +7716,13 @@ function refreshXrayMode() {
        and it's a transient state that Mirror bakes away on merge anyway. */
     o.mesh.updateMatrixWorld();
     const mirrored = o.mesh.matrixWorld.determinant() < 0;
+    /* THE SIDE IS PART OF THE POOL KEY (v2.8), so this no longer writes to
+       a material - it hands the mesh a different one. Guarded on the side
+       actually having changed, because this runs on every selection change
+       and every UI tick and a rebuild of a 1536-entry array sixty times a
+       second would be worse than the recompile it used to avoid. */
     const side = (App.xraySelection || mirrored) ? THREE.DoubleSide : THREE.FrontSide;
-    const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
-    mats.forEach(m => {
-      if (m && m.side !== side) { m.side = side; m.needsUpdate = true; }
-    });
+    if (o.mesh.userData.matSide !== side) dressFromPool(o);
   });
 }
 
@@ -7609,18 +7818,34 @@ function reconcileFinishes(obj) {
          drop the entry and leave the face showing the dead definition -
          colour, mask and all - forever, while the UI reported Solid. Put it
          back on Solid instead, which restamps it and strips the mask. */
-      if (stamp !== undefined) applyFinish(m, 'standard');
-      if (!MATERIALS.has(m.userData.kubikDef)) continue;   // never wore one
-      id = m.userData.kubikDef;
+      /* SET, not applied (v2.8). This used to call applyFinish on the
+         material to restamp it and then read the stamp back - which on a
+         POOLED instance would have turned the whole pool entry into Solid
+         for every other group wearing it. The answer was always just
+         'standard'; dressFromPool below is what puts it on. */
+      if (stamp === undefined) continue;                   // never wore one
+      id = 'standard';
     }
     out[gi] = id;
-    /* Dress only what actually moved or is new. applyFinish is the funnel
-       that also re-patches the mask on a fresh clone; running it over every
-       group on every rebuild would mean 1536 calls per slider tick on a
-       subdivided mesh. */
-    if (fin[gi] !== id || stamp !== id) applyFinish(m, id);
+    /* AND NOTHING IS DRESSED HERE ANY MORE (v2.8). This used to call
+       applyFinish on the material sitting at the group - correct when that
+       material belonged to the group and nobody else, and a way to repaint
+       half the scene now that it is shared. dressFromPool at the end of this
+       function hands the group the instance that already wears `id`, so
+       there is nothing left to dress.
+
+       The probe that caught it is _imp_probe, which deliberately clears a
+       material's stamp to reproduce a pre-a2.24 file: the fallback then
+       dressed the shared Solid as a custom red, and every grey face in the
+       scene went with it. */
   }
   mesh.userData.finishes = out;
+  /* AND THE POOL, here and nowhere else (v2.8). This function is the one
+     place that sees the finished group list and the finished material array
+     together, which is what made it the right place to derive `finishes` -
+     and derived finishes are exactly what dressing from the pool needs. Every
+     op reaches this line; none of them knows the pool exists. */
+  dressFromPool(obj);
   /* An id test cannot see whether a material is DRESSED. A clone landing at
      an index that already held the same id passes every check above and is
      still unpatched, because the patch lives in a module WeakSet that a
@@ -11565,7 +11790,12 @@ function applyKnifeOp(obj, pts) {
    stacks another one - see "Extrude mode" below. */
 
 function captureObjectState(obj) {  const ed = toEditable(obj.mesh);
-  const mats = (Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material]).map(m => m.clone());
+  /* NOT CLONED SINCE v2.8. The array holds pooled materials, and a pooled
+     material is the same object for every group and every mesh wearing that
+     definition - there is nothing about it that belongs to this snapshot, so
+     there was nothing for the clone to protect. It cost 1536 clones per frame
+     of an op-slider drag, and 1536 disposals behind them. */
+  const mats = (Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material]).slice();
   return {
     positions: ed.positions.slice(),
     groups: ed.groups.map(g => ({ triangles: g.triangles.map(t => t.slice()) })),
@@ -11632,8 +11862,7 @@ function refreshPendingAppearance(obj) {
     // topology is not this mesh's appearance. The caller has already refused
     // in that case - this is the belt to its braces.
     if (!st.mats || st.mats.length !== mats.length) return;
-    st.mats.forEach(m => m.dispose());     // never rendered, so this is free
-    st.mats = mats.map(m => m.clone());
+    st.mats = mats.slice();                // pooled: nothing to clone, nothing to free
     st.finishes = { ...fin };
   });
 }
@@ -11667,12 +11896,20 @@ function flushMatBin() {
 
 function restoreObjectState(obj, st) {
   const outgoing = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
-  obj.mesh.material = st.mats.map(m => { PERF.matClone++; return m.clone(); });
+  /* A copy of the ARRAY, not of the materials (v2.8) - and the rebuild two
+     lines down re-dresses from the pool anyway, so this only has to be right
+     long enough for reconcileFinishes to read the stamps off it. */
+  obj.mesh.material = st.mats.slice();
   /* Only deferred while an op is actually running. A one-off restore - a
      cancel, an undo - disposes immediately, which is both correct and the
      moment the program can go without anyone noticing. */
-  if (App.pendingOp) binMaterials(outgoing);
-  else outgoing.forEach(m => m && m.dispose());
+  /* POOLED MATERIALS ARE NOT RUBBISH (v2.8). This used to hand the whole
+     outgoing array to the bin - fifteen hundred entries per frame of an
+     op-slider drag, every one of them a shared instance whose dispose is a
+     no-op. Filtered here, the bin holds only what an op really made. */
+  const dropped = outgoing.filter(m => m && !_pooledMats.has(m));
+  if (App.pendingOp) binMaterials(dropped);
+  else dropped.forEach(m => m.dispose());
   obj.mesh.userData.smoothGroups = { ...st.smooth };
   if (st.finishes) obj.mesh.userData.finishes = { ...st.finishes };
   if (st.creases) obj.mesh.userData.creases = { ...st.creases };
@@ -21318,11 +21555,19 @@ function applyFinishToSelection(name) {
   }
   const setOn = (obj, groupIndices) => {
     if (!obj.mesh.userData.finishes) obj.mesh.userData.finishes = {};
-    const mats = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
-    groupIndices.forEach(gi => {
-      obj.mesh.userData.finishes[gi] = name;
-      if (mats[gi]) applyFinish(mats[gi], name);
-    });
+    groupIndices.forEach(gi => { obj.mesh.userData.finishes[gi] = name; });
+    /* THE MAP, THEN THE POOL (v2.8). This used to call applyFinish on the
+       material sitting at that group - which was that group's own material
+       and nobody else's. It is a SHARED instance now, so re-dressing it in
+       place painted every face in the scene wearing the same definition, and
+       every copy an Array had made of them. Writing the map and re-dressing
+       from the pool paints exactly the groups named and nothing else.
+
+       The suite caught all of it in one run: an Array's copies painting
+       together, a repaint under an open op spreading from one face to six,
+       Solidify's walls all inheriting one colour, and an exported cube coming
+       back with no preset faces left on it. One line, five probes. */
+    dressFromPool(obj);
     // ...and into the open op's snapshot, or the next slider frame undoes it.
     refreshPendingAppearance(obj);
   };
@@ -27869,10 +28114,17 @@ document.getElementById('meDelete').addEventListener('click', () => {
     const fin = o.mesh.userData.finishes || {};
     const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
     mats.forEach((m, gi) => {
-      if (fin[gi] === d.id) { fin[gi] = 'standard'; applyFinish(m, 'standard'); }
+      /* The map, not the material (v2.8): `m` is a shared instance and
+         applyFinish refuses to re-dress it as another definition anyway.
+         dressFromPool below is what puts Solid on. */
+      if (fin[gi] === d.id) fin[gi] = 'standard';
     });
   });
   MATERIALS.delete(d.id);
+  /* Retire its instances and re-dress whatever wore them, or the model goes
+     on drawing a definition the library no longer has. */
+  prunePool(d.id + '|', null);
+  App.objects.forEach(o => dressFromPool(o));
   const _t = _maskTex.get(d.id);
   if (_t) { _t.dispose(); _maskTex.delete(d.id); }
   pruneMaskImages();

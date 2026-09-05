@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~30,000 lines)
-- Version at time of writing: **2.7**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~30,200 lines)
+- Version at time of writing: **2.8**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -35,6 +35,96 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## One material per definition (v2.8)
+
+Until now every FACE GROUP carried its own `MeshStandardMaterial`. A cube
+subdivided twice has 1536 of them, six definitions between the lot, and every
+one was a separate JS object with its own uniform set, its own entry in
+three's per-material property map, and its own upload on every draw. Dragging
+a material slider ran `applyFinish` 1536 times a tick; every frame of an
+op-slider drag cloned 1536 materials and threw 1536 away.
+
+They are **pooled** now, keyed by definition, by side, and - where it matters
+- by object. Measured on the probes: **640 material clones per apply -> 0**,
+and a 22-group mesh wearing two definitions holds **two** material instances.
+
+### The ops did not have to learn anything
+
+All thirty of them still clone the material of the face their new faces grew
+from, and that clone is still what says which definition the new group wears.
+It is read by `reconcileFinishes` - the one function that sees the finished
+group list and the finished material array together, which is why it already
+derived `finishes` - and then dropped. **Pooling happens at the end of that
+one function**, which `rebuildFromEditable` calls and every op funnels
+through. Not one op site was touched.
+
+Objects that are CREATED rather than edited - a new cube, a primitive, an
+import, a clone, a document being loaded - are dressed late, by a healer at
+the top of `ensureMaskPatches` gated on `userData.matSide === undefined`.
+Late on purpose: `restoreDoc` builds materials from a file's stored surface
+values and `harvestLegacyMaterials` is what mints definitions for those, so
+dressing during a load would replace a file's look with a definition that had
+not been written yet.
+
+### A pooled material cannot be disposed
+
+A dozen places dispose a material array - object delete, primitive swap, the
+op bin, an import's throwaway cube - and any one of them would take the
+shared instance out from under every other mesh wearing it. Rather than teach
+all twelve, **the pooled instance's own `dispose` is replaced with a no-op**
+and the real one kept as `__dispose`, which `prunePool` uses. It is blunt, it
+is one line, and it cannot be forgotten by the next op somebody writes.
+
+### THE RULE: a pooled material IS its definition
+
+It may never be re-dressed as another one. `applyFinish` **refuses** it - a
+guard, not a comment, because every bug this release produced was old code
+doing the obviously right thing for a material it thought it owned:
+
+- `applyFinishToSelection` calling `applyFinish` on the material at a group -
+  which painted every face in the scene wearing that definition, and every
+  copy an Array had made of them.
+- `reconcileFinishes` dressing the material it had just read the stamp off.
+- its deleted-definition branch restamping one to read the stamp back.
+
+All three write the FINISHES MAP and re-dress from the pool now. **The suite
+caught every one of them in a single run** - `_array`, `_bug`, `_solid` and
+`_imp` each failed with a different symptom of the same cause. That is what
+35 byte-compared probe outputs are for.
+
+### And a fourth, which only a reviewer would have found
+
+`applyMaskPatch` hangs an `onBeforeRender` on a material to fill per-MESH
+uniforms - the object's distance field, its normal matrix. three calls that
+hook once per drawn object, so sharing looks safe. It is not: three uploads a
+material's custom uniforms only when `refreshMaterial` is set in `setProgram`,
+and that is skipped when the material is the same as the last draw - which,
+since the opaque sort puts same-material draws next to each other, is exactly
+the second object. It would have drawn with the FIRST object's field: wear
+and rounded edges taken from the wrong shape, on every multi-object scene.
+
+So **a definition that hangs that hook gets one instance per object**, by the
+same test `applyMaskPatch` uses to decide whether to hang it (`defNeedsOwn` =
+`defWantsField || defWantsBump`), so the two cannot drift. It is still the
+whole win - a subdivided cube goes from 1536 materials to one - and every
+definition with no per-object state stays shared across the scene.
+
+`prunePool` retires entries two ways: a definition being deleted, and an
+object being deleted (which retires only the instances that were its own).
+
+### Measured
+
+- `_poolchk.py` - the pool's own probe, real clock: a mesh borrows rather
+  than owns, painting one face still paints one face, 22 groups hold 2
+  instances, a shared material outlives the mesh that dropped it, the x-ray
+  side rides in the key, the appearance survives a save and back, and a
+  shape-masked definition is NOT shared between two objects.
+- The suite: `_array`'s section 8 was rewritten - it asserted that two copies
+  held different material OBJECTS, which the pool deliberately breaks; it now
+  asserts the consequence that still has to hold, that painting one copy
+  paints only that copy. Everything else is byte-identical to the `_det2`
+  baseline except `_perf`, where `material_churn` reads 0 instead of 640.
 
 ## Carve as well as bump (v2.7)
 
