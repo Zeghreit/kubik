@@ -2295,6 +2295,11 @@
           <input type="color" id="mkColor">
           <label class="mk-check"><input type="checkbox" id="mkRoughOn"> Roughness <span id="mkRoughV"></span></label>
           <input type="range" id="mkRough" min="0" max="1" step="0.01">
+          <!-- The third component. A mask is a greyscale field and a normal
+               is its slope, so every noise type already built is a bump for
+               the cost of two derivatives. -->
+          <label class="mk-check"><input type="checkbox" id="mkBumpOn"> Bump <span id="mkBumpV"></span></label>
+          <input type="range" id="mkBump" min="0.05" max="1" step="0.05">
           <label>Amount <span id="mkAmountV"></span></label>
           <input type="range" id="mkAmount" min="0" max="1" step="0.01">
           <label id="mkScaleLbl">Scale <span id="mkScaleV"></span></label>
@@ -2352,7 +2357,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.5</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.6</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -4636,7 +4641,7 @@ function maskOf(d) {
   const n = maskCount(d);
   for (let i = 0; i < n; i++) {
     const mk = d.masks[i];
-    if (mk && mk.on && (mk.colorOn || mk.roughOn)) return mk;
+    if (mk && mk.on && (mk.colorOn || mk.roughOn || mk.bump > 0)) return mk;
   }
   return null;
 }
@@ -4980,7 +4985,26 @@ function defWantsField(d) {
   const n = maskCount(d);
   for (let i = 0; i < n; i++) {
     const m = d.masks[i];
-    if (m && m.on && maskCurvMode(m) && (m.colorOn || m.roughOn)) return true;
+    if (m && m.on && maskCurvMode(m) && (m.colorOn || m.roughOn || m.bump > 0)) return true;
+  }
+  return false;
+}
+
+/* DOES ANYTHING HERE BEND THE NORMAL? (v2.6) Separate from defWantsField
+   because the two answers stopped agreeing the day a bump could ride a cloth
+   mask: a Clouds mask driving Bump needs no distance field at all, but it
+   does need uKubikNrmMat, which is maintained in onBeforeRender - and
+   onBeforeRender was hung on the FIELD question alone. Left that way the
+   bump's normal went to the shader through an identity matrix, which is an
+   object-space normal used as a view-space one: lit from a fixed direction
+   in the model's own frame, unchanged by the camera and unchanged by the
+   depth slider. It looked like stone and it was wrong. */
+function defWantsBump(d) {
+  if (!d) return false;
+  const n = maskCount(d);
+  for (let i = 0; i < n; i++) {
+    const m = d.masks[i];
+    if (m && m.on && m.bump > 0) return true;
   }
   return false;
 }
@@ -5004,12 +5028,13 @@ function maskWantsPatch(d) {
    nothing holds on to it. */
 const _maskSlot = {
   live: false, color: '#ffffff', amount: 0, scale: 1, blend: 0,
-  colorOn: 0, roughOn: 0, rough: 0.5, source: 0, blur: 0.5, noise: 0, nscale: 1
+  colorOn: 0, roughOn: 0, rough: 0.5, source: 0, blur: 0.5, noise: 0, nscale: 1,
+  bump: 0
 };
 function maskSlotValues(list, k) {
   const mk = list[k];
   const s = _maskSlot;
-  s.live = !!(mk && mk.on && (mk.colorOn || mk.roughOn));
+  s.live = !!(mk && mk.on && (mk.colorOn || mk.roughOn || mk.bump > 0));
   s.color = mk && mk.color ? mk.color : '#ffffff';
   s.amount = s.live ? mk.amount : 0;
   /* A shape mask's Width is a FRACTION of the field's reach, so it has to be
@@ -5022,6 +5047,10 @@ function maskSlotValues(list, k) {
   s.colorOn = s.live && mk.colorOn ? 1 : 0;
   s.roughOn = s.live && mk.roughOn ? 1 : 0;
   s.rough = mk && typeof mk.rough === 'number' ? mk.rough : 0.5;
+  /* THE PRESENCE OF THE KEY IS THE SWITCH. There is no `bumpOn` beside it on
+     purpose - see the editor's checkbox for why the key is deleted rather
+     than written false. */
+  s.bump = s.live && mk.bump > 0 ? Math.min(1, mk.bump) : 0;
   // 0 = read the baked cloth texture, 1 = concave edges, 2 = convex.
   s.source = cm;
   s.blur = cm && mk ? Math.min(1, Math.max(0, mk.contrast)) : 0.5;
@@ -5038,6 +5067,7 @@ function maskSlotValues(list, k) {
    working space directly, which is exactly what `.copy` from a parsed Color
    used to do. Capped, because a project file can carry any number of
    colours and this must not become a leak. */
+const _kubikMV = new THREE.Matrix4();   // scratch for the normal matrix below
 const _maskColorLin = new Map();
 function maskColorLinear(hex) {
   let v = _maskColorLin.get(hex);
@@ -5091,6 +5121,10 @@ function applyMaskPatch(mat, d) {
       uKubikColorOn: { value: [] },
       uKubikRoughOn: { value: [] },
       uKubikRough: { value: [] },
+      uKubikBump: { value: [] },
+      // Whether ANY slot drives a bump, so the fragment shader can skip
+      // measuring its own pixel footprint on every material that does not.
+      uKubikBumpAny: { value: 0 },
       uKubikSource: { value: [] },
       uKubikBlur: { value: [] },
       uKubikNoise: { value: [] },
@@ -5121,6 +5155,8 @@ function applyMaskPatch(mat, d) {
       u.uKubikColorOn.value.push(s.colorOn);
       u.uKubikRoughOn.value.push(s.roughOn);
       u.uKubikRough.value.push(s.rough);
+      u.uKubikBump.value.push(s.bump);
+      if (s.bump > 0) u.uKubikBumpAny.value = 1;
       u.uKubikSource.value.push(s.source);
       u.uKubikBlur.value.push(s.blur);
       u.uKubikNoise.value.push(s.noise);
@@ -5145,7 +5181,7 @@ function applyMaskPatch(mat, d) {
     // orphan the ones the compiled program is holding.
     u.uKubikMask.value = tex;
     if (u.uKubikBevel) u.uKubikBevel.value = Math.min(1, Math.max(0, d.bevel || 0));
-    let count = 0;
+    let count = 0, anyBump = 0;
     for (let k = 0; k < MASK_SLOTS; k++) {
       const s = maskSlotValues(list, k);
       const c = maskColorLinear(s.color);
@@ -5156,6 +5192,8 @@ function applyMaskPatch(mat, d) {
       u.uKubikColorOn.value[k] = s.colorOn;
       u.uKubikRoughOn.value[k] = s.roughOn;
       u.uKubikRough.value[k] = s.rough;
+      u.uKubikBump.value[k] = s.bump;
+      if (s.bump > 0) anyBump = 1;
       u.uKubikSource.value[k] = s.source;
       u.uKubikBlur.value[k] = s.blur;
       u.uKubikNoise.value[k] = s.noise;
@@ -5163,6 +5201,7 @@ function applyMaskPatch(mat, d) {
       if (s.live) count = k + 1;
     }
     u.uKubikCount.value = count;
+    if (u.uKubikBumpAny) u.uKubikBumpAny.value = anyBump;
   };
 
   if (!d.maskGen) bumpMaskGen(d);   // first wearer of a never-patched definition
@@ -5196,9 +5235,15 @@ function applyMaskPatch(mat, d) {
      Clouds has no use for a distance field, and baking one for it costs a
      megabyte and a stall on every geometry change. */
   const wantsField = defWantsField(d);
-  if (!wantsField) delete mat.onBeforeRender;
+  /* TWO REASONS TO WANT THIS HOOK NOW, and only one of them is the field.
+     A bump on a cloth mask bends the normal without reading the field at
+     all, and the normal matrix that carries that bend into view space is
+     maintained here. Hanging the hook on the field question alone left
+     every cloth bump rendering through an identity matrix. */
+  const wantsNrm = wantsField || defWantsBump(d);
+  if (!wantsNrm) delete mat.onBeforeRender;
   else mat.onBeforeRender = function (renderer, scene, camera, geometry, object) {
-    const f = ensureEdgeField(object);
+    const f = wantsField ? ensureEdgeField(object) : null;
     if (f) _matField.set(mat, f);
     /* three runs this BEFORE it compiles, so on a material's very first draw
        the uniforms do not exist yet. The stash above is what onBeforeCompile
@@ -5206,8 +5251,22 @@ function applyMaskPatch(mat, d) {
        of every newly applied shape mask renders as one solid face. */
     const u = maskUniStore(mat).get(_maskKey.get(mat));
     if (!u || !u.uKubikField) return;
-    // Written first: it belongs to the mesh, not to the field.
-    u.uKubikNrmMat.value.copy(object.normalMatrix);
+    /* Written first: it belongs to the mesh, not to the field.
+
+       COMPUTED HERE, NOT COPIED (v2.6). three calls onBeforeRender from
+       renderObject BEFORE it sets object.modelViewMatrix and
+       object.normalMatrix for this draw - so `copy(object.normalMatrix)`
+       took the matrix from the PREVIOUS render, and every frame of an orbit
+       shaded the bevel with the camera it had a frame ago. It has been that
+       way since the bevel was written and is invisible in motion, which is
+       exactly why it survived: it only shows when one frame is looked at on
+       its own, which is what a probe does. Found by measuring a bump so
+       shallow it should have changed nothing and getting a different picture
+       anyway. Two multiplies on a matrix three is about to compute again. */
+    _kubikMV.multiplyMatrices(camera.matrixWorldInverse, object.matrixWorld);
+    u.uKubikNrmMat.value.getNormalMatrix(_kubikMV);
+    // The rest is the field's, and a bump-only material has none to carry.
+    if (!wantsField) return;
     /* No field on this mesh - it has never been through applyShading. Put
        the default BACK rather than returning: leaving the uniform alone
        would hand it whatever mesh was drawn before this one. */
@@ -5241,6 +5300,8 @@ function applyMaskPatch(mat, d) {
         'uniform float uKubikColorOn[' + MASK_SLOTS + '];',
         'uniform float uKubikRoughOn[' + MASK_SLOTS + '];',
         'uniform float uKubikRough[' + MASK_SLOTS + '];',
+        'uniform float uKubikBump[' + MASK_SLOTS + '];',
+        'uniform float uKubikBumpAny;',
         'uniform int   uKubikSource[' + MASK_SLOTS + '];',
         'uniform float uKubikBlur[' + MASK_SLOTS + '];',
         'uniform float uKubikNoise[' + MASK_SLOTS + '];',
@@ -5263,6 +5324,17 @@ function applyMaskPatch(mat, d) {
         'vec2 kubikF0;',
         'vec2 kubikDN;',
         'float kubikDNset;',
+        /* The height this pixel stands at, summed over every mask driving
+           Bump, and whether anything drove it at all. Accumulated with the
+           weights in <color_fragment> and read two chunks later in
+           <normal_fragment_maps>, which is where three has a normal to
+           perturb. */
+        'float kubikH;',
+        'float kubikHOn;',
+        // Object-space units this pixel covers - the yardstick the height
+        // below is faded against. Measured once, and only when something
+        // actually wants it.
+        'float kubikFP;',
         // One triplanar tap set, then the channel this mask owns. Picked by
         // a dot with a selector rather than s[i] so this stays legal if the
         // renderer ever falls back to WebGL1.
@@ -5451,6 +5523,38 @@ function applyMaskPatch(mat, d) {
         '  k = k * k * (3.0 - 2.0 * k);',
         '  return normalize(objN - t * k);',
         '}',
+        /* A NORMAL FROM A HEIGHT NOBODY PARAMETERISED (v2.6). Every mask in
+           this file is a greyscale field over object space, and a normal is
+           its slope - so the only thing missing is a way to take a gradient
+           on a surface that has no UVs and no tangents. Mikkelsen's surface
+           gradient is exactly that: the two screen-space derivatives of the
+           position span the tangent plane at this pixel, and the same two
+           derivatives of the height say how fast it climbs along each.
+
+           THE SIGMAS ARE NOT NORMALISED, deliberately. three's own
+           perturbNormalArb normalises them, which makes the bump quietly
+           weaken as you zoom in - dH shrinks with the pixel footprint and
+           nothing shrinks with it. Left raw, dH and R1/R2 both carry one
+           power of the footprint and det carries two, so the ratio is the
+           same at every distance and the surface keeps its texture.
+
+           Object space, like kubikBevelN, so the result goes through
+           uKubikNrmMat with it and a non-uniform object scale is handled by
+           the normal matrix rather than by us.
+
+           det is the squared pixel footprint in object units - about 1e-6 on
+           a full-screen cube - so the degenerate bar sits far below anything
+           real and only catches a genuinely collapsed derivative. */
+        'vec3 kubikBumpN(vec3 p, vec3 n, float dHx, float dHy) {',
+        '  vec3 sx = dFdx(p);',
+        '  vec3 sy = dFdy(p);',
+        '  vec3 R1 = cross(sy, n);',
+        '  vec3 R2 = cross(n, sx);',
+        '  float det = dot(sx, R1);',
+        '  if (abs(det) < 1e-20) return n;',
+        '  vec3 grad = sign(det) * (dHx * R1 + dHy * R2);',
+        '  return normalize(abs(det) * n - grad);',
+        '}',
         'vec3 kubikBlend(vec3 base, vec3 top, int mode) {',
         '  if (mode == 1) return base * top;',
         '  if (mode == 2) return 1.0 - (1.0 - base) * (1.0 - top);',
@@ -5467,11 +5571,24 @@ function applyMaskPatch(mat, d) {
         '                            step(0.5, base));',
         '  return top;',
         '}'].join('\n'))
+      /* ONE PLACE THE NORMAL IS BENT, and the two benders compose in
+         order: Round edges leans the vertex normal towards the nearest
+         edge, and Bump then climbs the mask's own height on top of
+         whatever that left. Written as two separate blocks they would
+         each have started from the raw vertex normal and the second one
+         to run would have thrown the first away. */
+      /* AND IT OWNS THE NORMAL OUTRIGHT once either is live: it starts
+         from the vertex normal, not from whatever the chunk above produced.
+         True of the bevel since it was written and harmless, because nothing
+         in this app binds a normalMap - but the day something does, this is
+         the line that will be quietly ignoring it. */
       .replace('#include <normal_fragment_maps>', ['#include <normal_fragment_maps>',
         '#ifndef FLAT_SHADED',
-        'if (uKubikBevel > 0.0) {',
+        '{',
         '  vec3 kbN = normalize(vKubikNrm);',
-        '  vec3 kbB = kubikBevelN(kbN, uKubikBevel, kubikF0.r);',
+        '  vec3 kbB = kbN;',
+        '  if (uKubikBevel > 0.0) kbB = kubikBevelN(kbN, uKubikBevel, kubikF0.r);',
+        '  if (kubikHOn > 0.5) kbB = kubikBumpN(vKubikPos, kbB, dFdx(kubikH), dFdy(kubikH));',
         '  if (dot(kbB - kbN, kbB - kbN) > 1e-12) {',
         '    normal = normalize(uKubikNrmMat * kbB) * faceDirection;',
         '  }',
@@ -5482,6 +5599,10 @@ function applyMaskPatch(mat, d) {
         '  vec3 kubikN = normalize(vKubikNrm);',
         '  kubikF0 = kubikField(vKubikPos);',
         '  kubikDNset = 0.0;',
+        '  kubikH = 0.0;',
+        '  kubikHOn = 0.0;',
+        '  kubikFP = 0.0;',
+        '  if (uKubikBumpAny > 0.5) kubikFP = max(length(dFdx(vKubikPos)), length(dFdy(vKubikPos)));',
         '  for (int i = 0; i < ' + MASK_SLOTS + '; i++) {',
         '    kubikW[i] = 0.0;',
         '    if (i >= uKubikCount) continue;',
@@ -5491,6 +5612,44 @@ function applyMaskPatch(mat, d) {
         '    if (uKubikColorOn[i] > 0.5) {',
         '      vec3 mixed = kubikBlend(diffuseColor.rgb, uKubikColor[i], uKubikBlend[i]);',
         '      diffuseColor.rgb = mix(diffuseColor.rgb, mixed, kubikW[i] * uKubikAmount[i]);',
+        '    }',
+        /* 0.15 turns the slider into a HEIGHT IN OBJECT UNITS - depth 1 is
+           15% of a default cube. It has to be a real length, because the
+           gradient below compares it against a real pixel footprint; and it
+           means a fine mask is steeper than a coarse one at the same depth,
+           which is what fine and deep actually looks like. */
+        '    if (uKubikBump[i] > 0.0) {',
+        /* FADED OUT WHEN THE MASK STOPS FITTING IN A PIXEL. A cloth mask is
+           128 texels across its period, so one texel is 2/(128*scale) object
+           units; a shape mask's finest structure is its own band. Once a
+           pixel covers more than one of those the gradient is sampling noise,
+           and because this bump deliberately does NOT weaken with distance
+           that noise would keep full strength and crawl across the model as
+           the camera moves. Fading here costs one clamp.
+
+           MINIFICATION ONLY, and that is the whole point: leaning IN makes
+           the footprint smaller and lod saturates at 1, so close up the
+           surface keeps exactly the texture it had. It is stepping BACK that
+           takes it away, which is the direction where there was nothing left
+           to see anyway. */
+        '      float feat = (uKubikSource[i] > 0) ? uKubikScale[i] * uKubikFieldRange',
+        '                                         : 0.015625 / max(uKubikScale[i], 1e-4);',
+        /* SQUARED, and the exponent is the whole behaviour. Linear in the
+           footprint leaves the SLOPE constant once a texel drops under a
+           pixel - amplitude falls exactly as fast as the frequency rises -
+           so a mask ten times too fine came back neither steeper nor quieter,
+           just permanently noisy. Squared, the height falls faster than the
+           frequency climbs and the surface flattens out the way a mipmapped
+           one does, converging on the average it can no longer resolve.
+           Measured: at scale 60 on this cube the spread goes from louder than
+           scale 6 to well under it. */
+        '      float lod = clamp(feat / max(kubikFP, 1e-6), 0.0, 1.0);',
+        '      lod *= lod;',
+        '      kubikH += kubikW[i] * uKubikAmount[i] * uKubikBump[i] * 0.15 * lod;',
+        /* NOT gated on lod. kubikHOn decides whether a derivative is taken
+           two chunks down, and a derivative inside non-uniform control flow
+           is undefined - lod varies per pixel, uKubikBump does not. */
+        '      kubikHOn = 1.0;',
         '    }',
         '  }',
         '}'].join('\n'))
@@ -27865,6 +28024,20 @@ function refreshMaskControls(d) {
   document.getElementById('mkRough').value = mk.rough;
   document.getElementById('mkRough').style.opacity = mk.roughOn ? '' : '.4';
   document.getElementById('mkRoughV').textContent = Number(mk.rough).toFixed(2);
+  /* The checkbox reads the DEPTH, because the depth is the only thing
+     stored - a mask with no bump has no key at all. An unticked box leaves
+     the slider parked at a sensible depth to turn on with. */
+  const bumped = mk.bump > 0;
+  document.getElementById('mkBumpOn').checked = bumped;
+  document.getElementById('mkBump').value = bumped ? mk.bump : 0.5;
+  document.getElementById('mkBump').style.opacity = bumped ? '' : '.4';
+  /* DISABLED, not merely dimmed, and it is the one component slider that is.
+     Colour and Roughness keep their value on the mask whether their box is
+     ticked or not; a depth cannot, because the presence of the key IS the
+     switch - so a drag with the box clear would write nothing and still
+     commit an undo step for it. */
+  document.getElementById('mkBump').disabled = !bumped;
+  document.getElementById('mkBumpV').textContent = bumped ? Number(mk.bump).toFixed(2) : '';
   document.getElementById('mkAmount').value = mk.amount;
   document.getElementById('mkScale').value = mk.scale;
   document.getElementById('mkDetail').value = mk.detail;
@@ -27891,8 +28064,12 @@ function mkLive(rebake) {
   // both, and the slider's own step is what keeps a cloth mask on integers.
   mk.detail = parseFloat(document.getElementById('mkDetail').value);
   mk.contrast = parseFloat(document.getElementById('mkContrast').value);
+  // Only while it is ON - writing it back when it is off would put the key
+  // on a mask that has no bump, which is the one thing this must not do.
+  if (mk.bump > 0) mk.bump = parseFloat(document.getElementById('mkBump').value);
   if (maskCurvMode(mk)) mk.nscale = parseFloat(document.getElementById('mkNScale').value);
   document.getElementById('mkRoughV').textContent = mk.rough.toFixed(2);
+  document.getElementById('mkBumpV').textContent = mk.bump > 0 ? mk.bump.toFixed(2) : '';
   document.getElementById('mkAmountV').textContent = mk.amount.toFixed(2);
   document.getElementById('mkScaleV').textContent = mk.scale.toFixed(2);
   document.getElementById('mkDetailV').textContent = mkNum(mk.detail);
@@ -27903,7 +28080,7 @@ function mkLive(rebake) {
   updateMaterialEverywhere(d.id);
 }
 
-['mkColor', 'mkRough', 'mkAmount', 'mkScale', 'mkNScale'].forEach(id => {
+['mkColor', 'mkRough', 'mkBump', 'mkAmount', 'mkScale', 'mkNScale'].forEach(id => {
   const el = document.getElementById(id);
   el.addEventListener('input', () => mkLive(false));
   el.addEventListener('change', () => { mkLive(false); meCommit(); });
@@ -27914,12 +28091,26 @@ function mkLive(rebake) {
   el.addEventListener('change', () => { mkLive(true); meCommit(); });
 });
 
-['mkColorOn', 'mkRoughOn'].forEach(id => {
+['mkColorOn', 'mkRoughOn', 'mkBumpOn'].forEach(id => {
   document.getElementById(id).addEventListener('change', () => {
     const mk = mkCurrent();
     if (!mk) return;
     mk.colorOn = document.getElementById('mkColorOn').checked;
     mk.roughOn = document.getElementById('mkRoughOn').checked;
+    /* BUMP IS THE PRESENCE OF ITS OWN DEPTH - there is no `bumpOn` field,
+       and the key is DELETED when the box is cleared rather than written
+       false. materialDefSig stringifies the mask objects themselves, so a
+       mask carrying `bumpOn: false` and an otherwise identical one carrying
+       no such key are two different materials to the import matcher: that is
+       the absent-versus-zero trap that once minted a "(imported)" copy of
+       every masked preset on every single load. A mask nobody has given a
+       bump to has to serialise byte for byte the way it did before v2.6.
+       Whatever else is added here later must follow the same rule. */
+    if (document.getElementById('mkBumpOn').checked) {
+      mk.bump = parseFloat(document.getElementById('mkBump').value) || 0.5;
+    } else {
+      delete mk.bump;
+    }
     // A component going on or off changes whether this mask paints at all,
     // which is structural.
     mkStructural(getMaterialDef(matEditingId));

@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~29,800 lines)
-- Version at time of writing: **2.5**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~30,000 lines)
+- Version at time of writing: **2.6**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -35,6 +35,110 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Normals from the masks (v2.6)
+
+The agreed next feature, and the cheapest one left: a mask is a greyscale
+field over the surface and a normal is its slope, so every noise type already
+built - Clouds, Cells, Scratches, Dots, Stripes, your own pictures, Cavity and
+Edges - became a **bump** for the cost of two derivatives. A third checkbox
+beside Colour and Roughness, with a depth slider of its own. Triplanar like
+everything else, so the no-UV policy survives untouched.
+
+Edges + Bump is the one to try first: a raised welt along every convex rim,
+which is a chamfer you can put on and take off without touching the geometry.
+
+### The depth IS the switch
+
+There is no `bumpOn` field. **`mk.bump` is present when the box is ticked and
+DELETED when it is cleared**, and that is not tidiness - `materialDefSig`
+stringifies the mask objects themselves, so a mask carrying `bumpOn: false`
+and an otherwise identical one carrying no such key are two different
+materials to the import matcher. That is the absent-versus-zero trap that
+once minted an "(imported)" copy of every masked preset on every single load.
+A mask nobody has given a bump to serialises byte for byte the way it did in
+v2.5, and the probe asserts exactly that. **Anything added to a mask later
+has to follow the same rule, or normalise the whole mask in the signature and
+migrate every stored one.**
+
+The depth slider is `disabled`, not merely dimmed, while the box is clear -
+the only component slider that is, for the same reason: there is nowhere to
+put the number until the key exists.
+
+### Mikkelsen's surface gradient, unnormalised
+
+The two screen-space derivatives of the object-space position span the
+tangent plane at a pixel; the same two derivatives of the height say how fast
+it climbs along each. That is the whole trick, and it needs no UVs and no
+tangents - which is why this feature was cheap and why it works on a shape
+mask as readily as on a cloth one.
+
+**The sigmas are deliberately NOT normalised.** three's own
+`perturbNormalArb` normalises them, which makes the height difference shrink
+with the pixel footprint while nothing shrinks with it - so the texture fades
+out as you lean in. Left raw, `dH` and `R1`/`R2` each carry one power of the
+footprint and `det` carries two, and the ratio is scale free. Measured:
+halving the camera distance leaves the luminance spread within a quarter.
+
+**Faded on MINIFICATION only, by the square of the footprint.** Nothing
+shrinks the height as the camera pulls back either, so a mask whose texels
+fall under a pixel would keep full amplitude and crawl. A cloth mask is 128
+texels across its period, so one texel is `2/(128*scale)` object units; the
+height is scaled by `clamp(texel/footprint, 0, 1)` **squared**. The exponent
+is the behaviour, not a taste: linear leaves the SLOPE constant once a texel
+drops under a pixel - amplitude falls exactly as fast as frequency rises -
+and a mask ten times too fine came back neither steeper nor quieter, just
+permanently noisy. Squared, it flattens the way a mipmapped surface does.
+Leaning IN saturates the clamp at 1, so close up nothing is taken away.
+
+### Two bugs it flushed out, one of them years old
+
+**`uKubikNrmMat` was an identity matrix for every cloth bump.** The uniform
+that carries a bent normal into view space is maintained in
+`onBeforeRender` - and `onBeforeRender` was hung on `defWantsField`, because
+until now the only thing that bent a normal was Round edges, which needs the
+distance field anyway. A Clouds mask driving Bump needs no field at all, so
+it got no hook, so it got the identity matrix packed at compile time: an
+object-space normal used as a view-space one, lit from a fixed direction in
+the model's own frame, unchanged by the camera **and unchanged by the depth
+slider**. It looked like stone. `defWantsBump` is the second question, and
+the hook now answers to either.
+
+Found by a check that had no business failing: render at a depth of 0.01,
+which should be a picture nobody could tell from no bump at all, and the
+spread came back identical to a depth of 0.5.
+
+**And `object.normalMatrix` was one render stale.** three calls
+`onBeforeRender` from `renderObject` BEFORE it sets `modelViewMatrix` and
+`normalMatrix` for that draw, so `copy(object.normalMatrix)` took the matrix
+from the previous frame. Round edges has shaded itself with a
+one-frame-old camera since the day it was written - invisible in motion,
+which is why it survived. Computed from `camera.matrixWorldInverse *
+object.matrixWorld` now, which is what three is about to compute anyway.
+
+### Measured
+
+`_bumpchk.py`, 24 checks, real clock, and it writes its pictures out - the
+lesson every shader round here has had to relearn. Shown to fail against two
+broken copies:
+
+- `_bak_v25.html`: no control, no function - 3 of 3.
+- `_bak_v26pre.html` (built by `_mkbroken26.py`): the normal-matrix hook and
+  the footprint fade undone. The depth check and the fine-mask check fail,
+  and they name their own bugs.
+
+### Known, and left
+
+- **A shape mask's bump does not show in the tray thumbnail.** The preview
+  ball binds a 1x1 black field so a thumbnail can show what a shape mask
+  does; a constant field has a zero gradient, so there is nothing to bend.
+  Cloth bumps preview correctly.
+- **Round edges makes a bump slightly deeper along a rim** - `det` carries
+  the cosine of the lean, up to about 1.4x on a full bevel crest. It is the
+  surface genuinely being steeper there.
+- **This block now owns the normal outright.** It starts from the vertex
+  normal, so anything `<normal_fragment_maps>` produces is discarded. Nothing
+  in the app binds a normalMap; the day something does, that is the line.
 
 ## A picture of what you made (v2.5)
 
