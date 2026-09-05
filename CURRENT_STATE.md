@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~29,200 lines)
-- Version at time of writing: **2.3c**
+- Version at time of writing: **2.4**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -35,6 +35,91 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## It gets out of the phone (v2.4)
+
+Two small things, both about how Kubik sits on the device rather than what it
+can model.
+
+### A Home Screen icon, drawn from the app's own glyph
+
+Every `apple-mobile-web-app-*` tag was already there — capable, title,
+status-bar style, theme colour — and there was **no `apple-touch-icon` and no
+`icon` link at all**, so pinning Kubik to a Home Screen gave you a screenshot
+of the page. It has been that way since the meta tags went in.
+
+The mark is `ICON.object`: the same box the hub button wears in Object mode,
+on a `--panel` tile, with the wordmark's `--signal` period in the corner. It
+is not a copy — `_mkicon.py` **lifts the path out of index.html by regex**,
+renders it through the same headless Chrome the probes use, and writes it back
+as a `data:` URI. So the icon cannot drift away from the pictogram it is
+supposed to be, and the one rule this file has — one file, runs by opening it
+— survives. 2 KB, both links.
+
+Re-run `py _mkicon.py` after changing `ICON.object` or the palette.
+
+Two things it got wrong first, both worth keeping written down:
+
+- **Do not quantize it.** The glyph is about 3% of the pixels and a median cut
+  folds a cluster that small straight back into the tile. The first build was
+  a 99-byte, perfectly empty square.
+- **Position against the tile, never the viewport.** Headless Chrome will not
+  take a window under about 500px (the same clamp `_uishot97` documents), so
+  the page lays out at 500 wide however small `--window-size` asks, and a
+  `left: 50%` on an absolutely positioned child resolved against THAT — putting
+  the glyph outside the 180px capture. It read as "the SVG did not render"
+  twice before it was spotted.
+
+### A file leaves by the share sheet on a phone
+
+Every export — glTF, OBJ, STL and the project JSON — comes through one
+function, `downloadBlob`, which is why the whole change is there.
+
+`a.download` is the right answer on a machine with a Downloads folder and a
+window to drag it out of. On a phone, especially one running this from the
+Home Screen, it is close to a dead end: the file lands somewhere you have to
+go and find, and every onward step — AirDrop it to the desktop, put it in
+Files, send it to someone — is a separate hunt. `navigator.share` hands the
+same blob to the system sheet, where all of those are one tap.
+
+Three decisions inside it:
+
+- **Coarse pointer, not "does the browser have share".** Desktop Chrome
+  implements Web Share too, and popping a sheet where a download was expected
+  would be a regression for the machine that already has the good answer.
+- **`canShare` with the actual File**, not a guess — iOS refuses some types
+  outright and asking is the only way to know before offering.
+- **Cancel is not a failure.** `AbortError` means the sheet opened and the user
+  closed it; handing them a download of the file they just declined would be
+  the app arguing with them. Any other rejection — most likely the glTF path,
+  which awaits its exporter over the network and can lose the tap's transient
+  activation on the way — falls back to the download.
+
+### Measured
+
+`_sharechk.py`, 19 checks, and the icon half fails on `_bak_v23c.html` because
+there is nothing to find. It decodes the icon and **counts pixels** — a tile
+with no glyph on it decodes perfectly well, which is how the first two builds
+of it got made — and it drives the share branch against stubs, because there
+is no system sheet in a headless browser and what matters is which branch the
+code takes: fine pointer downloads, coarse pointer shares one correctly-named
+file with its mime type and nothing downloads behind it, cancel downloads
+nothing, a real refusal falls back, and a browser with no share at all still
+downloads.
+
+### And the last flaky probe, closed
+
+`_imp_probe` was the one that still failed inside the suite while passing
+alone, and the reason is worth keeping: it fetches GLTFExporter over the
+network **inside a virtual clock**, so it is racing a real round trip while
+the clock runs at machine speed — and it loses that race under the load of the
+Chrome that has just exited. Retrying instantly retried into the same load.
+`_runprobes.py` now waits three seconds before the retry, which is enough for
+the previous browser to be gone.
+
+**Every probe in the suite now passes, and two consecutive full runs are
+byte-identical across all 35 files.** Nothing is on the "re-run it three times
+before believing it" list any more.
 
 ## Two pieces of work nobody could see (v2.3c)
 
