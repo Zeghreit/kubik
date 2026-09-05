@@ -43,9 +43,12 @@ diff.txt
 !_*chk.py
 !_*chk.js
 
-# Two patch scripts that happen to end in `_probe.py`. Not harness.
-_fix_probe.py
-_fix_probe2.py
+# ...but a patch script is never harness, whatever it is named after. These
+# two families are one-off edit scripts - `_patch_sharechk.py` ends in
+# `chk.py` and `_fix_probe.py` ends in `_probe.py`, and both slipped through
+# the patterns above on the first try. Re-ignored AFTER them, so they lose.
+_patch_*
+_fix_*
 
 # The recorded probe OUTPUTS stay out: the `_v*/` before-and-after folders,
 # `_*_out.txt` reports, generated harness HTML and version backups. They are
