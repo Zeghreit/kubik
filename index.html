@@ -2350,7 +2350,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.3a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.3b</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -22834,7 +22834,29 @@ function serializeDoc() {
            recomputed. */
         symPlane: o.mesh.userData.symPlane
           ? { axis: o.mesh.userData.symPlane.axis, offset: o.mesh.userData.symPlane.offset }
-          : undefined
+          : undefined,
+        /* AND THE PER-AXIS STORE (v2.3b). a2.89 gave symmetry a plane per
+           axis and kept writing the singular field so older files and older
+           readers keep working - but the note above was never extended, so
+           `symPlanes` was dropped by every save and every undo. The fallback
+           in symmetryPlane only accepts the singular plane when its axis
+           MATCHES, so after a reopen the other axes were recaptured from the
+           current bounding box: exactly the drift the comment above says
+           must not happen, still happening, just only when more than one
+           axis is on. Plain numbers, keyed by axis, same shape as one. */
+        symPlanes: (() => {
+          const s = o.mesh.userData.symPlanes;
+          if (!s) return undefined;
+          const out = {};
+          let any = false;
+          ['x', 'y', 'z'].forEach(a => {
+            if (s[a] && typeof s[a].offset === 'number') {
+              out[a] = { axis: s[a].axis, offset: s[a].offset };
+              any = true;
+            }
+          });
+          return any ? out : undefined;
+        })()
       };
     }),
     // Selection travels with the snapshot so undo/redo doesn't drop you back
@@ -22862,6 +22884,26 @@ function restoreDoc(doc, opts = {}) {
      cylinder, and a tap on empty space would delete it. Undo and Redo close
      the setup themselves; this covers Load, which does not. */
   if (App.geoSetup) { App.geoSetup = null; hideGeoBar(); }
+  /* THE THIRD ONE, and it was missing (v2.3b). An op bar holds `objId` and a
+     captureObjectState snapshot of the mesh AS IT WAS, and object ids are
+     small integers counted from 1 in every document - so exactly the
+     retargeting the note above describes happens here too, and worse: the
+     next slider nudge runs restoreObjectState and overwrites an unrelated
+     object in the model you just opened with the PREVIOUS document's
+     geometry, materials, creases and edge marks. Then OK commits it and
+     pushes a history step. Cancel is no better - it "restores" the same
+     foreign snapshot.
+
+     Abandoned rather than cancelled, deliberately: cancelPendingOp would
+     restore that snapshot into an object this function is about to dispose
+     anyway, and flushPendingApply inside it would re-run the whole op first.
+     Nulling it is enough - a scheduled apply that fires afterwards finds no
+     pendingOp and returns on applyPendingOp's second line.
+
+     flushMatBin because the bin holds the material arrays every re-run of
+     that op set aside; confirm and cancel are the only two paths that empty
+     it, and neither is taken here. */
+  if (App.pendingOp) { App.pendingOp = null; hideOpBar(); flushMatBin(); }
   /* Every mesh below is rebuilt, and a rebuilt position attribute starts at
      version 0 again - so the soft field's signature, which leans on that
      version to notice a changed mesh, reads identical across an undo and hands
@@ -23075,6 +23117,18 @@ function restoreDoc(doc, opts = {}) {
     if (od.symPlane && typeof od.symPlane.offset === 'number') {
       mesh.userData.symPlane = { axis: od.symPlane.axis, offset: od.symPlane.offset };
     }
+    /* The per-axis store (v2.3b). Written back BEFORE anything asks for a
+       plane, so symmetryPlane finds it rather than recapturing. A file older
+       than a2.89 carries none, and the singular field above is what it
+       falls back to - which is why that one is still written. */
+    if (od.symPlanes) {
+      const store = {};
+      ['x', 'y', 'z'].forEach(a => {
+        const p = od.symPlanes[a];
+        if (p && typeof p.offset === 'number') store[a] = { axis: p.axis || a, offset: p.offset };
+      });
+      if (Object.keys(store).length) mesh.userData.symPlanes = store;
+    }
     if (od.edgeShade) mesh.userData.edgeShade = { ...od.edgeShade };
     else migrateEdgeShade(obj);
     if (typeof od.autoSmoothAngleDeg === 'number') {
@@ -23239,7 +23293,15 @@ function undo() {
     cancelPendingOp();
     if (!settled) return;
   }
-  if (App.pendingOp) { App.pendingOp = null; hideOpBar(); }
+  /* AND THE SAME FOR AN OP THAT IS NOT "LIVE" (v2.3b). The reasoning three
+     comments up applies word for word to a slider op: a bevel with its bar
+     open has pushed nothing onto the history either, so what is in front of
+     you is a preview sitting on top of the last committed step. This line
+     used to drop the preview WITHOUT restoring it and then step the index
+     back as well, so one press took away the preview and the operation
+     before it - extrude, OK, bevel, drag, Undo, and the extrude was gone.
+     Cancel it and stop; a second press then means what it always meant. */
+  if (App.pendingOp) { cancelPendingOp(); return; }
   if (App.historyIndex <= 0) return;
   App.historyIndex--;
   restoreDoc(App.history[App.historyIndex], { keepAppearance: true, keepSelection: true });
@@ -23262,7 +23324,8 @@ function redo() {
     cancelPendingOp();
     if (!settled) return;
   }
-  if (App.pendingOp) { App.pendingOp = null; hideOpBar(); }
+  // See undo: a preview is a preview whether or not the op calls itself live.
+  if (App.pendingOp) { cancelPendingOp(); return; }
   if (App.historyIndex >= App.history.length - 1) return;
   App.historyIndex++;
   restoreDoc(App.history[App.historyIndex], { keepAppearance: true, keepSelection: true });
@@ -26296,6 +26359,15 @@ function buildMatTray() {
     const cancelLp = () => { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } };
     b.addEventListener('pointerup', cancelLp);
     b.addEventListener('pointerleave', cancelLp);
+    /* AND pointercancel (v2.3b). The tray is a vertical scroller, and a
+       finger that starts on a card and then flicks to scroll it hands the
+       touch to the browser: pointercancel fires, pointerup never does, and
+       touch's implicit capture means pointerleave does not either. So the
+       timer survived the gesture and opened the editor half a second later,
+       for a material the user was only scrolling past. Every other hold in
+       this app already guards this - the outliner row through dropHold, the
+       tool ring through the canvas's own pointercancel handler. */
+    b.addEventListener('pointercancel', cancelLp);
     b.addEventListener('click', (ev) => {
       if (longPressed) { ev.preventDefault(); return; }
       if (ev.target.classList.contains('mat-edit')) { openMatEditor(k); return; }

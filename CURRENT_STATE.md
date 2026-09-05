@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~29,200 lines)
-- Version at time of writing: **2.3a**
+- Version at time of writing: **2.3b**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -35,6 +35,84 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Four things that were quietly wrong (v2.3b)
+
+Found by two fresh reviews over the op/history core and the selection/UI
+layer. None of them is new behaviour; all four are cases where what was
+already there did the wrong thing.
+
+### 1. Loading a file with an op bar open corrupted the model you just opened
+
+`restoreDoc` deliberately abandons two modal states before it disposes the
+scene — the knife, and the geo setup — and the note on the second says
+exactly why: *"ids come from the DOCUMENT, so a setup bar left open would go
+on pointing at 'object 2' and quietly retarget whatever object in the LOADED
+model wears that id."* **`App.pendingOp` is the third such state and was not
+guarded**, and it is worse than the setup bar: it carries a
+`captureObjectState` snapshot of the previous document's mesh. Bevel open →
+menu → open a saved model, and the next slider nudge ran `restoreObjectState`
+over an unrelated object in the new document — geometry, materials, creases,
+edge marks — then ✓ committed it and pushed a history step. Cancel was no
+better; it "restored" the same foreign snapshot.
+
+Abandoned rather than cancelled, deliberately: `cancelPendingOp` would
+restore that snapshot into an object this function is about to dispose, and
+`flushPendingApply` inside it would re-run the whole op first. `flushMatBin`
+goes with it — confirm and cancel are the only two paths that empty the bin,
+and neither is taken here.
+
+### 2. Undo with an op bar open took back a committed step as well
+
+`undo` handles a live extrude correctly and says why: a live op *"has pushed
+NOTHING onto the history yet, so stepping the index back would take away that
+step as well as the preview."* Every other op fell through to the next line,
+which dropped the preview **without restoring it** and then stepped the index
+back anyway. Extrude → ✓ → bevel → drag → Undo, and the extrude was gone
+too, silently, from one press. The same shape in `redo`, stepping forward.
+
+A slider op's preview is a preview by the same argument, so it gets the same
+answer: cancel it and stop. A second press then means what it always meant.
+
+### 3. The material card's long-press survived a scroll
+
+`buildMatTray` arms a 500 ms timer on `pointerdown` and cleared it on
+`pointerup` and `pointerleave` only. The tray is a vertical scroller, and a
+finger that starts on a card and flicks to scroll hands the touch to the
+browser: `pointercancel` fires, `pointerup` never does, and touch's implicit
+capture means `pointerleave` does not either. So the editor opened half a
+second later, for a material you were only scrolling past. Every other hold
+in the app already guarded this — the outliner row through `dropHold`, the
+tool ring through the canvas's own `pointercancel` handler.
+
+### 4. Multi-axis symmetry planes were dropped by every save and every undo
+
+`serializeDoc`'s own note says the plane is *"CAPTURED, deliberately, so it
+cannot drift as the model grows — and then it was thrown away by every save
+and every undo, which silently recaptured it from the current bounding box."*
+That was fixed at a2.44 for `symPlane`. a2.89 then gave symmetry **a plane
+per axis** in `symPlanes`, kept writing the singular field for older files,
+and nobody extended the save. `symmetryPlane`'s fallback accepts the singular
+plane only when its axis MATCHES, so after a reopen every other axis was
+recaptured from the live bounding box — the same drift, still happening, just
+only when more than one axis is on. Both are written and read now; the
+singular field stays, because a file older than a2.89 has nothing else.
+
+### Measured
+
+`_fixchk.py`, and **verified against the broken copy, not just the good one**
+— the same run against `_bak_v23a.html` fails 6 of 12 and names each bug:
+
+```
+1. Load with an op bar open        pendingOp STILL POINTS AT objId 1
+2. Undo with a bevel bar open      historyIndex 1 -> 0  *** IT ATE A COMMITTED STEP
+3. Material card long-press        *** THE EDITOR OPENED ON A SCROLL
+4. symPlanes round trip            *** DROPPED BY THE SAVE / GONE AFTER THE LOAD
+```
+
+After: `VERDICT=PASS (13 checks)`. It needs a real clock — two of the four are
+about timers and one about a rebuild — so it lives outside `_runprobes.py`
+with the rest of that family.
 
 ## Turning the phone stretched the model, and it stayed stretched (v2.3a)
 
