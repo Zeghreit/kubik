@@ -68,6 +68,15 @@
     const realShare = navigator.share;
     const realClick = HTMLAnchorElement.prototype.click;
     let downloads = 0, shared = null;
+    /* WHAT THE USER IS TOLD, not only what the app did (v2.8e). Counting
+       downloads cannot tell "cancel handled quietly" from "cancel handled
+       loudly" - and saying "Exported" for a file the user just declined was
+       the actual bug. toast() writes textContent and adds .show, and a timer
+       1600ms later removes .show only, so textContent is the timer-proof
+       reading: blank it before each call, read it after. */
+    const toastEl = document.getElementById('toast');
+    const clearToast = () => { if (toastEl) toastEl.textContent = ''; };
+    const saidWhat = () => (toastEl ? toastEl.textContent : '(no #toast)');
     HTMLAnchorElement.prototype.click = function () {
       if (this.download) downloads++; else realClick.call(this);
     };
@@ -82,17 +91,18 @@
     navigator.share = () => Promise.resolve();
     setPointer(false);
     ok('fine pointer does not want the sheet', K.wantsShareSheet() === false);
-    downloads = 0;
-    K.downloadBlob(['{}'], 'model.json', 'application/json');
+    downloads = 0; clearToast();
+    K.downloadBlob(['{}'], 'model.json', 'application/json', 'Project saved');
     await sleep(60);
     ok('and a file downloads', downloads === 1, downloads + ' download(s)');
+    ok('and says so', saidWhat() === 'Project saved', saidWhat());
 
     // a phone: coarse pointer -> the sheet, and no download behind it
     setPointer(true);
     ok('coarse pointer wants the sheet', K.wantsShareSheet() === true);
-    downloads = 0; shared = null;
+    downloads = 0; shared = null; clearToast();
     navigator.share = (d) => { shared = d; return Promise.resolve(); };
-    K.downloadBlob(['solid x\n'], 'model.stl', 'model/stl');
+    K.downloadBlob(['solid x\n'], 'model.stl', 'model/stl', 'Exported .stl');
     await sleep(60);
     ok('it goes to the sheet', !!shared);
     if (shared) {
@@ -103,20 +113,27 @@
          shared.files[0].type);
     }
     ok('and nothing downloaded behind it', downloads === 0, downloads + ' download(s)');
+    ok('and it says so AFTER the sheet settles', saidWhat() === 'Exported .stl', saidWhat());
 
     // cancel is not a failure
-    downloads = 0;
-    navigator.share = () => Promise.reject(Object.assign(new Error('x'), { name: 'AbortError' }));
-    K.downloadBlob(['x'], 'a.obj', 'text/plain');
+    downloads = 0; shared = null; clearToast();
+    navigator.share = (d) => { shared = d;
+      return Promise.reject(Object.assign(new Error('x'), { name: 'AbortError' })); };
+    K.downloadBlob(['x'], 'a.obj', 'text/plain', 'Exported .obj');
     await sleep(80);
+    /* The sheet has to have been REACHED, or the two checks under it pass on
+       a downloadBlob that quietly did nothing at all. */
+    ok('the cancelled export reached the sheet', !!shared);
     ok('cancelling does NOT force a download', downloads === 0, downloads + ' download(s)');
+    ok('and NOTHING is claimed', saidWhat() === '', saidWhat() || '(silent)');
 
     // a real refusal does fall back
-    downloads = 0;
+    downloads = 0; clearToast();
     navigator.share = () => Promise.reject(Object.assign(new Error('x'), { name: 'NotAllowedError' }));
-    K.downloadBlob(['x'], 'b.obj', 'text/plain');
+    K.downloadBlob(['x'], 'b.obj', 'text/plain', 'Exported .obj');
     await sleep(80);
     ok('a refusal falls back to the download', downloads === 1, downloads + ' download(s)');
+    ok('and that one DOES say so', saidWhat() === 'Exported .obj', saidWhat() || '(silent)');
 
     /* and a browser with no share at all. `delete` is not enough: canShare is
        native on this one, so deleting the stub only uncovers the real thing.
@@ -124,9 +141,11 @@
     downloads = 0;
     Object.defineProperty(navigator, 'canShare', { value: undefined, configurable: true });
     ok('no canShare, no sheet', K.wantsShareSheet() === false);
-    K.downloadBlob(['x'], 'c.obj', 'text/plain');
+    clearToast();
+    K.downloadBlob(['x'], 'c.obj', 'text/plain', 'Exported .obj');
     await sleep(60);
     ok('it still downloads', downloads === 1, downloads + ' download(s)');
+    ok('and says so', saidWhat() === 'Exported .obj', saidWhat() || '(silent)');
 
     window.matchMedia = realMatch;
     HTMLAnchorElement.prototype.click = realClick;

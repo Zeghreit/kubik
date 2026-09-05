@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~30,400 lines)
-- Version at time of writing: **2.8e**
+- Version at time of writing: **2.8d**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -10321,9 +10321,9 @@ conflictEdges, reversed, ok}`.
 
 ## Testing loop
 
-**The harness is in the repo (v2.8e).** 136 files - every `_*_probe.py` /
+**The harness is in the repo (v2.8d).** 136 files - every `_*_probe.py` /
 `.js` pair, every `_*chk.py` / `.js`, plus `_verify.py`, `_runprobes.py`,
-`_cmpdirs.py` and `_pageschk.py`. It was untracked until v2.8e: the `_`
+`_cmpdirs.py` and `_pageschk.py`. It was untracked until v2.8d: the `_`
 prefix is in `.gitignore` for the 549 one-off PATCH scripts, and it had
 quietly swallowed the entire test suite, so `git ls-files "_*"` returned
 nothing and losing this machine would have lost the ability to check any
@@ -10975,11 +10975,6 @@ that a note gets believed for a year.
   texture, and the shape masks - which read the edge field - come back flat
   there. Cloth masks preview correctly. The thumbnail is honest about
   everything except this one class.
-- **Every export toasts before the share sheet has been answered.** All five
-  of them - .glb, .obj, .stl, the JSON and the picture - say "Exported" or
-  "saved" synchronously, so cancelling the iOS sheet still reads as success.
-  The fix belongs in `downloadBlob` (return a promise, toast on the outcome),
-  which is one change for all five call sites rather than five.
 - **Moving the pivot / re-origining an object.** Deferred. Capturing the
   symmetry plane from geometry buys most of what it would have.
 - **Gesture-driven modelling tools** - extrude on a two-finger tap, and the
@@ -11006,13 +11001,22 @@ that a note gets believed for a year.
 - ~~`mkStructural` re-bakes the mask texture on every structural change.~~
   Fixed at v2.8d, above.
 - ~~The whole test harness is untracked, not just `_verify.py`.~~ **Committed
-  at v2.8e** - 136 files, and `.gitignore` un-ignores the two naming families
+  at v2.8d** - 136 files, and `.gitignore` un-ignores the two naming families
   by pattern so new ones follow automatically. See the Testing loop. This was
   the largest single risk on the list and had never been written down as one:
   `git ls-files "_*"` returned nothing, because the rule written for 549
   disposable patch scripts had swallowed the suite with them.
 - ~~Normals from the masks is the agreed next feature.~~ Shipped at v2.6, and
   signed at v2.7 so it carves as well as bumps.
+- ~~Every export toasts before the share sheet has been answered.~~ **Fixed at
+  v2.8b**, in exactly the place the note proposed: `downloadBlob` owns the
+  toast, all five callers pass it a message instead of saying one, and an
+  `AbortError` returns without a word because a cancelled sheet saved nothing.
+  The note outlived the fix by two versions. What was genuinely missing was
+  the CHECK - `_sharechk` counted downloads and never read the toast, so it
+  could not tell "cancel handled quietly" from "cancel handled loudly", which
+  was the whole bug. Six assertions added; verified against a copy with the
+  synchronous toast put back, which fails exactly one of them.
 - **Overstated, now narrowed:** "`refreshOutliner` rebuilds the whole list on
   every state change". Its caller checks `outlinerIsOpen()` and two hold flags
   first, so a closed outliner costs a boolean. It does rebuild fully while it
