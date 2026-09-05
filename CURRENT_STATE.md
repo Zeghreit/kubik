@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~30,200 lines)
-- Version at time of writing: **2.8b**
+- Version at time of writing: **2.8c**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -35,6 +35,67 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## What a long session leaves on the GPU (v2.8c)
+
+Two counts that were supposed to be bounded and were not, both measured
+before and after by `_gpuchk.py`, which is the point - the old notes called
+these "suspected" and one of the four turned out to have been fixed years ago.
+
+| | before | after |
+|---|---|---|
+| WebGL programs, over 20 toggles of one mask component | 7 -> 17 | 7 -> 7 |
+| packed mask textures, over 10 tried-and-dropped masks | 1 -> 11 (640 KB) | 1 -> 1 |
+
+### An off mask keeps its patch
+
+`maskWantsPatch` asked whether any mask was LIVE. So switching a component
+off dropped the shader patch and switching it on again put it back - and
+**every one of those crossings mints a WebGL program that three never
+releases**. Ten of them over twenty toggles, on the app's own path, growing
+for as long as the session lasts.
+
+It asks whether a mask EXISTS now. Nothing else had to change, because this
+is what the design already said: *the shader source is the same for one mask
+as for four, and an off mask is amount zero*. An off mask now really is
+amount zero rather than a different shader; the loop early-outs on
+`i >= uKubikCount`, so a definition whose masks are all off costs what one
+with none costs. The crossing still happens when the first mask is added and
+when the last is removed, which is correct and rare.
+
+### The `#N` fork was tried and put back
+
+Removing it looked right - it is what mints the program on each crossing, and
+`refresh(known)` appeared to have made it redundant by writing the current
+stack into the uniform set filed under the key. **It has not.** With the fork
+gone, moving a mask's colour after its component had been switched off and on
+again did not change one pixel: the store holds the right values and three is
+reading a different set.
+
+That is written down as a fact rather than a suspicion because `_gpuchk` asks
+it directly - render, change the colour, compare the two frames - and the
+check was added *before* the change, specifically to catch this. It did.
+
+### A mask texture that nobody samples
+
+128x128 RGBA is 64 KB per definition and nothing ever gave one back except
+deleting the whole material, so trying a cloth and taking it off again left
+the bake behind. `dropMaskTexture` is the one place they die, called from
+`rebakeMaskTexture` - the moment a mask comes off - guarded by the same
+`maskWantsPatch` the shader patch uses, so a live uniform can never be left
+pointing at a disposed texture.
+
+### And two the notes were wrong about
+
+- **`backdrop-filter` is already gone.** It left `#inspector` at a2.101; the
+  only two occurrences left in the file are `backdrop-filter: none` on the
+  surfacing transition. The backlog note outlived the fix.
+- **`antialias: true` is untouched, deliberately.** It cannot be toggled on a
+  live context - it is a context-creation parameter - so it is all-or-nothing
+  for the session, and turning it off is the single most visible quality
+  change the app has: a low-poly editor is mostly edges. It is one word if
+  the phone is still getting warm, and it wants an eye on a real device
+  rather than a measurement in a software renderer, which cannot answer it.
 
 ## Five that could cost you work (v2.8b)
 

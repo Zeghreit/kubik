@@ -2360,7 +2360,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.8b</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.8c</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -4937,10 +4937,29 @@ function getMaskTexture(d) {
   return t;
 }
 
+/* ONE PLACE A PACKED MASK TEXTURE DIES (v2.8c). 128x128 RGBA is 64 KB of
+   the phone's texture memory per definition, and nothing ever gave one back
+   except deleting the whole material: trying a cloth, looking at it and
+   taking it off again left the bake behind. Measured at 640 KB held after
+   ten tried-and-dropped masks. */
+function dropMaskTexture(id) {
+  const t = _maskTex.get(id);
+  if (!t) return false;
+  t.dispose();
+  _maskTex.delete(id);
+  return true;
+}
+
 /* Re-bake IN PLACE: every wearer and every preview sees the new cloth with
    no shader recompile. The buffer is written through rather than replaced,
    so the texture object - and every uniform pointing at it - stays valid. */
 function rebakeMaskTexture(d, only) {
+  /* A DEFINITION THAT WANTS NO PATCH WANTS NO TEXTURE. This is the moment a
+     mask comes off - mkStructural calls it on every structural change - and
+     maskWantsPatch is the same predicate applyMaskPatch uses to decide
+     whether anything still samples it, so the two cannot disagree and a
+     live uniform can never be left pointing at a disposed texture. */
+  if (d && !maskWantsPatch(d)) { dropMaskTexture(d.id); return; }
   const t = _maskTex.get(d.id);
   if (!t) return;
   if (typeof only === 'number' && only >= 0 && only < MASK_SLOTS) {
@@ -5069,8 +5088,23 @@ function defWantsBump(d) {
    material then agreed with itself that it needed nothing, so extruding a
    face left the new faces flat while the old ones stayed rounded, with no
    way back but reopening the editor. One predicate, read by both. */
+/* A MASK THAT EXISTS KEEPS THE PATCH, even with every component switched
+   off (v2.8c). It used to ask whether any mask was LIVE, so switching a
+   component off dropped the shader patch and switching it on again put it
+   back - and every one of those crossings minted a WebGL program that three
+   never releases. Ten of them over twenty toggles, on the app's own path,
+   growing for as long as the session lasts.
+
+   Nothing else had to change, because this is what the design already said:
+   "the shader source is the same for one mask as for four, and an off mask
+   is amount zero". An off mask now really is amount zero rather than a
+   different shader. The loop early-outs on `i >= uKubikCount`, so a
+   definition whose masks are all off costs the same as one with none.
+
+   Crossing still happens once, when the first mask is added and when the
+   last is removed, which is correct and rare. */
 function maskWantsPatch(d) {
-  return !!maskOf(d) || (d && d.bevel > 0);
+  return maskCount(d) > 0 || (d && d.bevel > 0);
 }
 
 /* ONE SLOT'S NUMBERS, WRITTEN INTO A SCRATCH (v2.0b). packUniforms builds a
@@ -5270,7 +5304,18 @@ function applyMaskPatch(mat, d) {
      which still names whichever program compiled last. So a material coming
      BACK to a key it once compiled under renders from another program's
      uniform objects, and every slider we move writes into thin air. A fresh
-     generation is the only thing that guarantees the miss. */
+     generation is the only thing that guarantees the miss.
+
+     TRIED AND PUT BACK (v2.8c). Removing this bounded the program count -
+     seven to eight over twenty toggles instead of seven to seventeen - and
+     `refresh(known)` looked like it had made the fork redundant. It has not:
+     with the fork gone, moving a mask's colour after its component had been
+     switched off and on again did not change one pixel. The uniform store
+     holds the right values; three is reading a different set. _gpuchk asks
+     that question directly now, which is the only reason this is written
+     down as a fact rather than a suspicion.
+
+     What DID fix the leak is one line up the stack - see maskWantsPatch. */
   if (keyChanged && maskUniStore(mat).has(key)) key += '#' + (_maskGen++);
   _maskedMats.add(mat);
   _maskKey.set(mat, key);
@@ -28178,8 +28223,7 @@ document.getElementById('meDelete').addEventListener('click', () => {
      on drawing a definition the library no longer has. */
   prunePool(d.id + '|', null);
   App.objects.forEach(o => dressFromPool(o));
-  const _t = _maskTex.get(d.id);
-  if (_t) { _t.dispose(); _maskTex.delete(d.id); }
+  dropMaskTexture(d.id);        // one definition of the operation (v2.8c)
   pruneMaskImages();
   if (_matPreviewRig) {
     const _pm = _matPreviewRig.mats.get(d.id);
@@ -30160,6 +30204,12 @@ if (PICK_DEBUG) {
        slider release costs rather than drive it through a card's pencil. */
     openMatEditor, closeMatEditor, meCommit, renderMatPreviews,
     get matPreviews() { return _matPreviews; },
+    /* v2.8c: the two things that grow. A program count and a texture count
+       are the only honest way to ask whether a session leaks GPU memory -
+       everything else is inference from how warm the phone is. */
+    get matPoolSize() { return _matPool.size; },
+    get maskTexCount() { return _maskTex.size; },
+    dropMaskTexture,
     MATERIALS, getMaterialDef, updateMaterialEverywhere, saveMaterialLibrary,
     harvestLegacyMaterials, applyFinishToSelection,
     applyMaskPatch, ensureMaskPatches, rebakeMaskTexture,
