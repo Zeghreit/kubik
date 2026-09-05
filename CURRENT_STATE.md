@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~30,000 lines)
-- Version at time of writing: **2.6**
+- Version at time of writing: **2.7**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -35,6 +35,51 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Carve as well as bump (v2.7)
+
+The depth is **signed**. Left of the middle carves the mask into the surface,
+right of it stands it out, and zero is flat - one continuous sweep rather
+than two ranges with a hole between them. The control renames itself
+**Carve** the moment you cross over, which is the only thing on screen that
+says the slider has a left half.
+
+### Why not an invert switch
+
+It was the obvious alternative and it is the more expensive one. An `invert`
+flag would be a SECOND key on every mask - and a second chance for
+absent-versus-false to make a material stop matching itself across a file,
+which is the trap that once minted an "(imported)" copy of every masked
+preset on every load. The sign rides on the number that is already stored, so
+nothing new is written and nothing new can drift.
+
+### What the sign cost
+
+One predicate. `mk.bump > 0` was the "is there a bump here" test in six
+places, and it stopped being true the moment the depth could be negative.
+`maskBumped(mk)` is now the single reader, and it asks whether the KEY
+EXISTS - so a depth of zero is a live mask parked flat, not an absent one.
+That is exactly what lets the slider cross over: if zero meant off, dragging
+from carve to bump would switch the mask off and on again in the middle,
+recompiling as it went.
+
+The key is still deleted when the box is cleared. Everything the v2.6 section
+says about that still holds, and the probe still asserts a bumpless mask
+serialises byte for byte the way it did in v2.5.
+
+In the shader it is one character: `uKubikBump[i] != 0.0` rather than
+`> 0.0`. The height is signed, its gradient is signed, and the normal leans
+the other way; nothing else had to change. Clamped both ways in
+`maskSlotValues` now, because a hand-edited file carrying -40 would turn
+every face inside out.
+
+### Measured
+
+`_bumpchk.py` is up to 31 checks. The new ones drive the REAL slider rather
+than writing the field: a negative depth keeps the mask live, renames the
+control, gives a picture that is neither the raised one nor the plain one,
+and carries **as much** texture as the ridge rather than less - carving is
+the same height field with the sign flipped, not a weaker bump.
 
 ## Normals from the masks (v2.6)
 

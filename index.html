@@ -2298,8 +2298,11 @@
           <!-- The third component. A mask is a greyscale field and a normal
                is its slope, so every noise type already built is a bump for
                the cost of two derivatives. -->
-          <label class="mk-check"><input type="checkbox" id="mkBumpOn"> Bump <span id="mkBumpV"></span></label>
-          <input type="range" id="mkBump" min="0.05" max="1" step="0.05">
+          <label class="mk-check"><input type="checkbox" id="mkBumpOn"> <span id="mkBumpLbl">Bump</span> <span id="mkBumpV"></span></label>
+          <!-- Signed, and through zero rather than around it: left of the
+               middle carves the mask into the surface, right of it stands it
+               out, and 0 is flat. One sweep, no mode. -->
+          <input type="range" id="mkBump" min="-1" max="1" step="0.05">
           <label>Amount <span id="mkAmountV"></span></label>
           <input type="range" id="mkAmount" min="0" max="1" step="0.01">
           <label id="mkScaleLbl">Scale <span id="mkScaleV"></span></label>
@@ -2357,7 +2360,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.6</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.7</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -4641,7 +4644,7 @@ function maskOf(d) {
   const n = maskCount(d);
   for (let i = 0; i < n; i++) {
     const mk = d.masks[i];
-    if (mk && mk.on && (mk.colorOn || mk.roughOn || mk.bump > 0)) return mk;
+    if (mk && mk.on && (mk.colorOn || mk.roughOn || maskBumped(mk))) return mk;
   }
   return null;
 }
@@ -4985,7 +4988,7 @@ function defWantsField(d) {
   const n = maskCount(d);
   for (let i = 0; i < n; i++) {
     const m = d.masks[i];
-    if (m && m.on && maskCurvMode(m) && (m.colorOn || m.roughOn || m.bump > 0)) return true;
+    if (m && m.on && maskCurvMode(m) && (m.colorOn || m.roughOn || maskBumped(m))) return true;
   }
   return false;
 }
@@ -4999,12 +5002,32 @@ function defWantsField(d) {
    object-space normal used as a view-space one: lit from a fixed direction
    in the model's own frame, unchanged by the camera and unchanged by the
    depth slider. It looked like stone and it was wrong. */
+/* IS THERE A BUMP ON THIS MASK? (v2.7)
+
+   It used to be `mk.bump > 0`, everywhere, and that stopped being true the
+   moment the depth could be NEGATIVE: a dent is as real a bump as a ridge.
+   The test is now the existence of the key, so ZERO is a bump somebody has
+   deliberately parked flat on the way from one sign to the other - which is
+   what makes the slider a single continuous sweep from carved to raised
+   rather than two ranges with a hole in the middle.
+
+   The key is still DELETED when the box is cleared, and that discipline is
+   what the whole design rests on - see the editor's checkbox. */
+function maskBumped(mk) { return !!mk && typeof mk.bump === 'number'; }
+
+/* The control renames itself at the crossing. One slider doing two opposite
+   things needs to say which one it is doing, and the word is cheaper than a
+   second switch would have been - an `invert` flag would be another key on
+   every mask, and another chance for absent-versus-false to make a material
+   stop matching itself across a file. */
+function bumpWord(v) { return v < 0 ? 'Carve' : 'Bump'; }
+
 function defWantsBump(d) {
   if (!d) return false;
   const n = maskCount(d);
   for (let i = 0; i < n; i++) {
     const m = d.masks[i];
-    if (m && m.on && m.bump > 0) return true;
+    if (m && m.on && maskBumped(m)) return true;
   }
   return false;
 }
@@ -5034,7 +5057,7 @@ const _maskSlot = {
 function maskSlotValues(list, k) {
   const mk = list[k];
   const s = _maskSlot;
-  s.live = !!(mk && mk.on && (mk.colorOn || mk.roughOn || mk.bump > 0));
+  s.live = !!(mk && mk.on && (mk.colorOn || mk.roughOn || maskBumped(mk)));
   s.color = mk && mk.color ? mk.color : '#ffffff';
   s.amount = s.live ? mk.amount : 0;
   /* A shape mask's Width is a FRACTION of the field's reach, so it has to be
@@ -5050,7 +5073,9 @@ function maskSlotValues(list, k) {
   /* THE PRESENCE OF THE KEY IS THE SWITCH. There is no `bumpOn` beside it on
      purpose - see the editor's checkbox for why the key is deleted rather
      than written false. */
-  s.bump = s.live && mk.bump > 0 ? Math.min(1, mk.bump) : 0;
+  // Clamped BOTH ways now: a hand-edited file can carry anything, and a
+  // depth of -40 would turn every face inside out.
+  s.bump = s.live && maskBumped(mk) ? Math.max(-1, Math.min(1, mk.bump)) : 0;
   // 0 = read the baked cloth texture, 1 = concave edges, 2 = convex.
   s.source = cm;
   s.blur = cm && mk ? Math.min(1, Math.max(0, mk.contrast)) : 0.5;
@@ -5156,7 +5181,7 @@ function applyMaskPatch(mat, d) {
       u.uKubikRoughOn.value.push(s.roughOn);
       u.uKubikRough.value.push(s.rough);
       u.uKubikBump.value.push(s.bump);
-      if (s.bump > 0) u.uKubikBumpAny.value = 1;
+      if (s.bump !== 0) u.uKubikBumpAny.value = 1;
       u.uKubikSource.value.push(s.source);
       u.uKubikBlur.value.push(s.blur);
       u.uKubikNoise.value.push(s.noise);
@@ -5193,7 +5218,7 @@ function applyMaskPatch(mat, d) {
       u.uKubikRoughOn.value[k] = s.roughOn;
       u.uKubikRough.value[k] = s.rough;
       u.uKubikBump.value[k] = s.bump;
-      if (s.bump > 0) anyBump = 1;
+      if (s.bump !== 0) anyBump = 1;
       u.uKubikSource.value[k] = s.source;
       u.uKubikBlur.value[k] = s.blur;
       u.uKubikNoise.value[k] = s.noise;
@@ -5618,7 +5643,11 @@ function applyMaskPatch(mat, d) {
            gradient below compares it against a real pixel footprint; and it
            means a fine mask is steeper than a coarse one at the same depth,
            which is what fine and deep actually looks like. */
-        '    if (uKubikBump[i] > 0.0) {',
+        /* NOT `> 0.0`. A negative depth carves the mask in instead of
+           standing it out, and the whole of the arithmetic below already
+           carries the sign through - the height is signed, its gradient is
+           signed, and the normal leans the other way. */
+        '    if (uKubikBump[i] != 0.0) {',
         /* FADED OUT WHEN THE MASK STOPS FITTING IN A PIXEL. A cloth mask is
            128 texels across its period, so one texel is 2/(128*scale) object
            units; a shape mask's finest structure is its own band. Once a
@@ -28027,7 +28056,7 @@ function refreshMaskControls(d) {
   /* The checkbox reads the DEPTH, because the depth is the only thing
      stored - a mask with no bump has no key at all. An unticked box leaves
      the slider parked at a sensible depth to turn on with. */
-  const bumped = mk.bump > 0;
+  const bumped = maskBumped(mk);
   document.getElementById('mkBumpOn').checked = bumped;
   document.getElementById('mkBump').value = bumped ? mk.bump : 0.5;
   document.getElementById('mkBump').style.opacity = bumped ? '' : '.4';
@@ -28038,6 +28067,7 @@ function refreshMaskControls(d) {
      commit an undo step for it. */
   document.getElementById('mkBump').disabled = !bumped;
   document.getElementById('mkBumpV').textContent = bumped ? Number(mk.bump).toFixed(2) : '';
+  document.getElementById('mkBumpLbl').textContent = bumpWord(bumped ? mk.bump : 1);
   document.getElementById('mkAmount').value = mk.amount;
   document.getElementById('mkScale').value = mk.scale;
   document.getElementById('mkDetail').value = mk.detail;
@@ -28066,10 +28096,11 @@ function mkLive(rebake) {
   mk.contrast = parseFloat(document.getElementById('mkContrast').value);
   // Only while it is ON - writing it back when it is off would put the key
   // on a mask that has no bump, which is the one thing this must not do.
-  if (mk.bump > 0) mk.bump = parseFloat(document.getElementById('mkBump').value);
+  if (maskBumped(mk)) mk.bump = parseFloat(document.getElementById('mkBump').value);
   if (maskCurvMode(mk)) mk.nscale = parseFloat(document.getElementById('mkNScale').value);
   document.getElementById('mkRoughV').textContent = mk.rough.toFixed(2);
-  document.getElementById('mkBumpV').textContent = mk.bump > 0 ? mk.bump.toFixed(2) : '';
+  document.getElementById('mkBumpV').textContent = maskBumped(mk) ? mk.bump.toFixed(2) : '';
+  document.getElementById('mkBumpLbl').textContent = bumpWord(maskBumped(mk) ? mk.bump : 1);
   document.getElementById('mkAmountV').textContent = mk.amount.toFixed(2);
   document.getElementById('mkScaleV').textContent = mk.scale.toFixed(2);
   document.getElementById('mkDetailV').textContent = mkNum(mk.detail);
@@ -28107,7 +28138,10 @@ function mkLive(rebake) {
        bump to has to serialise byte for byte the way it did before v2.6.
        Whatever else is added here later must follow the same rule. */
     if (document.getElementById('mkBumpOn').checked) {
-      mk.bump = parseFloat(document.getElementById('mkBump').value) || 0.5;
+      /* Number.isFinite, not `|| 0.5`: zero is a legal depth now and `||`
+         would quietly promote a deliberately flat bump to a raised one. */
+      const v = parseFloat(document.getElementById('mkBump').value);
+      mk.bump = Number.isFinite(v) ? v : 0.5;
     } else {
       delete mk.bump;
     }
@@ -29740,6 +29774,8 @@ if (PICK_DEBUG) {
     wantsShareSheet, downloadBlob, saveBlobAsDownload,
     // v2.5: the picture, and the rule that decides what is in it.
     savePictureAction, pictureHiddenParts, dataUrlBytes,
+    // v2.7: the signed depth, and the one predicate that reads it.
+    maskBumped, defWantsBump,
     restoreDoc, serializeDoc, refuseOp, pushHistory, toast,
     showMirrorChooser, hideOpBar, arraySelection, arrayOp,
     solidifySelection, solidifyOp, solidifySurvey, createObjectFromEditable,
