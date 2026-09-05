@@ -61,6 +61,47 @@ is not - it lands at 2.15x rather than 4x because much of the per-thumbnail
 cost is fixed. A slider RELEASE re-renders one definition, so it pays 18ms
 rather than 165ms; that is what `onlyId` has been for since v2.3c.
 
+### What the bigger tile costs at library scale (v2.10a)
+
+The tile change was measured at nine definitions, which is not a library, so
+it was measured again at **49** - every one of them shape-masked, the
+expensive kind. Two costs live in a tray build and they have different
+owners:
+
+| 49 definitions | v2.9 (104px) | v2.10 (208px) |
+|---|---|---|
+| cold - first time each is drawn | 10.3 s | 11.1 s |
+| warm - drawn again | 456 ms | 1125 ms |
+| warm, per definition | 9.3 ms | 23.0 ms |
+
+**The warm number is v2.10's, and it is linear** - 23.0 ms each at 49 against
+19.2 at nine, so the readback cost per definition does not grow with the
+library. That is the risk the bigger tile opened, and it is bounded.
+
+**The cold number is not v2.10's.** It moved 7%, and the 10 seconds under it
+was already there: a first tray open compiles **one WebGL program per masked
+definition**, forty for forty, serialised on the main thread.
+
+That is structural rather than a bug. three runs `onBeforeCompile` only on a
+program-cache MISS, and the custom uniforms are injected there, so the cache
+key has to carry the definition id - two definitions sharing a program means
+the second never gets its uniforms at all. The programs cannot be shared
+without a different approach entirely.
+
+**THE MILLISECONDS ARE SWIFTSHADER'S, NOT A PHONE'S.** The probe runs on a
+software rasteriser where a program compile costs around 210 ms, against
+single digits to low tens on real hardware. So the same 49-material library
+is more likely half a second to a second and a half on a device - noticeable
+on a first tray open, not a hang - and a millisecond threshold set here would
+be a fact about this machine. `_thumbchk` section 5 therefore asserts the
+COUNT, which is the same everywhere, and prints the times without judging
+them. Verified against a build that bumps the mask generation on every patch:
+90 programs for 40 definitions, and "warm" stops being warm.
+
+If it ever does bite on a real device, the fix is to SPREAD the work - a few
+tiles per frame, or render each card as it scrolls into view - not to share
+the program.
+
 ### The metric had to be replaced before it could answer
 
 The first one was a Laplacian over the ball, which answers to any hard line -
@@ -11127,6 +11168,15 @@ that a note gets believed for a year.
   a small job - **there is no UV attribute anywhere in the file**, on purpose,
   which is why the whole mask system is triplanar - so it would need an
   unwrap first. Say that plainly when it is reported as a bug.
+- **A first tray open compiles a program per masked definition.** Forty for
+  forty, on the main thread, and nothing spreads them. Measured at v2.10a and
+  left alone deliberately: the only timings available are a software
+  rasteriser's, which exaggerates a compile by roughly twenty times, so the
+  real question - does this hitch on the phone with a real library? - has not
+  been asked yet. Ask it before building anything. If it does, the answer is
+  to spread the work across frames or render each card as it scrolls into
+  view; it is NOT to share the program, which three's architecture forbids
+  (see the v2.10a block above). `_thumbchk` section 5 guards the count.
 - **Moving the pivot / re-origining an object.** Deferred. Capturing the
   symmetry plane from geometry buys most of what it would have.
 - **Gesture-driven modelling tools** - extrude on a two-finger tap, and the

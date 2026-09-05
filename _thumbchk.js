@@ -302,6 +302,80 @@
     ok('and costs a sane amount per definition', each < 60,
        each.toFixed(1) + ' ms each, ' + ms.toFixed(0) + ' ms for ' + K.MATERIALS.size);
 
+    say('');
+    say('5. and it still opens at library scale');
+    mark('5');
+    /* THE RISK v2.10 OPENED. Doubling the tile doubled the readback, and the
+       readback is a synchronous toDataURL plus a PNG encode on the main
+       thread - PER DEFINITION. Nine of them was measured; a real library is
+       not nine. Every one of these is shape-masked, which is the expensive
+       kind, so this is the worst case rather than the average.
+
+       ABSOLUTE MILLISECONDS HERE ARE NOT A PHONE'S. This runs on SwiftShader,
+       a software rasteriser, so the DRAW is far slower than any real GPU -
+       but the encode, which is the dominant term, is CPU either way. Treat
+       the per-definition figure as indicative and the SHAPE of the curve as
+       the real reading: it must stay linear, with no term that grows with
+       the size of the library. */
+    for (let i = 0; i < 40; i++) def('t_bulk' + i, 'Bulk ' + i, [shapeMask('edges')]);
+    const N = K.MATERIALS.size;
+    /* THE RIG'S OWN CONTEXT, not the viewport's - they are separate WebGL
+       contexts with separate program caches, and it is the rig that compiles
+       one per definition. */
+    const progs0 = rig.r.info.programs.length;
+    /* COLD, then WARM. Two different costs live in that one number and they
+       have different fixes: a definition drawn for the FIRST time compiles
+       its own shader program - the mask cache key carries the definition id,
+       so identical GLSL still compiles once per definition - and every
+       definition drawn at all pays a toDataURL readback and a PNG encode.
+       Only the second of those is v2.10's to answer for. */
+    const tCold = performance.now();
+    K.renderMatPreviews();
+    const coldMs = performance.now() - tCold;
+    const tWarm = performance.now();
+    K.renderMatPreviews();
+    const warmMs = performance.now() - tWarm;
+    const progs1 = rig.r.info.programs.length;
+    say('  ..    ' + N + ' definitions: ' + coldMs.toFixed(0) + ' ms cold, ' +
+        warmMs.toFixed(0) + ' ms warm (' + (coldMs / N).toFixed(1) + ' / ' +
+        (warmMs / N).toFixed(1) + ' ms each)');
+    say('  ..    rig programs ' + progs0 + ' -> ' + progs1 + ' for 40 new masked definitions');
+    /* THE READBACK IS THE PART A BIGGER TILE PAYS FOR, and it is the warm
+       number. Held against the nine-definition figure measured moments ago
+       on this same page, so it compares like with like. */
+    ok('the readback cost does not grow with the library',
+       (warmMs / N) < each * 1.6, (warmMs / N).toFixed(1) + ' ms each warm vs ' +
+       each.toFixed(1) + ' at nine');
+    /* THE COMPILE IS NOT v2.10's, and it is asserted as a COUNT rather than a
+       time on purpose. The milliseconds here are SwiftShader's - a software
+       rasteriser, where a program compile costs ~210ms against single-digit
+       to low-tens on real hardware - so a millisecond threshold set here
+       would be a number about this machine. The COUNT is the same everywhere.
+
+       One program per masked definition is structural, not a bug: three runs
+       onBeforeCompile only on a program-cache MISS, and the custom uniforms
+       are injected there, so the cache key has to carry the definition id or
+       the second definition to use a shared program never gets its uniforms
+       at all. See the onBeforeCompile law in the materials roadmap.
+
+       What this guards is that it stays ONE each. If anything ever makes a
+       preview material bounce between keys - the `#n` fork firing on every
+       pass, say - this goes quadratic and the first tray open on a real
+       library becomes a hang. That is a live hazard: it is exactly what the
+       shared preview material used to do before a2.21. */
+    const minted = progs1 - progs0;
+    ok('a first open compiles one program per definition, not more',
+       minted >= 38 && minted <= 44, minted + ' programs for 40 new definitions');
+    /* And the shape of the cost, so the next person does not have to
+       re-derive which half is which. */
+    say('  ..    cold is ' + (coldMs / Math.max(warmMs, 1)).toFixed(1) +
+        'x warm - the difference is the compile, paid once');
+    ok('one definition alone stays cheap', (() => {
+      const t = performance.now();
+      K.renderMatPreviews('t_edges');
+      return performance.now() - t;
+    })() < each * 2.5, 'the slider-release path');
+
     ok('the probe ran to the end', true);
     finish();
   }
