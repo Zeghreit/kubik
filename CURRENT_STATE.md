@@ -9778,6 +9778,46 @@ drags; `window.__kubik` exposes `App`, `camera`, `orbit`, `camAnim`,
 `vertexSpacing()` and helpers. This has caught several real bugs before they
 were pushed and produced the vertex spacing table above.
 
+### How every probe launches Chrome, and why each flag is there
+
+Got wrong for a long time, in two different directions, and both were
+written down as "known flakes" rather than found. Any new probe copies this:
+
+- **`--user-data-dir` pointing at a `tempfile.mkdtemp()`, removed at the
+  end.** NOT absent: without it the run shares Chrome's default profile, and
+  with a Chrome open on the machine it exits in about four seconds with an
+  empty DOM - which is what `_imp_probe`'s "CDN race" looked like every time
+  anyone checked. NOT fixed either: the app autosaves its document into
+  localStorage, so a directory that survives means the next run opens the
+  PREVIOUS run's scene. `_imp_probe` reported "2 objects added" and a face
+  count of 10 where it wanted 6 the first time it was given a fixed one.
+  A fixed directory also lets Chrome restore a saved WINDOW SIZE, which is
+  why five probes' pixel numbers moved when this was fixed - they had been
+  measuring at whatever size the last run left behind rather than the one
+  they ask for.
+- **`--disk-cache-dir` pointing at a SHARED `_httpcache`.** Deliberately not
+  the profile. The app pulls three.js from a CDN on every load, so a fresh
+  profile means a cold cache means a real network fetch inside a virtual-time
+  budget - the actual, smaller grain of truth in the "CDN race" note.
+  State fresh, network warm.
+- **`--no-first-run --no-default-browser-check --disable-sync
+  --disable-background-networking --disable-component-update
+  --disable-default-apps --disable-extensions --metrics-recording-only
+  --mute-audio`.** A brand-new profile registers with GCM, installs default
+  web apps and pulls component updates before it gets to the page. That alone
+  was enough to blow `_imp_probe`'s budget.
+
+`_fixprofs2.py`, `_fixprofs3.py` and `_fixprofs4.py` applied these across the
+suite; `_fixbom.py` cleaned up after the first of them, because twelve probes
+were saved with a UTF-8 BOM and a prepended line pushes the BOM onto line 2,
+which is a syntax error.
+
+### The suite is deterministic now
+
+`py _runprobes.py _a` then `py _runprobes.py _b` then
+`py _cmpdirs.py _a _b` reads **35 of 35 files identical**. Do that before
+believing any diff: if a line moved, the app moved.
+
 **Three harnesses now, all untracked, all the same shape** - append a plain
 `<script>` to a COPY of index.html, serve the folder on 127.0.0.1, run
 headless Chrome from a PYTHON subprocess with a fresh `--user-data-dir`:
@@ -9793,6 +9833,32 @@ headless Chrome from a PYTHON subprocess with a fresh `--user-data-dir`:
 - `_chk.py` - the one-off. A dozen lines that assert a handful of facts and
   dump them. Use it after a REMOVAL: it is what proved a vertex pick leaves
   the camera at 0.0000 once Aim assist was gone.
+
+**And a fourth family, which cannot join the suite.** `_runprobes.py` runs
+everything under SwiftShader with Chrome's virtual clock, where
+`requestAnimationFrame` never fires and `performance.now()` reads zero. Any
+question about time, about the render loop, or about a CSS transition is
+unanswerable there - a screenshot of an open tray is a picture of its START
+value, because the `max-height` transition never ran. These serve the folder
+themselves, run headless Chrome with no time budget, and have the page POST
+its own answer back (`--dump-dom` fires at load, far too early). All take an
+optional target filename, so a `_bak_*.html` gives a before number:
+
+| probe | asks |
+|---|---|
+| `_field_probe.py` | bakes per frame of an op-slider drag |
+| `_loop_probe.py` | idle frames, idle loop runs, the wake, the frame cap, the gesture pixel ratio |
+| `_rotchk.py` | does a rotation leave the renderer laid out for the viewport it has |
+| `_traychk.py` | the rail's geometry and the two shelves |
+| `_opbarchk.py` | the op bar's row at 430 / 393 / 375 / 360 / 320 |
+| `_cubelbl.py` | the cube's lit face and the colour it is lit with |
+| `_fixchk.py` | v2.3b's four correctness fixes, each with the sequence that broke it |
+| `_matperf.py` | `toDataURL` calls per material-slider release, and `refreshUI` |
+
+`_fixchk.py` is the one to copy the shape of: it prints `VERDICT=PASS/FAIL`
+and it is **verified against the broken copy** - run it against
+`_bak_v23a.html` and it fails 6 of 12 and names each bug. A probe that has
+never been shown to fail is a probe that proves nothing.
 
 **And when a bug is on the USER'S model, ask for the file.** a2.29e was
 found by reimplementing `applyShading`'s wear-edge pass in Python and
@@ -10365,11 +10431,14 @@ one re-run (4 cubes, Euler 8 → 4).
   where a save stringifies immediately; fatal to any test that holds a doc
   and then edits state. **Deep-copy a serialised doc before touching
   anything.**
-- Two probe lines are known to FLAKE, and neither is a regression:
-  `_perf_out` `slider_coalescing` (the middle number, a race on whether the
-  scheduled apply flushed before the probe looked) and `_theme_out`
-  `8.palette` (26 vs 28 tones off the view cube's SwiftShader canvas). Re-run
-  three times before believing either.
+- ~~Two probe lines are known to FLAKE.~~ **NEITHER DOES ANY MORE.** See
+  "The suite is deterministic now" below. `slider_coalescing` printed a
+  number this harness could not know and it was deleted; `8.palette` was
+  counting tones off a cube that has had three colour schemes since the note
+  was written, and it has read the same value on every run since v2.3. **Two
+  consecutive full runs are now byte-identical across all 35 files** - which
+  is the state the note above was written in the absence of. If a line moves,
+  it moved because the app moved.
 - Unmeasured on a phone: the environment's full-float DataTexture
   (`OES_texture_float_linear` is missing on many mobile GPUs), the atlas's
   two-tap slice interpolation, and the four extra field fetches a2.29c and
