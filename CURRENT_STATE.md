@@ -4,8 +4,8 @@ Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
 relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~29,200 lines)
-- Version at time of writing: **2.4**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~29,800 lines)
+- Version at time of writing: **2.5**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -35,6 +35,78 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## A picture of what you made (v2.5)
+
+The three exports send the MODEL somewhere else to be opened. This one sends
+the picture: the view as you framed it, with the workshop taken out of the
+shot, handed to the same share sheet everything else leaves by. Until now the
+only way to get one was a phone screenshot with the whole UI in it - the
+wrong artefact for what this app is, a fidget whose output is usually
+something you want to look at rather than something you want to open in
+Blender.
+
+**Save a picture**, in the drawer's Files section, under the format chips.
+`kubik-picture.png`, the size of the viewport's own buffer, at full pixel
+ratio whatever a gesture had left it at.
+
+### One rule decides what is in the shot
+
+Not a list of names - a list is a thing to forget to add to, and this app
+grows helpers. Everything the scene holds that is not a model goes dark (the
+grid, the pivot, the knife, the snap marker), and so does every CHILD of a
+model, because every child of a model IS an overlay: the dots, the edge
+lines, the face tint. Lights are not things you can see, so they stay. So
+does the background - it is the theme's own colour, and a model standing on
+it is the picture this app should make.
+
+Two properties fall out of the rule rather than being written: an object the
+user has hidden stays out of the shot, because only what was visible is
+recorded and restored; and a model parented into anything puts that thing in
+the keep set, so the picture cannot go blank the day the pivot becomes a
+container rather than a reference frame.
+
+### The two things that have to happen in one tick
+
+The viewport renderer is `preserveDrawingBuffer: false`, so its buffer is
+valid until the end of the task that drew it and empty afterwards.
+**`toDataURL` goes on the line after `render`** or it photographs nothing -
+which is also why the shot does not go through the frame loop at all: a
+picture scheduled for the next frame is a picture of black.
+
+And it stays synchronous all the way into `downloadBlob`, for a second
+reason: the share sheet needs the tap's transient activation, and `toBlob`
+would hand its result back in a later task. `toDataURL` plus `atob` costs one
+string the size of the picture, once, on a button somebody pressed on
+purpose.
+
+### Three things a reviewer caught, all worth keeping written down
+
+- **The hiding happens INSIDE the try, into a list the caller already owns.**
+  Written the other way round - hide, then enter the try - a throw half way
+  through the hiding leaves the grid switched off for the rest of the session
+  and nothing anywhere knows what to put back.
+- **A `catch`, or the button looks dead.** `toDataURL` can throw, and an
+  allocation that fails on a phone is the realistic way; without one the
+  exception walks out past both toasts and the tap does nothing visible.
+- **The workshop is drawn back in the SAME task.** The dimmed frame is the
+  one the browser is about to composite, so without a second render the grid
+  and the dots blink out for a frame on the way to the share sheet.
+
+### Measured
+
+`_shotchk.py`, 26 checks, and verified against two broken copies rather than
+only a good one:
+
+- `_bak_v24.html` - no button and no function, 4 of 4 fail.
+- `_bak_v25pre.html`, built by `_mkbroken25.py` with the last two fixes above
+  undone: the same-task check fails, and the mid-hide throw walks straight out
+  of `savePictureAction` and takes the probe with it, which is exactly the bug.
+
+It **counts pixels** rather than trusting the file. A blank PNG decodes
+perfectly well - the same trap the icon fell into at v2.4 - so the shot has
+to have more than 2000 pixels that are not its own corner colour, and FEWER
+of them than the same frame rendered with the grid in it.
 
 ## It gets out of the phone (v2.4)
 
@@ -10524,6 +10596,16 @@ one re-run (4 cubes, Euler 8 → 4).
   consecutive full runs are now byte-identical across all 35 files** - which
   is the state the note above was written in the absence of. If a line moves,
   it moved because the app moved.
+- **Every export toasts before the share sheet has been answered.** All
+  four of them - .glb, .obj, .stl, the JSON, and now the picture - say
+  "Exported"/"saved" synchronously, so cancelling the iOS sheet still reads
+  as success. The fix belongs in `downloadBlob` (return a promise, toast on
+  the outcome), which is one change for all five call sites rather than five.
+- **Named saves already exist** and have since well before v2.4 - the
+  drawer's "Models" section, `#projName` / `#btnProjSave` / `#projList`, kept
+  in localStorage with the last state restored automatically. It was proposed
+  again at v2.4 as if it were new. Read the drawer markup before proposing a
+  feature that stores something.
 - Unmeasured on a phone: the environment's full-float DataTexture
   (`OES_texture_float_linear` is missing on many mobile GPUs), the atlas's
   two-tap slice interpolation, and the four extra field fetches a2.29c and

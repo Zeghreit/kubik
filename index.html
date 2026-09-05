@@ -2352,7 +2352,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.4</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.5</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -2444,6 +2444,12 @@
           <button id="btnExportGlb" title="Export glTF binary">.glb</button>
           <button id="btnExportObj" title="Export Wavefront OBJ">.obj</button>
           <button id="btnExportStl" title="Export STL">.stl</button>
+        </div>
+        <!-- A picture, not a model - the view as you framed it, without the
+             app in the shot. It sits with the exports because it is the
+             other thing that leaves. -->
+        <div class="drawer-row">
+          <button id="btnShot" title="Save the view as a PNG">Save a picture</button>
         </div>
         <!-- "Bring in", not "Import": the row above is what goes OUT, and
              the two read as a pair without either needing a heading. -->
@@ -24999,6 +25005,100 @@ document.getElementById('btnExportStl').addEventListener('click', () => {
   toast('Exported .stl');
 });
 
+/* ---------------- A picture of the view (v2.5) ----------------
+
+   The three exports above send the MODEL somewhere else to be opened. This
+   one sends the picture: what is on the screen, framed exactly the way you
+   left it, with the workshop taken out of the shot. It is the natural thing
+   to come out of a session, and until now the only way to get one was a
+   phone screenshot with the whole UI in it.
+
+   ONE RULE DECIDES WHAT IS IN THE SHOT, not a list of names - a list is a
+   thing to forget to add to, and this app grows helpers. Everything the
+   scene holds that is not a model goes dark - the grid, the pivot, the
+   knife, the snap marker - and so does every CHILD of a model, because every
+   child of a model IS an overlay: the dots, the edge lines, the face tint,
+   put there by ensureHelpers and its neighbours. Lights are not things you
+   can see, so they stay. So does the background: it is the theme's own
+   colour, and a model standing on it is the picture this app should make.
+
+   THE READ HAPPENS IN THE SAME TICK AS THE RENDER. The viewport renderer is
+   preserveDrawingBuffer:false - its buffer is valid until the end of this
+   task and empty after it - so toDataURL goes on the line after render, or
+   it photographs nothing. That is also why the shot does not go through the
+   frame loop: a picture scheduled for the next frame is a picture of black.
+
+   AND SYNCHRONOUS ALL THE WAY INTO downloadBlob, for a second reason: the
+   share sheet needs the tap's transient activation, and toBlob would hand
+   its result back in a later task. toDataURL plus atob costs one string the
+   size of the picture, once, on a button somebody pressed on purpose. */
+/* IT IS HANDED THE LIST IT FILLS, rather than making one and returning it,
+   so that the caller owns the record from before the first thing goes dark.
+   Built the other way round, a throw half way through the hiding would leave
+   the grid switched off for the rest of the session and nothing anywhere
+   would know what to put back. */
+function pictureHiddenParts(hidden) {
+  /* The models, and everything they hang from. Nothing re-parents an object
+     today - the pivot is a reference frame, not a container - but the shot
+     must not go blank on the day something does, and a model parented into
+     the pivot puts the PIVOT in this set, which is what keeps it visible. */
+  const keep = new Set();
+  App.objects.forEach(o => {
+    let p = o.mesh;
+    while (p && p !== scene) { keep.add(p); p = p.parent; }
+  });
+  const dim = (o) => { if (o.visible) { o.visible = false; hidden.push(o); } };
+  scene.children.forEach(o => { if (!o.isLight && !keep.has(o)) dim(o); });
+  App.objects.forEach(o => o.mesh.children.forEach(dim));
+  return hidden;
+}
+
+function dataUrlBytes(url) {
+  const bin = atob(url.slice(url.indexOf(',') + 1));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function savePictureAction() {
+  if (!App.objects.length) { toast('Nothing to picture'); return; }
+  /* A gesture may have left the viewport at LIVE_PIXEL_RATIO, and a picture
+     is not a frame of a gesture. Full resolution first - which is where the
+     next frame wanted it anyway, so there is nothing to put back. */
+  setRenderScale(false);
+  const hidden = [];
+  let url = '';
+  try {
+    pictureHiddenParts(hidden);
+    renderer.render(scene, camera);
+    url = renderer.domElement.toDataURL('image/png');
+  } catch (err) {
+    /* Without a catch the tap does NOTHING VISIBLE. toDataURL can throw - an
+       allocation that fails on a phone is the realistic one - and the
+       exception would walk straight out past both toasts below, so the
+       button would look dead rather than sorry. */
+    console.error(err);
+  } finally {
+    /* A finally, not the next line: if any of that throws, the workshop
+       still has to come back. A grid left hidden would read as the app
+       losing it. */
+    hidden.forEach(o => { o.visible = true; });
+    /* And drawn back in THIS task. The dimmed frame is the one the browser
+       is about to composite, so without a second render the grid and the
+       dots blink out for one frame on the way to the share sheet. */
+    try { renderer.render(scene, camera); } catch (_) {}
+    invalidate();
+  }
+  /* `data:,` is what a canvas with no size returns, and the floor catches
+     the other degenerate answer. Neither can tell a blank picture from a
+     picture of an empty background - nothing can - which is exactly why the
+     read is on the line after the render and not a tick later. */
+  if (url.indexOf('data:image/png') !== 0 || url.length < 1000) { toast('Picture failed'); return; }
+  downloadBlob([dataUrlBytes(url)], 'kubik-picture.png', 'image/png');
+  toast('Picture saved');
+}
+document.getElementById('btnShot').addEventListener('click', savePictureAction);
+
 /* ---------------- UI wiring ---------------- */
 
 /* ---------------- Thumb hub ----------------
@@ -29447,6 +29547,8 @@ if (PICK_DEBUG) {
     axisTooFlat, beginExtrudeDrag, updateExtrudeDrag, endExtrudeDrag,
     // v2.4: which way a file leaves, and the two halves of it.
     wantsShareSheet, downloadBlob, saveBlobAsDownload,
+    // v2.5: the picture, and the rule that decides what is in it.
+    savePictureAction, pictureHiddenParts, dataUrlBytes,
     restoreDoc, serializeDoc, refuseOp, pushHistory, toast,
     showMirrorChooser, hideOpBar, arraySelection, arrayOp,
     solidifySelection, solidifyOp, solidifySurvey, createObjectFromEditable,
