@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~30,400 lines)
-- Version at time of writing: **2.8d**
+- Version at time of writing: **2.8e**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -10321,6 +10321,21 @@ conflictEdges, reversed, ok}`.
 
 ## Testing loop
 
+**The harness is in the repo (v2.8e).** 136 files - every `_*_probe.py` /
+`.js` pair, every `_*chk.py` / `.js`, plus `_verify.py`, `_runprobes.py`,
+`_cmpdirs.py` and `_pageschk.py`. It was untracked until v2.8e: the `_`
+prefix is in `.gitignore` for the 549 one-off PATCH scripts, and it had
+quietly swallowed the entire test suite, so `git ls-files "_*"` returned
+nothing and losing this machine would have lost the ability to check any
+claim in this file. `.gitignore` now un-ignores those two name families by
+pattern, so **a new probe named `_<thing>_probe.py` or `_<thing>chk.py` is
+tracked without anyone remembering to say so** - keep to the naming and it
+looks after itself.
+
+Recorded probe OUTPUTS stay out (`_v*/` folders, `_*_out.txt`, generated
+`_*.html`): they are regenerable from the tracked scripts and the app, which
+is the point of having them.
+
 Node is installed (portable, no installer) at
 `%USERPROFILE%\Tools\node-v24.19.0-win-x64`. `_verify.py` uses it.
 
@@ -10965,15 +10980,6 @@ that a note gets believed for a year.
   "saved" synchronously, so cancelling the iOS sheet still reads as success.
   The fix belongs in `downloadBlob` (return a promise, toast on the outcome),
   which is one change for all five call sites rather than five.
-- **The whole test harness is untracked, not just `_verify.py`.** This is the
-  item that grew. `git ls-files "_*"` returns **nothing**, against 984
-  `_*.py` files in the repo root: every probe, every harness, `_verify.py`,
-  `_runprobes.py`, `_cmpdirs.py`, the 35 suites and each version's baseline
-  outputs. The `_` prefix is in `.gitignore` by convention, and the convention
-  ate the evidence. **Losing this machine loses the ability to check any claim
-  in this file.** It is a public repo, so committing it is the owner's call,
-  not Claude's - but it is the largest single risk on this list and it had
-  never been written down as one.
 - **Moving the pivot / re-origining an object.** Deferred. Capturing the
   symmetry plane from geometry buys most of what it would have.
 - **Gesture-driven modelling tools** - extrude on a two-finger tap, and the
@@ -10999,6 +11005,12 @@ that a note gets believed for a year.
   load. The comment in the code that claimed otherwise now says this instead.
 - ~~`mkStructural` re-bakes the mask texture on every structural change.~~
   Fixed at v2.8d, above.
+- ~~The whole test harness is untracked, not just `_verify.py`.~~ **Committed
+  at v2.8e** - 136 files, and `.gitignore` un-ignores the two naming families
+  by pattern so new ones follow automatically. See the Testing loop. This was
+  the largest single risk on the list and had never been written down as one:
+  `git ls-files "_*"` returned nothing, because the rule written for 549
+  disposable patch scripts had swallowed the suite with them.
 - ~~Normals from the masks is the agreed next feature.~~ Shipped at v2.6, and
   signed at v2.7 so it carves as well as bumps.
 - **Overstated, now narrowed:** "`refreshOutliner` rebuilds the whole list on

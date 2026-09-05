@@ -10,7 +10,6 @@ _out.txt
 
 _test.html
 
-_verify.py
 _check.mjs
 
 # Everything with a leading underscore is a scratch file: patch scripts,
@@ -20,3 +19,38 @@ _check.mjs
 # deserves to be tracked.
 _*
 diff.txt
+
+# THE HARNESS IS TRACKED (v2.8d). The rule above was written for patch
+# scripts - one-off, disposable, 549 of them - and it swallowed the test
+# suite with them: `git ls-files "_*"` returned NOTHING against 262 probe
+# and check files. Losing this machine would have lost the ability to check
+# any claim in CURRENT_STATE.md, which is most of what that file is for.
+#
+# These patterns are deliberately shaped so a NEW probe is tracked by
+# default: name it `_<thing>_probe.py` / `.js` or `_<thing>chk.py` / `.js`
+# and it lands in the repo without anyone remembering to say so.
+!_verify.py
+!_runprobes.py
+!_cmpdirs.py
+!_pageschk.py
+!_diffprobes.py
+!_probe.py
+!_probe_js.js
+!_*_probe.py
+!_*_probe.js
+!_*_probe2.py
+!_*_probe2.js
+!_*chk.py
+!_*chk.js
+
+# Two patch scripts that happen to end in `_probe.py`. Not harness.
+_fix_probe.py
+_fix_probe2.py
+
+# The recorded probe OUTPUTS stay out: the `_v*/` before-and-after folders,
+# `_*_out.txt` reports, generated harness HTML and version backups. They are
+# regenerable from the tracked scripts and the app, which is the point.
+_v[0-9]*/
+_a2[0-9]*/
+_*_out.txt
+_*.html
