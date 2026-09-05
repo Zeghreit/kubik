@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~29,200 lines)
-- Version at time of writing: **2.2b**
+- Version at time of writing: **2.3**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -35,6 +35,87 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## The view cube lights the face you are looking down (v2.3)
+
+Zeghreit's, and the third try at this cube's colour — the one that fits the
+app rather than decorating it.
+
+**The history, because it is the argument.** a2.107 took all the colour out,
+on the ground that the axis triad means X, Y and Z *during a drag* while a
+face of this cube means *look down this axis*, so sharing those colours
+claimed the two statements were one. v2.2 put colour back as six tones of
+that same triad — the borrowing a2.107 objected to, in a new coat. v2.2a
+moved to the component hues in three pairs, which answered the objection but
+said something **static**: a permanent legend of which axis is which, painted
+on a control nobody reads as a legend.
+
+**The cube already knew something and was not saying it.** Five of its six
+faces are behind or beside you; exactly one is the face you are looking down.
+So that is the one that is lit, and the other five go dull. The cube stops
+being a chart and becomes a readout — it changes as you orbit, which is the
+only time you look at it.
+
+**And the lit one wears the mode.** `--accent-mode` is what every accented
+control in the app is painted with: neutral in Object, acid in Vertex, cyan
+in Edge, violet in Face. The cube joins them instead of keeping a private
+palette, so switching mode moves one more thing in step and the colour on the
+cube means what it means everywhere else. In Object mode that lands on the
+near-white accent, which is exactly the bright grey this wants to look like
+anyway — so there is no special case for Object, only a hue that happens to
+be grey.
+
+**The dull tone is a rule, not a taste.** `#687079` is the midpoint of
+`--line` and `--text-dim`, channel by channel: far enough under the lit face
+to read as off, still 3.35:1 on `--panel2`, which is the AA floor for text at
+this size and weight (25px, 700). Going all the way to `--line` is 1.9:1 and
+the labels stop being labels.
+
+### What it costs, which is the part worth getting right
+
+The label is baked into the face's texture, so a colour change is a re-bake:
+a 128px canvas fill, one string of text, a 64KB upload. That is nothing
+**once** and would be something per frame, so both callers are edges, not
+polls:
+
+- `cubeSync` computes the facing face from `_cubeDir` — six dot products
+  against the unit normals, in the same order as `BoxGeometry`'s materials —
+  and re-bakes only when the index CHANGES. It runs on cube repaints, and the
+  cube only repaints when the camera's quaternion moved.
+- `refreshUI`'s `dataset.mode` block calls `refreshCubeLabels()`, which runs
+  exactly once per mode change, beside `applyModeSelectColor` and
+  `refreshModeView`.
+
+Two things that are easy to get wrong here:
+
+- **No `m.needsUpdate`.** Swapping one map for another of the same kind does
+  not change three's program cache key — only map present-vs-absent does, and
+  every face always has one. Setting it would recompile the cube's shader on
+  every flip, which is the sort of thing v2.0b through v2.1a spent a whole
+  version removing from the render path.
+- **`cubeDirty` and `invalidate()`.** The cube repaints only when the camera's
+  quaternion moved, so a mode change would sit unpainted until the heartbeat —
+  and since v2.1 the loop is asleep by then, so it needs waking too.
+  `refreshCubeLabels` sets both, and only when something actually changed.
+
+### Measured
+
+`_cubelbl.py` — a real clock, because the cube repaints from the render loop:
+
+```
+dull=#687079  object lit=#d5dce4
+home camera        facing=4 (FRONT)  lit: FRONT #d5dce4
+  after 1.4s idle: no re-bake, same textures
+mode vertex        lit: FRONT #D9FF3D
+mode edge          lit: FRONT #46E1FF
+mode face          lit: FRONT #B48CFF
+mode object        lit: FRONT #d5dce4
+looking +X..-Z     RIGHT, LEFT, TOP, BTM, FRONT, BACK - each lights its own
+```
+
+Exactly one face lit in every state, the other five dull, and the texture
+objects are unchanged across an idle second and a half — which is the check
+that the re-bake is on an edge and not on the frame.
 
 ## Cancel was sitting on the stepper's + (v2.2b)
 

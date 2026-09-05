@@ -2350,7 +2350,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.2b</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.3</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -3184,45 +3184,75 @@ viewCubeEl.appendChild(cubeRenderer.domElement);
    system - MeshBasicMaterial with an sRGB texture on a renderer that has
    no tone mapping draws exactly the colours written below. */
 
-/* THREE PAIRS, IN THE COMPONENT COLOURS (v2.2a, Zeghreit's).
+/* ONE FACE IS LIT, AND ITS COLOUR IS THE MODE'S (v2.3, Zeghreit's).
 
-   The history in one line: a2.107 made every label grey, on the argument
-   that the AXIS triad means X, Y and Z during a drag while a face of this
-   cube means look-DOWN-this-axis, so sharing those colours claimed the two
-   statements were one. v2.2 put colour back as six tones of the axis triad.
-   v2.2a keeps the colour and drops the borrowing: the cube wears the
-   COMPONENT hues instead - the three this app colours a selected vertex,
-   edge and face with, and the only three-colour vocabulary it has that is
-   not already spoken for by the drag guides. a2.107's objection is answered
-   rather than overruled: the axis colours still say only what they said.
+   Three tries at this, and the third is the one that fits the app rather
+   than decorating it. a2.107 took all the colour out, on the argument that
+   the AXIS triad means X, Y and Z during a drag while a face of this cube
+   means look-DOWN-this-axis, so sharing those colours claimed the two
+   statements were one. v2.2 put colour back as six tones of that same
+   triad - the borrowing a2.107 objected to, in a new coat. v2.2a moved to
+   the COMPONENT hues in three pairs, which answered the objection but said
+   something static: a permanent legend of which axis is which, painted on a
+   control nobody reads as a legend.
 
-   AN AXIS IS A PAIR, SO A PAIR IS A COLOUR. Three hues over six faces, and
-   opposite faces are the same axis seen from either end - so they share, and
-   the cube reads as three pairs rather than as six unrelated squares. Which
-   end you are looking at is what the WORD says; the colour says which axis.
+   THE CUBE ALREADY KNOWS SOMETHING, AND IT WAS NOT SAYING IT. Five of its
+   six faces are behind or beside you; exactly one is the face you are
+   looking down. So that is the one that is lit, and the other five go dull.
+   The cube stops being a chart and starts being a readout - it changes as
+   you orbit, which is the only time you look at it.
 
-   The pairing is the two orders this file already keeps, read together:
-   GIZMO_AXES is x, y, z and the component modes are vertex, edge, face. So
-   X takes acid, Y takes cyan, Z takes violet. There is nothing deeper in it
-   than that, and pretending otherwise would be the mistake a2.107 named.
+   AND THE LIT ONE WEARS THE MODE. --accent-mode is what every accented
+   control in this app is painted with: neutral in Object, acid in Vertex,
+   cyan in Edge, violet in Face. The cube joins them rather than keeping a
+   private palette, so switching mode moves one more thing in step, and the
+   colour on the cube means the same thing it means everywhere else. In
+   Object mode that lands on the near-white accent, which is exactly the
+   "bright grey, like all the other text" this wants to look like anyway -
+   so there is no special case for Object, only a hue that happens to be
+   grey.
+
+   THE DULL TONE IS A RULE, NOT A TASTE. #687079 is the midpoint of --line
+   and --text-dim, channel by channel: far enough under the lit face to be
+   read as off, still 3.35:1 on --panel2, which is the AA floor for text at
+   this size and weight (25px, 700). Going as far as --line itself is 1.9:1
+   and the labels stop being labels.
 
    BoxGeometry's own face order is +X, -X, +Y, -Y, +Z, -Z, which is RIGHT,
-   LEFT, TOP, BTM, FRONT, BACK. All three are far clear of 3:1 on --panel2,
-   the AA floor for text at this size and weight: acid 14.6:1, cyan 10.5:1,
-   violet 6.5:1. They are brighter than what they replace, which is the one
-   thing to watch - these are SELECTION colours, tuned to be seen against a
-   dark model, and the cube is the only chrome now wearing them. */
+   LEFT, TOP, BTM, FRONT, BACK - the order cubeFacingIndex indexes into. */
 const CUBE_FACE_BG = '#1b1f25';    // --panel2
 const CUBE_FACE_LINE = '#454d56';  // --line
 const CUBE_LABEL = '#8b939c';      // --text-dim, kept: the fallback tone
+const CUBE_LABEL_DULL = '#687079'; // the midpoint of --line and --text-dim
+const CUBE_LABEL_OBJECT = '#d5dce4';   // --accent, which is Object's --accent-mode
 const CUBE_FACES = [
-  { label: 'RIGHT', color: COMPONENT_HUE.vertex },   // +X
-  { label: 'LEFT',  color: COMPONENT_HUE.vertex },   // -X
-  { label: 'TOP',   color: COMPONENT_HUE.edge },     // +Y
-  { label: 'BTM',   color: COMPONENT_HUE.edge },     // -Y
-  { label: 'FRONT', color: COMPONENT_HUE.face },     // +Z
-  { label: 'BACK',  color: COMPONENT_HUE.face }      // -Z
+  { label: 'RIGHT' },   // +X
+  { label: 'LEFT'  },   // -X
+  { label: 'TOP'   },   // +Y
+  { label: 'BTM'   },   // -Y
+  { label: 'FRONT' },   // +Z
+  { label: 'BACK'  }    // -Z
 ];
+/* The unit normals of those six faces, in the same order, so the face you
+   are looking down is one dot product each. */
+const CUBE_FACE_N = [
+  new THREE.Vector3(1, 0, 0), new THREE.Vector3(-1, 0, 0),
+  new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, -1, 0),
+  new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, -1)
+];
+function cubeFacingIndex(dir) {
+  let best = 0, bestDot = -Infinity;
+  for (let i = 0; i < 6; i++) {
+    const d = dir.dot(CUBE_FACE_N[i]);
+    if (d > bestDot) { bestDot = d; best = i; }
+  }
+  return best;
+}
+/* App does not exist yet where this file defines the cube, and it does not
+   need to: nothing calls this until the first frame. */
+function cubeLitColor() {
+  return (typeof App !== 'undefined' && COMPONENT_HUE[App.mode]) || CUBE_LABEL_OBJECT;
+}
 
 function cubeFaceTexture(label, color) {
   const c = document.createElement('canvas');
@@ -3259,10 +3289,52 @@ const cubeScene = new THREE.Scene();
    most-reported thing about it - while still filling enough of the 128px
    box that each face is a finger-sized target. */
 const cubeCam = new THREE.OrthographicCamera(-1.15, 1.15, 1.15, -1.15, 0.1, 10);
+/* All six start dull; the first cubeSync lights whichever one is facing. */
 const cubeMesh = new THREE.Mesh(
   new THREE.BoxGeometry(1, 1, 1),
-  CUBE_FACES.map(f => new THREE.MeshBasicMaterial({ map: cubeFaceTexture(f.label, f.color) }))
+  CUBE_FACES.map(f => new THREE.MeshBasicMaterial({ map: cubeFaceTexture(f.label, CUBE_LABEL_DULL) }))
 );
+
+/* ONE FACE, ONE COLOUR, AND ONLY WHEN IT CHANGES (v2.3). The label is baked
+   into the face's texture, so a colour change is a re-bake: a 128px canvas
+   fill, one string of text, and a 64KB upload. That is nothing ONCE, and it
+   would be something per frame - so both callers below are edges, not polls.
+   The facing face changes a handful of times in an orbit and the mode
+   changes when you press the chip.
+
+   NO m.needsUpdate. Swapping one map for another of the same kind does not
+   change three's program cache key - only map present-vs-absent does - and
+   every face here always has one. Setting it would recompile the cube's
+   shader on every flip, which is the sort of thing v2.0b through v2.1a spent
+   a whole version taking out of the render path. */
+let cubeFacing = -1;
+let cubeDirty = false;
+function setCubeFaceLabelColor(i, color) {
+  const m = cubeMesh.material[i];
+  if (m.userData.kubikLabel === color) return false;
+  const old = m.map;
+  m.map = cubeFaceTexture(CUBE_FACES[i].label, color);
+  m.userData.kubikLabel = color;
+  if (old) old.dispose();
+  return true;
+}
+function refreshCubeLabels() {
+  const lit = cubeLitColor();
+  let changed = false;
+  for (let i = 0; i < 6; i++) {
+    changed = setCubeFaceLabelColor(i, i === cubeFacing ? lit : CUBE_LABEL_DULL) || changed;
+  }
+  if (changed) {
+    /* The cube only repaints when the camera's QUATERNION moved, so a mode
+       change would otherwise sit unpainted until the heartbeat a second
+       later - and since v2.1 the loop is asleep by then, so it needs waking
+       too. Both, or the colour arrives when you next happen to orbit. */
+    cubeDirty = true;
+    invalidate();
+  }
+  return changed;
+}
+
 /* The labels are baked before Archivo is necessarily parsed - canvas 2D
    draws with whatever is loaded at the time. Bake them again once it is
    (a2.97); the cube's heartbeat repaint shows the result within a second. */
@@ -3270,10 +3342,11 @@ if (document.fonts && document.fonts.load) {
   document.fonts.load('700 25px "Archivo"').then(() => {
     cubeMesh.material.forEach((m, i) => {
       const old = m.map;
-      m.map = cubeFaceTexture(CUBE_FACES[i].label, CUBE_FACES[i].color);
-      m.needsUpdate = true;
+      // Its CURRENT colour, not a fixed one: by now one face may be lit.
+      m.map = cubeFaceTexture(CUBE_FACES[i].label, m.userData.kubikLabel || CUBE_LABEL_DULL);
       if (old) old.dispose();
     });
+    cubeDirty = true;
     invalidate();
   }).catch(() => {});
 }
@@ -3317,6 +3390,12 @@ function cubeSync() {
   _cubeDir.copy(camera.position).sub(orbit.target);
   if (_cubeDir.lengthSq() < 1e-9) _cubeDir.set(0, 0, 1);
   cubeCam.position.copy(_cubeDir.normalize()).multiplyScalar(4);
+  /* WHICH FACE ARE YOU LOOKING DOWN (v2.3). _cubeDir is the unit vector from
+     the model to the camera, so the face whose outward normal it agrees with
+     most is the one pointing at you. Six dot products, once per cube
+     repaint - and the repaint only happens when this vector moved. */
+  const facing = cubeFacingIndex(_cubeDir);
+  if (facing !== cubeFacing) { cubeFacing = facing; refreshCubeLabels(); }
   cubeCam.up.copy(camera.up);
   cubeCam.lookAt(0, 0, 0);
   cubeCam.updateMatrixWorld();
@@ -28230,6 +28309,11 @@ function refreshUI() {
     applyModeSelectColor();
     // ...and the way the whole viewport is lit (a2.62).
     refreshModeView();
+    /* ...and the lit face of the view cube (v2.3), which wears --accent-mode
+       like every other accented control. Here rather than in setMode for the
+       reason the block itself gives: every path that can change the mode
+       ends by refreshing the UI, and this one runs exactly once per change. */
+    refreshCubeLabels();
     document.documentElement.dataset.mode = App.mode;
   }
   /* ARMED (a2.67): a component mode with something actually picked. The
@@ -28895,8 +28979,10 @@ function stepFrame(now) {
        backstop, so anything that blanked its canvas without turning the camera
        - a lost-and-restored WebGL context, which backgrounding a tab on mobile
        does routinely - stayed blank until the user happened to orbit. */
-    if (viewCube.animating || heartbeat || !camQuatSeen.equals(camera.quaternion)) {
+    if (viewCube.animating || heartbeat || cubeDirty ||
+        !camQuatSeen.equals(camera.quaternion)) {
       camQuatSeen.copy(camera.quaternion);
+      cubeDirty = false;
       viewCube.render(cubeRenderer);
     }
   }
@@ -29045,6 +29131,10 @@ init();
 if (PICK_DEBUG) {
   window.__kubik = {
     App, orbit, scene,
+    // v2.3: the cube's lit face and the colour it is lit with.
+    cubeFacingIndex, cubeLitColor, refreshCubeLabels, cubeMesh,
+    CUBE_FACES, CUBE_LABEL_DULL, COMPONENT_HUE,
+    get cubeFacing() { return cubeFacing; },
     // a2.95: the headlight rig, so a probe can measure light directions
     // and the camera-turn tracker rather than infer them from pixels.
     hemi, dir, rimLight, fill, applyEnvRig, applyEnvLive, cameraTurnDeg,
