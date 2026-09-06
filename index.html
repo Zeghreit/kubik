@@ -2362,7 +2362,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.15</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.16</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -4250,7 +4250,14 @@ function vertexDotTexture() {
 // this the strokes render at the wrong weight after any resize or rotation.
 function updateStrokeResolution() {
   const w = viewportEl.clientWidth || 1, h = viewportEl.clientHeight || 1;
-  gizmoStrokes.forEach(l => l.material.resolution.set(w, h));
+  /* Guarded, not assumed. Everything in this array is meant to own a
+     LineMaterial, and one that has lost it - see applyFinishToSelection - used
+     to take the whole resize with it, including the invalidate() that repaints
+     the viewport. A stroke with no resolution is a bug elsewhere; it is not a
+     reason for the window to stop redrawing. */
+  gizmoStrokes.forEach(l => {
+    if (l && l.material && l.material.resolution) l.material.resolution.set(w, h);
+  });
 }
 
 
@@ -10832,19 +10839,53 @@ function revolveSweep(ed, mats, profile, o) {
      claimed to be proven. To prove it, find a profile whose chain walk runs
      the other way - that is the case this could not construct. */
   if (!rimSpoke && profile.length > 1) {
-    const q0 = [rings[0][0], rings[0][1], rings[1][1], rings[1][0]];
-    const pts = q0.map(a => vecAt(ed, a));
-    const nrm = new THREE.Vector3(), cen = new THREE.Vector3();
-    for (let i = 0; i < pts.length; i++) {
-      const a = pts[i], b = pts[(i + 1) % pts.length];
-      nrm.x += (a.y - b.y) * (a.z + b.z);
-      nrm.y += (a.z - b.z) * (a.x + b.x);
-      nrm.z += (a.x - b.x) * (a.y + b.y);
-      cen.add(a);
+    /* SUMMED OVER EVERY LEG OF THE FIRST BAND (corrected in review, v2.16).
+
+       It used to read leg 0 alone, and leg 0 is the worst leg to ask. The
+       three shapes people actually lathe all defeat it:
+
+       - a CUP drawn from the axis outward starts with its BOTTOM, whose
+         normal is axial, so the radial dot is ~0 (exactly 0 for a poly, +1.7e-5
+         for the Bezier, which is not float noise - it is the 1/6 form's dip)
+         and the whole shell came out inside out, deterministically.
+       - a CLOSED rectangle - a wheel, a ring - starts on whichever corner you
+         happened to draw first. Starting on the inner wall inverts it, because
+         the inner wall's outward normal points TOWARD the axis. Four of the
+         eight ways of drawing that profile were wrong.
+       - anything whose first leg is short: the least evidence, given the most
+         weight.
+
+       The sum is a discrete flux: Newell's normal is proportional to the leg's
+       AREA and the radial to its distance from the axis, so a big far leg
+       outvotes a small near one and a purely axial leg (a cup's bottom) casts
+       no vote at all. The inner and outer walls of a closed profile do not
+       cancel, because the outer one is further out and larger. It is the same
+       measurement leg 0 was making, taken over the whole band instead of one
+       arbitrary quarter of it.
+
+       This is what `auditWinding` cannot see, by design - "every face reversed
+       is the same mesh seen inside out" - so nothing downstream would ever
+       have caught it. */
+    const legs0 = closed ? profile.length : profile.length - 1;
+    const nrm = new THREE.Vector3(), cen = new THREE.Vector3(), rad = new THREE.Vector3();
+    let flux = 0;
+    for (let i = 0; i < legs0; i++) {
+      const j = (i + 1) % profile.length;
+      const qp = [rings[0][i], rings[0][j], rings[1][j], rings[1][i]].map(a => vecAt(ed, a));
+      nrm.set(0, 0, 0);
+      cen.set(0, 0, 0);
+      for (let k = 0; k < qp.length; k++) {
+        const a = qp[k], b = qp[(k + 1) % qp.length];
+        nrm.x += (a.y - b.y) * (a.z + b.z);
+        nrm.y += (a.z - b.z) * (a.x + b.x);
+        nrm.z += (a.x - b.x) * (a.y + b.y);
+        cen.add(a);
+      }
+      rad.copy(cen).multiplyScalar(1 / qp.length).sub(centre);
+      rad.addScaledVector(axisVec, -rad.dot(axisVec));   // the radial part
+      flux += nrm.dot(rad);
     }
-    cen.multiplyScalar(1 / pts.length).sub(centre);
-    cen.sub(_revPrj.copy(axisVec).multiplyScalar(cen.dot(axisVec)));   // the radial part
-    if (cen.lengthSq() > 1e-12 && nrm.dot(cen) < 0) flip = !flip;
+    if (flux < 0) flip = !flip;
   }
 
   const added = [];
@@ -13498,6 +13539,12 @@ document.getElementById('opToggle').addEventListener('click', () => {
   /* Back, while a curve is being drawn. The bar has one independent button
      slot and Back is what a drawing hand reaches for most; Bezier/Poly and
      the resolution are properties of the finished curve and live on its ring. */
+  if (App.tubeSetup && !App.pendingOp) {
+    App.tubeSetup.caps = !App.tubeSetup.caps;
+    document.getElementById('opToggle').classList.toggle('active', !!App.tubeSetup.caps);
+    refreshTubeMesh();
+    return;
+  }
   if (App.curveDraw && !App.pendingOp) {
     if (App.curveDraw.pts.length) App.curveDraw.pts.pop();
     refreshCurvePreview();
@@ -13724,6 +13771,10 @@ function flushPendingApply() {
 }
 
 function setPendingAmount(v, defer) {
+  // The tube setup borrows the slider and the value box. Without this branch
+  // both would look live and do nothing, which is the failure this file names
+  // as its worst - and it is the same branch the boolean toggle needed.
+  if (App.tubeSetup && !App.pendingOp) { setTubeRadius(v); return; }
   const op = App.pendingOp;
   if (!op) return;
   const spec = OP_SPECS[op.kind];
@@ -13752,6 +13803,7 @@ function setPendingAmount(v, defer) {
 
 opSliderEl.addEventListener('input', () => setPendingAmount(parseFloat(opSliderEl.value), true));
 function stepSegments(delta) {
+  if (App.tubeSetup && !App.pendingOp) { stepTubeSides(delta); return; }
   if (!App.pendingOp) return;
   const cap = (OP_SPECS[App.pendingOp.kind] || {}).maxSegments || 10;
   const n = Math.max(1, Math.min(cap, (App.pendingOp.segments || 1) + delta));
@@ -13797,6 +13849,12 @@ opValueEl.addEventListener('keydown', (ev) => {
    the model is about to do. */
 opValueEl.addEventListener('blur', () => {
   if (App.pendingOp) opValueEl.value = amountText(App.pendingOp, App.pendingOp.amount);
+  /* And the same for a tube's radius (found in review). Half-typed text -
+     "1.2.3", "-", an empty box - is rejected by setTubeRadius, which left the
+     box reading what was typed while the model kept its old radius. A readout
+     that lies about what OK is going to commit is exactly what this handler
+     exists to prevent. */
+  else if (App.tubeSetup) opValueEl.value = Number(App.tubeSetup.radius.toFixed(3));
 });
 document.getElementById('opOk').addEventListener('click', confirmPendingOp);
 document.getElementById('opCancel').addEventListener('click', cancelPendingOp);
@@ -13804,6 +13862,7 @@ document.getElementById('opCancel').addEventListener('click', cancelPendingOp);
 function confirmPendingOp() {
   flushPendingApply();   // accept what the slider asked for, not the last frame
   flushMatBin();         // everything the re-runs abandoned, released in one go
+  if (App.tubeSetup) { finishTubeSetup(true); toast('Tube kept'); return; }
   if (App.curveDraw) { applyCurveDraw(); return; }
   if (App.knife) { applyKnife(); return; }
   const op = App.pendingOp;
@@ -13954,6 +14013,7 @@ function confirmPendingOp() {
 }
 
 function cancelPendingOp() {
+  if (App.tubeSetup) { finishTubeSetup(false); return; }
   if (App.curveDraw) { cancelCurveDraw(); return; }
   if (App.knife) { cancelKnife(); return; }
   flushPendingApply();
@@ -17295,6 +17355,16 @@ function setMode(mode) {
   if (mode !== 'object') {
     const sel = Array.from(App.selectedObjectIds).map(id => findObject(id)).filter(Boolean);
     if (sel.length && sel.every(isCurve)) {
+      /* PUT THE OPEN TOOLS DOWN BEFORE REFUSING (found in review). Every
+         other exit from this function resolves them first; this one returned
+         over the top of them, so pressing the mode button with an op bar open
+         and a curve selected left that bar aimed at a selection which no
+         longer contained its object. The mode still does not change. */
+      if (App.knife) cancelKnife(true);
+      if (App.pendingOp && App.pendingOp.live) confirmPendingOp();
+      else if (App.pendingOp) cancelPendingOp();
+      if (App.geoSetup) finishGeoSetup(true);
+      if (App.tubeSetup) finishTubeSetup(true);
       toast('A curve has no vertices, edges or faces - pick a mesh to edit');
       return;
     }
@@ -17317,6 +17387,7 @@ function setMode(mode) {
   // A setup is real work in the scene, so switching mode keeps it - the same
   // call a live op gets one line above.
   if (App.geoSetup) finishGeoSetup(true);
+  if (App.tubeSetup) finishTubeSetup(true);
   /* Object mode has no components to fall off from, so Soft cannot survive
      the trip. Coming back through the button re-enters Component, not Soft,
      which is what makes the three positions a cycle rather than a memory. */
@@ -19761,6 +19832,7 @@ function refreshCurvePreview() {
 function showCurveBar() {
   mirrorChooser = null;
   booleanChooser = null;
+  latheChooser = null;   // it was missed; see the v2.13 note in hideOpBar
   const el = document.getElementById('opGrouping');
   el.innerHTML = '';
   el.style.display = 'inline-flex';
@@ -20232,8 +20304,13 @@ function segClosest2D(p, a, b) {
 function snapTargetAt(ev, skip) {
   const skipObjs = (skip && skip.objects) || null;
   const skipVerts = (skip && skip.verts) || null;
+  /* NOT CURVES (found in review). A curve has no topo, so the vertex and edge
+     refinement below returns before it runs - and with the 14px Line2 pick
+     threshold a curve passing in front of a corner swallowed the snap and
+     reported it as `kind: 'face'`, which is a lie about what was caught.
+     Snapping is to geometry; a curve is construction. */
   const meshes = App.objects
-    .filter(o => objectPickable(o) && !(skipObjs && skipObjs.has(o.id)))
+    .filter(o => objectPickable(o) && !isCurve(o) && !(skipObjs && skipObjs.has(o.id)))
     .map(o => o.mesh);
   if (!meshes.length) return null;
 
@@ -20831,7 +20908,12 @@ function endDirectDrag() {
      call, in the autosave too: Undo then stopped at "the sphere before I
      changed its divisions", and a shape thrown away by tapping outside came
      back with Redo, or on the next reload. */
-  if (!App.geoSetup) pushHistory();
+  /* ...and the same for a tube setup, which is the same shape (found in
+     review): its object exists from the first tap and is selected, so
+     dragging it into place pushed a step containing a tube that Cancel then
+     removed - one Undo brought the discarded tube back, and the autosave had
+     it too. */
+  if (!App.geoSetup && !App.tubeSetup) pushHistory();
 }
 
 // Which handle, if any, is under this pointer.
@@ -22902,6 +22984,14 @@ function handleTap(ev) {
    per object everywhere else. The choice is recorded per face group so it
    survives rebuilds, save/load and undo. */
 function applyFinishToSelection(name) {
+  /* A CURVE HAS NO SURFACE TO PAINT, and painting it destroyed the app
+     (found in review). dressFromPool would put a MeshStandardMaterial over
+     the Line2's LineMaterial and dispose the old one - so the curve stopped
+     drawing, AND updateStrokeResolution, which walks gizmoStrokes on every
+     resize, then threw on `l.material.resolution` and left the viewport
+     unpainted for the rest of the session. No history is pushed here, so
+     Undo could not get it back either. */
+  if (refuseCurves('Materials')) return;
   /* Re-applying a masked definition can land on materials that wore this
      very definition earlier in the session; a fresh generation keeps their
      per-material program cache from resurrecting a stale patch. */
@@ -24392,26 +24482,45 @@ function curveSamplePoints(cv) {
   const P = (cv.pts || []).map(a => new THREE.Vector3(a[0], a[1], a[2]));
   const n = P.length;
   if (n < 2) return P.slice();
+  /* TWO POINTS CANNOT ENCLOSE ANYTHING, and this is the one place to say so
+     (v2.16, found in review). Closing a two-point curve draws the same segment
+     back over itself, and every consumer downstream then has to unpick it in
+     its own way: the lathe lays two opposite-wound bands on one leg, and the
+     tube sweeps an out-and-back line whose rings collide. Deciding it here,
+     where the samples are made, means they all agree by construction. */
+  const closed = !!cv.closed && n > 2;
   if (cv.type !== 'bezier') {
     const out = P.slice();
-    if (cv.closed) out.push(P[0].clone());
+    if (closed) out.push(P[0].clone());
     return out;
   }
   const res = Math.max(1, Math.min(CURVE_RES_MAX, (cv.res | 0) || CURVE_RES_DEF));
   // An open curve's virtual neighbour is the endpoint itself, which makes the
   // first and last spans leave the end straight rather than overshoot it.
-  const at = (i) => cv.closed ? P[((i % n) + n) % n] : P[Math.max(0, Math.min(n - 1, i))];
-  const spans = cv.closed ? n : n - 1;
+  const at = (i) => closed ? P[((i % n) + n) % n] : P[Math.max(0, Math.min(n - 1, i))];
+  const spans = closed ? n : n - 1;
   const out = [];
   for (let s = 0; s < spans; s++) {
     const p0 = at(s - 1), p1 = at(s), p2 = at(s + 1), p3 = at(s + 2);
+    /* A ZERO-LENGTH SPAN IS A CORNER, and sampling it draws a PETAL (found in
+       review). Two control points on the same spot is how a Bezier is given a
+       hard corner, and the 1/6 form on that span leaves p1 along the incoming
+       direction, loops through about 270 degrees and comes back heading the
+       outgoing one - an excursion of roughly a sixteenth of the neighbouring
+       spacing. Wrapped by a Tube that is thicker than the loop is wide, that
+       is a knot at every corner the user asked for.
+
+       Skipping the span gives the corner they meant: the two spans either
+       side already clamp through the doubled point, because `at` hands them
+       the same position twice and the 1/6 term collapses. */
+    if (p1.distanceToSquared(p2) < 1e-12) continue;
     const c1 = p1.clone().add(p2.clone().sub(p0).multiplyScalar(1 / 6));
     const c2 = p2.clone().sub(p3.clone().sub(p1).multiplyScalar(1 / 6));
     for (let k = 0; k < res; k++) {
       out.push(cubicPointAt(p1, c1, c2, p2, k / res, new THREE.Vector3()).clone());
     }
   }
-  out.push(at(cv.closed ? 0 : n - 1).clone());
+  out.push(at(closed ? 0 : n - 1).clone());
   return out;
 }
 
@@ -25281,6 +25390,7 @@ function startGeoSetup(kind) {
      selection nothing on screen still referred to. Its OK button would then
      have applied the bevel to it. */
   if (App.knife) cancelKnife(true);
+  if (App.tubeSetup) finishTubeSetup(true);
   if (App.pendingOp && App.pendingOp.live) confirmPendingOp();
   else if (App.pendingOp) cancelPendingOp();
   /* setMode, not `App.mode = 'object'`. The assignment is what Add Cube has
@@ -25613,6 +25723,12 @@ function restoreDoc(doc, opts = {}) {
   // And a curve half drawn, for the same reason: undo moves the scene the
   // points were aimed into, and the draft would go on hanging over it.
   if (App.curveDraw) cancelCurveDraw(true);
+  /* AND AN OPEN TUBE SETUP (found in review). Its bar holds an object id, and
+     after a restore that id names a different object - so the next nudge of
+     the radius slider rebuilt an unrelated mesh as a tube, and OK pushed the
+     damage to history. After a File open it is worse: the id resolves to a
+     mesh and tubeCurveOp reads kubikCurve off it, undefined. */
+  abandonTubeSetup();
   /* Every object is about to be disposed and rebuilt from the file, and ids
      come from the DOCUMENT - so a setup bar left open would go on pointing
      at "object 2" and quietly retarget whatever object in the LOADED model
@@ -27672,6 +27788,14 @@ function wireImport() {
 function buildExportGroup() {
   const group = new THREE.Group();
   App.objects.forEach(o => {
+    /* A CURVE IS NOT GEOMETRY ANY FILE FORMAT HERE CARRIES (found in review).
+       glTF, OBJ and STL are all triangles, and a Line2's geometry attributes
+       are LineSegmentsGeometry's internal eight-vertex quad TEMPLATE - not the
+       curve - so every export gained a small flat plate per curve, and the
+       .glb also carried instanceStart/instanceEnd as accessors whose counts
+       did not match POSITION. Skipped, quietly: a curve is construction, and
+       nobody expects their scaffolding in the .obj. */
+    if (isCurve(o)) return;
     const source = o.mesh;
     const mats = Array.isArray(source.material) ? source.material : [source.material];
     const eg = source.geometry.clone();
@@ -27992,7 +28116,10 @@ const ICON = {
   curveres:   '<path d="M3.5 18c4-10.5 13 3.5 17-7"/><path d="M7.6 12.6v3.4M11.4 11.6v3M15.2 12.6v3"/>',
   /* An axis with the SAME profile either side of it, which is what a surface
      of revolution is and what no other glyph here shows. */
-  lathe:      '<path d="M12 2.4v19.2"/><path d="M7 6.6c5.5 1.6 5.5 9.2 0 10.8"/><path d="M17 6.6c-5.5 1.6-5.5 9.2 0 10.8"/>'
+  lathe:      '<path d="M12 2.4v19.2"/><path d="M7 6.6c5.5 1.6 5.5 9.2 0 10.8"/><path d="M17 6.6c-5.5 1.6-5.5 9.2 0 10.8"/>',
+  /* The curve family's S, given thickness - two rails and an end ring, which
+     is what a swept circle looks like from the side. */
+  tube:       '<path d="M4 16.4c3.6-9.4 11.6 2.6 16-6.2M4 19.6c3.6-9.4 11.6 2.6 16-6.2"/><path d="M4 18a1.6 1.6 0 1 0 0-1.6"/><ellipse cx="20" cy="11.6" rx="1.5" ry="1.8"/>'
 };
 
 // Wraps a pictogram in an svg at the size the caller needs.
@@ -28234,6 +28361,21 @@ function latheCurveOp(curveObj, axis, sweepDeg, steps, dir) {
      back onto itself. The sweep says the same thing with `closed`, and given
      both it would lay a band across a leg of zero length. */
   if (cv.closed && samples.length > 2) samples = samples.slice(0, -1);
+  /* TWO POINTS CANNOT ENCLOSE ANYTHING (found in review). Left marked closed,
+     the sweep lays leg A->B and leg B->A on top of each other with opposite
+     windings - guaranteed conflicting edges, from an input the user can make
+     in two taps. It is an open profile; say so rather than refusing it. */
+  const isClosed = !!cv.closed && (cv.pts || []).length > 2;
+  /* AND NO ZERO-LENGTH LEGS. Tube drops repeated points; this did not, so a
+     poly curve with a doubled point swept a quad of no area - four distinct
+     indices, so the pole collapse below cannot see it - which loopNormal
+     cannot orient and computeLogicalOf welds after the rebuild. The same
+     failure the POLE threshold guards against on the axis, arriving along the
+     profile instead. */
+  const kept = [];
+  samples.forEach(p => { if (!kept.length || p.distanceTo(kept[kept.length - 1]) > 1e-6) kept.push(p); });
+  if (isClosed && kept.length > 2 && kept[0].distanceTo(kept[kept.length - 1]) < 1e-6) kept.pop();
+  samples = kept;
   if (samples.length < 2) return { ok: false, why: 'a profile needs at least two points' };
 
   const segs = Math.max(1, Math.round(steps || 1));
@@ -28262,17 +28404,397 @@ function latheCurveOp(curveObj, axis, sweepDeg, steps, dir) {
   const mats = makeMaterialSet(1, DEFAULT_MATERIAL_COLOR);
   const r = revolveSweep(ed, mats, profile, {
     L: L, centre: centre, axisVec: axisVec, sweepDeg: sweepDeg,
-    segs: segs, dir: dir, closed: !!cv.closed, dirTaken: null
+    segs: segs, dir: dir, closed: isClosed, dirTaken: null
   });
   if (!r.ok) return r;
   mats.shift();
   return { ok: true, ed: ed, mats: mats, count: r.count };
 }
 
+/* ---------------- Tube (v2.16) ----------------
+
+   A circle swept along a curve: pipes, handles, cables, rails, wire.
+
+   THE ONLY HARD PART IS THE FRAME. Sweeping needs two directions
+   perpendicular to the curve at every sample, and the obvious way to get them
+   - cross the tangent with a fixed up vector - fails exactly where curves are
+   interesting: where the tangent turns vertical the cross product collapses,
+   and the ring spins through half a turn in one step. The result looks like a
+   crease and reads as a broken tool.
+
+   So the frame is carried ALONG the curve instead of being recomputed at each
+   point: rotation-minimising frames by double reflection (Wang et al.). Each
+   step reflects the previous frame twice - once through the plane bisecting
+   the two positions, once through the plane bisecting the two tangents - and
+   the result has no preferred axis to collapse against and no twist beyond
+   what the curve itself has. It is a dozen lines and it has no bad case.
+
+   A CLOSED CURVE NEEDS ONE MORE STEP. Carried all the way round, the frame
+   does not generally come back to where it started - the leftover angle is
+   the curve's own holonomy - so the seam would meet itself rotated. That
+   defect is measured over the closing span and spread evenly across every
+   sample, which is the standard fix and the only way the two ends can agree. */
+
+const TUBE_SIDES_MAX = 32;
+
+function tubeFrames(pts, T, closed) {
+  const n = pts.length;
+  /* A reference normal to start from: whichever world axis is least aligned
+     with the first tangent, so the cross product below is well conditioned
+     wherever the curve happens to point. */
+  const seed = Math.abs(T[0].x) < 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+  let r0 = new THREE.Vector3().crossVectors(T[0], seed);
+  if (r0.lengthSq() < 1e-12) r0 = new THREE.Vector3().crossVectors(T[0], new THREE.Vector3(0, 0, 1));
+  const R = [r0.normalize()];
+
+  const step = (i, j) => {
+    const v1 = pts[j].clone().sub(pts[i]);
+    const c1 = v1.dot(v1);
+    const prev = R[R.length - 1];
+    if (c1 < 1e-18) return prev.clone();
+    const rL = prev.clone().addScaledVector(v1, -2 * v1.dot(prev) / c1);
+    const tL = T[i].clone().addScaledVector(v1, -2 * v1.dot(T[i]) / c1);
+    const v2 = T[j].clone().sub(tL);
+    const c2 = v2.dot(v2);
+    const out = c2 < 1e-18 ? rL : rL.clone().addScaledVector(v2, -2 * v2.dot(rL) / c2);
+    // Re-orthogonalised against the tangent: double reflection is exact in
+    // theory and drifts in float over a long curve.
+    out.addScaledVector(T[j], -out.dot(T[j]));
+    const len = out.length();
+    return len > 1e-9 ? out.divideScalar(len) : prev.clone();
+  };
+
+  for (let i = 0; i + 1 < n; i++) R.push(step(i, i + 1));
+
+  if (closed && n > 2) {
+    // Carry it over the closing span and see how far round it came back.
+    R.push(step(n - 1, 0));
+    const back = R.pop();
+    const cross = new THREE.Vector3().crossVectors(back, R[0]);
+    const defect = Math.atan2(cross.dot(T[0]), back.dot(R[0]));
+    for (let i = 0; i < n; i++) R[i].applyAxisAngle(T[i], defect * i / n).normalize();
+  }
+  return R;
+}
+
+function tubeCurveOp(curveObj, radius, sides, caps) {
+  const cv = curveObj.mesh.userData.kubikCurve;
+  curveObj.mesh.updateMatrixWorld();
+  let raw = curveSamplePoints(cv).map(p => p.clone().applyMatrix4(curveObj.mesh.matrixWorld));
+  // Two points cannot enclose anything - see latheCurveOp for what happens
+  // when they are allowed to try.
+  const closed = !!cv.closed && (cv.pts || []).length > 2;
+  if (closed && raw.length > 2) raw = raw.slice(0, -1);
+
+  /* A REPEATED POINT HAS NO TANGENT, and a curve can carry one - two control
+     points on the same spot is how a Bezier is given a corner. Dropped here
+     rather than guarded everywhere below. */
+  const pts = [];
+  raw.forEach(p => { if (!pts.length || p.distanceTo(pts[pts.length - 1]) > 1e-6) pts.push(p); });
+  if (closed && pts.length > 2 && pts[0].distanceTo(pts[pts.length - 1]) < 1e-6) pts.pop();
+  const n = pts.length;
+  if (n < 2) return { ok: false, why: 'a tube needs a curve with some length' };
+
+  const N = Math.max(3, Math.min(TUBE_SIDES_MAX, sides | 0));
+  const rad = Math.max(1e-3, radius);
+
+  const T = pts.map((p, i) => {
+    const a = closed ? pts[(i - 1 + n) % n] : pts[Math.max(0, i - 1)];
+    const b = closed ? pts[(i + 1) % n] : pts[Math.min(n - 1, i + 1)];
+    const t = b.clone().sub(a);
+    // The NEXT point, wrapping when the curve does - it used to clamp at
+    // n-1, so on a closed curve the last sample's fallback was p - p = 0 and
+    // the ring there fell back to an arbitrary world axis.
+    if (t.lengthSq() < 1e-18) t.copy(closed ? pts[(i + 1) % n] : pts[Math.min(n - 1, i + 1)]).sub(p);
+    if (t.lengthSq() < 1e-18) t.set(0, 1, 0);
+    return t.normalize();
+  });
+  const R = tubeFrames(pts, T, closed);
+
+  const ed = { positions: [], groups: [] };
+  const rings = [];
+  for (let i = 0; i < n; i++) {
+    const B = new THREE.Vector3().crossVectors(T[i], R[i]).normalize();
+    const row = [];
+    for (let j = 0; j < N; j++) {
+      const a = (j / N) * Math.PI * 2;
+      const p = pts[i].clone()
+        .addScaledVector(R[i], Math.cos(a) * rad)
+        .addScaledVector(B, Math.sin(a) * rad);
+      row.push(ed.positions.length / 3);
+      ed.positions.push(p.x, p.y, p.z);
+    }
+    rings.push(row);
+  }
+
+  const spans = closed ? n : n - 1;
+  const quads = [];
+  for (let i = 0; i < spans; i++) {
+    const r0 = rings[i], r1 = rings[(i + 1) % n];
+    for (let j = 0; j < N; j++) {
+      const k = (j + 1) % N;
+      quads.push([r0[j], r0[k], r1[k], r1[j]]);
+    }
+  }
+  if (!quads.length) return { ok: false, why: 'nothing to sweep' };
+
+  const faceTotal = quads.length + ((!closed && caps) ? 2 : 0);
+  if (faceTotal > IMPORT_FACE_BUDGET) {
+    return { ok: false, why: faceTotal + ' faces - too many to edit (limit ' +
+                            IMPORT_FACE_BUDGET + ')' };
+  }
+
+  /* OUTWARD, MEASURED ONCE AND APPLIED TO ALL OF THEM. The lathe's lesson,
+     which v2.15 finally proved: a swept surface has an outward direction that
+     needs no neighbour to define it, and guessing it from the construction
+     order is how a shell comes out inside out while passing every check.
+
+     ONE decision for the whole wall, not one per quad. Every band is built
+     the same way, so one answer carries them all - and measuring each
+     separately would let a tight bend, where the radial is nearly along the
+     tangent, disagree with its own neighbours. */
+  /* MEASURED OFF THE RING, NOT OFF THE QUAD'S CENTROID (corrected in review).
+
+     The centroid of a quad straddles two rings, so it carries half a step
+     ALONG the curve. On an open curve T[0] is exactly that direction and
+     projecting it out removed it; on a CLOSED curve T[0] is a central
+     difference across the seam corner, so a residual of |d|/2 * sin(theta/2)
+     survived, pointing into the corner. On a closed square of side 1 at the
+     default radius that residual is three times the true radial and points
+     the other way - so the whole wall flipped, and which way round you drew
+     the square decided it.
+
+     A ring vertex minus its own curve point IS the radial, exactly, by
+     construction: rad * (R cos a + B sin a). The pair either side of each quad
+     is averaged so the sample sits at the quad's own angle rather than half a
+     step off it, and the vote is summed over the whole first ring for the same
+     reason the lathe sums over its band. */
+  const radv = new THREE.Vector3();   // `rad` above is the radius, a number
+  let flux = 0;
+  for (let j = 0; j < N; j++) {
+    const k = (j + 1) % N;
+    radv.copy(vecAt(ed, rings[0][j])).add(vecAt(ed, rings[0][k]))
+        .multiplyScalar(0.5).sub(pts[0]);
+    flux += loopNormal(ed, quads[j]).dot(radv);
+  }
+  const flip = flux < 0;
+  quads.forEach(q => {
+    const loop = flip ? [q[0], q[3], q[2], q[1]] : q;
+    ed.groups.push({ triangles: polygonTriangles(ed, loop) });
+  });
+
+  /* The caps close an open tube, and each faces along the curve rather than
+     away from it - so they get their own measurement rather than the wall's. */
+  if (!closed && caps) {
+    [[rings[0], T[0].clone().negate()], [rings[n - 1], T[n - 1].clone()]].forEach(pair => {
+      const loop = pair[0].slice();
+      const want = pair[1];
+      const use = loopNormal(ed, loop).dot(want) < 0 ? loop.slice().reverse() : loop;
+      ed.groups.push({ triangles: polygonTriangles(ed, use) });
+    });
+  }
+
+  const mats = makeMaterialSet(ed.groups.length, DEFAULT_MATERIAL_COLOR);
+  return { ok: true, ed: ed, mats: mats, count: ed.groups.length, sides: N };
+}
+
 let latheChooser = null;
+
+/* THE SETUP BAR, and it is startGeoSetup's shape rather than a pendingOp's.
+
+   A pendingOp re-runs itself from a snapshot of the object it edits. A tube
+   has no such object: it MAKES one, out of a curve, and there is nothing to
+   snapshot. So it follows the primitive setup instead - the mesh is made the
+   moment you tap Tube, and the bar is a set of handles on the thing itself,
+   sitting in the scene at the size it will keep. Nothing reaches history
+   until OK, or every radius you tried on the way would be its own undo step.
+
+   It borrows the op bar's slider and stepper by hand, which cost two branches
+   in setPendingAmount and stepSegments - both of which bail on "no pending
+   op" and would otherwise have left a live-looking slider doing nothing. */
+App.tubeSetup = null;   // { curveId, objId, radius, sides, caps } while open
+
+function tubeSelection() {
+  if (App.mode !== 'object') { toast('Tube works in Object mode'); return; }
+  /* ONE EDITING STATE AT A TIME (found in review). Every branch added for the
+     tube reads `App.tubeSetup && !App.pendingOp`, so a pending op left open
+     underneath it meant the tube's slider re-ran the OTHER op, the stepper
+     changed its segment count, and the Caps button fell through to a spec
+     with no toggle and did nothing at all - a live-looking switch that is
+     inert, which this file calls its worst failure mode. Resolved the way
+     startGeoSetup resolves it. */
+  if (App.knife) cancelKnife(true);
+  if (App.pendingOp) {
+    toast('Finish the ' + ((OP_SPECS[App.pendingOp.kind] || {}).label || 'operation') + ' first');
+    return;
+  }
+  const c = oneCurve('Tube');
+  if (!c) return;
+  if (App.tubeSetup) finishTubeSetup(true);
+  const box = curveWorldBox(c);
+  const span = box.getSize(new THREE.Vector3()).length();
+  /* A radius you can SEE on this curve, not a constant. A tenth of the
+     curve's own reach reads as a pipe at any scale, and the slider's range is
+     set from the same number so the whole of it is useful. */
+  const radius = Math.max(0.01, span * 0.06);
+  const made = buildTubeObject(c, radius, 8, true);
+  if (!made) return;
+  App.tubeSetup = { curveId: c.id, objId: made.id, radius: radius, sides: 8, caps: true, span: span };
+  App.selectedObjectIds = new Set([made.id]);
+  App.activeObjectId = null;
+  detachAllGizmos();
+  hideRadialMenu();
+  refreshUI();
+  refreshGizmoAttachment();
+  showTubeBar();
+}
+
+function buildTubeObject(curveObj, radius, sides, caps) {
+  const r = tubeCurveOp(curveObj, radius, sides, caps);
+  if (!r.ok) { toast(r.why); return null; }
+  const box = new THREE.Box3(), v = new THREE.Vector3();
+  for (let i = 0; i < r.ed.positions.length; i += 3) {
+    box.expandByPoint(v.set(r.ed.positions[i], r.ed.positions[i + 1], r.ed.positions[i + 2]));
+  }
+  const c = box.getCenter(new THREE.Vector3());
+  for (let i = 0; i < r.ed.positions.length; i += 3) {
+    r.ed.positions[i] -= c.x;
+    r.ed.positions[i + 1] -= c.y;
+    r.ed.positions[i + 2] -= c.z;
+  }
+  return createObjectFromEditable(curveObj.name + ' tube', c, r.ed, r.mats, {});
+}
+
+function refreshTubeMesh() {
+  const t = App.tubeSetup;
+  if (!t) return;
+  const c = findObject(t.curveId), o = findObject(t.objId);
+  if (!c || !o) { finishTubeSetup(true); return; }
+  const r = tubeCurveOp(c, t.radius, t.sides, t.caps);
+  if (!r.ok) { toast(r.why); return; }
+  const box = new THREE.Box3(), v = new THREE.Vector3();
+  for (let i = 0; i < r.ed.positions.length; i += 3) {
+    box.expandByPoint(v.set(r.ed.positions[i], r.ed.positions[i + 1], r.ed.positions[i + 2]));
+  }
+  const cen = box.getCenter(new THREE.Vector3());
+  for (let i = 0; i < r.ed.positions.length; i += 3) {
+    r.ed.positions[i] -= cen.x;
+    r.ed.positions[i + 1] -= cen.y;
+    r.ed.positions[i + 2] -= cen.z;
+  }
+  o.mesh.position.copy(cen);
+  /* The material array BEFORE the rebuild: reconcileFinishes runs inside it
+     and reads the array to derive what every face is wearing, so handing it
+     the old one would leave the new faces unstamped. */
+  o.mesh.material = r.mats.length > 1 ? r.mats : r.mats[0];
+  rebuildFromEditable(o, r.ed);
+  refreshUI();
+  refreshGizmoAttachment();
+}
+
+function setTubeRadius(v) {
+  const t = App.tubeSetup;
+  if (!t || !Number.isFinite(v)) return;
+  const hi = Math.max(0.05, t.span * 0.5);
+  t.radius = Math.max(0.005, Math.min(hi, v));
+  document.getElementById('opValue').value = Number(t.radius.toFixed(3));
+  document.getElementById('opSlider').value = t.radius;
+  refreshTubeMesh();
+}
+
+function stepTubeSides(delta) {
+  const t = App.tubeSetup;
+  if (!t) return;
+  const n = Math.max(3, Math.min(TUBE_SIDES_MAX, t.sides + delta));
+  if (n === t.sides) return;
+  t.sides = n;
+  document.getElementById('opSegValue').textContent = n;
+  refreshTubeMesh();
+}
+
+function showTubeBar() {
+  mirrorChooser = null;
+  booleanChooser = null;
+  latheChooser = null;
+  const t = App.tubeSetup;
+  const el = document.getElementById('opGrouping');
+  el.innerHTML = '';
+  el.style.display = 'none';
+  document.getElementById('opLabel').textContent = 'Tube · radius';
+  const sl = document.getElementById('opSlider');
+  sl.style.display = '';
+  sl.min = 0.005;
+  sl.max = Math.max(0.05, t.span * 0.5);
+  sl.step = Math.max(0.001, t.span * 0.002);
+  sl.value = t.radius;
+  const val = document.getElementById('opValue');
+  val.style.display = '';
+  val.value = Number(t.radius.toFixed(3));
+  document.getElementById('opHint').style.display = 'none';
+  document.getElementById('opSegments').style.display = '';
+  document.getElementById('opSegValue').textContent = t.sides;
+  const wrap = document.getElementById('opToggleWrap');
+  const btn = document.getElementById('opToggle');
+  wrap.style.display = 'inline-flex';
+  btn.textContent = 'Caps';
+  btn.title = 'Close the two ends';
+  btn.classList.toggle('active', !!t.caps);
+  document.getElementById('opOk').style.display = '';
+  surfaceIn(opBarEl);
+}
+
+/* Dropped without touching the scene, for restoreDoc: undo and load rebuild
+   every object, so there is nothing left to keep OR to remove - and either
+   branch of finishTubeSetup would reach for an object id that now means
+   something else entirely in the loaded document. */
+function abandonTubeSetup() {
+  if (!App.tubeSetup) return;
+  App.tubeSetup = null;
+  hideOpBar();
+  document.getElementById('opToggleWrap').style.display = 'none';
+}
+
+function finishTubeSetup(keep) {
+  const t = App.tubeSetup;
+  if (!t) return;
+  App.tubeSetup = null;
+  hideOpBar();
+  document.getElementById('opToggleWrap').style.display = 'none';
+  const o = findObject(t.objId);
+  if (keep) {
+    if (o) { pushHistory(); return; }
+    /* The tube was deleted from the outliner while its bar was open, so there
+       is nothing to keep - but the bar has just gone and the outliner, the
+       object count and the gizmo are all still describing the scene as it was
+       before the delete. pushHistory is what refreshes on the normal path;
+       with nothing to push, this does it instead. */
+    refreshUI();
+    refreshGizmoAttachment();
+    return;
+  }
+  if (o) {
+    removeObjects([o]);
+    App.selectedObjectIds.delete(o.id);
+    App.selectedObjectIds.add(t.curveId);
+    toast('Cancelled');
+    /* The history is untouched by a discard - nothing was ever pushed - but
+       the AUTOSAVE is not the history, and the half-built tube has been in
+       App.objects since the first tap. The same line, for the same reason,
+       that finishGeoSetup carries. */
+    scheduleAutosave();
+  }
+  refreshUI();
+  refreshGizmoAttachment();
+}
 
 function latheSelection() {
   if (App.mode !== 'object') { toast('Lathe works in Object mode'); return; }
+  if (App.knife) cancelKnife(true);
+  if (App.tubeSetup) finishTubeSetup(true);
+  if (App.pendingOp) {
+    toast('Finish the ' + ((OP_SPECS[App.pendingOp.kind] || {}).label || 'operation') + ' first');
+    return;
+  }
   const c = oneCurve('Lathe');
   if (!c) return;
   if (curveSamplePoints(c.mesh.userData.kubikCurve).length < 2) {
@@ -28439,9 +28961,15 @@ const HUB_TOOLS_CURVE = [
     run: toggleCurveClosed },
   { key: 'curveres', icon: 'curveres', label: 'Segments', seat: 3, run: cycleCurveRes },
   { key: 'delete', icon: 'del', label: 'Delete', seat: 4, run: deleteSelection },
-  /* Seat 6, held for it since v2.14. Seat 7 is Tube's. */
+  /* SEAT 5 IS DUPLICATE HERE, not the grouping seat (v2.16). Grouping is
+     appended to the OBJECT ring because a group of mixed things is the common
+     case - and a mixed selection shows the object ring, where it still is. A
+     group of curves ALONE is rare enough that it is not worth the seat that
+     Tube needs, and the two ops this metacomponent exists for hold the outer
+     pair where the thumb reaches furthest. */
+  { key: 'duplicate', icon: 'dupe', label: 'Duplicate', seat: 5, run: duplicateSelection },
   { key: 'lathe', icon: 'lathe', label: 'Lathe', seat: 6, run: latheSelection },
-  { key: 'duplicate', icon: 'dupe', label: 'Duplicate', seat: 7, run: duplicateSelection }
+  { key: 'tube', icon: 'tube', label: 'Tube', seat: 7, run: tubeSelection }
 ];
 
 const HUB_TOOLS_EMPTY = [
@@ -28546,7 +29074,7 @@ function currentHubTools() {
        Grouping rides along, because grouping a curve with a mesh is exactly
        the kind of thing a curve is for. */
     const sel = Array.from(App.selectedObjectIds).map(id => findObject(id)).filter(Boolean);
-    if (sel.length && sel.every(isCurve)) return HUB_TOOLS_CURVE.concat(HUB_TOOL_GROUPING);
+    if (sel.length && sel.every(isCurve)) return HUB_TOOLS_CURVE;
     return HUB_TOOLS_OBJECT_BASE.concat(HUB_TOOL_GROUPING);
   }
   if (App.mode === 'vertex') return HUB_TOOLS_VERTEX;
@@ -31892,9 +32420,16 @@ window.addEventListener('keydown', (ev) => {
 
      Undo and Redo are exempt. They have their own meaning over an open setup
      - take back what is on screen - and they enforce it themselves. */
-  if (App.geoSetup) {
+  if (App.geoSetup || App.tubeSetup) {
     const undoish = (ev.ctrlKey || ev.metaKey) && 'zy'.includes(ev.key.toLowerCase());
-    if (!undoish) finishGeoSetup(true);
+    /* A TUBE SETUP IS THE SAME SHAPE, and was missed (found in review). Its
+       object exists from the first tap and is selected, so Ctrl+D copied an
+       uncommitted tube and pushed both to history, and Delete disposed the
+       very object the bar was still pointing at. */
+    if (!undoish) {
+      if (App.geoSetup) finishGeoSetup(true);
+      if (App.tubeSetup) finishTubeSetup(true);
+    }
   }
   if (App.pendingOp) {
     // While adjusting an operation, keys are dedicated to confirming,
@@ -32792,6 +33327,10 @@ if (PICK_DEBUG) {
     // v2.15: the lathe, and the sweep it now shares with Revolve.
     revolveSweep, latheCurveOp, latheSelection, runLathe, revolveOp,
     get latheChooser() { return latheChooser; },
+    // v2.16: the tube, its frames and its setup bar.
+    tubeCurveOp, tubeFrames, tubeSelection, buildTubeObject, refreshTubeMesh,
+    setTubeRadius, stepTubeSides, finishTubeSetup, TUBE_SIDES_MAX,
+    get tubeSetup() { return App.tubeSetup; },
     get activePointers() { return activePointers; },
     get directDrag() { return directDrag; },
     finishGeoSetup,

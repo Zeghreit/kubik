@@ -269,6 +269,117 @@
        !ring2.some(t => t.key === 'lathe'));
     mark('8.ring');
 
+    /* 9 -- ORIENTATION, THE WAY THE REVIEW FOUND IT WRONG -------------------
+       Sections 2 and 3 turn a single straight profile parallel to the axis,
+       which is the ONE shape whose first leg gives a clean answer - so they
+       passed while every cup and every closed profile came out inside out.
+       An inverted shell is watertight, consistently wound and invisible to
+       auditWinding by design, so the test has to measure orientation itself.
+
+       Signed volume does it for anything closed: sum a.(b x c)/6 over every
+       triangle. Calibrated against a cube first, because the sign convention
+       is the app's, not arithmetic's. */
+    function signedVolume(obj) {
+      const ed = K.toEditable(obj.mesh);
+      let v = 0;
+      const g = (i) => V(ed.positions[i * 3], ed.positions[i * 3 + 1], ed.positions[i * 3 + 2]);
+      ed.groups.forEach(grp => grp.triangles.forEach(t => {
+        v += g(t[0]).dot(new K.THREE.Vector3().crossVectors(g(t[1]), g(t[2]))) / 6;
+      }));
+      return v;
+    }
+    // And the flux measure, for a shell that is open and so has no volume.
+    function outwardFlux(obj, axis) {
+      const ed = K.toEditable(obj.mesh);
+      const ax = V(axis === 'x' ? 1 : 0, axis === 'y' ? 1 : 0, axis === 'z' ? 1 : 0);
+      obj.mesh.updateMatrixWorld();
+      let f = 0;
+      for (let gi = 0; gi < ed.groups.length; gi++) {
+        const loop = K.getGroupBoundaryLoopAttr(ed, gi);
+        if (loop.length < 3) continue;
+        const p = loop.map(a => V(ed.positions[a * 3], ed.positions[a * 3 + 1], ed.positions[a * 3 + 2])
+          .applyMatrix4(obj.mesh.matrixWorld));
+        const nrm = V(0, 0, 0), cen = V(0, 0, 0);
+        for (let i = 0; i < p.length; i++) {
+          const a = p[i], b = p[(i + 1) % p.length];
+          nrm.x += (a.y - b.y) * (a.z + b.z);
+          nrm.y += (a.z - b.z) * (a.x + b.x);
+          nrm.z += (a.x - b.x) * (a.y + b.y);
+          cen.add(a);
+        }
+        cen.multiplyScalar(1 / p.length);
+        cen.addScaledVector(ax, -cen.dot(ax));
+        f += nrm.dot(cen);
+      }
+      return f;
+    }
+
+    clearScene();
+    const calib = mkPrim('Cube', 'cube', 0);
+    const vCube = signedVolume(calib);
+    ok('9.orient a cube reads POSITIVE, so positive is outward here',
+       vCube > 0, 'volume = ' + vCube.toFixed(4));
+
+    /* THE CLOSED RECTANGLE, from every corner and both ways round. The review
+       traced four of these eight as inverted, and which one you got depended
+       on which corner you happened to draw first. */
+    const rect = [[0.8, -0.2, 0], [1.2, -0.2, 0], [1.2, 0.2, 0], [0.8, 0.2, 0]];
+    let worstV = Infinity, worstName = '';
+    for (let start = 0; start < 4; start++) {
+      for (let dir = 0; dir < 2; dir++) {
+        const pts = [];
+        for (let i = 0; i < 4; i++) pts.push(rect[(start + i) % 4]);
+        if (dir) pts.reverse();
+        clearScene();
+        const c = mkCurve('R', pts, { type: 'poly', res: 8, closed: true });
+        K.runLathe(c, 'y');
+        const m = K.App.objects.filter(o => !K.isCurve(o))[0];
+        const v = m ? signedVolume(m) : 0;
+        if (v < worstV) { worstV = v; worstName = 'start ' + start + (dir ? ' reversed' : ''); }
+      }
+    }
+    ok('9.orient a closed profile comes out SOLID from every corner, both ways',
+       worstV > 0, 'worst was ' + worstName + ' at ' + worstV.toFixed(4));
+
+    // The cup: drawn from the axis outward and then up, so the FIRST leg is
+    // the bottom - the leg whose radial dot is zero, which is what used to
+    // decide the whole shell.
+    clearScene();
+    const cup = mkCurve('Cup', [[0, 0, 0], [1, 0, 0], [1, 1, 0]], { type: 'poly', res: 8 });
+    K.runLathe(cup, 'y');
+    const cupM = K.App.objects.filter(o => !K.isCurve(o))[0];
+    const cupF = cupM ? outwardFlux(cupM, 'y') : 0;
+    ok('9.orient a cup drawn from the axis faces outward, not in',
+       cupF > 0, 'flux = ' + cupF.toFixed(4));
+
+    clearScene();
+    const cupB = mkCurve('CupB', [[0, 0, 0], [1, 0, 0], [1, 1, 0]], { type: 'bezier', res: 8 });
+    K.runLathe(cupB, 'y');
+    const cupBM = K.App.objects.filter(o => !K.isCurve(o))[0];
+    const cupBF = cupBM ? outwardFlux(cupBM, 'y') : 0;
+    ok('9.orient and so does the Bezier version, whose first leg dips',
+       cupBF > 0, 'flux = ' + cupBF.toFixed(4));
+    mark('9.orient');
+
+    // 10 -- degenerate profiles the review named ---------------------------
+    clearScene();
+    const two = mkCurve('Two', [[0.6, 0, 0], [0.6, 1, 0]], { type: 'poly', res: 8, closed: true });
+    K.runLathe(two, 'y');
+    const twoM = K.App.objects.filter(o => !K.isCurve(o))[0];
+    const twoW = twoM ? K.auditWinding(twoM) : null;
+    ok('10.degen a CLOSED two-point curve is swept as the open profile it is',
+       !!twoW && twoW.conflictEdges === 0 && twoM.mesh.geometry.groups.length === 8,
+       twoW && (JSON.stringify(twoW) + ' groups=' + twoM.mesh.geometry.groups.length));
+
+    clearScene();
+    const rep = mkCurve('Rep', [[0.6, 0, 0], [0.6, 0, 0], [0.6, 1, 0]], { type: 'poly', res: 8 });
+    K.runLathe(rep, 'y');
+    const repM = K.App.objects.filter(o => !K.isCurve(o))[0];
+    ok('10.degen a repeated point is dropped, not swept into zero-area faces',
+       !!repM && repM.mesh.geometry.groups.length === 8,
+       repM && ('groups=' + repM.mesh.geometry.groups.length));
+    mark('10.degen');
+
     finish();
   }
 

@@ -15,8 +15,8 @@ modes to remember, the viewport as the hero, nothing that breaks the run of
 work. What is gone is the implied ceiling.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~32,800 lines)
-- Version at time of writing: **2.15**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
+- Version at time of writing: **2.16**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -46,6 +46,155 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Tube (v2.16), and the review that reshaped all three
+
+A circle swept along a curve: pipes, handles, cables, rails, wire. Curve ring,
+seat 7.
+
+### The frame is the whole job
+
+Sweeping needs two directions perpendicular to the curve at every sample, and
+the obvious way to get them - cross the tangent with a fixed up vector - fails
+exactly where curves are interesting. Where the tangent turns vertical the
+cross product collapses; either side of that it flips sign, and the ring spins
+through **half a turn in one step**. That is a crease down the model and it
+reads as a broken tool.
+
+So the frame is CARRIED along the curve instead of recomputed: rotation-
+minimising frames by double reflection (Wang et al.). Each step reflects the
+previous frame through the plane bisecting the two positions, then through the
+plane bisecting the two tangents. No preferred axis, so nothing to collapse
+against, and no twist beyond what the curve itself has. A dozen lines, no bad
+case.
+
+A closed curve needs one more step: carried all the way round, the frame does
+not come back to where it started - the leftover angle is the curve's own
+holonomy - so the seam would meet itself rotated. That defect is measured over
+the closing span and spread evenly across every sample.
+
+`_tubechk` section 1 measures both, **and measures the naive method on the
+same curve**, because a test that cannot fail on the old way is not testing
+the new one. On an S whose middle tangent is exactly world up: RMF's worst
+consecutive frame step is `1.0000`; the naive frame goes degenerate. (The
+first draft of that check used a half-circle arc, which does NOT provoke it -
+for a tangent in the XY plane the cross with up is always ±Z and never changes
+sign. The control test failed, correctly, and the test was what was wrong.)
+
+### The setup bar is startGeoSetup's shape, not a pendingOp's
+
+A pendingOp re-runs from a snapshot of the object it edits. A tube has no such
+object - it MAKES one, out of a curve. So it follows the primitive setup: the
+mesh appears the moment you tap Tube and the bar is a set of handles on the
+thing itself, sitting in the scene at the size it will keep. **Nothing reaches
+history until OK**, or every radius you tried on the way would be its own undo
+step.
+
+It borrows the op bar's slider (radius), stepper (sides) and toggle (caps) by
+hand, which costs one branch each in `setPendingAmount`, `stepSegments` and
+the `#opToggle` listener - all three of which bail on "no pending op" and would
+otherwise have left live-looking controls doing nothing.
+
+### The curve ring is its own eight now
+
+`HUB_TOOLS_CURVE` no longer concatenates `HUB_TOOL_GROUPING`: Add points ·
+Bezier/Poly · Close/Open · Segments · Delete · Duplicate · **Lathe** ·
+**Tube**. Grouping rides on the OBJECT ring because a group of mixed things is
+the common case, and a mixed selection shows that ring. A group of curves
+alone is rare enough not to be worth the seat that Tube needs, and the two ops
+this whole metacomponent exists for hold the outer pair where the thumb
+reaches furthest.
+
+## The v2.16 review, and what it found in all three versions
+
+Two reviewers on the whole of 2.14-2.16 (opus on integration, fable on
+geometry). **Seventeen real defects.** The two worst were the same shape as
+the Booleans session's two worst, which is now a pattern worth naming:
+
+> **Watertight and wrong.** A shell that is inside out is closed, consistently
+> wound, one shell, and passes every assertion `auditWinding` can make -
+> because "every face reversed is the same mesh seen inside out" is true by
+> design. Nothing downstream catches it. It has to be measured on purpose.
+
+- **The lathe decided the whole shell from LEG 0**, and leg 0 is the worst leg
+  to ask. A cup drawn from the axis starts with its BOTTOM, whose normal is
+  axial, so the radial dot is 0 (poly) or +1.7e-5 (Bezier - not float noise,
+  the 1/6 form's dip) and the whole thing came out inside out. A closed
+  rectangle - a wheel, a ring - starts on whichever corner you drew first, and
+  **four of the eight ways of drawing it inverted**. It is a summed flux over
+  the whole first band now: Newell's normal scales with the leg's AREA and the
+  radial with its distance from the axis, so a big far leg outvotes a small
+  near one, a purely axial leg casts no vote, and a closed profile's inner and
+  outer walls do not cancel.
+- **The tube measured its radial from the QUAD CENTROID**, which straddles two
+  rings and so carries half a step ALONG the curve. On an open curve `T[0]` is
+  exactly that direction and projecting it out removed it; on a CLOSED curve
+  `T[0]` is a central difference across the seam corner and the residual
+  survives - on a square of side 1 at the default radius it is three times the
+  true radial and points the other way. A ring vertex minus its own curve
+  point IS the radial, exactly, by construction.
+
+Both probes passed while both were broken, because both tested the one shape
+whose first quad gives a clean answer: a straight profile parallel to the
+axis. **`_lathechk` section 9 and `_tubechk` section 10 now measure signed
+volume** - `sum a.(b x c)/6`, calibrated against a cube first because the sign
+convention is the app's and not arithmetic's - over a closed profile started
+at every corner in both directions. Sixteen lathes and sixteen tubes, all
+solid.
+
+Also fixed, and each one is a real user path:
+
+- **Painting a curve from the materials tray destroyed the app.**
+  `dressFromPool` put a MeshStandardMaterial over the `Line2`'s LineMaterial
+  and disposed the old one, so the curve stopped drawing - and then
+  `updateStrokeResolution`, which walks `gizmoStrokes` on every resize, threw
+  on `l.material.resolution` and left the viewport unpainted for the rest of
+  the session. No history is pushed there, so Undo could not get it back.
+- **An open Tube bar outlived the document.** `restoreDoc` closes the knife,
+  the curve draw, the geo setup and the pending op by name; the tube setup was
+  not on the list, so after an undo its object id named a DIFFERENT object and
+  the next nudge of the radius slider rebuilt an unrelated mesh as a tube.
+- **Two editing states could be open at once.** Every tube branch reads
+  `App.tubeSetup && !App.pendingOp`, so with a pending op underneath it the
+  tube's slider re-ran the OTHER op, the stepper changed its segment count,
+  and Caps fell through to a spec with no toggle and did nothing at all.
+- **Every glTF / OBJ / STL export contained junk.** `buildExportGroup` clones
+  `source.geometry` for every object; a `Line2`'s attributes are
+  `LineSegmentsGeometry`'s internal eight-vertex quad TEMPLATE, so each curve
+  exported as a small flat plate. Curves are skipped now - a curve is
+  construction, and nobody expects their scaffolding in the .obj.
+- **A drag during a tube setup pushed history**, so Cancel left a step that
+  brought the discarded tube back on Undo and on the next reload.
+- **Ctrl+D and Delete did not resolve a tube setup**, so Ctrl+D copied an
+  uncommitted tube and Delete disposed the object the bar was pointing at.
+- **Snapping caught curves.** With the new 14px `Line2` threshold a curve in
+  front of a corner swallowed the snap and reported it as `kind: 'face'`.
+- **A doubled Bezier control point drew a PETAL, not a corner** - the 1/6 form
+  on a zero-length span loops through about 270 degrees, an excursion of a
+  sixteenth of the neighbouring spacing, which a tube thicker than the loop
+  turns into a knot at every corner the user asked for.
+- **A closed curve with two points** swept two coincident opposite-wound
+  bands. Two points cannot enclose anything, and `curveSamplePoints` says so
+  now - one place, upstream of every consumer, so they all agree.
+- Plus: the lathe had no repeated-point guard where the tube did; the closing
+  tangent on a closed curve fell back to a zero vector; `showCurveBar` missed
+  `latheChooser`; the curve mode refusal returned over the top of the open
+  tools instead of putting them down; `finishTubeSetup(true)` skipped the UI
+  refresh when its object was already gone; and the value box went on showing
+  half-typed text while the tube kept its old radius.
+
+## The three probes
+
+| probe | assertions | broken copy fails |
+|---|---|---|
+| `_curvechk.py` | 47 | 12 |
+| `_lathechk.py` | 32 | 11 |
+| `_tubechk.py` | 30 | 10 |
+
+Every one of them is verified against a deliberately broken build, and the
+break list now includes **the exact regressions the review found**: the lathe's
+outward test reduced back to leg 0, and the tube's radial back to the quad
+centroid. Those two are the ones that would come back silently.
 
 ## Lathe (v2.15)
 
@@ -265,8 +414,9 @@ than naming a smoothness.
   TYPE, and it is what keeps Lathe and Tube out of an Object ring that has
   been full at 0-7 since Array took seat 1.
 
-`HUB_TOOLS_CURVE`: Add points · Bezier/Poly · Close/Open · Segments · Delete ·
-(grouping) · **seat 6 held for Lathe** · Duplicate. Segments is a CYCLE
+`HUB_TOOLS_CURVE` at v2.14 was: Add points · Bezier/Poly · Close/Open ·
+Segments · Delete · (grouping) · seat 6 held for Lathe · Duplicate. **Grouping
+left it at v2.16** to make room for Tube - see that section. Segments is a CYCLE
 through 2/4/8/16/32 rather than a slider: the shape redraws on the tap, so
 stepping through the five useful values shows the answer faster than a bar you
 have to open, aim at and dismiss, and it costs one seat instead of a whole op.
@@ -11233,6 +11383,7 @@ optional target filename, so a `_bak_*.html` gives a before number:
 | `_boolchk.py` | the booleans, all fifteen sections (v2.13) |
 | `_curvechk.py` | the curve entity, its guards and its ring (v2.14) |
 | `_lathechk.py` | Lathe, and the Revolve sweep `_spinchk` never covered (v2.15) |
+| `_tubechk.py` | Tube, its frames and its setup bar (v2.16) |
 
 `_fixchk.py` is the one to copy the shape of: it prints `VERDICT=PASS/FAIL`
 and it is **verified against the broken copy** - run it against
@@ -11774,8 +11925,13 @@ Zeghreit's words: these are what "elevate the app to the next level".
    see the section above, including the two defects that were watertight and
    wrong.
 2. **Curves, as a METACOMPONENT** - the ENTITY shipped at v2.14, see above.
-   **Lathe shipped at v2.15** and holds seat 6. Tube is what remains, and
-   seat 7 of the curve ring is where it goes.
+   ~~**Lathe shipped at v2.15** and holds seat 6. Tube is what remains.~~
+   **DONE.** The entity at v2.14, Lathe at v2.15, Tube at v2.16. Both of the
+   two big things named at v2.12 have shipped. What a curve does NOT have yet,
+   and each is its own increment: draggable Bezier handles (the file format
+   already reserves `hIn`/`hOut`), edge snapping while drawing, and a Lathe
+   that sweeps an ARC rather than only a full turn - that one wants the
+   pendingOp machinery so a slider re-runs the sweep live.
 
    Originally: - not one op but a new kind of thing the app
    holds, with a whole set of operations built around it. Lathe is one of

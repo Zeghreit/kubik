@@ -26,13 +26,20 @@ sub('      if (onAxis[i]) return profile[i];',
     '      if (false && onAxis[i]) return profile[i];   // BROKEN: pole',
     '2. the shared pole')
 
-sub('    if (cen.lengthSq() > 1e-12 && nrm.dot(cen) < 0) flip = !flip;',
-    '    if (false && cen.lengthSq() > 1e-12 && nrm.dot(cen) < 0) flip = !flip;  // BROKEN',
+sub('    if (flux < 0) flip = !flip;',
+    '    if (flux > 0) flip = !flip;   // BROKEN: the sign inverted',
     '3. the geometric winding answer')
 
 sub('  if (cv.closed && samples.length > 2) samples = samples.slice(0, -1);',
     '  if (false && cv.closed) samples = samples.slice(0, -1);   // BROKEN: closed',
     '4. the closed-curve duplicate sample')
+
+# 5. The exact regression the v2.16 review found: decide the whole shell from
+#    leg 0 instead of summing the band. Straight profiles still pass; every cup
+#    and every closed profile comes out inside out.
+sub('    const legs0 = closed ? profile.length : profile.length - 1;',
+    '    const legs0 = 1;                                   // BROKEN: leg 0 only',
+    '5. the outward test back to leg 0 alone')
 
 io.open(ROOT + r'\_bak_lathebroken.html', 'w', encoding='utf-8', newline='').write(src)
 print('WROTE _bak_lathebroken.html')
