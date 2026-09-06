@@ -20,7 +20,9 @@
 {
   "imports": {
     "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/",
+    "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.9.7/build/index.module.js",
+    "three-bvh-csg": "https://cdn.jsdelivr.net/npm/three-bvh-csg@0.0.18/build/index.module.js"
   }
 }
 </script>
@@ -2360,7 +2362,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.12</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.13</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -3836,6 +3838,8 @@ const App = {
   showInspector: false,
   selectedObjectIds: new Set(),
   activeObjectId: null,   // used for vertex/edge/face editing
+  // Boolean's one independent switch, remembered across runs (v2.13).
+  boolKeep: false,
   selectedElements: new Set(), // logical vertex ids / edge indices / face-group indices, for activeObjectId
   edgeAnchor: null,      // edge selected by the previous single tap, for path selection
   edgeAnchorTime: 0,     // when that tap happened - a stale anchor is ignored
@@ -13317,6 +13321,7 @@ const opValueEl = document.getElementById('opValue');
 function showOpBar() {
   // Whatever this bar was showing before, it is an op now - see cancelPendingOp.
   mirrorChooser = null;
+  booleanChooser = null;
   const op = App.pendingOp;
   if (!op) return;
   const spec = OP_SPECS[op.kind];
@@ -13393,6 +13398,17 @@ function refreshOpToggle() {
 }
 
 document.getElementById('opToggle').addEventListener('click', () => {
+  /* THE BOOLEAN CHOOSER BORROWS THIS SWITCH (v2.13). It has no pending op
+     and so no OP_SPECS entry, and the spec lookup below would return early -
+     leaving a switch that looks live and does nothing, on the one control
+     whose entire job is to say which of two things is about to happen. A
+     silent no-op is the worst failure mode this file records; this is that
+     failure with a label on it. */
+  if (booleanChooser && !App.pendingOp) {
+    App.boolKeep = !App.boolKeep;
+    document.getElementById('opToggle').classList.toggle('active', !!App.boolKeep);
+    return;
+  }
   const op = App.pendingOp;
   const spec = op && OP_SPECS[op.kind];
   if (!spec || !spec.toggle) return;
@@ -13543,10 +13559,16 @@ function refreshOpAmountVisibility() {
    needs its own handle: something for the ✕ to close, and somewhere to keep
    the selection it was opened for. */
 let mirrorChooser = null;
+/* Boolean's chooser, kept beside Mirror's and cleared everywhere Mirror's is
+   (v2.13). Mirror's note records what happens when a chooser outlives its
+   bar: it sits through any amount of later work and then runs on whatever
+   happens to be selected. Same capture, same clears. */
+let booleanChooser = null;
 
 function hideOpBar() {
   endAmountDrag();   // a2.102: never leave orbit off behind a finished op
   mirrorChooser = null;
+  booleanChooser = null;
   submergeOut(opBarEl);
   // The chooser bars (Mirror, Extrude grouping) drive this bar by hand and
   // know nothing about the toggle, so it goes away with the bar itself.
@@ -13843,7 +13865,7 @@ function cancelPendingOp() {
      it - and then ✕ hid the bar and returned, leaving the bevel preview baked
      into the mesh with no bar left to accept or reject it. A real op always
      wins this guard now, and showOpBar clears the flag as well. */
-  if (mirrorChooser && !App.pendingOp) { hideOpBar(); return; }
+  if ((mirrorChooser || booleanChooser) && !App.pendingOp) { hideOpBar(); return; }
   const op = App.pendingOp;
   if (!op) return;
   const obj = findObject(op.objId);
@@ -19180,6 +19202,7 @@ gizmoStrokes.push(knifeLine);   // so a resize keeps the line's width honest
    count in the label so you can see the cut growing. */
 function showKnifeBar() {
   mirrorChooser = null;   // same reasoning as showOpBar
+  booleanChooser = null;
   const el = document.getElementById('opGrouping');
   el.innerHTML = '';
   el.style.display = 'inline-flex';
@@ -23731,6 +23754,688 @@ function joinSelection() {
   toast('Joined ' + ids.length + ' objects');
 }
 
+/* ---------------- Booleans (v2.13) ----------------
+
+   Union, Difference and Intersect on whole objects. Not a modifier and not
+   live: it runs, it makes one object, and Undo puts back what went in.
+
+   THE ENGINE ARRIVES ON FIRST USE, NOT ON LOAD. three-bvh-csg and its BVH,
+   two prebuilt ESM modules, ~100 KB gzipped between them, named in the
+   importmap and fetched by the dynamic import below the first time anyone
+   runs a boolean - so cold start, first paint and the phone's memory are
+   untouched for everyone who never does.
+
+   They are named in the IMPORTMAP rather than pulled as a bundle for one
+   reason: both builds keep `three` as an external bare import, so they
+   resolve to the one three@0.184.0 instance this file already loaded. A
+   bundled build carries its own copy, and every `instanceof THREE.*` in this
+   file would quietly start lying.
+
+   AND NOT OUR OWN CSG. Coplanar faces are where hand-written BSP
+   implementations fail, and they fail silently and geometrically - the class
+   this file's own rules single out as the one to be most careful with. */
+let csgMod = null, csgLoading = null;
+function loadCSG() {
+  if (csgMod) return Promise.resolve(csgMod);
+  // A failed load has to be retryable - the usual cause is a phone that was
+  // in a tunnel, and the second attempt is the one that works.
+  if (!csgLoading) {
+    csgLoading = import('three-bvh-csg')
+      .then(m => { csgMod = m; return m; })
+      .catch(e => { csgLoading = null; throw e; });
+  }
+  return csgLoading;
+}
+
+/* REFUSED BEFORE ANYTHING IS FETCHED, AND NAMED. three-bvh-csg wants
+   two-manifold watertight brushes. Handed anything else it does not throw:
+   it returns a plausible-looking wrong answer, which is indistinguishable
+   from a working app until you look inside the model. auditWinding already
+   counts exactly what makes an input unusable, so the refusal can say which
+   object and how many - and Cap holes is one seat away in the same door. */
+function booleanSurvey(objs) {
+  for (let i = 0; i < objs.length; i++) {
+    const o = objs[i], a = auditWinding(o);
+    if (a.boundary > 0) {
+      return o.name + ' is not closed - ' + a.boundary + ' open edge' +
+             (a.boundary === 1 ? '' : 's') + '. Cap holes first.';
+    }
+    if (a.nonManifold > 0) {
+      return o.name + ' has ' + a.nonManifold + ' non-manifold edge' +
+             (a.nonManifold === 1 ? '' : 's') + '. Clean up first.';
+    }
+    /* AND A REVERSED FACE, which is not a topology error and IS a boolean
+       one. three-bvh-csg decides inside from outside by shooting a ray along
+       each triangle's own normal and reading the sign against the face it
+       hits; one face pointing the wrong way corrupts that in both roles - its
+       own ray heads into its solid, and every ray that leaves through it
+       reads the wrong side. Flip normals can produce this state and
+       auditWinding already counts it, so refusing costs a line. */
+    if (a.conflictEdges > 0) {
+      return o.name + ' has ' + a.conflictEdges + ' face' +
+             (a.conflictEdges === 1 ? '' : 's') +
+             ' wound the wrong way. Flip normals, or Clean up, first.';
+    }
+  }
+  return null;
+}
+
+/* A BRUSH CARRYING ONLY WHAT THE EVALUATOR READS. Every new vertex the
+   evaluator makes is interpolated across every attribute it is told about,
+   and this app's geometry carries shading data that means nothing halfway
+   along a cut edge. Stripping to position plus a freshly computed normal
+   also guarantees the two brushes MATCH, which is the one thing
+   three-bvh-csg requires of a pair and does not check for you.
+
+   The transform rides on the BRUSH, not baked into the vertices: the
+   evaluator reads matrixWorld itself and puts A's transform back on the
+   result, so baking here would apply it twice. */
+function booleanBrushOf(CSG, o) {
+  o.mesh.updateMatrixWorld(true);
+  const src = o.mesh.geometry;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', src.attributes.position.clone());
+  if (src.index) g.setIndex(src.index.clone());
+  (src.groups || []).forEach(gr => g.addGroup(gr.start, gr.count, gr.materialIndex));
+
+  /* THE TRANSFORM IS BAKED, AND THE BRUSH LEFT AT IDENTITY. It used to ride
+     on the brush - decomposed onto position/quaternion/scale - which is what
+     the evaluator reads, and which was WRONG for a mirrored object.
+
+     Measured: cube A minus cube B with B's scale.x set to -1 and B sitting
+     squarely over A's right half. The result came back watertight, six
+     faces, 1 x 1 x 1 - the whole of A, untouched. three-bvh-csg decides
+     inside from outside by shooting a ray along each triangle's own normal;
+     a negative determinant on the brush reverses every one of them, so the
+     cutter is read as its own complement and removes nothing. Watertight and
+     wrong is the worst answer available, because nothing downstream can tell.
+
+     Baking removes the question rather than answering it: no brush carries a
+     determinant at all, so the result carries none either, and the flip in
+     editableFromCSGResult is left as the guard it was always meant to be
+     rather than the thing correctness depends on. Same fix, and the same
+     reason, as the importer's - and applyMatrix4 transforms positions while
+     leaving the index order alone, so a mirrored object arrives wound
+     backwards unless it is turned back here. */
+  g.applyMatrix4(o.mesh.matrixWorld);
+  if (o.mesh.matrixWorld.determinant() < 0) {
+    const ix = g.index;
+    if (ix) {
+      for (let i = 0; i + 2 < ix.count; i += 3) {
+        const sw = ix.getX(i + 1);
+        ix.setX(i + 1, ix.getX(i + 2));
+        ix.setX(i + 2, sw);
+      }
+      ix.needsUpdate = true;
+    } else {
+      /* Every mesh this app makes is indexed - rebuildFromEditable sets one -
+         but an unindexed geometry would be silently left inside out, which is
+         exactly the class of bug this block exists to close. */
+      const pa = g.attributes.position;
+      for (let i = 0; i + 2 < pa.count; i += 3) {
+        const x = pa.getX(i + 1), y = pa.getY(i + 1), z = pa.getZ(i + 1);
+        pa.setXYZ(i + 1, pa.getX(i + 2), pa.getY(i + 2), pa.getZ(i + 2));
+        pa.setXYZ(i + 2, x, y, z);
+      }
+      pa.needsUpdate = true;
+    }
+  }
+  g.computeVertexNormals();
+  const srcMats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
+  /* THE LIVE MATERIALS, NOT CLONES, and this is load-bearing (found in
+     review). The evaluator collapses duplicate materials with
+     `materials.indexOf(mat)` - REFERENCE identity - and two clones of one
+     pooled material are never ===, so nothing collapses and every A group
+     and every B group keeps a materialIndex of its own. mergeCoplanarTriangles
+     refuses to flood across a material boundary, so the flat top of two grey
+     cubes unioned in a line came back as TWO faces instead of one, and Inset
+     on it moved half the plane.
+
+     Nothing is shared with a deleted input as a result: the output materials
+     are cloned per face group in runBoolean, which is where the clone always
+     belonged. */
+  const b = new CSG.Brush(g, srcMats);
+  b.updateMatrixWorld(true);   // identity - the transform is already in the vertices
+  return b;
+}
+
+/* ---- T-junctions, healed before anything reads a face outline ----------
+
+   MEASURED, at v2.13, and it is the second half of what makes a boolean
+   usable here rather than merely correct-looking.
+
+   A CSG evaluator clips triangle by triangle. Where one triangle is split
+   against the other solid and the neighbour sharing that edge is not, the
+   neighbour's edge SPANS a vertex the first one now has: geometrically
+   watertight - the vertices are coincident and nothing cracks on screen -
+   and topologically open, because (a,c) is not (a,b) plus (b,c).
+
+   Why that is not cosmetic here:
+
+   - booleanSurvey refuses an object with open edges, so a result full of
+     T-junctions could not be fed to a SECOND boolean. Chaining is most of
+     what booleans are for.
+   - mergeCoplanarTriangles floods over shared welded edges, so a T-junction
+     stops a region merging across it - the faces come out smaller and more
+     numerous than the shape has.
+   - Cap holes, the winding audit, Inset, Extrude and the loop walk all read
+     a face's boundary loop, and all of them read the T as a hole.
+
+   The fix is the smallest one that is exactly right: split the triangle that
+   is missing the vertex, from the corner opposite the edge. (a,b,c) with v
+   on a-b becomes (a,v,c) and (v,b,c). The plane is unchanged, the winding is
+   unchanged, no new vertex is invented, and no polygon has to be
+   re-triangulated - which is the step that would have needed an ear clip,
+   because a clipped face is very often concave.
+
+   Candidates are only the endpoints of edges that are ALREADY open: a
+   T-vertex is one by construction, and it keeps the search over a handful of
+   points rather than the whole mesh. Splitting an edge makes the candidate
+   an endpoint of the two halves, so each split strictly reduces what is left
+   inside it and the walk terminates. Three passes, because a split can
+   expose a T one edge further along; in practice the second pass finds
+   nothing. */
+/* THE TOLERANCE IS BIGGER THAN THE WELD, ON PURPOSE (corrected in review).
+
+   The weld above is grid ROUNDING - Math.round(p * 1e4) - and it keeps the
+   first point that lands in a cell as that cell's representative. Two points
+   inside one cell can be a full 1e-4 apart on each axis, so a welded vertex
+   can sit up to sqrt(3) * 1e-4 from where the segment's own endpoints ended
+   up. A tolerance of exactly 1e-4 therefore rejects genuine T-vertices
+   whenever a cut lands near a cell boundary - ordinary inputs, not
+   pathological ones. Twice the diagonal covers it with room to spare and is
+   still four thousandths of a unit cube.
+
+   THE END EXCLUSION IS ABSOLUTE for the same reason. It used to be `t` in
+   parametric units, which scales with the edge: on a 100-unit edge a
+   parametric 1e-6 is a 1e-4 window, exactly the size of a weld cell, so a
+   real T-vertex near a corner was silently skipped. Distance, not fraction. */
+const CSG_WELD_TOL = 3.5e-4;
+const CSG_ON_EDGE_TOL2 = CSG_WELD_TOL * CSG_WELD_TOL;
+const CSG_HEAL_EDGE_CAP = 20000;    // beyond this, say so rather than grind
+const CSG_HEAL_SPLIT_CAP = 2000000; // and the same for the split walk
+
+function csgPointOnSegment(P, a, b, v) {
+  const ax = P[a * 3], ay = P[a * 3 + 1], az = P[a * 3 + 2];
+  const ex = P[b * 3] - ax, ey = P[b * 3 + 1] - ay, ez = P[b * 3 + 2] - az;
+  const L2 = ex * ex + ey * ey + ez * ez;
+  if (L2 <= CSG_ON_EDGE_TOL2) return -1;
+  const vx = P[v * 3] - ax, vy = P[v * 3 + 1] - ay, vz = P[v * 3 + 2] - az;
+  const t = (vx * ex + vy * ey + vz * ez) / L2;
+  // Absolute, so the window does not grow with the edge.
+  const end = CSG_WELD_TOL / Math.sqrt(L2);
+  if (t <= end || t >= 1 - end) return -1;
+  const dx = vx - ex * t, dy = vy - ey * t, dz = vz - ez * t;
+  return (dx * dx + dy * dy + dz * dz) <= CSG_ON_EDGE_TOL2 ? t : -1;
+}
+
+/* A TRIANGLE THINNER THAN THE WELD IS NOT A TRIANGLE (found in review).
+
+   The splitter emits slivers far below float32 resolution, and they used to
+   reach healTJunctions - where they contributed edge counts that made a T
+   look closed - and were only dropped afterwards by mergeCoplanarTriangles,
+   which discards anything with no usable normal. Dropped after the only pass
+   that could have healed what their removal opens, so the T survived; and a
+   sliver whose apex is nearer the base than the tolerance can be SPLIT into
+   two reversed children, which is worse.
+
+   Measured as height, not area: cross length over the longest edge is the
+   distance from the far corner to the line, in the same units the weld and
+   the on-edge test use, so one number governs all three. */
+function csgTriIsSliver(P, a, b, c) {
+  const ax = P[a * 3], ay = P[a * 3 + 1], az = P[a * 3 + 2];
+  const ux = P[b * 3] - ax, uy = P[b * 3 + 1] - ay, uz = P[b * 3 + 2] - az;
+  const vx = P[c * 3] - ax, vy = P[c * 3 + 1] - ay, vz = P[c * 3 + 2] - az;
+  const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+  const cross2 = nx * nx + ny * ny + nz * nz;
+  if (!Number.isFinite(cross2)) return true;
+  const wx = vx - ux, wy = vy - uy, wz = vz - uz;
+  const longest = Math.max(ux * ux + uy * uy + uz * uz,
+                           vx * vx + vy * vy + vz * vz,
+                           wx * wx + wy * wy + wz * wz);
+  if (longest <= 0) return true;
+  return cross2 <= CSG_ON_EDGE_TOL2 * longest;   // height^2 <= tol^2
+}
+
+function healTJunctions(positions, trisIn, matOfTriIn) {
+  let tris = trisIn, matOf = matOfTriIn, capped = false;
+  const ek = (a, b) => (a < b ? a + '_' + b : b + '_' + a);
+
+  for (let pass = 0; pass < 3; pass++) {
+    const uses = new Map();
+    tris.forEach(t => {
+      uses.set(ek(t[0], t[1]), (uses.get(ek(t[0], t[1])) || 0) + 1);
+      uses.set(ek(t[1], t[2]), (uses.get(ek(t[1], t[2])) || 0) + 1);
+      uses.set(ek(t[2], t[0]), (uses.get(ek(t[2], t[0])) || 0) + 1);
+    });
+    const open = new Set();
+    uses.forEach((n, k) => { if (n === 1) open.add(k); });
+    if (!open.size) break;
+    // Said out loud by the caller rather than swallowed - the rule this file
+    // keeps: when a guard returns early, SAY so.
+    if (open.size > CSG_HEAL_EDGE_CAP) { capped = true; break; }
+
+    const cand = new Set();
+    open.forEach(k => { const ab = k.split('_'); cand.add(+ab[0]); cand.add(+ab[1]); });
+    const candArr = Array.from(cand);
+
+    const outT = [], outM = [];
+    const workT = tris.slice(), workM = matOf.slice();
+    let guard = 0, split = 0;
+    while (workT.length && guard++ < CSG_HEAL_SPLIT_CAP) {
+      const t = workT.pop(), mi = workM.pop();
+      let cut = false;
+      for (let e = 0; e < 3 && !cut; e++) {
+        const a = t[e], b = t[(e + 1) % 3], c = t[(e + 2) % 3];
+        if (!open.has(ek(a, b))) continue;
+        let best = -1, bestT = 2;
+        for (let i = 0; i < candArr.length; i++) {
+          const v = candArr[i];
+          /* `c` TOO (found in review). It was only a and b, so a sliver whose
+             apex sits within the tolerance of its own base - and every seam
+             vertex is a candidate - matched its own third corner, and the
+             split emitted [a,c,c] and [c,b,c]: two index-degenerate triangles
+             that the merge then drops, opening the very edges this pass
+             exists to close, and inflating the neighbour's edge count so the
+             real T became invisible to the next pass. */
+          if (v === a || v === b || v === c) continue;
+          const tt = csgPointOnSegment(positions, a, b, v);
+          if (tt >= 0 && tt < bestT) { bestT = tt; best = v; }
+        }
+        if (best < 0) continue;
+        /* The two halves inherit the parent's openness, so a run of several
+           T-vertices on one edge is finished inside THIS pass rather than one
+           per pass. Splitting a matched edge is safe for the same reason it
+           is necessary: the face on the other side shares the key, so it is
+           in `open` too and takes the same split. */
+        open.add(ek(a, best));
+        open.add(ek(best, b));
+        workT.push([a, best, c], [best, b, c]);
+        workM.push(mi, mi);
+        cut = true;
+        split++;
+      }
+      if (!cut) { outT.push(t); outM.push(mi); }
+    }
+    /* WHATEVER IS STILL ON THE WORKLIST BELONGS TO THE MESH (found in
+       review). The guard used to end the loop and the remainder was simply
+       not copied into outT - so tripping it deleted triangles, silently, from
+       a mesh that was then recentred, made into an object and pushed to
+       history. Flushed instead, and the cap is reported. */
+    while (workT.length) { outT.push(workT.pop()); outM.push(workM.pop()); }
+    if (guard >= CSG_HEAL_SPLIT_CAP) capped = true;
+    tris = outT; matOf = outM;
+    if (!split || capped) break;
+  }
+  return { tris: tris, matOf: matOf, capped: capped };
+}
+
+/* THE RESULT, READ BACK. Three things here are not obvious, and two of them
+   are in three-bvh-csg's own README:
+
+   - the result uses drawRange. The position attribute can be LONGER than the
+     part that is drawn, because a bigger intermediate result left its
+     buffers behind; reading `count` would pull stale triangles in.
+   - the transform sits on the BRUSH, in A's space. Every op in this app
+     reads positions straight out of the buffer, so it is baked here the same
+     way the importer bakes a glTF node's.
+   - baking a NEGATIVE determinant reverses winding, so it is flipped back -
+     the same trap, and the same fix, as editableFromImportedMeshes.
+
+   Then mergeCoplanarTriangles turns the soup into faces. That function is
+   the whole reason this op is small: it welds, refuses to merge across a
+   material boundary or a fold, and - the part that matters here - rejects a
+   region whose boundary is not one simple loop and falls back to coplanar
+   PAIRS. A cube with a cylinder cut out of its top face is exactly that
+   region, and merging it whole would give a face whose rim Inset would pull
+   inward while the hole stayed put. */
+function editableFromCSGResult(res) {
+  const g = res.geometry;
+  const pos = g.attributes.position;
+  if (!pos || pos.count < 3) return null;
+  const idx = g.index;
+  const total = idx ? idx.count : pos.count;
+  const dr = g.drawRange || { start: 0, count: Infinity };
+  const start = Math.max(0, dr.start | 0);
+  const avail = total - start;
+  const count = (dr.count === Infinity || dr.count == null || dr.count > avail)
+    ? avail : Math.max(0, dr.count | 0);
+  if (count < 3) return null;
+
+  // Which material painted each vertex slot, so a triangle can be asked.
+  // Group ranges are in the same units drawRange is.
+  const matOfSlot = new Int32Array(total);
+  if (g.groups && g.groups.length) {
+    g.groups.forEach(gr => {
+      const gs = Math.max(0, gr.start | 0);
+      const ge = Math.min(total, gs + (gr.count === Infinity ? total : (gr.count | 0)));
+      for (let i = gs; i < ge; i++) matOfSlot[i] = gr.materialIndex | 0;
+    });
+  }
+
+  res.updateMatrixWorld(true);
+  const m = res.matrixWorld;
+  const flip = m.determinant() < 0;
+
+  /* WELDED HERE, AND THIS IS THE WHOLE OP (measured at v2.13, and it was
+     wrong first).
+
+     A CSG result is a flat triangle list: every triangle owns its own three
+     vertices and nothing is shared. Carrying that straight into an editable
+     LOOKS right - mergeCoplanarTriangles welds internally, so it still
+     merged the two triangles of every quad into one face group - and the
+     result was a mesh whose faces had no edges in common. The measurement
+     that found it: a union of two DISJOINT cubes, which should come back as
+     exactly its two inputs, came back with 72 attribute vertices where 48
+     was right, 28 open edges, and eight shells for two solids.
+
+     The reason is precise. getGroupBoundaryLoopAttr walks the group's OWN
+     attribute indices, and an edge used by two of the group's triangles is
+     interior. Unwelded, a quad's diagonal is two DIFFERENT index pairs, so
+     it is used once each way, so it reads as boundary - and every face came
+     back a triangle with its diagonal exposed. Everything downstream that
+     reads a face outline reads that: Inset, Extrude, Bevel, the winding
+     audit, Cap holes.
+
+     One tolerance, the app's own: the same 1e-4 rounding computeLogicalOf
+     and importWeldKey use, so a boolean result welds exactly as tightly as
+     everything else here. */
+  const positions = [];
+  const weld = new Map();
+  const slotVert = new Int32Array(count);
+  const p = new THREE.Vector3();
+  for (let i = start; i < start + count; i++) {
+    const v = idx ? idx.getX(i) : i;
+    p.set(pos.getX(v), pos.getY(v), pos.getZ(v)).applyMatrix4(m);
+    /* One non-finite coordinate NaNs the whole object - it survives the
+       recentre, every position becomes NaN, and the mesh is unrenderable
+       and unpickable after it has been pushed to history. Refuse instead,
+       and refuse HERE, before a NaN becomes a weld key that matches every
+       other NaN and quietly collapses the mesh to a point. */
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) return null;
+    const k = Math.round(p.x * 1e4) + '_' + Math.round(p.y * 1e4) + '_' + Math.round(p.z * 1e4);
+    let n = weld.get(k);
+    if (n === undefined) {
+      n = positions.length / 3;
+      weld.set(k, n);
+      positions.push(p.x, p.y, p.z);
+    }
+    slotVert[i - start] = n;
+  }
+
+  const tris = [], matOfTri = [];
+  for (let t = 0; t + 2 < count; t += 3) {
+    const a = slotVert[t], b = slotVert[t + 1], c = slotVert[t + 2];
+    /* Dropped HERE, before healing, not later by mergeCoplanarTriangles.
+       A sliver has no plane to agree with and no honest normal, and leaving
+       it in makes a T-junction LOOK closed: it contributes the edge counts
+       that hide the gap, and it is only discarded afterwards, by which time
+       the one pass that could have healed what its removal opens has run. */
+    if (a === b || b === c || a === c) continue;
+    if (csgTriIsSliver(positions, a, b, c)) continue;
+    tris.push(flip ? [a, c, b] : [a, b, c]);
+    matOfTri.push(matOfSlot[start + t]);
+  }
+  if (!tris.length) return null;
+  /* THE TRIANGLE BUDGET, BEFORE THE EXPENSIVE PART (found in review). The
+     face budget is checked after the merge, which is far too late: healing is
+     O(open edges x candidates) and runs on the main thread, so a union of two
+     subdivided spheres could freeze the tab for minutes and only THEN be
+     refused for having too many faces. Same number and the same sentence the
+     importer uses, so "too heavy" means one thing in this app. */
+  if (tris.length > IMPORT_TRI_BUDGET) {
+    return { why: tris.length + ' triangles - too many to edit (limit ' +
+                  Math.round(IMPORT_TRI_BUDGET / 1000) + 'k)' };
+  }
+  // BEFORE the merge, not after: a T-junction also stops the flood fill
+  // crossing an edge, so healing first gives bigger, truer faces as well as
+  // a closed mesh.
+  const healed = healTJunctions(positions, tris, matOfTri);
+  const groups = mergeCoplanarTriangles(positions, healed.tris, ti => healed.matOf[ti]);
+  return { positions: positions, groups: groups,
+           triCount: healed.tris.length, capped: healed.capped };
+}
+
+const BOOL_OPS = {
+  union:      { label: 'Union', suffix: 'union' },
+  difference: { label: 'Difference', suffix: 'cut' },
+  intersect:  { label: 'Intersect', suffix: 'intersection' }
+};
+
+/* FOLDED LEFT: A op B op C. Union and Intersect are order-free; Difference
+   is not, and A is ids[0] - the FIRST object you tapped. That is the rule
+   Solidify and the material tools already use for "the one you mean", and
+   the toast names both sides afterwards so a boolean that came out backwards
+   says so rather than looking like a broken cut. */
+async function runBoolean(kind, keep) {
+  if (App.mode !== 'object') { toast('Boolean works in Object mode'); return; }
+  const ids = Array.from(App.selectedObjectIds);
+  if (ids.length < 2) { toast('Select 2+ objects for a boolean'); return; }
+  let objs = ids.map(id => findObject(id)).filter(Boolean);
+  if (objs.length < 2) { toast('Select 2+ objects for a boolean'); return; }
+
+  const why = booleanSurvey(objs);
+  if (why) { toast(why); return; }
+
+  let CSG;
+  try {
+    CSG = await loadCSG();
+  } catch (err) {
+    console.warn('[boolean] load failed', err);
+    toast('Boolean needs the network the first time it runs');
+    return;
+  }
+  /* RE-RESOLVED AFTER THE AWAIT. The first boolean of a session waits on a
+     network fetch, and everything stays live while it does - undo, delete,
+     another op. Running against objects captured before the wait is how an
+     op deletes something that is no longer there. */
+  objs = ids.map(id => findObject(id)).filter(Boolean);
+  if (objs.length < 2) { toast('The selection changed - pick them again'); return; }
+  /* AND THE MODE, AND THE SURVEY, AGAIN (found in review). Re-resolving the
+     objects was not enough: the whole app stays live through that wait, so a
+     double-tap into Vertex mode and one deleted face is all it takes to
+     arrive here with an OPEN brush that was surveyed while it was closed -
+     and the library does not throw on one, it returns a plausible wrong
+     solid. Worse, removeObjects below would then delete the object being
+     edited while the mode, the element selection and the helpers still point
+     into it. Ask both questions again on this side of the await. */
+  if (App.mode !== 'object') { toast('Boolean works in Object mode'); return; }
+  const whyNow = booleanSurvey(objs);
+  if (whyNow) { toast(whyNow); return; }
+
+  const OP = kind === 'union' ? CSG.ADDITION
+           : kind === 'difference' ? CSG.SUBTRACTION
+           : CSG.INTERSECTION;
+
+  const ev = new CSG.Evaluator();
+  /* position and normal ONLY. The default list includes uv, every brush in
+     an evaluate has to carry the same attributes, and there is no UV
+     attribute anywhere in this file on purpose - the whole mask system is
+     triplanar because of it. */
+  ev.attributes = ['position', 'normal'];
+  /* THE CDT SPLITTER, NOT THE LEGACY ONE. three-bvh-csg ships both and
+     defaults to the legacy clipper; the constrained-Delaunay one retriangulates
+     a clipped triangle as a whole rather than by successive splits, which is
+     what stops a cut that GRAZES an existing wall leaving a run of unmatched
+     edges behind. Measured on the case that found it: a cube with a rod cut
+     through it, cut again by a cube whose face lands tangent to the rod wall. */
+  ev.useCDTClipping = true;
+  ev.useGroups = true;
+  ev.consolidateGroups = true;
+  ev.removeUnusedMaterials = true;
+
+  let res, mats;
+  try {
+    let acc = booleanBrushOf(CSG, objs[0]);
+    for (let i = 1; i < objs.length; i++) {
+      acc = ev.evaluate(acc, booleanBrushOf(CSG, objs[i]), OP);
+    }
+    res = acc;
+    mats = Array.isArray(res.material) ? res.material : [res.material];
+  } catch (err) {
+    console.warn('[boolean]', err);
+    toast('That boolean failed - try Clean up on the inputs first');
+    return;
+  }
+
+  const ed = editableFromCSGResult(res);
+  if (ed && ed.why) { toast(ed.why); return; }
+  if (!ed || !ed.groups.length) { toast('That boolean left nothing behind'); return; }
+  /* THE SAME BUDGET THE IMPORTER HAS, for the same reason: every face is a
+     geometry group, a material and a draw call, and a boolean can multiply
+     them the way a scanned mesh does. Counted after the merge, because
+     before it there is nothing to count. */
+  if (ed.groups.length > IMPORT_FACE_BUDGET) {
+    toast(ed.groups.length + ' faces - too many to edit (limit ' +
+          IMPORT_FACE_BUDGET + ')');
+    return;
+  }
+
+  const outMats = ed.groups.map(g => {
+    const src = mats[g.mat] || mats[0];
+    return src ? src.clone() : new THREE.MeshStandardMaterial();
+  });
+
+  /* The RESULT's own bounding-box centre is its pivot - what exists now,
+     not the average of where the things that made it used to be. */
+  const box = new THREE.Box3(), v = new THREE.Vector3();
+  for (let i = 0; i < ed.positions.length; i += 3) {
+    box.expandByPoint(v.set(ed.positions[i], ed.positions[i + 1], ed.positions[i + 2]));
+  }
+  const centre = box.getCenter(new THREE.Vector3());
+  for (let i = 0; i < ed.positions.length; i += 3) {
+    ed.positions[i] -= centre.x;
+    ed.positions[i + 1] -= centre.y;
+    ed.positions[i + 2] -= centre.z;
+  }
+
+  const made = createObjectFromEditable(
+    objs[0].name + ' ' + BOOL_OPS[kind].suffix, centre,
+    { positions: ed.positions, groups: ed.groups }, outMats, {});
+  if (!made) { toast('That boolean left nothing behind'); return; }
+
+  /* The result wears A's smoothing. It is a per-object angle, not a per-face
+     map, so unlike smoothGroups it carries across a renumber without meaning
+     anything different - and a union of two smooth objects coming back flat,
+     silently, is the kind of thing you notice a session later. */
+  const smoothA = objs[0].mesh.userData.autoSmoothAngle;
+  if (typeof smoothA === 'number') {
+    made.mesh.userData.autoSmoothAngle = smoothA;
+    applyShading(made);
+  }
+
+  if (!keep) removeObjects(objs);
+  App.selectedObjectIds = new Set([made.id]);
+  App.activeObjectId = null;
+  detachAllGizmos();
+  hideRadialMenu();
+  refreshUI();
+  refreshGizmoAttachment();
+  pushHistory();
+
+  /* SAID OUT LOUD, both ways round. three-bvh-csg's own README warns the
+     result may not come back perfectly two-manifold, so it is MEASURED here
+     rather than assumed - and reported, because a mesh that needs a Clean up
+     and does not say so is a mesh you find out about three ops later. */
+  const w = auditWinding(made);
+  if (PICK_DEBUG) console.log('[winding]', JSON.stringify(w));
+  /* OPEN EDGES INCLUDED, which is the whole point (found in review, by both
+     reviewers). This used to count only nonManifold and conflictEdges - and
+     an open edge is the one defect a boolean actually produces, the reason
+     healTJunctions exists, and precisely what booleanSurvey will refuse the
+     NEXT time. Reporting everything except it meant you learned about it one
+     op later, from a refusal that named a shape you thought was finished. */
+  const trouble = [];
+  if (w.boundary) trouble.push(w.boundary + ' open edge' + (w.boundary === 1 ? '' : 's'));
+  if (w.nonManifold) trouble.push(w.nonManifold + ' non-manifold');
+  if (w.conflictEdges) trouble.push(w.conflictEdges + ' reversed');
+  if (ed.capped) trouble.push('too tangled to close fully');
+  const which = kind === 'difference'
+    ? objs[0].name + ' - ' + objs.slice(1).map(o => o.name).join(' - ')
+    : objs.map(o => o.name).join(' + ');
+  toast(BOOL_OPS[kind].label + ': ' + which + ', ' + ed.groups.length + ' faces' +
+        (trouble.length ? ' - ' + trouble.join(', ') + '. Clean up first.' : ''));
+}
+
+/* THREE ANSWERS TO ONE QUESTION, asked the way Mirror asks Joined / Apart /
+   Flip: chips on the op bar, one tap, no dialog and no OK button. Three ring
+   seats for one idea would have spent half the MESH door on it.
+
+   Union leads because it is the one that cannot come out backwards. Keep
+   originals is the bar's independent switch rather than a fourth chip - it
+   is not a fourth thing to do, it changes what the other three leave behind,
+   and it is remembered so a session that wants it does not re-tap it. */
+function showBooleanChooser() {
+  if (App.mode !== 'object') { toast('Boolean works in Object mode'); return; }
+  const ids = Array.from(App.selectedObjectIds);
+  if (ids.length < 2) { toast('Select 2+ objects for a boolean'); return; }
+  const objs = ids.map(id => findObject(id)).filter(Boolean);
+  if (objs.length < 2) { toast('Select 2+ objects for a boolean'); return; }
+  /* Surveyed BEFORE the bar opens, not after a chip is pressed. An op bar
+     that appears and then refuses everything on it has wasted the tap and
+     told you nothing about which object is the problem. */
+  const why = booleanSurvey(objs);
+  if (why) { toast(why); return; }
+
+  /* Captured NOW, the a2.109 rule: the bar has no exit, so it could sit
+     through any amount of later work and then run on whatever happened to be
+     selected by the time a chip was pressed. */
+  booleanChooser = { ids: ids };
+
+  const rest = objs.slice(1).map(o => o.name).join(', ');
+  const opts = [
+    ['union', 'Union', 'One solid - everything either shape encloses'],
+    ['difference', 'Difference', 'Cut ' + rest + ' out of ' + objs[0].name],
+    ['intersect', 'Intersect', 'Only what every shape encloses']
+  ];
+  const el = document.getElementById('opGrouping');
+  el.innerHTML = '';
+  el.style.display = 'inline-flex';
+  opts.forEach(entry => {
+    const key = entry[0];
+    const b = document.createElement('button');
+    b.textContent = entry[1];
+    b.title = entry[2];
+    b.addEventListener('click', () => {
+      /* Checked HERE, before the captured selection is restored - the same
+         ordering Mirror's chooser records: a mode guard inside the op fires
+         after this handler has already replaced the live selection, so a
+         chooser left open across a mode switch wiped what you had picked and
+         then refused to do anything with it. */
+      if (App.mode !== 'object') { hideOpBar(); toast('Boolean works in Object mode'); return; }
+      const saved = (booleanChooser && booleanChooser.ids) || null;
+      const keep = !!App.boolKeep;
+      hideOpBar();                                   // clears booleanChooser
+      if (saved) App.selectedObjectIds = new Set(saved.filter(findObject));
+      if (App.selectedObjectIds.size < 2) { toast('Nothing left to combine'); return; }
+      /* CAUGHT (found in review). runBoolean is async and only its load and
+         its evaluate were guarded, so a throw anywhere after them became an
+         unhandled rejection: the op bar had already closed, so the tap looked
+         like it had done nothing at all and the only trace was the console. */
+      runBoolean(key, keep).catch(err => {
+        console.warn('[boolean]', err);
+        toast('That boolean failed - try Clean up on the inputs first');
+      });
+    });
+    el.appendChild(b);
+  });
+
+  document.getElementById('opLabel').textContent = 'Boolean';
+  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opOk'].forEach(id => {
+    document.getElementById(id).style.display = 'none';
+  });
+  // Wired by hand: the chooser bars do not go through OP_SPECS, so the
+  // toggle's own listener has a branch for this - see there.
+  const wrap = document.getElementById('opToggleWrap');
+  const btn = document.getElementById('opToggle');
+  wrap.style.display = 'inline-flex';
+  btn.textContent = 'Keep originals';
+  btn.title = 'Leave the objects that went in standing beside the result';
+  btn.classList.toggle('active', !!App.boolKeep);
+  surfaceIn(opBarEl);
+}
+
+
 // Named so the Empty-state fan item can call it directly rather than
 // clicking a drawer button that's about to stop existing as visible UI.
 /* ---------------- Add geo (a2.36) ----------------
@@ -26484,7 +27189,12 @@ const ICON = {
      1.8-unit floor and nothing is dashed, so both survive at 20px. */
   persp:   '<rect x="3.2" y="9" width="4" height="6" rx=".8"/><path d="M7.2 9 20.5 4v16L7.2 15"/>',
   ortho:   '<rect x="3.2" y="9" width="4" height="6" rx=".8"/><path d="M7.2 9h13.3M7.2 15h13.3M20.5 9v6"/>',
-  centre:  '<circle cx="12" cy="12" r="2.2"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5"/><circle cx="12" cy="12" r="7.5" stroke-dasharray="2.5 3"/>'
+  centre:  '<circle cx="12" cy="12" r="2.2"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5"/><circle cx="12" cy="12" r="7.5" stroke-dasharray="2.5 3"/>',
+  /* Two solids that overlap, which is the one thing all three booleans have
+     in common - the op bar says WHICH of the overlap survives. Square and
+     circle rather than two squares so the two shapes stay tellable apart at
+     20px, and nothing here is finer than the 1.8-unit floor. */
+  boolop:  '<rect x="2.8" y="7.6" width="10.6" height="10.6" rx="1.2"/><circle cx="15.2" cy="10.4" r="5.6"/>'
 };
 
 // Wraps a pictogram in an svg at the size the caller needs.
@@ -26628,7 +27338,15 @@ const HUB_TOOLS_OBJECT_BASE = [
     // visibly one you cannot make.
     { key: 'join', icon: 'join', label: 'Join', seat: 7,
       enabled: () => App.selectedObjectIds.size > 1, run: joinSelection },
-    { key: 'separate', icon: 'separate', label: 'Separate', seat: 2, run: separateSelection }
+    { key: 'separate', icon: 'separate', label: 'Separate', seat: 2, run: separateSelection },
+    /* ONE SEAT IN FROM JOIN (v2.13). Join and Boolean answer the same
+       question - "these objects become one mesh" - and differ only in
+       whether the parts that overlap survive. Join is the one you reach for
+       first, so it keeps the outer seat. Worn disabled rather than absent
+       for a selection of one, the a2.112 rule: a boolean you cannot make is
+       visibly one you cannot make. */
+    { key: 'boolean', icon: 'boolop', label: 'Boolean', seat: 6,
+      enabled: () => App.selectedObjectIds.size > 1, run: showBooleanChooser }
   ] },
   { key: 'finish', label: 'Finish', seat: 7, door: [
     { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 0,
@@ -30986,6 +31704,13 @@ if (PICK_DEBUG) {
     stepSegments, refreshOpGrouping, refreshOpAmountVisibility,
     activeRange, logicalPos, creaseKeyFor,
     get mirrorChooser() { return mirrorChooser; },
+    // v2.13: the boolean, its chooser and the survey that refuses ahead of it.
+    get booleanChooser() { return booleanChooser; },
+    showBooleanChooser, runBoolean, booleanSurvey, editableFromCSGResult,
+    /* THREE and the primitive builder, so a probe can put a real scene
+       together rather than hand-rolling a cube and getting the winding
+       wrong - which is the one thing a winding probe must not do. */
+    THREE, buildPrimitiveEditable,   // makeMaterialSet is already up there
     get activePointers() { return activePointers; },
     get directDrag() { return directDrag; },
     finishGeoSetup,

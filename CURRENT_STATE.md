@@ -15,8 +15,8 @@ modes to remember, the viewport as the hero, nothing that breaks the run of
 work. What is gone is the implied ceiling.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~30,400 lines)
-- Version at time of writing: **2.12**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~31,900 lines)
+- Version at time of writing: **2.13**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -46,6 +46,166 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Booleans (v2.13)
+
+Union, Difference and Intersect on whole objects. The first of the two things
+named at v2.12 as what would "elevate the app to the next level".
+
+### The engine is a library, lazy-loaded
+
+`three-bvh-csg@0.0.18` plus `three-mesh-bvh@0.9.7`, both as their prebuilt
+`build/index.module.js`, named in the importmap and pulled by a dynamic
+`import()` the first time anyone runs a boolean. Nothing is fetched otherwise,
+so cold start and first paint are unchanged for everyone who never uses it.
+164 KB + 223 KB raw, about 100 KB gzipped, two requests.
+
+**They are in the importmap rather than bundled for one reason:** both builds
+keep `three` as an external bare import, so they resolve to the one
+three@0.184.0 instance already loaded. A `+esm` bundle carries its own copy of
+three and every `instanceof THREE.*` in this file starts quietly lying.
+
+Not our own CSG: coplanar faces are where hand-written BSP implementations
+fail, and they fail silently and geometrically.
+
+`ev.useCDTClipping = true` - the library ships two splitters and defaults to
+the legacy one. The constrained-Delaunay clipper retriangulates a clipped
+triangle whole instead of by successive splits, and switching to it did three
+measurable things at once: the union of two overlapping cubes went from 42
+edges to the theoretically correct 30, a rod cut through a cube from 30 faces
+to 19, and the ONLY case in `_boolchk` that would not close - a second cut
+whose face lands tangent to the first cut's wall - closed.
+
+### And a Kubik half, which is most of the work
+
+A CSG result is a flat triangle list. Three passes turn it into something this
+app can edit, and each of them was measured into existence:
+
+1. **Weld by position**, at the app's own 1e-4. Unwelded, every triangle owns
+   its three vertices, so a quad's diagonal is two different index pairs -
+   used once each way - and `getGroupBoundaryLoopAttr` reads it as BOUNDARY.
+   Every face came back a triangle with its diagonal exposed. Found by a union
+   of two DISJOINT cubes, which must come back as exactly its two inputs and
+   came back with 72 attribute vertices where 48 was right, 28 open edges and
+   eight shells for two solids.
+2. **`healTJunctions`.** Where the evaluator splits one triangle and not the
+   neighbour sharing that edge, the neighbour's edge SPANS a vertex the first
+   one now has: geometrically watertight, topologically open. The fix is the
+   smallest one that is exactly right - split the triangle missing the vertex
+   from the corner opposite the edge, so the plane and the winding are
+   untouched and no polygon has to be re-triangulated. **This is not
+   cosmetic:** `booleanSurvey` refuses an object with open edges, so without
+   it a boolean result could not be fed to a SECOND boolean, and chaining is
+   most of what booleans are for.
+3. **`mergeCoplanarTriangles`** - the importer's, unchanged, which is why this
+   op is as small as it is. It floods over shared welded edges, refuses to
+   cross a material boundary or a fold, and rejects a region whose boundary is
+   not one simple loop, falling back to coplanar PAIRS. A cube with a cylinder
+   cut out of its top face is exactly that region; merged whole, Inset would
+   pull the outer rim in and leave the hole where it was.
+
+Healing runs BEFORE the merge, because a T-junction also stops the flood fill
+crossing an edge - so healing first gives bigger, truer faces as well as a
+closed mesh.
+
+### Where it lives
+
+The MESH door in the Object ring, seat 6, one seat in from Join - the two
+answer the same question and differ only in whether the overlap survives.
+Disabled rather than absent for a selection of one (the a2.112 rule).
+
+One seat, not three. Tapping it opens an op-bar chooser - **Union /
+Difference / Intersect** - the way Mirror asks Joined / Apart / Flip. **Keep
+originals** is the bar's independent toggle (`App.boolKeep`, remembered),
+wired by hand because the chooser bars do not go through `OP_SPECS`; the
+`#opToggle` listener has a branch for it, because a switch that looks live and
+does nothing is the worst failure mode this file records.
+
+A is `ids[0]` - the first object you tapped, the same rule Solidify uses - and
+the toast names both sides afterwards, so a Difference that came out backwards
+says so rather than looking like a broken cut.
+
+### Refusals, and the budgets
+
+`booleanSurvey` runs BEFORE the bar opens and before anything is fetched. It
+refuses, by name and with the count: an object with open edges (Cap holes is
+one seat away in the same door), one with non-manifold edges, and - added in
+review - one with a face **wound the wrong way**. That last is not a topology
+error and IS a boolean one: three-bvh-csg decides inside from outside by
+shooting a ray along each triangle's own normal, so one reversed face corrupts
+the classification in both roles.
+
+`IMPORT_TRI_BUDGET` is checked before healing (which is O(open edges x
+candidates) on the main thread), `IMPORT_FACE_BUDGET` after the merge. Same
+numbers and the same sentence the importer uses.
+
+### What the review found (and both reviewers found three of it)
+
+Reviewed adversarially by two independent agents, opus and **fable - the first
+fable run on this codebase**. Both were worth the money; neither was
+redundant. Opus found the two most valuable defects; fable found the three
+sharpest numerical ones. Nine real defects between them, three found by both,
+no false alarms from either.
+
+- **The brushes carried CLONED materials** (opus). The evaluator collapses
+  duplicate materials with `materials.indexOf(mat)` - reference identity - so
+  two clones of one pooled material never collapse, every A group and every B
+  group keeps its own materialIndex, and `mergeCoplanarTriangles` will not
+  flood across a material boundary. The flat top of two grey cubes unioned in
+  a line came back as TWO faces. `_boolchk` section 12 now asserts that a box
+  unioned with a box is a box: six faces, no more.
+- **A mirrored input did nothing at all** (opus). The transform used to ride
+  on the brush; a negative determinant reverses every triangle normal, so the
+  cutter is read as its own complement. Cube minus a mirrored cube came back
+  watertight, six faces, 1x1x1 - the whole of A, untouched. **Watertight and
+  wrong is the worst answer available**, because nothing downstream can tell.
+  The transform is BAKED now and the brush left at identity, so no brush
+  carries a determinant at all.
+- **`healTJunctions` admitted the triangle's own third corner as a split
+  candidate** (fable), emitting `[a,c,c]` - index-degenerate triangles that
+  the merge then drops, opening the very edges the pass exists to close.
+- **Slivers were dropped after healing rather than before** (fable), so they
+  contributed the edge counts that made a T look closed and were discarded
+  only once the one pass that could have healed the gap had run. There is a
+  `csgTriIsSliver` now, measured as HEIGHT over longest edge so one tolerance
+  governs the weld, the on-edge test and the sliver test alike.
+- **The on-edge tolerance was smaller than the weld's own displacement**
+  (opus). The weld is grid ROUNDING keeping the first point in a cell, so a
+  welded vertex can sit sqrt(3) x 1e-4 from where the segment's endpoints
+  ended up; 1e-4 rejected genuine T-vertices whenever a cut landed near a cell
+  boundary. And the end-exclusion was PARAMETRIC (fable), so on a 100-unit
+  edge its window was a whole weld cell wide. Both absolute now.
+- **The split walk's guard silently deleted triangles** (opus) - the remainder
+  of the worklist was never copied out. Flushed, and the cap reported.
+- **`runBoolean` re-resolved the objects after the await but not the mode or
+  the survey** (both). Two seconds of network is enough to double-tap into
+  Vertex mode and delete a face; the boolean then ran on an open brush and
+  `removeObjects` deleted the object being edited.
+- **The completion toast counted everything except `boundary`** (both) - the
+  one defect a boolean actually produces, and precisely what the survey
+  refuses NEXT time. You learned about it one op later, from a refusal naming
+  a shape you thought was finished.
+- **Nothing caught a rejection** (opus). The op bar had already closed, so a
+  throw looked like a tap that did nothing, with the only trace in the
+  console.
+
+The result also inherits A's `autoSmoothAngle`, so a union of two smooth
+objects does not come back flat without saying so.
+
+### The probe
+
+`_boolchk.py` / `_boolchk.js`, `_fixchk`'s shape: `VERDICT=PASS/FAIL`, running
+marks after every section, and **verified against `_mkboolbroken.py`'s copy** -
+healing removed, weld removed, survey never refusing - which fails 19 of its
+43 assertions and names each one. 43 pass against `index.html`.
+
+Fifteen sections: union / difference / intersect; a rod through a cube, where
+no face may come back with a second boundary loop; two cubes sharing exactly
+one face; disjoint solids both ways; a MIRRORED cutter, asserted by SHAPE and
+not merely by closure; rotation and non-uniform scale; the refusals and that
+the bar never opens on a refused pair; Keep originals; materials, stamps and
+finishes; Undo; the coplanar seam; a face wound the wrong way; and a boolean
+ON a boolean.
 
 ## Spin means Rotate Edge (v2.12)
 
@@ -7729,9 +7889,12 @@ otherwise the inspector reports the position the object was reflected FROM.
   `FILLET_ANGLE`, and `findSharpEdges` / `buildFilletedMesh` / `clearFillet` /
   `refreshFillets` / `toggleFilletPreview` with their call sites in
   `pushHistory` and the export path. Tagged `a2.50-fillet` so the
-  implementation stays findable. **Seat 1 in the Object ring is deliberately
-  free** and whatever replaces this should take it back - the pairing with
-  Bevel one ring over was the good part. Do not rebuild it as it was: a live
+  implementation stays findable. ~~**Seat 1 in the Object ring is deliberately
+  free**~~ - NOT ANY MORE, and this note stood for two releases after it
+  stopped being true: **Array took seat 1**, and the Object ring is full,
+  0 to 7. What survives of the entry is the PAIRING - whatever replaces
+  Fillet wants to sit one ring over from Bevel, wherever that turns out to
+  be. (Corrected at v2.13, while looking for somewhere to put Boolean.) Do not rebuild it as it was: a live
   preview that clones every object's mesh and materials, rebuilds on every
   history push, and has to be special-cased in export is the shape of the
   problem.
@@ -10815,6 +10978,7 @@ optional target filename, so a `_bak_*.html` gives a before number:
 | `_cubelbl.py` | the cube's lit face and the colour it is lit with |
 | `_fixchk.py` | v2.3b's four correctness fixes, each with the sequence that broke it |
 | `_matperf.py` | `toDataURL` calls per material-slider release, and `refreshUI` |
+| `_boolchk.py` | the booleans, all fifteen sections (v2.13) |
 
 `_fixchk.py` is the one to copy the shape of: it prints `VERDICT=PASS/FAIL`
 and it is **verified against the broken copy** - run it against
@@ -11352,7 +11516,9 @@ that a note gets believed for a year.
 
 Zeghreit's words: these are what "elevate the app to the next level".
 
-1. **Booleans.** Union, difference, intersection.
+1. ~~**Booleans.** Union, difference, intersection.~~ **SHIPPED at v2.13** -
+   see the section above, including the two defects that were watertight and
+   wrong.
 2. **Curves, as a METACOMPONENT** - not one op but a new kind of thing the app
    holds, with a whole set of operations built around it. Lathe is one of
    those. So is anything else that needs a path rather than a mesh.
