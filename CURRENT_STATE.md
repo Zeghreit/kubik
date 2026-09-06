@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~30,400 lines)
-- Version at time of writing: **2.11**
+- Version at time of writing: **2.12**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -36,7 +36,65 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
-## Spin (v2.11)
+## Spin means Rotate Edge (v2.12)
+
+**v2.11 shipped the wrong tool under the right name.** "Spin" on the Edge ring
+was a lathe — a profile revolved about an axis. The first person to use it
+selected an edge on a character's torso, tapped Spin, and got the body swept
+into a cone. What they expected, and what every modeller expects, is Blender's
+**Rotate Edge** / Maya's **Spin Edge**: take the edge two faces share and hang
+it on the next pair of corners.
+
+The lathe was correct. It was tested against shapes whose answers were known,
+reviewed, and every defect the review found was fixed. **None of that could
+have caught this**, because nothing was wrong with the geometry — the name was
+taken from what the code did rather than from what the word means to the
+people who use the tool. There is no test for that; there is only asking, or
+shipping it and being told.
+
+### What Spin is now
+
+Any selected edge with a face on both sides. Two chips — **CW** and **CCW** —
+and nothing else: no slider, no stepper. The vertex count never changes and
+nothing moves. Only which corners the wall between the two faces runs between.
+
+**One idea makes it general.** Do not think about triangles, or about quads:
+think about the two faces as ONE polygon with a chord across it. Delete the
+shared edge and what is left is the outline of the pair; the edge is a chord
+between two of its vertices; rotating moves both ends of that chord one step
+round the outline, the same way; then the polygon is cut in two along the new
+chord. Written like that it is right for a triangle pair, a quad pair, an
+n-gon against a triangle and every mixture, with no cases. Written as "swap
+the diagonal" it would have been right for two triangles and wrong for
+everything else — which is exactly what `_spinchk` section 3 exists to catch.
+
+**Clockwise is read off the outline's own winding**, not off the screen. So it
+is the same answer from any camera, and — because a mirrored face is wound the
+other way — the mirrored side of a symmetric model turns to match rather than
+against. That makes Spin a UNION op: `symExpand` and one line, where Bridge
+and Revolve need a pass per side.
+
+The two faces are **replaced in place**, never pushed. `ed.groups` lines up
+1:1 with the material array, so both keep their material, their finish and
+their place in the outliner: a rotation is not two new faces, it is the same
+two faces holding a different corner.
+
+### The lathe is kept, off the ring
+
+`revolveOp` / `revolveSelection`, reachable from `__kubik` only, guarded by
+`_revolvechk` (35 checks, still passing). The machinery is sound and a lathe
+is worth having the day there is a seat for it. Slide stays in the Flow door
+where v2.11 put it — the seat was wanted for the op that should have been
+there all along.
+
+Guarded by `_spinchk.py`, 24 checks, all stated as **the edge that must exist
+afterwards** rather than as a face count, which a broken rotation would also
+satisfy: a triangle pair loses 0–2 and gains 1–3; both directions are the same
+move there and it is its own undo; on a quad-plus-triangle five-ring CW lands
+on 3–4 and CCW on 0–4; the materials do not shuffle; a rim edge is refused;
+and Revolve is asserted both present in code and absent from every ring.
+
+## Spin (v2.11) — now Revolve, see above
 
 A profile turned about an axis — bottles, wheels, columns, cups, handles: the
 one shape this app could not make in a single move. Edge mode, seat 3.
@@ -11288,11 +11346,11 @@ that a note gets believed for a year.
   symmetry plane from geometry buys most of what it would have.
 - **Gesture-driven modelling tools** - extrude on a two-finger tap, and the
   like. Unstarted.
-- **Spin's winding rule is unproven** - see the v2.11 section. The geometric
+- **Revolve's winding rule is unproven** - see the v2.11 section. The geometric
   answer is in and the check passes with it disabled, so the case that
   discriminates has not been found. If a profile ever sweeps inside out, that
   is the case; add it to `_spinchk` section 8.
-- **Spin's mirrored pass is guarded by argument, not by measurement.** The
+- **Revolve's mirrored pass is guarded by argument, not by measurement.** The
   sign rule is arithmetic and stated where it is applied, but `_spinchk`
   section 10 only establishes that the repairable case is not refused and
   neither run throws. Demonstrating that the two halves come out mirror

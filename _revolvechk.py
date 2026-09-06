@@ -4,13 +4,13 @@ import http.server, socketserver
 ROOT = r'C:\Users\a.bodrov\Projects\kubik'
 PROF = tempfile.mkdtemp(prefix='_prof_')
 CHROME = r'C:\Program Files\Google\Chrome\Application\chrome.exe'
-PORT = 8875
+PORT = 8873
 TARGET = sys.argv[1] if len(sys.argv) > 1 else 'index.html'
 RESULT = {}
 
 src = io.open(os.path.join(ROOT, TARGET), encoding='utf-8').read()
-js = io.open(os.path.join(ROOT, '_spinchk.js'), encoding='utf-8').read()
-io.open(os.path.join(ROOT, '_spinchk.html'), 'w', encoding='utf-8', newline='').write(
+js = io.open(os.path.join(ROOT, '_revolvechk.js'), encoding='utf-8').read()
+io.open(os.path.join(ROOT, '_revolvechk.html'), 'w', encoding='utf-8', newline='').write(
     src.replace('</body>', '<script>\n' + js + '\n</script>\n</body>', 1))
 
 class H(http.server.SimpleHTTPRequestHandler):
@@ -24,7 +24,7 @@ class H(http.server.SimpleHTTPRequestHandler):
             b = body.decode('ascii', 'replace')
             tag, b = b.split('|', 1)
             b = b[b.find(',') + 1:]
-            io.open(os.path.join(ROOT, '_spinchk_%s.png' % tag), 'wb').write(base64.b64decode(b))
+            io.open(os.path.join(ROOT, '_revolvechk_%s.png' % tag), 'wb').write(base64.b64decode(b))
         elif self.path == '/mark':
             RESULT['mark'] = body.decode('utf-8', 'replace')
         else:
@@ -35,7 +35,7 @@ socketserver.TCPServer.allow_reuse_address = True
 srv = socketserver.TCPServer(('127.0.0.1', PORT), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 
-url = 'http://127.0.0.1:%d/_spinchk.html?debug=1&t=%d' % (PORT, int(time.time()))
+url = 'http://127.0.0.1:%d/_revolvechk.html?debug=1&t=%d' % (PORT, int(time.time()))
 cmd = [CHROME, '--headless=new', '--no-sandbox',
        '--user-data-dir=' + PROF,
        '--disk-cache-dir=' + os.path.join(ROOT, '_httpcache'),
@@ -52,5 +52,5 @@ while time.time() - t0 < 300 and 'txt' not in RESULT:
 p.kill(); srv.shutdown()
 shutil.rmtree(PROF, ignore_errors=True)
 txt = RESULT.get('txt') or ('NO REPORT - last mark was:\n' + RESULT.get('mark', '(no marks at all)'))
-io.open(os.path.join(ROOT, '_spinchk_out.txt'), 'w', encoding='utf-8').write(txt + '\n')
+io.open(os.path.join(ROOT, '_revolvechk_out.txt'), 'w', encoding='utf-8').write(txt + '\n')
 print('TARGET %s\n%s' % (TARGET, txt))

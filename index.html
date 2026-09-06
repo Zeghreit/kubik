@@ -2360,7 +2360,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.11</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.12</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -10493,7 +10493,134 @@ function bridgeEdgesOp(obj, logicalPairs, segments, curved) {
 }
 
 
-/* ---------------- Spin (v2.11) ----------------
+
+/* ---------------- Spin edge (v2.12) ----------------
+
+   Blender's Rotate Edge, Maya's Spin Edge: the edge two faces share is taken
+   off the corners it is on and hung on the next pair round. The vertex count
+   never changes and nothing moves - only which corners the wall between the
+   two faces runs between. It is THE retopo move: the one that turns a
+   triangle pair the right way up, or makes a quad flow along a form instead
+   of across it.
+
+   ONE IDEA MAKES IT GENERAL. Do not think about triangles, or about quads -
+   think about the two faces as ONE POLYGON with a chord drawn across it.
+   Delete the shared edge and what is left is the outline of the pair; the
+   edge is a chord between two of its vertices; rotating is moving both ends
+   of that chord one step round the outline, the same way. Then the polygon
+   is cut in two along the new chord.
+
+   Written that way it is right for a triangle pair, a quad pair, an n-gon
+   against a triangle, and every mixture, with no cases. Written as "swap the
+   diagonal" it would have been right for two triangles and wrong for
+   everything else. */
+function spinEdgeOp(obj, logicalEdges, ccw) {
+  const mesh = obj.mesh;
+  const ed = toEditable(mesh);
+  const mats = Array.isArray(mesh.material) ? mesh.material : (mesh.material = [mesh.material]);
+  const L = edLogical(ed);
+  const attrFor = (l) => L.logicalGroups[l][0];
+
+  // Every face's outline as LOGICAL ids, in that face's own winding order.
+  const loopsOf = () => ed.groups.map((g, gi) => {
+    const lp = getGroupBoundaryLoopAttr(ed, gi);
+    return lp ? lp.map(a => L.logicalOf[a]) : null;
+  });
+
+  let done = 0, why = null;
+  const refuse = (w) => { if (!why) why = w; };
+
+  logicalEdges.forEach(pair => {
+    const u = pair[0], v = pair[1];
+    /* RECOMPUTED PER EDGE. Rotating one edge rewrites two outlines, and the
+       next edge in the selection may sit on one of them. Positions never
+       move, so the LOGICAL map is still good - it is only the outlines that
+       have to be read again. */
+    const loops = loopsOf();
+
+    /* WHERE THE SHARED EDGE SITS IN EACH FACE, as a directed step. Two faces
+       agreeing on an edge traverse it in opposite directions, which is the
+       whole reason the combined outline below closes up. */
+    const at = [];
+    loops.forEach((lp, gi) => {
+      if (!lp) return;
+      for (let i = 0; i < lp.length; i++) {
+        const a = lp[i], b = lp[(i + 1) % lp.length];
+        if ((a === u && b === v) || (a === v && b === u)) at.push({ gi: gi, i: i, fwd: a === u });
+      }
+    });
+    if (at.length !== 2) {
+      refuse(at.length < 2 ? 'that edge is on a rim - it needs a face on both sides'
+                           : 'that edge has ' + at.length + ' faces on it, not 2');
+      return;
+    }
+    const [eA, eB] = at;
+    if (eA.gi === eB.gi) { refuse('that edge is a face\u2019s own diagonal, not a wall between two'); return; }
+    if (eA.fwd === eB.fwd) { refuse('those two faces disagree about which way that edge runs'); return; }
+
+    /* THE COMBINED OUTLINE. Each face rotated to START at its own end of the
+       shared edge and walked all the way round, so A ends where B begins.
+       Dropping B's two endpoints - they are A's first and last - leaves one
+       closed loop of the pair with the shared edge gone. */
+    const A = loops[eA.gi], B = loops[eB.gi];
+    const rot = (lp, from) => lp.slice(from).concat(lp.slice(0, from));
+    const pathA = rot(A, (eA.i + 1) % A.length);          // [far end .. near end]
+    const pathB = rot(B, (eB.i + 1) % B.length);          // [near end .. far end]
+    const ring = pathA.concat(pathB.slice(1, pathB.length - 1));
+    const N = ring.length;
+    const iv = 0, iu = pathA.length - 1;                  // the chord's two ends
+    if (N < 4) { refuse('there is not enough face around that edge to rotate it'); return; }
+
+    /* ONE STEP ROUND, BOTH ENDS THE SAME WAY. Which way is "clockwise" comes
+       from the outline's own winding rather than from the screen, so it is
+       the same answer from any camera and the mirrored side of a symmetric
+       model turns to match rather than against. */
+    const step = ccw ? -1 : 1;
+    const x = ring[((iu + step) % N + N) % N];
+    const y = ring[((iv + step) % N + N) % N];
+    if (x === y) { refuse('there is nowhere for that edge to go'); return; }
+
+    // Cut the ring in two along the new chord.
+    const ix = ring.indexOf(x), iy = ring.indexOf(y);
+    const arc = (from, to) => {
+      const out = [];
+      for (let k = from; ; k = (k + 1) % N) { out.push(ring[k]); if (k === to) break; }
+      return out;
+    };
+    const f1 = arc(ix, iy), f2 = arc(iy, ix);
+    /* A face of two vertices is not a face. It is what asking for the
+       rotation that puts the chord back on an edge of the outline gets you -
+       a triangle pair has exactly one such move in each direction - and it
+       has to be refused rather than drawn, because polygonTriangles would
+       hand back nothing and the face would silently vanish. */
+    if (f1.length < 3 || f2.length < 3) { refuse('there is nowhere for that edge to go'); return; }
+
+    /* REPLACED IN PLACE, NEVER REORDERED. `ed.groups` lines up 1:1 with the
+       material array, so the two faces keep their own materials, their
+       finishes and their place in the outliner - a rotation is not a new
+       face, it is the same two faces holding a different corner. */
+    ed.groups[eA.gi].triangles = polygonTriangles(ed, f1.map(attrFor));
+    ed.groups[eB.gi].triangles = polygonTriangles(ed, f2.map(attrFor));
+    done++;
+  });
+
+  if (!done) return { ok: false, why: why || 'nothing to rotate' };
+  rebuildFromEditable(obj, ed);
+  return { ok: true, count: done, why: why };
+}
+
+/* ---------------- Revolve (v2.11, taken off the ring at v2.12) ----------
+
+   A LATHE, AND IT IS NOT WHAT "SPIN" MEANS TO A MODELLER. This was built as
+   Spin and shipped on the Edge ring at v2.11; the first person to touch it
+   expected Blender's Spin Edge - rotate an edge onto the next corners - and
+   got a body swept into a cone. Renamed to Revolve, unhooked from the ring
+   and KEPT: the machinery is sound and guarded, and a lathe is still worth
+   having the day there is a seat for it. Reachable from __kubik only.
+
+   The name is the whole lesson. "Spin" was chosen from the geometry rather
+   than from the vocabulary of the people who use the tool, and no amount of
+   testing the geometry could have caught that. --------------------------
 
    A profile turned about an axis: bottles, wheels, columns, cups, handles -
    the one shape this app could not make in a single move.
@@ -10505,23 +10632,23 @@ function bridgeEdgesOp(obj, logicalPairs, segments, curved) {
    same loop, the same winding rule and the same open/closed distinction.
    Everything difficult here was solved by bridge, twice, and written down -
    see matchRings and the dirTaken block. Do not re-derive it. */
-const SPIN_AXES = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] };
-const _spinAx = new THREE.Vector3(), _spinRel = new THREE.Vector3();
-const _spinPrj = new THREE.Vector3(), _spinQ = new THREE.Quaternion();
-const _spinP = new THREE.Vector3();
+const REVOLVE_AXES = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] };
+const _revAx = new THREE.Vector3(), _revRel = new THREE.Vector3();
+const _revPrj = new THREE.Vector3(), _revQ = new THREE.Quaternion();
+const _revP = new THREE.Vector3();
 
-function spinOp(obj, logicalPairs, steps, sweepDeg, axis, dir) {
+function revolveOp(obj, logicalPairs, steps, sweepDeg, axis, dir) {
   const mesh = obj.mesh;
   const ed = toEditable(mesh);
   const mats = Array.isArray(mesh.material) ? mesh.material : (mesh.material = [mesh.material]);
   const L = edLogical(ed);
   const attrFor = (l) => L.logicalGroups[l][0];
 
-  /* ONE run, not two. Bridge needs a pair because it joins them; a spin has
+  /* ONE run, not two. Bridge needs a pair because it joins them; a revolve has
      only a profile, so a second run is a different sweep and not this one. */
   const chains = edgeChains(ed, logicalPairs);
   if (chains.length !== 1) {
-    return { ok: false, why: 'select ONE run of edges to spin (found ' + chains.length + ')' };
+    return { ok: false, why: 'select ONE run of edges to revolve (found ' + chains.length + ')' };
   }
   const chain = chains[0];
   const closed = !!chain.closed;
@@ -10544,7 +10671,7 @@ function spinOp(obj, logicalPairs, steps, sweepDeg, axis, dir) {
   const [ua, ub] = ARRAY_PERP[axis] || ARRAY_PERP.y;
   const sa = Math.abs(mesh.scale[ua]), sb = Math.abs(mesh.scale[ub]);
   if (Math.abs(sa - sb) > Math.max(sa, sb, 1e-6) * 1e-3) {
-    return { ok: false, why: 'a spin needs even scale across the axis it turns about - this one is ' +
+    return { ok: false, why: 'a revolve needs even scale across the axis it turns about - this one is ' +
       sa.toFixed(2) + ' by ' + sb.toFixed(2) + ', so the sweep would come out skewed' };
   }
 
@@ -10554,13 +10681,13 @@ function spinOp(obj, logicalPairs, steps, sweepDeg, axis, dir) {
     ? App.pivotPoint.clone() : new THREE.Vector3(0, 0, 0);
   mesh.updateMatrixWorld();
   const centre = mesh.worldToLocal(w);
-  const a = SPIN_AXES[axis] || SPIN_AXES.y;
-  _spinAx.set(a[0], a[1], a[2]);
+  const a = REVOLVE_AXES[axis] || REVOLVE_AXES.y;
+  _revAx.set(a[0], a[1], a[2]);
 
   const radiusOf = (ai) => {
-    _spinRel.copy(vecAt(ed, ai)).sub(centre);
-    _spinPrj.copy(_spinAx).multiplyScalar(_spinRel.dot(_spinAx));
-    return _spinRel.sub(_spinPrj).length();
+    _revRel.copy(vecAt(ed, ai)).sub(centre);
+    _revPrj.copy(_revAx).multiplyScalar(_revRel.dot(_revAx));
+    return _revRel.sub(_revPrj).length();
   };
   const radii = profile.map(radiusOf);
   let maxR = 0;
@@ -10596,7 +10723,7 @@ function spinOp(obj, logicalPairs, steps, sweepDeg, axis, dir) {
   const rings = [profile];
   const nNew = full ? segs - 1 : segs;
   for (let sIdx = 1; sIdx <= nNew; sIdx++) {
-    _spinQ.setFromAxisAngle(_spinAx, stepAng * sIdx);
+    _revQ.setFromAxisAngle(_revAx, stepAng * sIdx);
     const row = profile.map((ai, i) => {
       /* A POINT ON THE AXIS DOES NOT MOVE, SO IT MUST NOT BE COPIED. N
          coincident vertices weld under computeLogicalOf's rounding and every
@@ -10605,9 +10732,9 @@ function spinOp(obj, logicalPairs, steps, sweepDeg, axis, dir) {
          bad luck. Sharing the one vertex across every ring is also what turns
          the quads at a pole into the triangles a lathe actually has. */
       if (onAxis[i]) return profile[i];
-      _spinP.copy(vecAt(ed, ai)).sub(centre).applyQuaternion(_spinQ).add(centre);
+      _revP.copy(vecAt(ed, ai)).sub(centre).applyQuaternion(_revQ).add(centre);
       const ni = ed.positions.length / 3;
-      ed.positions.push(_spinP.x, _spinP.y, _spinP.z);
+      ed.positions.push(_revP.x, _revP.y, _revP.z);
       return ni;
     });
     rings.push(row);
@@ -10687,7 +10814,7 @@ function spinOp(obj, logicalPairs, steps, sweepDeg, axis, dir) {
       cen.add(a);
     }
     cen.multiplyScalar(1 / pts.length).sub(centre);
-    cen.sub(_spinPrj.copy(_spinAx).multiplyScalar(cen.dot(_spinAx)));   // the radial part
+    cen.sub(_revPrj.copy(_revAx).multiplyScalar(cen.dot(_revAx)));   // the radial part
     if (cen.lengthSq() > 1e-12 && nrm.dot(cen) < 0) flip = !flip;
   }
 
@@ -12444,8 +12571,18 @@ const OP_SPECS = {
      shape has to belong to the op, or tapping X mid-spin changes the confirm
      toast and not the mesh. The slider is the ANGLE, so a quarter-turn
      bracket and a full wheel are the same tool. */
-  spin: {
-    label: 'Spin', min: 15, max: 360, step: 5, start: 360,
+  /* No amount and no stepper - there is exactly one thing to say about a
+     rotation and it is which way. Two chips, and the bar is otherwise just
+     the tick. */
+  spinedge: {
+    label: 'Spin', min: 0, max: 1, step: 1, start: 0, noAmount: true,
+    options: [
+      { key: 'cw', label: 'CW' },
+      { key: 'ccw', label: 'CCW' }
+    ]
+  },
+  revolve: {
+    label: 'Revolve', min: 15, max: 360, step: 5, start: 360,
     segments: true, maxSegments: 32,
     options: [
       { key: 'x', label: 'X' },
@@ -12877,9 +13014,29 @@ function applyPendingOpInner() {
       if (lab) lab.textContent = 'Bridge' + (op.badWinding ? ' \u00b7 folds over' : '');
     }
 
-  } else if (op.kind === 'spin') {
+  } else if (op.kind === 'spinedge') {
+    ensureHelpers(obj);
+    const res = spinEdgeOp(obj, op.payload.pairs, op.groupMode === 'ccw');
+    if (!res.ok) refuseOp(res.why);
+    ensureHelpers(obj);
+    const lab = document.getElementById('opLabel');
+    if (lab) {
+      /* Says how many of the selection it could turn, because a mixed
+         selection - some edges on a rim, some not - is the ordinary case and
+         a silent partial result is indistinguishable from the tool being
+         broken. */
+      lab.textContent = res.ok
+        ? ('Spin \u00b7 ' + res.count + (res.why ? ' of ' + op.payload.pairs.length : ''))
+        : ('Spin \u00b7 ' + res.why);
+    }
+    if (!res.ok) {
+      op.saidWhy = op.saidWhy || {};
+      if (!op.saidWhy[res.why]) { op.saidWhy[res.why] = 1; toast('Spin - ' + res.why); }
+    }
+
+  } else if (op.kind === 'revolve') {
     const spinAxis = op.groupMode || 'y';
-    const run = (pairs, dir) => spinOp(obj, pairs, op.segments, op.amount, spinAxis, dir);
+    const run = (pairs, dir) => revolveOp(obj, pairs, op.segments, op.amount, spinAxis, dir);
     ensureHelpers(obj);
     const res = run(op.payload.pairs, 1);
     /* THROUGH refuseOp, NOT ONTO op.lastWhy. The tail of this function does
@@ -12962,7 +13119,7 @@ function applyPendingOpInner() {
       op.badWinding = !wa.ok;
       op.finOnly = !wa.ok && wa.reversed === 0 && wa.conflictEdges === 0 && wa.nonManifold > 0;
       if (lab) {
-        lab.textContent = 'Spin' + (op.finOnly ? ' \u00b7 the profile face is still there'
+        lab.textContent = 'Revolve' + (op.finOnly ? ' \u00b7 the profile face is still there'
                                   : op.badWinding ? ' \u00b7 folds over' : '');
       }
     } else {
@@ -12973,9 +13130,9 @@ function applyPendingOpInner() {
          re-runs on every press, and one toast per reason is the point. */
       op.badWinding = false;
       op.finOnly = false;
-      if (lab) lab.textContent = 'Spin \u00b7 ' + res.why;
+      if (lab) lab.textContent = 'Revolve \u00b7 ' + res.why;
       op.saidWhy = op.saidWhy || {};
-      if (!op.saidWhy[res.why]) { op.saidWhy[res.why] = 1; toast('Spin - ' + res.why); }
+      if (!op.saidWhy[res.why]) { op.saidWhy[res.why] = 1; toast('Revolve - ' + res.why); }
     }
 
   } else if (op.kind === 'inset') {
@@ -13655,12 +13812,12 @@ function confirmPendingOp() {
        destructive thing this tool does. */
     toast('Smooth below ' + Math.round(op.amount) + '\u00b0' +
       (op.clearedMarks ? ' \u2014 cleared ' + op.clearedMarks + ' edge mark(s)' : ''));
-  } else if (op.kind === 'spin' && op.badWinding) {
+  } else if (op.kind === 'revolve' && op.badWinding) {
     /* The same last-moment drop bridge's branch exists to prevent: the bar
        said it for the whole drag and the confirm toast reported a clean
        success. The fin is the ordinary case and gets the ordinary words. */
-    toast(op.finOnly ? 'Spin applied - the profile face is still inside it'
-                     : 'Spin applied - it folds over itself');
+    toast(op.finOnly ? 'Revolve applied - the profile face is still inside it'
+                     : 'Revolve applied - it folds over itself');
   } else if (op.kind === 'bridge' && op.badWinding) {
     // The bar has said "folds over" the whole time it was open; the toast
     // used to drop it at the last moment and report a clean success.
@@ -15633,7 +15790,7 @@ function clearAllCreases() {
    so the union of a pair and its mirror - four - would fail that guard
    outright. That is why the mirrored side travels as its own marked set to
    be bridged in a second pass, rather than being folded into the selection. */
-function spinSelection() {
+function spinEdgeSelection() {
   const obj = findObject(App.activeObjectId);
   if (!obj) { toast('Select an object first'); return; }
   if (App.knife) { toast('Finish the cut first'); return; }
@@ -15641,13 +15798,58 @@ function spinSelection() {
     toast('Finish the ' + ((OP_SPECS[App.pendingOp.kind] || {}).label || 'operation') + ' first');
     return;
   }
-  if (App.mode !== 'edge') { toast('Spin works in Edge mode - select the profile to turn'); return; }
+  if (App.mode !== 'edge') { toast('Spin works in Edge mode - pick the edge to rotate'); return; }
+  ensureHelpers(obj);
+
+  /* A UNION OP, so symmetry is one line. Each edge is rotated on its own and
+     the mirror of an edge is just another edge - unlike Bridge or Revolve,
+     which act on the selection as a GROUP and have to run once per side.
+     And "clockwise" is read off each face pair's own winding rather than off
+     the screen, so the mirrored side turns to match rather than against it:
+     a mirrored face is wound the other way, which is exactly the correction
+     needed and costs nothing to get right. */
+  if (App.symmetry) symExpand(obj);
+
+  const topo = obj.mesh.userData.topo;
+  const pairs = Array.from(App.selectedElements)
+    .map(ei => topo.edges[ei]).filter(Boolean).map(e => [e[0], e[1]]);
+  if (!pairs.length) { toast('Select an edge to rotate'); return; }
+
+  beginPendingOp('spinedge', obj, { pairs: pairs }, { groupMode: 'cw' });
+
+  /* A bar that can never work is worse than a refusal - beginPendingOp has
+     already run one pass, so lastWhy is a real answer from the worker. */
+  const op = App.pendingOp;
+  if (op && op.lastWhy) {
+    const why = op.lastWhy;
+    const st = op.state, sel = op.selectionBefore;
+    App.pendingOp = null;
+    hideOpBar();
+    restoreObjectState(obj, st);
+    App.selectedElements = sel;
+    ensureHelpers(obj);
+    setActiveObjectHelpersVisible(obj, App.mode);
+    refreshElementColors(obj);
+    invalidate();
+    toast('Spin - ' + why);
+  }
+}
+
+function revolveSelection() {
+  const obj = findObject(App.activeObjectId);
+  if (!obj) { toast('Select an object first'); return; }
+  if (App.knife) { toast('Finish the cut first'); return; }
+  if (App.pendingOp) {
+    toast('Finish the ' + ((OP_SPECS[App.pendingOp.kind] || {}).label || 'operation') + ' first');
+    return;
+  }
+  if (App.mode !== 'edge') { toast('Revolve works in Edge mode - select the profile to turn'); return; }
   ensureHelpers(obj);
 
   const topo = obj.mesh.userData.topo;
   const pairs = Array.from(App.selectedElements)
     .map(ei => topo.edges[ei]).filter(Boolean).map(e => [e[0], e[1]]);
-  if (!pairs.length) { toast('Select a run of edges to spin'); return; }
+  if (!pairs.length) { toast('Select a run of edges to revolve'); return; }
   const payload = { pairs, marks: null };
 
   /* RELATIONAL, not union: a spin turns the selection AS A PROFILE, so the
@@ -15672,7 +15874,7 @@ function spinSelection() {
      only axis whose mirrored pass needs no sign flip - and otherwise Y, which
      is the one a lathe turns about when nobody has said. (primarySymAxis
      itself falls back to X, which is why it is not used here.) */
-  beginPendingOp('spin', obj, payload,
+  beginPendingOp('revolve', obj, payload,
     { segments: 12, groupMode: (App.symmetryAxes && App.symmetryAxes[0]) || 'y' });
 
   /* A bar that can never work is worse than a refusal. beginPendingOp has
@@ -15689,7 +15891,7 @@ function spinSelection() {
     setActiveObjectHelpersVisible(obj, App.mode);
     refreshElementColors(obj);
     invalidate();
-    toast('Spin - ' + why);
+    toast('Revolve - ' + why);
     return;
   }
   /* AND THE MIRRORED SIDE'S REASON. op.symWhy was being set on every re-run
@@ -26260,9 +26462,9 @@ const ICON = {
   crease:  '<path d="M3 18Q12 5 21 18"/><path d="M12 4v5"/><circle cx="12" cy="11.4" r="1.9" fill="currentColor" stroke="none"/>',
   uncrease:'<path d="M3 18c4-6 14-6 18 0"/>',
   subdiv:  '<path d="M3 3h18v18H3z"/><path d="M12 3v18M3 12h18"/>',
-  /* The profile standing at the left, and the ellipse it sweeps - the shape
-     the op makes, seen the way the viewport shows it. */
-  spin:    '<path d="M6 4v16"/><path d="M6 7c7 0 12 2.2 12 5s-5 5-12 5"/><ellipse cx="12" cy="12" rx="6" ry="2.6" opacity=".45"/>',
+  /* Two faces and the wall between them, shown mid-swing: the chord it is
+     leaving drawn faint, the one it lands on solid. */
+  spin:    '<path d="M4 6h16v12H4z"/><path d="M4 6l16 12" opacity=".35"/><path d="M20 6L4 18"/>',
   // Two solid edges and the band of new faces forming between them.
   bridge:  '<path d="M5 4.5v15M19 4.5v15"/><rect x="5" y="9" width="14" height="6" fill="currentColor" opacity=".45" stroke="none"/>',
   /* Two ends driven onto one solid point. The dot is deliberately the same
@@ -26336,7 +26538,7 @@ const HUB_TOOLS_EDGE = [
      - Extrude, Bevel, Loop, Bridge - hold the top level, and the ones that
      refine what is already there sit behind a door. Slide is a refinement; a
      lathe is not. Slide keeps its own seat in the VERTEX ring untouched. */
-  { key: 'spin', icon: 'spin', label: 'Spin', seat: 3, run: spinSelection },
+  { key: 'spin', icon: 'spin', label: 'Spin', seat: 3, run: spinEdgeSelection },
   { key: 'delete', icon: 'del', label: 'Delete', seat: 4, run: deleteSelection },
   { key: 'bridge', icon: 'bridge', label: 'Bridge', seat: 5, run: bridgeSelection },
   /* Thirteen ops and seven bearings, so the six least reached go behind two
@@ -29390,7 +29592,7 @@ HELP_SECTIONS.push(
       ['extrude', 'Extrude', 'Pulls edges out. Drag it out, tap it for another section, tap away when done. Two-finger tap switches to Rotate or Scale.'],
       ['bevel', 'Bevel', 'A narrow flat face along an edge. More segments rounds it.'],
       ['loop', 'Loop', 'New edge rings across the mesh, square to the edge you picked. Flow curves them to follow the surface.'],
-      ['spin', 'Spin', 'Turns a run of edges about an axis — bottles, wheels, columns. The chips pick the axis, the slider the angle, the stepper how many steps it takes. It turns around the pivot, or the world centre if you have not placed one.'],
+      ['spin', 'Spin', 'Rotates an edge onto the next pair of corners of the two faces sharing it — the retopo move. Clockwise or counter-clockwise; the vertex count never changes.'],
       ['del', 'Delete', 'Dissolves: the faces close over the gap.'],
       ['bridge', 'Bridge', 'Joins two selections with new faces. Sections subdivides it, Curved keeps each end going its own way.'],
       [null, 'CUT — a door', 'Knife, Split, Collapse, Cap hole.'],
@@ -30755,8 +30957,11 @@ if (PICK_DEBUG) {
     // The drag itself, driveable with a plain {clientX, clientY}.
     axisTooFlat, beginExtrudeDrag, updateExtrudeDrag, endExtrudeDrag,
     // v2.4: which way a file leaves, and the two halves of it.
-    // v2.11: the lathe, and the worker under it.
-    spinSelection, spinOp,
+    /* v2.11's lathe, kept off the ring at v2.12 - see the Revolve block.
+       Its probe drives it from here. */
+    revolveSelection, revolveOp,
+    // v2.12: Spin Edge, the op the ring seat actually holds.
+    spinEdgeSelection, spinEdgeOp,
     wantsShareSheet, downloadBlob, saveBlobAsDownload,
     // v2.5: the picture, and the rule that decides what is in it.
     savePictureAction, pictureHiddenParts, dataUrlBytes,
