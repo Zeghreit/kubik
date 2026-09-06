@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kubik — Surfaces</title>
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap">
+<style>
+ *{box-sizing:border-box}
+ body{margin:0;padding:32px;background:var(--bg);color:var(--text);
+   font-family:'Archivo',-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
+ h1{font-size:18px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;margin:0 0 4px}
+ .sub,h2,.cap{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-dim)}
+ .sub{margin-bottom:8px}
+ h2{font-weight:500;margin:34px 0 14px;padding-bottom:6px;border-bottom:var(--rule) solid var(--line)}
+ .cap{margin:16px 0 6px}
+ .row{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start}
+ button{background:var(--panel2);color:var(--text);border:var(--rule) solid var(--line);border-radius:0;
+   padding:8px 12px;font:inherit;font-size:13px;min-height:40px;display:inline-flex;align-items:center;gap:6px}
+ .chip{background:var(--panel2);border:var(--rule) solid var(--accent);padding:6px 12px;
+   box-shadow:0 8px 24px rgb(0 0 0/.18);font-size:12px}
+</style></head><body>
+<h1>Surfaces</h1>
+<div class="sub">Op deck, inspector, chips, dialog, tray card</div>
+
+<h2>Op deck &mdash; full-bleed, hazard stripe on top</h2>
+<div style="position:relative;width:390px;background:var(--panel);border:var(--rule) solid var(--line);
+  border-left:none;border-right:none;padding:12px 14px 10px;margin-top:18px">
+ <div style="position:absolute;left:0;right:0;top:-8px;height:6px;background:var(--hazard)"></div>
+ <div style="display:flex;align-items:center;gap:12px">
+  <div style="width:118px;font-size:36px;font-weight:800;letter-spacing:-.02em;line-height:1">0.42</div>
+  <div>
+   <div style="font-size:13px;font-weight:800;letter-spacing:.08em;text-transform:uppercase">Extrude</div>
+   <div style="font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-dim)">Drag or type</div>
+  </div>
+ </div>
+ <div style="position:relative;height:44px;margin-top:2px">
+  <div style="position:absolute;left:0;right:0;top:20px;height:4px;background:var(--line)"></div>
+  <div style="position:absolute;left:0;width:62%;top:20px;height:4px;background:var(--text)"></div>
+  <div style="position:absolute;left:62%;top:13px;width:18px;height:18px;margin-left:-9px;background:var(--text);
+    border:var(--rule) solid var(--panel);transform:rotate(45deg)"></div>
+ </div>
+ <div style="display:flex;align-items:center;gap:8px">
+  <div style="display:inline-flex;gap:2px;background:var(--bg);border:var(--rule) solid var(--line);padding:2px">
+   <button style="border:none;background:#666d76;font-weight:600;min-height:34px;padding:6px 9px;font-size:12px">Per face</button>
+   <button style="border:none;background:transparent;color:var(--text-dim);min-height:34px;padding:6px 9px;font-size:12px">Region</button>
+  </div>
+  <div style="display:inline-flex;gap:2px;background:var(--panel2);border:var(--rule) solid var(--line);padding:2px;align-items:center">
+   <button style="width:44px;height:44px;border:none;background:transparent;padding:0;justify-content:center;font-size:16px">&minus;</button>
+   <span style="min-width:18px;text-align:center;font-size:13px;font-weight:600">2</span>
+   <button style="width:44px;height:44px;border:none;background:transparent;padding:0;justify-content:center;font-size:16px">+</button>
+  </div>
+  <button style="position:relative;overflow:hidden;margin-left:auto;min-height:44px;padding:8px 34px 8px 16px;
+    background:var(--signal);border-color:var(--signal);color:var(--on-accent);font-weight:600">Apply
+   <span style="position:absolute;right:0;top:0;bottom:0;width:22px;
+     background:repeating-linear-gradient(135deg,rgb(0 0 0/.55) 0 5px,transparent 5px 10px)"></span></button>
+ </div>
+</div>
+
+<h2>Inspector &mdash; mode hue on the left edge</h2>
+<div style="min-width:226px;max-width:280px;padding:8px 10px 10px;background:var(--panel2);
+  border:var(--rule) solid var(--line);border-left:3px solid #d9ff3d">
+ <div style="font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-dim);margin-bottom:6px">Selection</div>
+ <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;font-family:var(--mono)">
+  <div><div style="font-size:9px;letter-spacing:.12em;color:var(--text-dim)">X</div><div style="font-size:12px">0.240</div></div>
+  <div><div style="font-size:9px;letter-spacing:.12em;color:var(--text-dim)">Y</div><div style="font-size:12px">1.032</div></div>
+  <div><div style="font-size:9px;letter-spacing:.12em;color:var(--text-dim)">Z</div><div style="font-size:12px">&minus;0.480</div></div>
+ </div>
+</div>
+
+<h2>Floating chips &amp; toast</h2>
+<div class="row">
+ <div class="chip">Pivot &middot; <span style="color:#ffc857">Median</span></div>
+ <div class="chip">Snap &middot; <span style="color:#5ad1a5">0.25</span></div>
+ <div class="chip" style="border-color:var(--line)">Isometric</div>
+ <div style="font-size:12px;font-weight:600;text-shadow:0 1px 4px rgb(0 0 0/.8),0 1px 2px rgb(0 0 0/.6)">
+  Toast &mdash; no plate, text only</div>
+</div>
+
+<h2>Dialog</h2>
+<div style="width:360px;max-height:80vh;padding:16px;background:var(--panel);border:var(--rule) solid var(--line)">
+ <div style="font-size:18px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;margin-bottom:12px">
+  Kubik <span style="font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.08em;color:var(--text-dim)">2.13</span></div>
+ <div style="font-size:13px;line-height:1.6;color:var(--text)">Hold anywhere to bloom the tools under your finger.
+  Two fingers switch tool, three switch mode.</div>
+</div>
+
+<h2>Material card &mdash; 64px column in the tray</h2>
+<div class="row" style="gap:8px">
+ <div style="width:64px;padding:5px 4px;display:flex;flex-direction:column;align-items:center;gap:3px;
+   background:var(--panel2);border:var(--rule) solid var(--line)">
+  <div style="width:50px;height:50px;border-radius:50%;background:#8b939c"></div>
+  <div style="font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-dim)">Solid</div>
+ </div>
+ <div style="position:relative;width:64px;padding:5px 4px;display:flex;flex-direction:column;align-items:center;gap:3px;
+   background:var(--panel2);border:var(--rule) solid var(--signal)">
+  <div style="width:50px;height:50px;border-radius:50%;background:#ff5230"></div>
+  <div style="font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--text)">Signal</div>
+  <div style="position:absolute;right:-2px;top:-2px;width:20px;height:20px;background:var(--signal)"></div>
+ </div>
+</div>
+</body></html>

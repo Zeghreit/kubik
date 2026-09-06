@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kubik — Screens</title>
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap">
+<style>
+ *{box-sizing:border-box}
+ body{margin:0;padding:32px;background:#000;color:var(--text);
+   font-family:'Archivo',-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
+ h1{font-size:18px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;margin:0 0 4px}
+ .sub,.cap{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-dim)}
+ .sub{margin-bottom:28px}
+ .cap{margin-bottom:10px}
+ .wrap{display:flex;gap:48px;flex-wrap:wrap}
+ .stage{position:relative;width:390px;height:844px;background:var(--bg);overflow:hidden}
+ .vig{position:absolute;inset:0;pointer-events:none;
+   background:radial-gradient(ellipse at 50% 45%,rgb(0 0 0/0) 42%,rgb(0 0 0/.55) 100%)}
+ .modeline{position:absolute;top:0;left:0;right:0;height:3px;background:var(--accent-mode)}
+ .hdr{position:absolute;left:14px;right:14px;top:7px;height:44px;display:flex;gap:2px}
+ .sq{width:44px;height:44px;flex:0 0 44px;display:flex;align-items:center;justify-content:center;
+   background:var(--panel2);border:var(--rule) solid var(--line);color:var(--text);font-size:18px}
+ .slab{flex:1 1 auto;display:flex;align-items:center;gap:8px;padding:0 20px 0 14px;
+   background:var(--accent-mode);color:var(--on-accent);
+   clip-path:polygon(0 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%)}
+ .slab i{width:8px;height:8px;background:var(--on-accent);flex:0 0 8px}
+ .slab b{font-size:15px;font-weight:800;letter-spacing:.107em;text-transform:uppercase}
+ .ax{position:relative;width:44px;height:44px;display:flex;align-items:center;justify-content:center;
+   background:var(--panel);border:var(--rule) solid var(--line);color:var(--text-dim);
+   font-family:var(--mono);font-size:14px;font-weight:700}
+ .ax s{position:absolute;right:5px;bottom:5px;width:6px;height:6px;box-shadow:inset 0 0 0 1.5px var(--text-dim)}
+</style></head><body>
+<style>
+ .read{position:absolute;left:14px;top:59px;height:14px;font-family:var(--mono);font-size:10px;
+   letter-spacing:.12em;text-transform:uppercase;color:var(--text-dim)}
+ .tab{position:absolute;left:0;width:26px;height:96px;display:flex;align-items:center;justify-content:center;
+   background:var(--panel2);border:var(--rule) solid var(--line);border-left:none;
+   clip-path:polygon(0 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%)}
+ .tab span{writing-mode:vertical-rl;transform:rotate(180deg);font-family:var(--mono);font-size:10px;
+   letter-spacing:.12em;text-transform:uppercase;color:var(--text-dim)}
+ .quick{position:absolute;left:14px;bottom:4px;display:flex;gap:2px}
+ .quick b{width:56px;height:44px;display:flex;align-items:center;justify-content:center;font-weight:400;
+   background:var(--panel2);border:var(--rule) solid var(--line);color:var(--text);font-size:18px}
+ .hub{position:absolute;right:14px;bottom:4px;width:64px;height:64px}
+ .hub i{position:absolute;inset:0;background:var(--accent-mode);clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%)}
+ .hub s{position:absolute;inset:5px;border:var(--rule) solid var(--accent-mode);transform:rotate(45deg)}
+ .hub u{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--on-accent)}
+ .hint{position:absolute;left:50%;transform:translateX(-50%);bottom:82px;white-space:nowrap;
+   display:flex;align-items:center;gap:10px;padding:7px 10px;font-size:11px;
+   background:var(--panel2);border:var(--rule) solid var(--line)}
+ .cube{position:absolute;right:14px;top:71px;width:128px;height:128px;clip-path:circle(40%)}
+ .insp{position:absolute;left:60px;top:151px;min-width:226px;padding:8px 10px 10px;
+   background:var(--panel2);border:var(--rule) solid var(--line);border-left:3px solid var(--accent-mode)}
+ .deck{position:absolute;left:0;right:0;bottom:76px;padding:12px 14px 10px;
+   background:var(--panel);border:var(--rule) solid var(--line);border-left:none;border-right:none}
+ .deck .haz{position:absolute;left:0;right:0;top:-8px;height:6px;background:var(--hazard)}
+ .grp{display:inline-flex;gap:2px;padding:2px;border:var(--rule) solid var(--line)}
+ .grp b{min-height:34px;padding:6px 9px;font-size:12px;font-weight:400;display:flex;align-items:center}
+</style>
+<h1>Screens</h1>
+<div class="sub">390 &times; 844 &middot; Kubik 2.13</div>
+<div class="wrap">
+ <div>
+  <div class="cap">Object mode &mdash; at rest</div>
+  <div class="stage" style="--accent-mode:#d5dce4">
+   <svg viewBox="0 0 390 844" width="390" height="844" style="position:absolute;inset:0;display:block">
+    <polygon points="195,318 104,374 195,428" fill="#4a525b" stroke="#0b0d10"/>
+    <polygon points="195,318 195,428 286,374" fill="#5a636d" stroke="#0b0d10"/>
+    <polygon points="104,374 90,470 195,428" fill="#363c44" stroke="#0b0d10"/>
+    <polygon points="286,374 195,428 300,470" fill="#464e57" stroke="#0b0d10"/>
+    <polygon points="90,470 195,542 195,428" fill="#2b3037" stroke="#0b0d10"/>
+    <polygon points="195,428 195,542 300,470" fill="#383f47" stroke="#0b0d10"/>
+   </svg>
+   <div class="vig"></div>
+   <div class="modeline" style="opacity:0"></div>
+   <div class="hdr">
+    <div class="sq">&#9776;</div>
+    <div class="slab"><i></i><b>Object</b></div>
+    <div style="display:flex;gap:2px"><div class="ax">X<s></s></div><div class="ax">Y<s></s></div><div class="ax">Z<s></s></div></div>
+   </div>
+   <div class="read">Move</div>
+   <div class="cube"><svg viewBox="0 0 128 128" width="128" height="128">
+    <polygon points="64,26 102,48 64,70 26,48" fill="#4f5862" stroke="#8b939c"/>
+    <polygon points="26,48 64,70 64,102 26,80" fill="#2e343b" stroke="#8b939c"/>
+    <polygon points="102,48 102,80 64,102 64,70" fill="#3a4149" stroke="#8b939c"/></svg></div>
+   <div class="tab" style="top:81px"><span>Outliner</span></div>
+   <div class="tab" style="top:185px"><span>Materials</span></div>
+   <div class="hint"><span>Press and hold &mdash; tools bloom under your finger</span><span style="color:var(--text-dim)">&#10005;</span></div>
+   <div class="quick"><b>&#10554;</b><b>&#10555;</b></div>
+   <div class="hub"><i></i><s></s><u><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg></u></div>
+  </div>
+ </div>
+ <div>
+  <div class="cap">Vertex mode &mdash; op deck open</div>
+  <div class="stage" style="--accent-mode:#d9ff3d">
+   <svg viewBox="0 0 390 844" width="390" height="844" style="position:absolute;inset:0;display:block">
+    <polygon points="195,288 104,344 195,398" fill="#4a525b" stroke="#0b0d10"/>
+    <polygon points="195,288 195,398 286,344" fill="#5a636d" stroke="#0b0d10"/>
+    <polygon points="104,344 90,440 195,398" fill="#363c44" stroke="#0b0d10"/>
+    <polygon points="286,344 195,398 300,440" fill="#464e57" stroke="#0b0d10"/>
+    <polygon points="90,440 195,512 195,398" fill="#2b3037" stroke="#0b0d10"/>
+    <polygon points="195,398 195,512 300,440" fill="#383f47" stroke="#0b0d10"/>
+    <rect x="191" y="284" width="8" height="8" fill="#d9ff3d"/>
+    <rect x="100" y="340" width="8" height="8" fill="#d9ff3d"/>
+    <rect x="282" y="340" width="8" height="8" fill="#eef1f4"/>
+    <rect x="191" y="394" width="8" height="8" fill="#d9ff3d"/>
+    <rect x="86" y="436" width="8" height="8" fill="#eef1f4"/>
+    <rect x="296" y="436" width="8" height="8" fill="#eef1f4"/>
+    <rect x="191" y="508" width="8" height="8" fill="#eef1f4"/>
+   </svg>
+   <div class="vig"></div>
+   <div class="modeline"></div>
+   <div class="hdr">
+    <div class="sq">&#9776;</div>
+    <div class="slab"><i></i><b>Vertex</b></div>
+    <div style="display:flex;gap:2px">
+     <div class="ax" style="border-color:#d9ff3d;color:#d9ff3d">X<s style="background:#d9ff3d;box-shadow:none"></s></div>
+     <div class="ax">Y<s></s></div><div class="ax">Z<s></s></div></div>
+   </div>
+   <div class="read">Extrude &middot; 3 selected</div>
+   <div class="insp">
+    <div style="font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-dim);margin-bottom:6px">Selection</div>
+    <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;font-family:var(--mono)">
+     <div><div style="font-size:9px;letter-spacing:.12em;color:var(--text-dim)">X</div><div style="font-size:12px">0.240</div></div>
+     <div><div style="font-size:9px;letter-spacing:.12em;color:var(--text-dim)">Y</div><div style="font-size:12px">1.032</div></div>
+     <div><div style="font-size:9px;letter-spacing:.12em;color:var(--text-dim)">Z</div><div style="font-size:12px">&minus;0.480</div></div>
+    </div>
+   </div>
+   <div class="deck">
+    <div class="haz"></div>
+    <div style="display:flex;align-items:center;gap:12px">
+     <div style="width:118px;font-size:36px;font-weight:800;letter-spacing:-.02em;line-height:1">0.42</div>
+     <div>
+      <div style="font-size:13px;font-weight:800;letter-spacing:.08em;text-transform:uppercase">Extrude</div>
+      <div style="font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-dim)">Drag or type</div>
+     </div>
+    </div>
+    <div style="position:relative;height:44px;margin-top:2px">
+     <div style="position:absolute;left:0;right:0;top:20px;height:4px;background:var(--line)"></div>
+     <div style="position:absolute;left:0;width:62%;top:20px;height:4px;background:var(--text)"></div>
+     <div style="position:absolute;left:62%;top:13px;width:18px;height:18px;margin-left:-9px;background:var(--text);border:var(--rule) solid var(--panel);transform:rotate(45deg)"></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px">
+     <div class="grp" style="background:var(--bg)"><b style="background:#666d76;font-weight:600">Per face</b><b style="color:var(--text-dim)">Region</b></div>
+     <div class="grp" style="background:var(--panel2);align-items:center"><b style="width:44px;height:44px;padding:0;justify-content:center;font-size:16px">&minus;</b><span style="min-width:18px;text-align:center;font-size:13px;font-weight:600">2</span><b style="width:44px;height:44px;padding:0;justify-content:center;font-size:16px">+</b></div>
+     <div style="position:relative;overflow:hidden;margin-left:auto;min-height:44px;padding:8px 34px 8px 16px;display:flex;align-items:center;background:var(--signal);border:var(--rule) solid var(--signal);color:var(--on-accent);font-size:13px;font-weight:600">Apply<span style="position:absolute;right:0;top:0;bottom:0;width:22px;background:repeating-linear-gradient(135deg,rgb(0 0 0/.55) 0 5px,transparent 5px 10px)"></span></div>
+    </div>
+   </div>
+   <div class="quick"><b>&#10554;</b><b>&#10555;</b></div>
+   <div class="hub"><i></i><s></s><u><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5h14v14H5z"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/></svg></u></div>
+  </div>
+ </div>
+</div>
+</body></html>

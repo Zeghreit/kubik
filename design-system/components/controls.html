@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kubik — Controls</title>
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap">
+<style>
+ *{box-sizing:border-box}
+ body{margin:0;padding:32px;background:var(--bg);color:var(--text);
+   font-family:'Archivo',-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
+ h1{font-size:18px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;margin:0 0 4px}
+ .sub,h2,.cap{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-dim)}
+ .sub{margin-bottom:8px}
+ h2{font-weight:500;margin:34px 0 14px;padding-bottom:6px;border-bottom:var(--rule) solid var(--line)}
+ .row{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+ .cap{margin:14px 0 6px}
+ button,.btn{background:var(--panel2);color:var(--text);border:var(--rule) solid var(--line);border-radius:0;
+   padding:8px 12px;font:inherit;font-size:13px;min-height:40px;display:inline-flex;align-items:center;gap:6px}
+ button.hover{background:#262a31}
+ button.press{background:#32373e}
+ button.active{background:var(--accent-dim);border-color:var(--accent)}
+ button.danger{border-color:var(--danger);color:var(--danger)}
+ button.ok{background:var(--signal);border-color:var(--signal);color:var(--on-accent);font-weight:600}
+ button[disabled]{opacity:.35}
+ .small{padding:6px 9px;min-height:34px;font-size:12px}
+ .group{display:inline-flex;gap:2px;background:var(--panel2);border:var(--rule) solid var(--line);padding:2px}
+ .group button{border:none;background:transparent;min-height:34px}
+ .group button.on{background:var(--accent);color:var(--on-accent);font-weight:600}
+</style></head><body>
+<h1>Controls</h1>
+<div class="sub">44px standard target &middot; 34px small &middot; radius 0 &middot; 2px rules</div>
+
+<h2>Button &mdash; states</h2>
+<div class="row">
+ <button>Default</button>
+ <button class="hover">Hover</button>
+ <button class="press">Pressed</button>
+ <button class="active">Active</button>
+ <button class="danger">Delete</button>
+ <button class="ok">Apply</button>
+ <button disabled>Disabled</button>
+</div>
+<div class="cap">Small &mdash; 34px</div>
+<div class="row">
+ <button class="small">Default</button>
+ <button class="small active">Active</button>
+ <button class="small danger">Clear creases</button>
+</div>
+
+<h2>Segmented group</h2>
+<div class="row">
+ <div class="group"><button class="on">Each</button><button>Joined</button></div>
+ <div class="group"><button>Tap</button><button class="on">Box</button><button>Lasso</button></div>
+</div>
+<div class="cap">Inside the op deck the well goes to --bg and the raised chip to #666d76</div>
+<div class="row">
+ <div class="group" style="background:var(--bg)">
+  <button style="background:#666d76;font-weight:600">Per face</button><button>Region</button>
+ </div>
+</div>
+
+<h2>Stepper</h2>
+<div class="row">
+ <div class="group" style="align-items:center">
+  <button style="width:44px;height:44px;padding:0;justify-content:center;font-size:16px">&minus;</button>
+  <span style="min-width:18px;text-align:center;font-size:13px;font-weight:600">2</span>
+  <button style="width:44px;height:44px;padding:0;justify-content:center;font-size:16px">+</button>
+ </div>
+</div>
+
+<h2>Slider &mdash; 44px box, 4px track, 18px diamond thumb</h2>
+<div style="position:relative;height:44px;max-width:520px">
+ <div style="position:absolute;left:0;right:0;top:20px;height:4px;background:var(--line)"></div>
+ <div style="position:absolute;left:0;width:62%;top:20px;height:4px;background:var(--text)"></div>
+ <div style="position:absolute;left:62%;top:13px;width:18px;height:18px;margin-left:-9px;
+   background:var(--text);border:var(--rule) solid var(--panel);transform:rotate(45deg)"></div>
+</div>
+
+<h2>Fields</h2>
+<div class="row">
+ <input value="1.00" style="width:62px;height:44px;text-align:center;font:inherit;font-size:16px;
+   background:var(--panel2);color:var(--text);border:var(--rule) solid var(--line);border-radius:0">
+ <input value="1.00" style="width:62px;height:44px;text-align:center;font:inherit;font-size:16px;
+   background:var(--panel2);color:var(--text);border:var(--rule) solid var(--accent);border-radius:0">
+ <span class="cap" style="margin:0">focus takes --accent</span>
+ <input type="color" value="#ff5230" style="width:40px;height:36px;padding:2px;
+   background:var(--panel2);border:var(--rule) solid var(--line);border-radius:0">
+</div>
+</body></html>
