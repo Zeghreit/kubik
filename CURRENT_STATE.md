@@ -5,7 +5,7 @@ relaxing, one-handed, mobile-first. three.js from CDN, no build step.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~30,400 lines)
-- Version at time of writing: **2.10**
+- Version at time of writing: **2.11**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -35,6 +35,113 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Spin (v2.11)
+
+A profile turned about an axis — bottles, wheels, columns, cups, handles: the
+one shape this app could not make in a single move. Edge mode, seat 3.
+
+**It is BRIDGE'S MACHINERY with the rings made by rotation.** Bridge walls the
+gap between two rims by generating the rings between them and laying a band of
+quads across each gap. A spin generates its rings by turning the profile
+instead of interpolating toward a second rim, then walls them with the same
+loop, the same open/closed distinction and the same winding question.
+Everything difficult was solved by bridge, twice, and written down.
+
+Three controls: the **chips are the axis**, the **slider is the angle** (15° to
+360°, so a quarter-turn bracket and a full wheel are one tool), the **stepper
+is how many steps it takes**. The axis rides the chip row as the op's own
+state rather than reading the live symmetry set — the array's `op.axis` note
+says why: a control that changes the shape has to belong to the op, or tapping
+X mid-spin changes the confirm toast and not the mesh.
+
+It turns about the **pivot** when one is placed, otherwise the world origin —
+the array's Ring answer, for the array's reason.
+
+### Where it displaced something
+
+All eight Edge bearings were taken, so **Slide moved into the Flow door** and
+Spin took seat 3. The rule is the one the ring already used: the ops that MAKE
+surface — Extrude, Bevel, Loop, Bridge — hold the top level, and refinements
+sit behind a door. Slide keeps its own Vertex-ring seat untouched.
+`_door_probe` caught the swap in the same run it was made, which is what it is
+for.
+
+### The three things a lathe gets wrong
+
+- **The pole.** A profile point on the axis does not move, so it must not be
+  COPIED: N coincident vertices weld under `computeLogicalOf` and every quad
+  touching them collapses. The point is shared across every ring, which is
+  also what turns the quads there into the triangles a cone actually has.
+  **And the threshold is not the eye's.** Relative reach alone (`maxR * 1e-3`)
+  missed the real hazard: ring copies of a near-axis point are
+  `2·r·sin(step/2)` apart, and the weld grid is a FIXED 1e-4, so at the
+  narrowest sweep on offer — 15° over 32 steps — copies of a point at radius
+  0.005 land 4e-5 apart and weld after the rebuild, where nothing in the op
+  can see it. The threshold is whichever is larger, and past it the answer is
+  to share the vertex. If that swallows the whole profile, it refuses.
+- **The seam.** A full turn closes onto the profile ITSELF rather than onto a
+  last ring sitting on top of it — the array's "a full turn divides by n, an
+  arc by n−1" in the form a swept surface takes it.
+- **The fin, which is not a bug.** An edge only exists in this app where a
+  face uses it, so a profile ALWAYS carries one; sweep a full turn and the
+  first and last bands both land on it, giving that edge three faces. That is
+  what spinning a profile that is part of a solid means — Blender does the
+  same — but it IS surprising, and the fix is one tap of Delete. So the bar
+  says `Spin · the profile face is still there`, worded differently from a
+  genuine fold because the two want different answers.
+
+### What the review found, and what it could not settle
+
+No correctness defect in the sweep itself. Five real defects around it, all
+fixed, and one honest loose end:
+
+- **Every refusal was being swallowed.** `applyPendingOpInner` ends with
+  `if (op.kind !== 'bridge') op.lastWhy = opRefusal`, so a reason written
+  straight onto `op.lastWhy` is wiped a few lines later. Both of spin's
+  refusals were measured *passing* before this was found. Bridge is exempt by
+  name; everything else speaks through `refuseOp`, and now so does this.
+- **A refusal mid-drag was silent.** `restoreObjectState` has already run, so
+  the shape snaps back with the bar still open, the stepper reading 2 and
+  nothing said until the tick. Latched toast, one per reason, like array's.
+- **`confirmPendingOp` dropped the warning** — the exact regression bridge's
+  own branch exists to prevent: the bar said "folds over" all through the drag
+  and the confirm toast reported a clean success.
+- **Symmetry was wrong three ways and could not say so.** `op.symWhy` was set
+  on every re-run and read by nobody. And a reflection conjugates a rotation
+  into a rotation the OTHER way — `M·R(t)·M⁻¹ = R(−t)` — *except* when the
+  mirror is along the spin axis, where they commute. The chips open on the
+  symmetry axis, which is the case that needs no flip and the only one anyone
+  had tried; pick a different chip and the two halves came out as rotations of
+  each other, invisible at 360° because a full revolution is its own mirror.
+  Now: the sign flips when the axes differ, and the pass is refused outright
+  when the spin centre is off the mirror plane, where no sign can repair it.
+- **The winding rule measured nothing** — see below.
+
+**The loose end, stated as one.** Bridge decides winding by reading which
+direction a neighbouring face runs the profile edge and going against it. That
+works on a RIM, where the edge has one face. A lathe's profile is normally
+drawn INSIDE a solid, where the edge has two and `dirTaken` holds both
+directions — so the test is true whatever it is asked, and which way the shell
+faced was really decided by whichever end `edgeChains` began walking from. A
+uniformly inverted shell is invisible to `auditWinding` by design.
+
+So spin asks the geometry instead where the rim is mute: the first quad's
+normal against the outward radial. **That block is reasoned, not measured.**
+`_spinchk` section 8 asserts the sweep faces outward on both hands, and it
+passes with the block disabled — on every profile that could be built to test
+it, `flip` already fell the right way. It is kept because removing it puts an
+incidental answer back where a measured one is now, and it costs one quad's
+arithmetic. It is not claimed to be proven. **To prove it, find a profile
+whose chain walk runs the other way** — that is the case this could not
+construct.
+
+Guarded by `_spinchk.py`, 35 checks: a 1-edge profile in 8 steps is 8 faces
+and 14 new vertices (not 16 — the seam welds), an arc is 16 (nothing welds),
+a pole is 7 and 8 triangles, the live re-run returns to exactly where it was,
+both refusals, and the ring seats on both sides of the swap. Suite: **35 of 35
+identical** to v2.10 apart from the two files that describe the ring and the
+help card, both of which changed because the ring and the card changed.
 
 ## The stepped bump was a stretched picture (v2.10)
 
@@ -11181,6 +11288,15 @@ that a note gets believed for a year.
   symmetry plane from geometry buys most of what it would have.
 - **Gesture-driven modelling tools** - extrude on a two-finger tap, and the
   like. Unstarted.
+- **Spin's winding rule is unproven** - see the v2.11 section. The geometric
+  answer is in and the check passes with it disabled, so the case that
+  discriminates has not been found. If a profile ever sweeps inside out, that
+  is the case; add it to `_spinchk` section 8.
+- **Spin's mirrored pass is guarded by argument, not by measurement.** The
+  sign rule is arithmetic and stated where it is applied, but `_spinchk`
+  section 10 only establishes that the repairable case is not refused and
+  neither run throws. Demonstrating that the two halves come out mirror
+  images needs a profile whose mirror exists in the mesh.
 - **Unmeasured on a phone:** the environment's full-float DataTexture
   (`OES_texture_float_linear` is missing on many mobile GPUs), the atlas's
   two-tap slice interpolation, and the four extra field fetches a2.29c and
