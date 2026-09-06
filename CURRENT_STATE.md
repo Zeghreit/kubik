@@ -1,7 +1,18 @@
 # Kubik — current state
 
-Single-file browser 3D low-poly mesh editor. "A fidget for 3D artists":
-relaxing, one-handed, mobile-first. three.js from CDN, no build step.
+Single-file browser 3D low-poly mesh editor. Relaxing, one-handed,
+mobile-first. three.js from CDN, no build step.
+
+**GENERAL-PURPOSE. NOT A CHARACTER-ART TOOL** (stated at v2.12). Zeghreit is a
+character artist and that must NOT shape what gets built - Kubik is for many
+purposes now. Do not reason from "he models characters" to what the app should
+have; ask instead.
+
+**It has stepped out of the "fidget" framing, and kept the FLOW.** The line
+this file opened with for a year - "a fidget for 3D artists" - described where
+it started, not where it is. What survives is the approach: one thumb, no
+modes to remember, the viewport as the hero, nothing that breaks the run of
+work. What is gone is the implied ceiling.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~30,400 lines)
@@ -78,6 +89,19 @@ The two faces are **replaced in place**, never pushed. `ed.groups` lines up
 1:1 with the material array, so both keep their material, their finish and
 their place in the outliner: a rotation is not two new faces, it is the same
 two faces holding a different corner.
+
+### Why a lathe has nowhere to live yet
+
+Not the fin, which is what the v2.11 notes blamed. **A lathe needs a PROFILE,
+and this app cannot express one.** There are no curves, and an edge only
+exists where a face uses it - so there is no such thing as a standalone line
+to revolve. Every attempt to use it means building a throwaway sheet, sweeping
+its rim and deleting the sheet, which is not a tool, it is a workaround.
+
+So Revolve waits on **Curves**, and comes back as its own op called **Lathe**,
+built on them. That is the ordering, and it is Zeghreit's: the missing
+primitive is upstream of the operation, and building the operation first is
+what produced a correct tool nobody could use.
 
 ### The lathe is kept, off the ring
 
@@ -11323,6 +11347,20 @@ against memory. Of the nine live items, three had already been fixed by later
 work, one was overstated, and one turned out to be much bigger than it said.
 Do the same before believing any of these again - this file's own history is
 that a note gets believed for a year.
+
+### The next two big things (stated at v2.12)
+
+Zeghreit's words: these are what "elevate the app to the next level".
+
+1. **Booleans.** Union, difference, intersection.
+2. **Curves, as a METACOMPONENT** - not one op but a new kind of thing the app
+   holds, with a whole set of operations built around it. Lathe is one of
+   those. So is anything else that needs a path rather than a mesh.
+
+Neither is scoped yet, and neither should be started from this note alone -
+they are both large enough that the shape wants agreeing first. What is
+already known is the ordering constraint above: **Curves come before Lathe**,
+because the primitive is upstream of the operation.
 
 ### Still open
 
