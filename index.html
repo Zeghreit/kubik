@@ -2375,7 +2375,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.21</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.22</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -13912,9 +13912,14 @@ opValueEl.addEventListener('blur', () => {
      the box reading what was typed while the model kept its old value. A
      readout that lies about what OK is going to commit is exactly what this
      handler exists to prevent. */
+  /* ...and it is the SELECTED POINT'S number when there is one (v2.22a,
+     found in review). Reading s.p.radius here put the tube's own radius into
+     a box that was showing a point's thickness, and the arrow keys step from
+     whatever the box says - so one ArrowUp collapsed a point from twice the
+     tube to once it. */
   else if (App.opSetup && opSetupSpec() && opSetupSpec().slider) {
     const sl = opSetupSpec().slider;
-    opValueEl.value = Number(App.opSetup.p[sl.key].toFixed(sl.decimals));
+    opValueEl.value = Number(opSliderValue().toFixed(sl.decimals));
   }
 });
 document.getElementById('opOk').addEventListener('click', confirmPendingOp);
@@ -19781,6 +19786,51 @@ function curvePlanePoint(ev, through) {
   return raycaster.ray.intersectPlane(pl, hit) ? hit : null;
 }
 
+/* THE PLANE FACING YOU, through a point you are already holding (v2.22).
+
+   A DRAG is not a placement. `curveResolve` exists to put a NEW point
+   somewhere sensible - which is why its first rung raycasts the scene and
+   snaps to whatever surface or corner is under the cursor - and that is
+   exactly wrong for a point that already exists: inside a tube, the thing
+   under the cursor is the tube itself, so every drag pulled the point onto
+   the tube's own skin and it wound towards the camera. On a curve near any
+   other model, the same.
+
+   So a drag gets no snapping and no work plane: it moves in the plane that
+   faces the camera, through the point it started on. Everything you see move
+   is the thing you are holding, and nothing behind it can take it away. The
+   X / Y / Z / Free chips still decide where NEW points land, which is where
+   the question of a plane actually belongs. */
+/* A NON-PRIMARY MOUSE BUTTON IS ALWAYS THE CAMERA (v2.22). Right drag pans
+   and middle drag dollies everywhere else in this app, and a tool that
+   claimed the press whatever button it arrived on quietly took both away for
+   as long as its bar was open. Touch and pen have one button and go on
+   meaning what they meant; `undefined > 0` is false, so a synthetic event
+   without a button reads as the primary one. */
+/* HOW FAR A PRESS MAY DRIFT AND STILL BE A TAP, now that the camera is live
+   underneath it (v2.22b, found in review). A thumb rolls as it presses and
+   again as it lifts, and 15px - a number written for a mouse - threw away a
+   real fraction of taps on a phone: the view turned a couple of degrees and
+   no point appeared, with nothing said. Generous for a finger, unchanged for
+   a pointing device. */
+const TAP_DRIFT_TOUCH_PX = 26;
+function tapDriftPx(ev) {
+  return (ev && ev.pointerType === 'touch') ? TAP_DRIFT_TOUCH_PX : DIRECT_DECIDE_PX;
+}
+
+function cameraButton(ev) {
+  return ev.pointerType === 'mouse' && ev.button > 0;
+}
+
+function cameraPlanePoint(ev, through) {
+  const n = new THREE.Vector3();
+  camera.getWorldDirection(n).negate().normalize();
+  const pl = new THREE.Plane().setFromNormalAndCoplanarPoint(n, through);
+  raycaster.setFromCamera(ndcFromEvent(ev), camera);
+  const hit = new THREE.Vector3();
+  return raycaster.ray.intersectPlane(pl, hit) ? hit : null;
+}
+
 function curveResolve(ev, through) {
   raycaster.setFromCamera(ndcFromEvent(ev), camera);
   // Curves are not surfaces to land on - including the one being drawn.
@@ -19842,14 +19892,35 @@ function curveEditObj() {
    things it can be inside: its own bar, where the curve is the whole answer,
    and a tube's bar, where the curve is the input to a mesh that has to be
    rebuilt with it. */
-function curveEditChanged() {
+/* `selAlso` (v2.22a, found in review): this change moved the SELECTION as
+   well as the shape - an insert, an append and a delete all do - and the
+   slider is aimed at the selected point now, so the bar has to be redrawn or
+   it goes on showing the range, the value and the name of a point that is no
+   longer the one the slider writes to. Not on a drag, which changes the shape
+   forty times and the selection never: rebuilding the bar under the finger
+   would throw the chips away mid-gesture. */
+function curveEditChanged(selAlso) {
   refreshCurvePreview();
   if (App.curveEdit && App.curveEdit.hosted && App.opSetup) {
     refreshOpSetupMesh();
     refreshTubeRings();
+    if (selAlso) showOpSetupBar();
   } else {
     refreshCurveEditBar();
   }
+}
+
+/* SELECTION, as against shape (v2.22). Nothing needs rebuilding - the tube is
+   the same tube - but the BAR has to be redrawn, because the slider now
+   addresses whichever point is selected and its range, its value and its
+   label all change with that. Kept apart from curveEditChanged so a drag of
+   forty frames does not rebuild the bar forty times. */
+function curveEditSelChanged() {
+  const ce = App.curveEdit;
+  if (!ce) return;
+  refreshCurvePreview();
+  if (ce.hosted && App.opSetup) showOpSetupBar();
+  else refreshCurveEditBar();
 }
 
 /* GENEROUS, like every other GRAB in this file, and shared with the tube's
@@ -20185,6 +20256,7 @@ function startCurveDraw(editObj) {
   }
   App.curveDraw = {
     pts: pts, live: null, pid: null,
+    x0: 0, y0: 0, moved: false,
     plane: App.curvePlane || 'y',
     type: cv ? cv.type : 'bezier',
     res: cv ? cv.res : CURVE_RES_DEF,
@@ -20261,6 +20333,17 @@ function opSetupStepBack() {
   s.p = Object.assign({}, st.p);
   s.built = Object.assign({}, st.p);
   if (spec.restore) spec.restore(s, st.snap);
+  /* AND THE GUEST'S SELECTION WITH IT (v2.22b, found in review). The points
+     come back under it, so an index that named the point an extend had just
+     added now names nothing - and Delete would take a step, splice nothing
+     and say nothing. curveEditStepBack clamps for the same reason; its
+     hosted twin never did. */
+  if (App.curveEdit) {
+    const co = curveEditObj();
+    const cn = co && hasCurveData(co) ? (curveDataOf(co).pts || []).length : 0;
+    App.curveEdit.sel = Math.min(App.curveEdit.sel, cn - 1);
+    App.curveEdit.drag = null;
+  }
   refreshOpSetupMesh();
   showOpSetupBar();     // the controls have to follow the shape back
   refreshCurvePreview();
@@ -20410,20 +20493,31 @@ function curveEditInsert(obj, span, local, w) {
   return at;
 }
 
-function curveEditAppend(obj, local) {
+/* `head` (v2.22): put it before the first point rather than after the last
+   one. Same edit either way - one row into pts and one into radii, together,
+   which is the rule these three share. */
+function curveEditAppend(obj, local, head) {
   const cv = obj.mesh.userData.kubikCurve;
   normaliseCurveRadii(cv);
-  cv.pts.push([local.x, local.y, local.z]);
-  // Carrying on from the end means carrying on at the thickness it ended at.
-  cv.radii.push(cv.radii.length ? cv.radii[cv.radii.length - 1] : 1);
+  const at = head ? 0 : cv.pts.length;
+  cv.pts.splice(at, 0, [local.x, local.y, local.z]);
+  // Carrying on from an end means carrying on at the thickness it ended at.
+  const near = !cv.radii.length ? 1
+             : head ? cv.radii[0] : cv.radii[cv.radii.length - 1];
+  cv.radii.splice(at, 0, near);
   rebuildCurveGeometry(obj);
-  return cv.pts.length - 1;
+  return at;
 }
 
 function curveEditDelete() {
   const ce = App.curveEdit, obj = curveEditObj();
   if (!ce || !obj || ce.sel < 0) { toast('Tap a point first'); return; }
   const cv = obj.mesh.userData.kubikCurve;
+  // A selection can be left pointing past the end by something outside this
+  // editor. Deleting nothing, silently, is the one answer that is never right.
+  if (ce.sel >= cv.pts.length) {
+    ce.sel = -1; curveEditSelChanged(); toast('Tap a point first'); return;
+  }
   /* TWO IS THE FLOOR, not one. One point is not a curve - it has no length to
      sweep, no tangent to frame and nothing to draw - and the sampler's own
      rule about two points is written for the pair, not for a single. */
@@ -20440,7 +20534,7 @@ function curveEditDelete() {
   ce.drag = null;
   ce.sel = Math.min(ce.sel, cv.pts.length - 1);
   rebuildCurveGeometry(obj);
-  curveEditChanged();
+  curveEditChanged(true);
   refreshUI();
 }
 
@@ -20507,9 +20601,16 @@ function hideCurveEditBar() {
    press that never moves must not have committed anything on the way down. */
 function curveEditPointerDown(ev) {
   const ce = App.curveEdit, obj = curveEditObj();
-  if (!ce || !obj) return;
+  // TRUE means "this press is mine" - the one thing the canvas needs to know
+  // before it decides whether to take the camera away (v2.22).
+  if (!ce || !obj) return false;
   ce.pid = ev.pointerId;
   ce.x0 = ev.clientX; ce.y0 = ev.clientY; ce.moved = false;
+  ce.togg = false;
+  ce.markedDrag = false;
+  ce.tapSpan = null; ce.tapEnd = null;
+  ce.tapId = obj.id;
+  ce.tapN = ((obj.mesh.userData.kubikCurve || {}).pts || []).length;
   /* THE RING FIRST, when there is one (v2.20). Inside a tube's bar every
      point wears a circle at its own thickness, and that circle is the radius
      handle - which is what frees the dot in the middle to mean "move this
@@ -20522,8 +20623,8 @@ function curveEditPointerDown(ev) {
           pointWorldOnCurve(obj, ring.i))) {
       ce.sel = ring.i;
       ce.drag = null;
-      refreshCurvePreview();
-      return;
+      curveEditSelChanged();
+      return true;
     }
   }
   const hit = pickCurvePointOn(obj, ev, GRAB_RADIUS_PX);
@@ -20531,12 +20632,52 @@ function curveEditPointerDown(ev) {
      the drag happens in the plane the point is already in rather than in one
      through the origin. */
   ce.drag = hit ? { i: hit.i, from: hit.world.clone() } : null;
-  if (hit) {
-    editStepMark();
-    ce.sel = hit.i;
-    refreshCurvePreview();
-    if (!ce.hosted) refreshCurveEditBar();
+  if (!hit) {
+    /* WHERE THIS PRESS WAS AIMED, kept for the release (v2.22a, found in
+       review). The camera is live under a press that claims nothing now, and
+       OrbitControls turns from the first pixel - so by the time a still
+       finger lifts, the view has rolled the few pixels it drifted and the
+       line it was plainly on has moved out from under it. Judged on the
+       press, the aim is the one you took; the release still only decides
+       WHETHER it was a tap. Same rule as `hadPoint`, one gesture further. */
+    ce.tapSpan = pickCurveSpanOn(obj, ev, CURVE_LINE_PX);
+    if (!ce.tapSpan) ce.tapEnd = curveEditEndAim(obj, ev);
+    /* STAMPED, because an aim outlives the press that took it now. `span` is
+       an index and `local` a position on the curve as it stood; the BAR is
+       DOM, so a second finger on Delete point or Undo is never seen by the
+       pointer tracker and the two-finger bail-out does not fire - it just
+       renumbers the spans under a finger that is still down. */
+    return false;
   }
+  /* A SECOND TAP ON THE SAME POINT LETS IT GO (v2.22). Selecting a point is
+     what aims the slider at that point's own thickness, so there has to be a
+     way to aim it back at the whole tube, and the press already under your
+     finger is the obvious one. Decided on the RELEASE, though, and only if
+     the finger did not travel: this press may still turn into a drag, and
+     dragging the selected point must not also deselect it. */
+  if (ce.sel === hit.i) ce.togg = true;
+  else { ce.sel = hit.i; curveEditSelChanged(); }
+  return true;
+}
+
+/* WHICH END this press would carry the curve on from, and where. The end is
+   the SELECTED one when the selection is an end - tap the first point and the
+   curve grows backwards from there, which is the only way to extend a curve
+   at the end you did not draw last. Resolved HERE, on the press, for the
+   reason the caller gives. Through that end, so carrying a curve on carries
+   it on from where it stopped rather than from a plane through the origin. */
+function curveEditEndAim(obj, ev) {
+  const ce = App.curveEdit;
+  if (!ce || !hasCurveData(obj)) return null;
+  obj.mesh.updateMatrixWorld();
+  const cv = obj.mesh.userData.kubikCurve;
+  const n = (cv.pts || []).length;
+  const head = n > 1 && ce.sel === 0;
+  const a = (cv.pts || [])[head ? 0 : n - 1];
+  const r = curveResolve(ev, a
+    ? new THREE.Vector3(a[0], a[1], a[2]).applyMatrix4(obj.mesh.matrixWorld)
+    : null);
+  return r ? { head: head, world: r.p.clone() } : null;
 }
 
 // One control point, in world space. Both the ring pick and the drag want it.
@@ -20552,14 +20693,22 @@ function curveEditPointerMove(ev) {
   if (!ce || !obj || ce.pid !== ev.pointerId) return;
   if (tubeRadiusDrag) return;   // the ring has it; its own handler is upstream
   if (!ce.moved &&
-      Math.hypot(ev.clientX - ce.x0, ev.clientY - ce.y0) > DIRECT_DECIDE_PX) {
+      Math.hypot(ev.clientX - ce.x0, ev.clientY - ce.y0) > tapDriftPx(ev)) {
     ce.moved = true;
   }
   if (!ce.moved || !ce.drag) return;
-  const r = curveResolve(ev, ce.drag.from);
-  if (!r) return;
+  const p3 = cameraPlanePoint(ev, ce.drag.from);
+  if (!p3) return;
+  const r = { p: p3 };
   const cv = obj.mesh.userData.kubikCurve;
   if (ce.drag.i >= cv.pts.length) { ce.drag = null; return; }
+  /* THE STEP IS TAKEN HERE, not on the press (v2.22a) and not above the two
+     guards (v2.22b, both found in review). Tapping points is how you aim the
+     slider now, so marking on every press filled a forty-deep stack with
+     selections; marking before the guards pushed a step for a drag that then
+     wrote nothing. Nothing has been written at this line, so what the mark
+     captures is still the state before the drag. */
+  if (!ce.markedDrag) { ce.markedDrag = true; editStepMark(); }
   /* Written back in the curve's OWN space. The points are local to the mesh,
      which has a position and can have a rotation and a scale of its own, and
      dropping a world coordinate straight into that list is how a curve you
@@ -20589,38 +20738,78 @@ function curveEditPointerUp(ev) {
      still - so a press 30px from a point, drifting 14px away from it, missed
      the point on the way out and ADDED one. The press already knows. */
   const hadPoint = !!ce.drag;
+  const togg = !!ce.togg;
+  /* The aim, if the curve it was taken on is still the curve it was taken
+     on. Anything else and this release places nothing: it is not a refusal
+     to explain, it is a gesture whose meaning was taken away mid-press. */
+  const fresh = ce.tapId === obj.id &&
+                ce.tapN === ((obj.mesh.userData.kubikCurve || {}).pts || []).length;
+  const aimSpan = fresh ? ce.tapSpan : null;
+  const aimEnd = fresh ? ce.tapEnd : null;
   ce.pid = null;
   ce.drag = null;
+  ce.togg = false;
+  ce.markedDrag = false;
+  ce.tapSpan = null; ce.tapEnd = null;
   if (wasDrag || ce.moved) { ce.moved = false; refreshUI(); return; }
   ce.moved = false;
-  // A tap ON a point has already selected it, in the press.
-  if (hadPoint || pickCurvePointOn(obj, ev, GRAB_RADIUS_PX)) { refreshUI(); return; }
+  /* A tap ON a point has already selected it, in the press - or, on the one
+     that was already selected, lets it go here (v2.22).
+
+     AND THE PRESS IS THE WHOLE TEST NOW (v2.22a, found by the probe). There
+     used to be a second pick here, against the release; with the camera live
+     under a tap it runs on a view that has MOVED, so a point that drifted
+     under the lifting finger vetoed the insert the press had aimed and the
+     tap did nothing at all. Every branch below this line is aimed by the
+     press, and so is this one. */
+  if (hadPoint) {
+    if (togg) { ce.sel = -1; curveEditSelChanged(); }
+    refreshUI();
+    return;
+  }
   /* ON THE LINE: put a point there. The position is the point on the curve
      itself rather than where the finger landed, so adding one does not also
      move the shape - and the span comes from the sampler, which is the only
      thing that knows which two control points that piece of line ran between. */
-  const on = pickCurveSpanOn(obj, ev, CURVE_LINE_PX);
-  if (on) {
+  // The curve was renumbered under this press. It aimed at something that
+  // is no longer there, so it places nothing.
+  if (!fresh) { refreshUI(); return; }
+  if (aimSpan) {
     editStepMark();
-    ce.sel = curveEditInsert(obj, on.span, on.local, on.w);
-    curveEditChanged();
+    ce.sel = curveEditInsert(obj, aimSpan.span, aimSpan.local, aimSpan.w);
+    curveEditChanged(true);
     refreshUI();
     return;
   }
-  // OFF THE LINE: carry on from the end, the way drawing does.
-  /* Through the END of the curve, for the same reason a drag is through the
-     point it holds: carrying a curve on should carry it on from where it
-     stopped, not from a plane through the world origin. */
-  obj.mesh.updateMatrixWorld();
-  const tail = (obj.mesh.userData.kubikCurve.pts || []).slice(-1)[0];
-  const r = curveResolve(ev, tail
-    ? new THREE.Vector3(tail[0], tail[1], tail[2]).applyMatrix4(obj.mesh.matrixWorld)
-    : null);
-  if (!r) { toast('That plane is edge on - turn the view, or pick another'); return; }
+  // OFF THE LINE: carry on from an end - the one the press picked out.
+  if (!aimEnd) { toast('That plane is edge on - turn the view, or pick another'); return; }
   editStepMark();
-  ce.sel = curveEditAppend(obj, obj.mesh.worldToLocal(r.p.clone()));
-  curveEditChanged();
+  obj.mesh.updateMatrixWorld();
+  ce.sel = curveEditAppend(obj, obj.mesh.worldToLocal(aimEnd.world.clone()), aimEnd.head);
+  curveEditChanged(true);
   refreshUI();
+}
+
+/* THE ONE PLACE A CURVE GESTURE IS DROPPED (v2.22b, found in review). Every
+   other drag in this file has a line in the cancel handler and this one had
+   none - and a press that CLAIMS a point is exactly the press that switches
+   orbit off, so OrbitControls takes no capture, a release over the top bar
+   never reaches the canvas listener, and afterwards the bare cursor went on
+   moving that point with the camera dead. Word for word the failure the pivot,
+   the vertex and the radius drag each record.
+
+   The point keeps where the drag reached, which is what a lift would have
+   done. The AIM goes, because a gesture that ended somewhere this app never
+   saw is not a tap and must not place anything. */
+function endCurveGesture() {
+  const ce = App.curveEdit;
+  if (ce) {
+    ce.pid = null; ce.drag = null; ce.moved = false; ce.togg = false;
+    ce.markedDrag = false; ce.tapSpan = null; ce.tapEnd = null;
+  }
+  const cd = App.curveDraw;
+  if (cd) { cd.pid = null; cd.live = null; cd.moved = false; refreshCurvePreview(); }
+  if (ce || cd) orbit.enabled = true;
 }
 
 function cancelCurveDraw(quiet) {
@@ -20687,23 +20876,42 @@ function applyCurveDraw() {
    the knife's reason: on a phone that is the difference between a point where
    you meant it and a point a thumb-width away. */
 function curvePointerDown(ev) {
-  App.curveDraw.pid = ev.pointerId;
-  App.curveDraw.live = curveResolve(ev);
+  const cd = App.curveDraw;
+  cd.pid = ev.pointerId;
+  cd.x0 = ev.clientX; cd.y0 = ev.clientY; cd.moved = false;
+  cd.live = curveResolve(ev);
   refreshCurvePreview();
 }
 
+/* PAST THE THRESHOLD THIS WAS NEVER A TAP (v2.22). The camera has been
+   orbiting under this finger since the press - it was never switched off -
+   so all that is left to do is let go of the point being aimed, and remember
+   that the release must not commit one. Under the threshold nothing changes:
+   press to aim, slide to place, lift to commit, exactly as before. */
 function curvePointerMove(ev) {
-  if (App.curveDraw.pid !== ev.pointerId) return;
+  const cd = App.curveDraw;
+  if (cd.pid !== ev.pointerId) return;
+  if (!cd.moved &&
+      Math.hypot(ev.clientX - cd.x0, ev.clientY - cd.y0) > tapDriftPx(ev)) {
+    cd.moved = true;
+    cd.live = null;
+  }
+  if (cd.moved) { refreshCurvePreview(); return; }
   const r = curveResolve(ev);
-  if (r) App.curveDraw.live = r;
+  if (r) cd.live = r;
   refreshCurvePreview();
 }
 
 function curvePointerUp() {
   const live = App.curveDraw.live;
   const plane = App.curveDraw.plane;
+  const turned = App.curveDraw.moved;
   App.curveDraw.live = null;
   App.curveDraw.pid = null;
+  App.curveDraw.moved = false;
+  // That gesture was the camera. It places nothing, and it must not say the
+  // plane is edge on either - it was never asked for a point.
+  if (turned) { refreshCurvePreview(); refreshCurveBar(); return; }
   if (live) App.curveDraw.pts.push(live.p);
   /* THE ONLY WAY A TAP CATCHES NOTHING is a work plane seen edge on, where
      the ray runs along it and the intersection is meaningless. Say which
@@ -22774,7 +22982,7 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     closeToolRing(false);
     // The camera is taking over, so the half-placed point is not a point.
     if (App.knife) { App.knife.live = null; App.knife.pid = null; refreshKnifePreview(); }
-    if (App.curveDraw) { App.curveDraw.live = null; App.curveDraw.pid = null; refreshCurvePreview(); }
+    if (App.curveDraw) { App.curveDraw.live = null; App.curveDraw.pid = null; App.curveDraw.moved = false; refreshCurvePreview(); }
     if (App.curveEdit) { App.curveEdit.pid = null; App.curveEdit.drag = null; App.curveEdit.moved = false; }
     directCandidate = null;
     endAmountDrag();   // a2.102: a second finger is the camera, not the amount
@@ -22799,15 +23007,36 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   /* The knife owns every single-finger gesture while it is open: press to
      aim, slide to place, lift to commit. Two fingers still reach the camera,
      because the bail-out above runs first. */
-  // A curve draw owns the single finger exactly as the knife does, and for
-  // exactly as long - the two-finger bail above still reaches the camera.
-  if (App.curveDraw) { orbit.enabled = false; curvePointerDown(ev); return; }
-  if (App.knife) { orbit.enabled = false; knifePointerDown(ev); return; }
-  /* Editing points owns the single finger the same way, and for the same
-     length. Two fingers still reach the camera from the bail-out above -
-     which matters more here than for a draw, because placing points on a
-     shape you cannot turn is placing them blind. */
-  if (App.curveEdit) { orbit.enabled = false; curveEditPointerDown(ev); return; }
+  /* THE CAMERA COMES FIRST NOW (v2.22). These three used to take EVERY press
+     the moment their bar opened - any button, anywhere on screen - so inside
+     a curve or a tube the orbit, the pan and the dolly were all gone, which
+     is what "the controls act weird" turned out to mean. Two fingers always
+     reached the camera, from the bail-out above, but one finger and a mouse
+     never did. A tool may now claim only a press it has something to DO with.
+
+     A DRAW still takes the press, because placing a point IS the press - but
+     it no longer switches the camera off, so a press that travels turns into
+     an orbit and drops the point it was aiming (see curvePointerMove). */
+  if (App.curveDraw) {
+    if (!cameraButton(ev)) curvePointerDown(ev);
+    return;
+  }
+  if (App.knife) {
+    if (cameraButton(ev)) return;
+    orbit.enabled = false; knifePointerDown(ev); return;
+  }
+  /* POINT EDITING claims only a press that took hold of a ring or a point.
+     Everything else it does - insert on the line, extend off it - is decided
+     on the RELEASE by a finger that did not travel, so the camera can have
+     the gesture in the meantime and still hand back a tap at the end of it. */
+  if (App.curveEdit) {
+    if (!cameraButton(ev) && curveEditPointerDown(ev)) {
+      orbit.enabled = false;
+      pointerDown = null;
+      directCandidate = null;
+    }
+    return;
+  }
 
   /* Placing the pivot owns every single-finger press while its bar is open -
      anywhere on screen, not only on the marker. Aiming at a 17px dot with a
@@ -23008,7 +23237,11 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
   if (App.curveEdit) {
     // Only the finger that started it, and only if it is the last one down -
     // the draw tool's rule below, for the reason recorded there.
-    const soloE = App.curveEdit.pid === ev.pointerId && activePointers.size === 1;
+    /* A mouse uses ONE pointerId for every button, so a right click while
+       the left is held looks exactly like the left one lifting - and used to
+       commit the press that was still down (v2.22b). */
+    const soloE = !cameraButton(ev) &&
+                  App.curveEdit.pid === ev.pointerId && activePointers.size === 1;
     trackPointerUp(ev);
     if (soloE) curveEditPointerUp(ev);
     else { App.curveEdit.pid = null; App.curveEdit.drag = null; App.curveEdit.moved = false; }
@@ -23021,7 +23254,8 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
     // Same rule as the knife below: only the finger that started it commits,
     // and only if it is the last one down. Read BEFORE trackPointerUp, which
     // is what removes this pointer from the tracker.
-    const soloC = App.curveDraw.pid === ev.pointerId && activePointers.size === 1;
+    const soloC = !cameraButton(ev) &&
+                  App.curveDraw.pid === ev.pointerId && activePointers.size === 1;
     trackPointerUp(ev);
     if (soloC) curvePointerUp();
     else { App.curveDraw.live = null; App.curveDraw.pid = null; refreshCurvePreview(); }
@@ -29961,17 +30195,99 @@ function refreshOpSetupMesh() {
   refreshGizmoAttachment();
 }
 
+/* ---------------- The slider's subject (v2.22) ----------------
+
+   A tube has ONE radius and a weight on every control point, and until now
+   the bar could only reach the first of those: dragging a ring was the only
+   way to say "this point, thinner", and a ring is a small thing to aim at.
+
+   So the SELECTION decides what the slider is for. Nothing selected and it is
+   the tube's radius, as it always was. Tap a point and the same slider is
+   that point's own thickness - the same units, over the whole range the
+   weight can express. Tap it again and it is the tube's again. One control,
+   two subjects, and the LABEL says which: a slider that silently changed what
+   it meant would be worse than the ring it replaces. */
+function opSliderPoint() {
+  const s = App.opSetup, spec = opSetupSpec();
+  if (!s || !spec || !spec.slider || !spec.perPoint) return -1;
+  const ce = App.curveEdit;
+  if (!ce || !ce.hosted || ce.objId !== s.curveId || ce.sel < 0) return -1;
+  const c = findObject(s.curveId);
+  if (!c || !hasCurveData(c)) return -1;
+  // The points can be deleted out from under a selection, so this asks.
+  return ce.sel < (c.mesh.userData.kubikCurve.pts || []).length ? ce.sel : -1;
+}
+
+/* THE READOUT ALONE, without rebuilding the bar. A ring drag writes exactly
+   the number the slider is aimed at, so the two have to move together - and a
+   full showOpSetupBar() on every frame of a drag would rebuild the chips
+   under the finger that is dragging (found in review). */
+function syncOpSlider() {
+  const s = App.opSetup, spec = opSetupSpec();
+  if (!s || !spec || !spec.slider) return;
+  const sl = document.getElementById('opSlider');
+  const val = document.getElementById('opValue');
+  if (!sl || sl.style.display === 'none') return;
+  const rng = opSliderRange(), now = opSliderValue();
+  sl.min = rng.lo; sl.max = rng.hi; sl.step = rng.step; sl.value = now;
+  if (document.activeElement !== val) {
+    val.value = Number(now.toFixed(spec.slider.decimals));
+  }
+}
+
+/* The travel, in whatever the slider already shows. On a point the two ends
+   are exactly the two ends of what the weight can be, so the slider cannot
+   be pushed somewhere the shape will not follow - the silent no-op this file
+   keeps naming as its worst failure. */
+function opSliderRange() {
+  const s = App.opSetup, spec = opSetupSpec();
+  if (!s || !spec || !spec.slider) return null;
+  const sl = spec.slider;
+  if (opSliderPoint() >= 0) {
+    const base = Math.max(1e-4, s.p[sl.key]);
+    return { lo: base * CURVE_R_MIN, hi: base * CURVE_R_MAX,
+             step: Math.max(1e-4, base * CURVE_R_MIN * 0.25) };
+  }
+  return { lo: sl.min(s.p, s), hi: sl.max(s.p, s), step: sl.step(s.p, s) };
+}
+
+// What it is showing: the tube's radius, or the selected point's actual
+// thickness - the base times its weight, which is what that measures.
+function opSliderValue() {
+  const s = App.opSetup, spec = opSetupSpec();
+  if (!s || !spec || !spec.slider) return 0;
+  const i = opSliderPoint();
+  if (i < 0) return s.p[spec.slider.key];
+  const c = findObject(s.curveId);
+  const w = normaliseCurveRadii(c.mesh.userData.kubikCurve);
+  return s.p[spec.slider.key] * (w[i] || 1);
+}
+
 function setOpSetupAmount(v) {
   const s = App.opSetup, spec = opSetupSpec();
   if (!s || !spec || !spec.slider || !Number.isFinite(v)) return;
-  const sl = spec.slider;
-  const lo = sl.min(s.p, s), hi = sl.max(s.p, s);
-  s.p[sl.key] = Math.max(lo, Math.min(hi, v));
-  const shown = Number(s.p[sl.key].toFixed(sl.decimals));
-  document.getElementById('opValue').value = shown;
-  document.getElementById('opSlider').value = s.p[sl.key];
+  const sl = spec.slider, rng = opSliderRange();
+  const val = Math.max(rng.lo, Math.min(rng.hi, v));
+  const i = opSliderPoint();
+  if (i >= 0) {
+    /* Written to the CURVE, not to the bar. The weights belong to the shape
+       the way its points do - they save, load and undo with it - and the ✕
+       still answers for them through the snapshot the spec already takes. */
+    const c = findObject(s.curveId);
+    const cv = c.mesh.userData.kubikCurve;
+    const w = normaliseCurveRadii(cv);
+    w[i] = Math.max(CURVE_R_MIN,
+                    Math.min(CURVE_R_MAX, val / Math.max(1e-4, s.p[sl.key])));
+    cv.radii = w;
+  } else {
+    s.p[sl.key] = val;
+  }
+  document.getElementById('opValue').value = Number(val.toFixed(sl.decimals));
+  document.getElementById('opSlider').value = val;
   syncOpSetupStepper();
   refreshOpSetupMesh();
+  // The ring at that point is the same number drawn in the scene.
+  refreshTubeRings();
 }
 
 function stepOpSetup(delta) {
@@ -30055,12 +30371,13 @@ function showOpSetupBar() {
   const sl = document.getElementById('opSlider');
   const val = document.getElementById('opValue');
   if (spec.slider) {
+    const rng = opSliderRange(), now = opSliderValue();
     sl.style.display = ''; val.style.display = '';
-    sl.min = spec.slider.min(s.p, s);
-    sl.max = spec.slider.max(s.p, s);
-    sl.step = spec.slider.step(s.p, s);
-    sl.value = s.p[spec.slider.key];
-    val.value = Number(s.p[spec.slider.key].toFixed(spec.slider.decimals));
+    sl.min = rng.lo;
+    sl.max = rng.hi;
+    sl.step = rng.step;
+    sl.value = now;
+    val.value = Number(now.toFixed(spec.slider.decimals));
   } else {
     sl.style.display = 'none'; val.style.display = 'none';
   }
@@ -30093,8 +30410,11 @@ function showOpSetupBar() {
   } else {
     wrap.style.display = 'none';
   }
+  const spi = opSliderPoint();
   document.getElementById('opLabel').textContent =
-    spec.label + (spec.slider ? ' · ' + (spec.slider.key === 'sweep' ? 'degrees' : 'radius') : '');
+    spec.label + (!spec.slider ? ''
+      : spi >= 0 ? ' · point ' + (spi + 1) + ' radius'
+      : ' · ' + (spec.slider.key === 'sweep' ? 'degrees' : 'radius'));
   document.getElementById('opOk').style.display = '';
   document.getElementById('opCancel').style.display = '';
   surfaceIn(opBarEl);
@@ -30242,19 +30562,34 @@ function finishOpSetup(keep) {
    has to be told the viewport size on every resize (see gizmoStrokes), and a
    handle that is one pixel wide on a phone is fine - it is aimed at with a
    34px radius, not with the eye. */
-const RING_SEGS = 24;
-const RING_GRAB_PX = 26;    // how near the ring counts as taking hold of it
-/* THE RING NEEDS ROOM INSIDE IT for the dot's own job (v2.20a). The two
+const RING_SEGS = 32;
+/* A BAND, NOT A LINE (v2.22). The ring is a one-pixel stroke and was being
+   aimed at like a button: 26px was too mean for a thumb, and the answer to
+   "I cannot catch it" is the answer this file gives everywhere else - the
+   GRAB radius is generous, because taking hold of something already yours
+   has nothing to arbitrate against. Same number the point dots use.
+
+   THE RING NEEDS ROOM INSIDE IT for the dot's own job (v2.20a). The two
    handles sit at the same place - one at the middle, one at the edge - so
-   below this the edge is not offered at all and the whole point moves; the
-   slider still sets the thickness, and zooming in brings the ring back. The
-   first draft put this at 30 and claimed in a comment that the dot fell back
-   to the radius, which it does not: it moves the point. */
-const RING_MIN_PX = 22;
-const RING_INNER_PX = 13;   // ...and this much of the middle is always the dot
+   the dead zone in the middle is PROPORTIONAL now: half the ring's own
+   radius rather than a flat 13px, which on a small ring left three pixels of
+   band and nothing to aim at. Below RING_MIN_PX there is no room for both
+   and the whole press moves the point; the slider still sets thickness. */
+/* AND THE RING HAS TO LEAVE ROOM FOR THE OTHER TWO THINGS a press near a
+   control point can mean (v2.22a, found in review): moving that point, and
+   turning the camera. So the grab band is bounded by the ring's OWN size
+   rather than being a flat 34px in every direction, and a ring is offered
+   only once there is a thumb-sized dot left inside it. Below that the point
+   moves and the SLIDER sets the thickness - which since v2.22 is a better
+   handle than a hairline circle was, so the floor costs nothing. */
+const RING_GRAB_PX = 34;
+const RING_MIN_PX = 30;
+const RING_INNER_PX = 17;
 
 const tubeRingMat = new THREE.LineBasicMaterial({
-  color: 0xffb454, transparent: true, opacity: 0.75,
+  // Solid, and over the top of the tube: a handle you are hunting for is not
+  // helped by being half transparent (v2.22).
+  color: 0xffb454, transparent: true, opacity: 0.95,
   depthTest: false, depthWrite: false, fog: false
 });
 const tubeRings = new THREE.LineSegments(new THREE.BufferGeometry(), tubeRingMat);
@@ -30344,9 +30679,17 @@ function pickTubeRingPx(ev) {
       if (c0) far = Math.max(far, Math.hypot(sp.x - c0.x, sp.y - c0.y));
     }
     if (far < RING_MIN_PX) continue;
-    // Inside this, the press is on the dot and means "move this point".
-    if (c0 && Math.hypot(c0.x - px.x, c0.y - px.y) < RING_INNER_PX) continue;
-    if (near <= RING_GRAB_PX && (!best || near < best.d)) best = { i: i, d: near };
+    /* Inside this, the press is on the dot and means "move this point" -
+       never more than half the ring's own radius, so the two handles cannot
+       swallow each other (v2.22). */
+    const inner = Math.min(RING_INNER_PX, far * 0.5);
+    if (c0 && Math.hypot(c0.x - px.x, c0.y - px.y) < inner) continue;
+    /* ...and OUTSIDE this the press is the camera's. `near` is the distance
+       to the ring's own stroke, so a flat grab is a band of the same width
+       round a ring of any size - which on a small one reaches half way to
+       the next point (v2.22a). */
+    const grab = Math.min(RING_GRAB_PX, Math.max(14, far * 0.55));
+    if (near <= grab && (!best || near < best.d)) best = { i: i, d: near };
   }
   return best;
 }
@@ -30419,7 +30762,6 @@ function beginTubeRadiusDragOn(ev, i, sp, world) {
   const hit = { i: i, sp: sp, world: world };
   const c = findObject(s.curveId);
   if (!c || !hasCurveData(c)) return false;
-  opSetupMark();   // the whole drag is one step, taken from here
   const cv = c.mesh.userData.kubikCurve;
   normaliseCurveRadii(cv);
   const p = pointerPx(ev);
@@ -30430,7 +30772,7 @@ function beginTubeRadiusDragOn(ev, i, sp, world) {
   tubeRadiusDrag = {
     curveId: c.id, i: hit.i, sx: hit.sp.x, sy: hit.sp.y, dx: dx, dy: dy,
     t0: (p.x - hit.sp.x) * dx + (p.y - hit.sp.y) * dy,
-    mult0: cv.radii[hit.i],
+    mult0: cv.radii[hit.i], marked: false,
     perPx: worldPerPixel(hit.world) / Math.max(1e-4, s.p.radius, s.span * 0.02)
   };
   orbit.enabled = false;
@@ -30448,9 +30790,15 @@ function updateTubeRadiusDrag(ev) {
   const p = pointerPx(ev);
   const t = (p.x - d.sx) * d.dx + (p.y - d.sy) * d.dy;
   const m = d.mult0 + (t - d.t0) * d.perPx;
+  /* THE STEP IS THE DRAG, not the press that might have become one (v2.22b).
+     A ring press is a SELECTION gesture too since v2.22, and marking on the
+     press filled the stack with taps. Nothing is written above this line, so
+     the mark still captures the state before the drag. */
+  if (!d.marked) { d.marked = true; opSetupMark(); }
   cv.radii[d.i] = Math.max(CURVE_R_MIN, Math.min(CURVE_R_MAX, m));
   refreshOpSetupMesh();
   refreshTubeRings();
+  syncOpSlider();     // the ring and the slider are the same number (v2.22a)
 }
 
 function endTubeRadiusDrag() {
@@ -34339,6 +34687,7 @@ if (typeof ResizeObserver === 'function') {
          so one stray swipe pinned it to a clamp. Word for word the failure
          the two comments above record for the pivot and the vertex drag. */
       if (tubeRadiusDrag) endTubeRadiusDrag();
+      endCurveGesture();      // v2.22b: and the point drag, which had no line
       if (boxDrag) {
         boxDrag = null;
         selectBoxEl.style.display = 'none';
@@ -34372,7 +34721,12 @@ if (typeof ResizeObserver === 'function') {
    still costs one comparison. */
 window.addEventListener('pointerup', (ev) => {
   if (ev.target === renderer.domElement) return;   // the canvas listener has it
-  if (!directDrag && !extrudeDrag && !softSlide) return;
+  /* ...and a curve gesture, for the reason this backstop exists: a claimed
+     point press has orbit OFF, so no capture is taken and this is the only
+     release the app will ever hear about (v2.22b). */
+  const curveLive = (App.curveEdit && App.curveEdit.pid !== null) ||
+                    (App.curveDraw && App.curveDraw.pid !== null);
+  if (!directDrag && !extrudeDrag && !softSlide && !curveLive) return;
   /* ONLY for a pointer this app is tracking. A second finger tapping Undo
      while the first is still dragging lifts on the button, bubbles to here,
      and would have committed the drag mid-gesture. A pointer that pressed on
@@ -34395,6 +34749,7 @@ window.addEventListener('pointerup', (ev) => {
   // switched off while one runs, so no capture was taken and this release may
   // be the only one this app ever hears about.
   if (softSlide) endSoftSlide();
+  if (curveLive) endCurveGesture();
   directCandidate = null;
   maybeResumeOrbit();
 });
@@ -35040,6 +35395,21 @@ if (PICK_DEBUG) {
     startCurveEdit, finishCurveEdit, abandonCurveEdit, curveEditDelete,
     curveEditPointerDown, curveEditPointerMove, curveEditPointerUp,
     pickCurvePointOn, pickCurveSpanOn, curveEditObj,
+    curveEditInsert, curveEditAppend, curveEditSelChanged,
+    // v2.22: the camera keeps its gestures, and the slider follows the
+    // selected point.
+    cameraButton, cameraPlanePoint,
+    curvePointerDown, curvePointerMove, curvePointerUp,
+    opSliderPoint, opSliderRange, opSliderValue, syncOpSlider,
+    showOpSetupBar, curveEditEndAim,
+    RING_GRAB_PX, RING_MIN_PX, RING_INNER_PX,
+    get orbitEnabled() { return orbit.enabled; },
+    set orbitEnabled(v) { orbit.enabled = v; },
+    /* The canvas itself, so a probe can dispatch a REAL press at it: the
+       whole of v2.22 is about which branch of that listener runs, and a probe
+       calling the handlers underneath it would prove nothing about that. */
+    get canvasEl() { return renderer.domElement; },
+    get camera() { return camera; },
     get curveEdit() { return App.curveEdit; },
     curveWorkPlane, curvePlanePoint, toggleCurveType, toggleCurveClosed,
     cycleCurveRes, curveAddPoints, HUB_TOOLS_CURVE, CURVE_RES_STEPS,

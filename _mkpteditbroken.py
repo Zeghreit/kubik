@@ -23,8 +23,8 @@ sub("""      if (sel.length === 1) {
     """      if (false) { }                          // BROKEN: the door is shut again""",
     '1. Component mode on a curve refuses again')
 
-sub("""  const on = pickCurveSpanOn(obj, ev, CURVE_LINE_PX);""",
-    """  const on = null;                          // BROKEN: the line is not a target""",
+sub("""    ce.tapSpan = pickCurveSpanOn(obj, ev, CURVE_LINE_PX);""",
+    """    ce.tapSpan = null;                        // BROKEN: the line is not a target""",
     '2. tapping the line no longer inserts')
 
 sub("""  const at = Math.max(1, Math.min(cv.pts.length, span + 1));""",
@@ -63,9 +63,9 @@ sub("""    if (curveEditStepBack()) return;
     '8. Undo takes the step under an open editor as well')
 
 # --- and the nine the review found ------------------------------------------
-sub("""  const r = curveResolve(ev, ce.drag.from);""",
-    """  const r = curveResolve(ev);              // BROKEN: the plane is the pivot's""",
-    '9. a drag teleports the point onto the world plane')
+sub("""  const p3 = cameraPlanePoint(ev, ce.drag.from);""",
+    """  const p3 = cameraPlanePoint(ev, new THREE.Vector3());  // BROKEN: through the origin""",
+    '9. a drag teleports the point onto a plane through the world origin')
 
 sub("""  if (App.curveEdit) { finishCurveEdit(true); return; }
   if (App.mode === 'object') { setSoft(false); setMode(App.lastComponentMode); }""",
@@ -98,8 +98,8 @@ sub("""  ce.drag = null;
     """  ce.sel = Math.min(ce.sel, cv.pts.length - 1);   // BROKEN: the drag re-aims""",
     '14. deleting a held point re-aims the drag')
 
-sub("""  if (hadPoint || pickCurvePointOn(obj, ev, GRAB_RADIUS_PX)) { refreshUI(); return; }""",
-    """  if (pickCurvePointOn(obj, ev, GRAB_RADIUS_PX)) { refreshUI(); return; }""",
+sub("""  if (hadPoint) {""",
+    """  if (false) {                              // BROKEN: the press is forgotten""",
     '15. a grab that drifts adds a point')
 
 sub("""  if ((App.geoSetup || App.opSetup) && !App.curveEdit) {
@@ -113,8 +113,10 @@ sub("""    if (curveEditStepBack()) return;""",
     '17. Undo throws the whole editing session away again')
 
 sub("""  editStepMark();
-  ce.sel = curveEditAppend(obj, obj.mesh.worldToLocal(r.p.clone()));""",
-    """  ce.sel = curveEditAppend(obj, obj.mesh.worldToLocal(r.p.clone()));""",
+  obj.mesh.updateMatrixWorld();
+  ce.sel = curveEditAppend(obj,""",
+    """  obj.mesh.updateMatrixWorld();             // BROKEN: no step for an added point
+  ce.sel = curveEditAppend(obj,""",
     '18. an added point cannot be stepped back')
 
 io.open(ROOT + r'\_bak_pteditbroken.html', 'w', encoding='utf-8', newline='').write(src)

@@ -16,7 +16,7 @@ work. What is gone is the implied ceiling.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.21**
+- Version at time of writing: **2.22**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -46,6 +46,130 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## The camera keeps its gestures (v2.22)
+
+Zeghreit's words: *"controls acting weird — let zoom rotate and translate of
+camera work as usual in curve, tube and edit modes"*.
+
+Three tools — the curve draw, the knife and the point editor — used to take
+**every** press the moment their bar opened, whatever button it arrived on and
+wherever it landed. Two fingers still reached the camera, from the bail-out
+that has always been there, but one finger never did, and neither did the
+right-drag pan or the middle-drag dolly. Placing points on a shape you cannot
+turn is placing them blind.
+
+**A tool may now claim only a press it has something to DO with.**
+
+- `cameraButton(ev)` is true for a non-primary MOUSE button. No tool ever
+  claims one, so pan and dolly work inside every bar. Touch and pen have one
+  button and go on meaning what they meant; an event with no button at all —
+  every synthetic one in the probes — reads as the primary one.
+- `curveEditPointerDown` returns TRUE only when it took hold of a ring or a
+  control point, and the canvas switches orbit off only then. A press on the
+  line, or on empty space, leaves the camera live.
+- The draw tool no longer switches orbit off at all. A press that travels
+  past `tapDriftPx(ev)` drops the point it was aiming and the release places
+  nothing.
+
+### ...so the PRESS is what a tap was aimed at
+
+OrbitControls has no dead zone: it turns from the first pixel. So by the time
+a still finger lifts, the view has rolled the few pixels it drifted, and a
+release judged against the moved camera can miss the line the press was
+plainly on — an insert becomes an extend, somewhere else entirely.
+
+`curveEditPointerDown` therefore stores what the press was aimed at —
+`ce.tapSpan` from the line, or `ce.tapEnd` from `curveEditEndAim` — and the
+release consumes it. The release-time `pickCurvePointOn` is **gone**:
+`hadPoint`, taken on the press, is the whole test. The release still decides
+WHETHER it was a tap; it no longer decides what it was aimed at.
+
+The aim is stamped with the object id and the point count, because the bar is
+DOM: a second finger on **Delete point** or **Undo** is never seen by the
+pointer tracker, so the two-finger bail-out does not fire and the spans get
+renumbered under a finger that is still down. A stale aim places nothing.
+
+`tapDriftPx(ev)` is 26px for a finger, 15 for a pointing device. A thumb rolls
+as it presses and again as it lifts; the mouse number threw away a real
+fraction of taps on a phone, silently.
+
+## A dragged point moves in the plane facing you (v2.22)
+
+`curveResolve` exists to place a NEW point, which is why its first rung
+raycasts the scene and snaps to whatever is under the cursor — and that is
+exactly wrong for a point that already exists. Inside a tube, the thing under
+the cursor IS the tube, so every drag pulled the point onto its own skin and
+it wound towards the camera.
+
+`cameraPlanePoint(ev, through)` gives a drag no snapping and no work plane: it
+moves in the plane facing the camera, through the point it started on. The
+X / Y / Z / Free chips still decide where NEW points land, which is where the
+question of a plane actually belongs.
+
+## The slider follows the selected point (v2.22)
+
+Zeghreit's words: *"let radius around point changing by slider — if I tap on
+point and select it, tube radius slider turns to point radius slider. Tap on
+this point again and it will be deselected."*
+
+A tube has one radius and a weight on every control point, and until v2.22 the
+bar could only reach the first of those: dragging a ring was the only way to
+say "this point, thinner", and a ring is a small thing to aim at.
+
+**The selection decides what the slider is for.** Nothing selected and it is
+the tube's radius, as before. Tap a point and the same slider is that point's
+own thickness — the same units, over exactly the range the weight can express
+(`base × [CURVE_R_MIN, CURVE_R_MAX]`), so it cannot be pushed somewhere the
+shape will not follow. Tap it again and it is the tube's again. The **label**
+says which — "Tube · point 3 radius" — because a slider that silently changed
+what it meant would be worse than the ring it replaces.
+
+`opSliderPoint()` / `opSliderRange()` / `opSliderValue()` answer the question
+in one place; `setOpSetupAmount` writes to the CURVE, not to the bar, so the
+weights save, load and undo with the shape and ✕ still puts them back through
+the snapshot the tube spec already takes.
+
+Every path that MOVES the selection redraws the bar — `curveEditChanged(true)`
+for an insert, an append and a delete, `curveEditSelChanged()` for a pure
+selection change, `syncOpSlider()` for a ring drag (which writes the same
+number the slider is showing, without rebuilding the chips under the finger),
+and `opSetupStepBack` clamps the guest's selection back into range. A readout
+that lies about what ✓ will commit is the failure this file names most often.
+
+### Growing a curve from the end you chose
+
+Tap the first point and a tap in empty space carries the curve on **before**
+it — the only way to extend a curve at the end you did not draw last. Select
+anything else, or nothing, and it carries on from the last point the way
+drawing does. `curveEditAppend(obj, local, head)` splices pts and radii
+together at 0 or at the end.
+
+### The rings, sized to leave room for the other two things
+
+`RING_GRAB_PX` went 26 → 34, because "I cannot catch it" gets the answer this
+file gives everywhere else: a GRAB is generous. But the band is bounded by the
+ring's OWN size (`min(34, max(14, far × 0.55))`) and a ring is offered only
+from 30px (`RING_MIN_PX`), because a flat 34px band round a small ring
+swallowed every press within 52px of a control point — which is the orbit
+v2.22 set out to give back. Below that floor the press moves the point and the
+SLIDER sets the thickness, which is now a better handle than a hairline circle
+ever was.
+
+### A step is a change, not a press
+
+Tapping points is how the slider gets aimed now, so a selection must not fill
+the forty-deep stack. The mark is taken when a drag becomes real — after the
+guards that can abandon it — in `curveEditPointerMove` (`ce.markedDrag`) and
+in `updateTubeRadiusDrag` (`d.marked`), never on the press.
+
+### Probe
+
+`_v222chk.js` / `.py` — 56 checks in 9 sections, two of them driving REAL
+`PointerEvent`s at the canvas because the whole change is about which branch
+of that listener runs. `_mkv222broken.py` builds the broken copy (16 breaks,
+27 failures); `_mkv222broken.py late` builds a second one for the check the
+first masks.
 
 ## Undo works INSIDE a bar (v2.21)
 
