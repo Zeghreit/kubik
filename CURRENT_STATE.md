@@ -15,8 +15,8 @@ modes to remember, the viewport as the hero, nothing that breaks the run of
 work. What is gone is the implied ceiling.
 
 - Live: https://zeghreit.github.io/kubik/
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~31,900 lines)
-- Version at time of writing: **2.13**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~32,800 lines)
+- Version at time of writing: **2.14**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -46,6 +46,160 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Curves, the metacomponent (v2.14)
+
+The second of the two things named at v2.12, and the bigger one: not an op but
+a new kind of thing the scene holds. Lathe and Tube are what it exists for and
+they follow; this version is the thing itself - draw it, edit it, select it,
+save it.
+
+### A CURVE IS AN OBJECT, and its mesh is a Line2
+
+This is the decision everything else follows from, and the obvious
+alternative - a second array, `App.curves`, beside `App.objects` - was checked
+against the code and rejected before a line was written.
+
+`App.objects` is read at 67 sites and about twenty of them touch `o.mesh` with
+no guard: `pickObjectAt`, `disposeObject`, `duplicateObject`,
+`centreSelectionToOrigin`, `frameBox`, region select, the isolation counts,
+the outliner swatch - and `flattenEntries`, which **rebuilds `App.objects`
+from the outliner's drag order**, so a parallel array is either invisible to
+reordering or silently reordered out of existence. Worse, `pushHistory`'s
+`modelSig` hashes `{objects, groups, environment, materialLib}`: **a curve
+outside `objects` would record no undo step at all**, which is verbatim the
+a2.93 groups bug this file already carries a scar from.
+
+So a curve is an ordinary `{ id, name, mesh }` and its `mesh` is a `Line2`.
+That is not a trick to dodge the type system. `Line2` extends `LineSegments2`
+extends `THREE.Mesh`: it has geometry, material, userData, a transform, a real
+`matrixWorld`, and **its own `raycast()`**. Picking, framing, box select, hide,
+isolate, group, reorder, duplicate, undo and the outliner all work with no new
+branch, and `_curvechk` asserts each of those rather than assuming it.
+
+The data is on `mesh.userData.kubikCurve`:
+
+    { pts: [[x,y,z], …], closed: bool, type: 'bezier'|'poly', res: int }
+
+`isCurve(obj)` is the one predicate everything asks.
+
+**Branches that ARE needed, and this is the whole list**: `disposeObject` (the
+material has to leave `gizmoStrokes`), `cloneObjectInto`, `serializeDoc` /
+`restoreDoc`, and the outliner swatch, which wears an OUTLINE for a curve
+rather than a fill - a solid blue tile beside a solid blue cube says the same
+thing about two things that are not the same kind of thing.
+
+### Defence in depth, because the failure mode is silence
+
+A `Line2` handed to `toEditable` does not throw. It keeps its points in an
+INSTANCE buffer, so the lines that read `attributes.position` and `index` come
+back with plausible nonsense and the op carries on and builds a broken mesh.
+Four layers, outermost first:
+
+1. **The ring.** `currentHubTools` returns `HUB_TOOLS_CURVE` when the Object
+   selection is all curves, so the mesh tools are not reachable at all.
+2. **`refuseCurves(what)`** in every Object-mode op, for the MIXED selection -
+   a curve and a cube picked together - where the object ring is still right.
+   It names the op and the curve.
+3. **`ensureHelpers` and `applyShading` return early**, which covers every
+   component path and every shading path at one line each.
+4. **`toEditable` throws a named error.** Unreachable by design; the broken-copy
+   run proves the layers above it are what actually fire, because with
+   `refuseCurves` disabled six ops reach it and say so by name.
+
+### Drawing it: the knife's gesture, with a work plane under it
+
+The knife already solved everything hard about placing points by hand on a
+phone and has been in use for a year, so `startCurveDraw` is its shape: press
+to aim, slide to nudge, lift to commit; a live uncommitted point under the
+finger; Back pops, Cancel drops the lot, OK applies; it borrows the op bar; it
+takes `orbit` on every press and hands it back **in its own exit paths**,
+because a press that ends off-canvas never sees a pointerup and leaving that
+to the pointer handlers killed the camera for a whole session; and two-finger
+orbit mid-draw works because the multi-pointer bail runs first.
+
+**What is new is where a point lands when there is no surface under it.**
+Zeghreit's rule: snap to a model's component if close enough, else follow the
+selected mode - Axis sticks to the active work plane, Free is guided by the
+camera. So:
+
+1. a **VERTEX** of any visible mesh within `CURVE_SNAP_PX` (16) - the hit
+   triangle's own three corners are real vertices, so this rung needs no
+   topology lookup
+2. else that mesh's **SURFACE**, where the ray meets it
+3. else the **WORK PLANE**: `X`/`Y`/`Z` chips naming the plane by its NORMAL
+   (so Y is the ground plane already on screen), or `Free`, the plane facing
+   the camera. Both pass through the pivot when one is placed.
+
+Snapping is the rung ABOVE the plane, not a separate setting, which is what
+makes "trace this silhouette, then carry on into space" one gesture.
+
+**The plane is drawn** - a rectangle sized off the camera distance - because a
+mode you cannot see is a mode you have to remember. Not in Free, where the
+plane is the screen and an outline round it would be noise.
+
+**Edge snapping is deliberately absent.** The knife gets it from
+`pickEdgeOnActive`, which reads `App.activeObjectId`, and while drawing the
+active object is the curve or nothing. Doing it properly means asking each hit
+object for its own topology; it is the obvious next rung, not a gap.
+
+The only way a tap catches nothing is a work plane seen edge on, where the ray
+runs along it - and the toast says which plane and what to do about it, rather
+than "nothing under that tap", which would be a lie.
+
+### Bezier, with handles nobody has to touch
+
+`type` is `bezier` or `poly`. **Handles are DERIVED** - the Catmull-Rom tangent
+at each point written as the two cubic controls either side of it, the
+standard 1/6 form - so drawing stays taps and nothing else and you still get a
+real Bezier. `hIn`/`hOut` are reserved in the format from the start, unused,
+so dragging handles can be added later without changing a single saved file.
+**Manual handle dragging is NOT in this version**, deliberately: two draggable
+handles per point is its own editing mode, and the drawing had to feel right
+first.
+
+`res` is the segment count per span, and in a low-poly modeller **that is not
+a display setting** - it is exactly the segment count of the surface a Lathe
+or a Tube will build, which is why the tool says "8 segments per span" rather
+than naming a smoothness.
+
+### Where the tools are
+
+- **Making one**: `HUB_TOOLS_GEO` - the Add geo ring - grows a sixth item,
+  **Curve**, beside Cube / Cylinder / Sphere / Torus / Plane. It is the one
+  item there that does not call `startGeoSetup`: a primitive appears finished
+  and is then adjusted, a curve does not exist until its points are placed.
+- **Working on one**: `currentHubTools` gains one branch. A selection that is
+  **all** curves gets `HUB_TOOLS_CURVE`; a mixed one keeps the object ring.
+  This is "the selection follows the mode" (a2.59) asked of the selection's
+  TYPE, and it is what keeps Lathe and Tube out of an Object ring that has
+  been full at 0-7 since Array took seat 1.
+
+`HUB_TOOLS_CURVE`: Add points · Bezier/Poly · Close/Open · Segments · Delete ·
+(grouping) · **seat 6 held for Lathe** · Duplicate. Segments is a CYCLE
+through 2/4/8/16/32 rather than a slider: the shape redraws on the tap, so
+stepping through the five useful values shows the answer faster than a bar you
+have to open, aim at and dismiss, and it costs one seat instead of a whole op.
+
+### What the probe found
+
+`_curvechk.py` / `.js`, 47 assertions, verified against `_mkcurvebroken.py`'s
+copy which fails 12 of them. Two real bugs, both caught before shipping:
+
+- **A curve was only as tappable as it was wide.** `Line2` raycasts in screen
+  space and `Raycaster.params.Line2.threshold` defaults to **0**, so the only
+  thing that could be hit was the three drawn pixels. Everything else in this
+  app is picked with a radius - 28 for a component, 16 for a knife snap - and
+  a control you have to hit exactly is one this app does not ask anyone to
+  hit. It is 14 now, and safe to set globally because the only `Line2` in any
+  pick list is a curve.
+- **A one-point curve drew a dot.** The doubling that keeps a lone point's
+  bounding sphere finite (an empty instance buffer gives NaN, which poisons
+  `Box3.setFromObject`, framing and every raycast in the scene) takes the
+  position array to exactly six numbers - so a length test alone said "long
+  enough to draw" about the very case the doubling exists to hide. The two
+  conditions are separate now: six numbers makes it safe, two DISTINCT points
+  make it drawable.
 
 ## Booleans (v2.13)
 
@@ -10979,6 +11133,7 @@ optional target filename, so a `_bak_*.html` gives a before number:
 | `_fixchk.py` | v2.3b's four correctness fixes, each with the sequence that broke it |
 | `_matperf.py` | `toDataURL` calls per material-slider release, and `refreshUI` |
 | `_boolchk.py` | the booleans, all fifteen sections (v2.13) |
+| `_curvechk.py` | the curve entity, its guards and its ring (v2.14) |
 
 `_fixchk.py` is the one to copy the shape of: it prints `VERDICT=PASS/FAIL`
 and it is **verified against the broken copy** - run it against
@@ -11519,7 +11674,11 @@ Zeghreit's words: these are what "elevate the app to the next level".
 1. ~~**Booleans.** Union, difference, intersection.~~ **SHIPPED at v2.13** -
    see the section above, including the two defects that were watertight and
    wrong.
-2. **Curves, as a METACOMPONENT** - not one op but a new kind of thing the app
+2. **Curves, as a METACOMPONENT** - the ENTITY shipped at v2.14, see above.
+   Lathe and Tube are what remains, and seat 6 of the curve ring is held for
+   the first of them.
+
+   Originally: - not one op but a new kind of thing the app
    holds, with a whole set of operations built around it. Lathe is one of
    those. So is anything else that needs a path rather than a mesh.
 

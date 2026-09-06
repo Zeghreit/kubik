@@ -2362,7 +2362,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.13</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.14</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -3701,6 +3701,20 @@ orbit.addEventListener('change', () => {
 });
 
 const raycaster = new THREE.Raycaster();
+/* A CURVE HAS TO BE THUMB-SIZED TO TAP (v2.14, found by the probe).
+
+   Line2 raycasts in SCREEN space, and with the default threshold of 0 the
+   only thing that can be hit is the drawn line itself - three pixels of it.
+   Everything else in this app is picked with a radius: PICK_RADIUS_PX is 28,
+   the knife snaps at 16, and a control you have to hit exactly is a control
+   this app does not ask anyone to hit.
+
+   Global, and that is safe rather than merely convenient: the only Line2 in
+   any pick list is a curve. The selection overlay, the axis guide, the knife
+   line and the draft are LineSegments2/Line2 too, but none of them is in
+   App.objects, so none of them is ever raycast. */
+raycaster.params.Line2 = raycaster.params.Line2 || {};
+raycaster.params.Line2.threshold = 14;
 
 const App = {
   objects: [],          // {id, name, mesh}
@@ -6287,6 +6301,19 @@ function primParams(kind, p) {
 }
 
 function disposeObject(obj) {
+  /* A CURVE LEAVES gizmoStrokes ON THE WAY OUT (v2.14). Its LineMaterial
+     joined that array so a resize keeps the line's width honest, and anything
+     that joins it and never leaves is exactly the leak
+     disposeSelectionOverlay was written to record. Nothing else here applies:
+     there is no pool entry, no helper layer and no distance field on a curve. */
+  if (isCurve(obj)) {
+    const gi = gizmoStrokes.indexOf(obj.mesh);
+    if (gi >= 0) gizmoStrokes.splice(gi, 1);
+    scene.remove(obj.mesh);
+    obj.mesh.geometry.dispose();
+    obj.mesh.material.dispose();
+    return;
+  }
 
   scene.remove(obj.mesh);
   // Its own pooled instances go with it; the shared ones stay for everyone else.
@@ -7009,6 +7036,9 @@ function ufScratch(n) {
 }
 
 function applyShading(obj) {
+  // Shading is a property of faces. A curve has none, and every shade path in
+  // the app - flat, smooth, by angle, the wear pass - ends up here.
+  if (isCurve(obj)) return;
   PERF.shade++;
   const geo = obj.mesh.geometry;
   /* THE ATTRIBUTE, NOT A WHOLE SHADING PASS (a2.83). This was
@@ -7648,6 +7678,11 @@ function shadeSelection(smooth) {
 }
 
 function ensureHelpers(obj) {
+  /* A curve has no faces, so no topology, no vertex dots and no edge lines -
+     and computeTopology on a Line2's instance buffer would not throw, it would
+     return nonsense. This is the one function every component path calls
+     before it touches anything, which is why the guard lives here. */
+  if (isCurve(obj)) return;
   if (obj.mesh.userData.topo) return;
   const topo = computeTopology(obj.mesh.geometry);
   obj.mesh.userData.topo = topo;
@@ -7852,6 +7887,17 @@ function vecAt(ed, ai) {
 }
 
 function toEditable(mesh) {
+  /* THE BACKSTOP, AND IT THROWS ON PURPOSE (v2.14). Nothing should reach here
+     with a curve: the ring hides the mesh tools when the selection is all
+     curves, refuseCurves catches a mixed selection, and ensureHelpers and
+     applyShading return early. But this is the function every mesh op funnels
+     through, and a Line2 keeps its points in an INSTANCE buffer - so the lines
+     below would not fail, they would hand back plausible nonsense and the op
+     would carry on and produce a broken mesh. A silent wrong answer is the
+     failure mode this file fears most; a named error is the cheap opposite. */
+  if (mesh && mesh.userData && mesh.userData.kubikCurve) {
+    throw new Error('toEditable: that object is a curve, not a mesh');
+  }
   const geo = mesh.geometry;
   const positions = Array.from(geo.attributes.position.array);
   const index = geo.index.array;
@@ -9323,6 +9369,16 @@ function fillHolesOp(obj, onlyEdges) {
 }
 
 function cloneObjectInto(obj, name) {
+  // A curve copies its POINTS, not its geometry - the drawable is derived.
+  if (isCurve(obj)) {
+    const cv = obj.mesh.userData.kubikCurve;
+    const dup = createCurveObject(name, obj.mesh.position.clone(),
+      cv.pts.map(a => new THREE.Vector3(a[0], a[1], a[2])),
+      { closed: cv.closed, type: cv.type, res: cv.res });
+    dup.mesh.quaternion.copy(obj.mesh.quaternion);
+    dup.mesh.scale.copy(obj.mesh.scale);
+    return dup;
+  }
   const newGeo = obj.mesh.geometry.clone();
   /* BufferGeometry.copy ends with `this.userData = source.userData` - by
      REFERENCE - so a duplicate and its original shared one userData for ever,
@@ -13404,6 +13460,15 @@ document.getElementById('opToggle').addEventListener('click', () => {
      whose entire job is to say which of two things is about to happen. A
      silent no-op is the worst failure mode this file records; this is that
      failure with a label on it. */
+  /* Back, while a curve is being drawn. The bar has one independent button
+     slot and Back is what a drawing hand reaches for most; Bezier/Poly and
+     the resolution are properties of the finished curve and live on its ring. */
+  if (App.curveDraw && !App.pendingOp) {
+    if (App.curveDraw.pts.length) App.curveDraw.pts.pop();
+    refreshCurvePreview();
+    refreshCurveBar();
+    return;
+  }
   if (booleanChooser && !App.pendingOp) {
     App.boolKeep = !App.boolKeep;
     document.getElementById('opToggle').classList.toggle('active', !!App.boolKeep);
@@ -13703,6 +13768,7 @@ document.getElementById('opCancel').addEventListener('click', cancelPendingOp);
 function confirmPendingOp() {
   flushPendingApply();   // accept what the slider asked for, not the last frame
   flushMatBin();         // everything the re-runs abandoned, released in one go
+  if (App.curveDraw) { applyCurveDraw(); return; }
   if (App.knife) { applyKnife(); return; }
   const op = App.pendingOp;
   if (!op) return;
@@ -13852,6 +13918,7 @@ function confirmPendingOp() {
 }
 
 function cancelPendingOp() {
+  if (App.curveDraw) { cancelCurveDraw(); return; }
   if (App.knife) { cancelKnife(); return; }
   flushPendingApply();
   flushMatBin();
@@ -14859,6 +14926,7 @@ function mergeByDistanceOp(obj, fraction) {
 
 function cleanupSelection() {
   if (App.mode !== 'object') { toast('Clean up works in Object mode'); return; }
+  if (refuseCurves('Clean up')) return;
   if (App.selectedObjectIds.size !== 1) {
     toast(App.selectedObjectIds.size ? 'Clean up works on one object at a time' : 'Select an object to clean up');
     return;
@@ -15605,6 +15673,7 @@ function finishMeshEdit(obj, message) {
    in Object mode it flips everything in the selected objects, which is the
    quick fix for a whole model that imported or mirrored inside-out. */
 function flipNormalsSelection() {
+  if (refuseCurves('Flip normals')) return;
   if (App.mode === 'object') {
     const ids = Array.from(App.selectedObjectIds);
     if (!ids.length) { toast('Select an object to flip'); return; }
@@ -15641,6 +15710,7 @@ function flipNormalsSelection() {
    property of the whole mesh, not of the selection, and the moment you want
    it is right after deleting a face, which happens in Face mode. */
 function fillHolesSelection() {
+  if (refuseCurves('Cap holes')) return;
   const targets = App.mode === 'object'
     ? Array.from(App.selectedObjectIds).map(findObject).filter(Boolean)
     : [findObject(App.activeObjectId)].filter(Boolean);
@@ -15720,6 +15790,7 @@ function fillHolesSelection() {
    both the old threshold and any marks it cleared. */
 function autoSmoothSelection() {
   if (App.mode !== 'object') { toast('Smooth by angle works in Object mode'); return; }
+  if (refuseCurves('Smooth by angle')) return;
   const ids = Array.from(App.selectedObjectIds);
   if (!ids.length) { toast('Select an object first'); return; }
   const obj = findObject(ids[0]);
@@ -15738,6 +15809,7 @@ function autoSmoothSelection() {
 
 function subdivideSelection() {
   if (App.mode !== 'object') { toast('Subdivide works in Object mode'); return; }
+  if (refuseCurves('Subdivide')) return;
   const ids = Array.from(App.selectedObjectIds);
   if (!ids.length) { toast('Select an object to subdivide'); return; }
   const obj = findObject(ids[0]);
@@ -17177,6 +17249,22 @@ function hideAllHelpers() {
 }
 
 function setMode(mode) {
+  // A draw is aimed at a work plane in Object mode; leaving it abandons the
+  // draw. startCurveDraw calls this BEFORE it makes the state, so it cannot
+  // eat the draw it is about to begin.
+  if (App.curveDraw) cancelCurveDraw(true);
+  /* THERE IS NOTHING TO ENTER ON A CURVE (v2.14). Refused here rather than in
+     each picker, because activeObjectId is what every picker reads and it is
+     set from the selection - so one guard at the door covers all of them. */
+  if (mode !== 'object') {
+    const sel = Array.from(App.selectedObjectIds).map(id => findObject(id)).filter(Boolean);
+    if (sel.length && sel.every(isCurve)) {
+      toast('A curve has no vertices, edges or faces - pick a mesh to edit');
+      return;
+    }
+    // A mixed selection is fine, but the ACTIVE object still has to be a mesh.
+    if (isCurve(findObject(App.activeObjectId))) App.activeObjectId = null;
+  }
   // A cut is aimed at one mesh in one mode; changing either abandons it.
   if (App.knife) cancelKnife(true);
   /* Extrude mode is aimed at one selection in one mode for the same reason,
@@ -19403,6 +19491,416 @@ function refreshKnifePreview() {
 }
 
 
+/* ---------------- Drawing a curve (v2.14) ----------------
+
+   THE KNIFE'S GESTURE, because the knife already solved everything hard about
+   placing points by hand on a phone and it has been in use for a year: press
+   to aim, slide to nudge, lift to commit; a live uncommitted point under the
+   finger; Back pops, Cancel drops the lot, OK applies; it borrows the op bar
+   rather than building its own; it takes `orbit` on every press and hands it
+   back in its OWN exit paths, because a press that ends off-canvas never sees
+   a pointerup and leaving that to the pointer handlers killed the camera for
+   a whole session; and two-finger orbit mid-draw works because the
+   multi-pointer bail runs before the tool claims the press.
+
+   WHAT IS NEW IS WHERE A POINT LANDS WHEN THERE IS NO SURFACE UNDER IT. The
+   knife always had a mesh to land on. A curve usually does not, so it needs a
+   work plane - and Zeghreit's rule for it: snap to a model's component if
+   close enough, else follow the selected mode, where Axis sticks to the
+   active work plane and Free is guided by the camera.
+
+   So the cascade is: a VERTEX of any visible mesh within CURVE_SNAP_PX, else
+   that mesh's SURFACE where the ray meets it, else the WORK PLANE. Snapping
+   is the rung above the plane, not a separate setting, which is what makes
+   "trace this silhouette, then carry on into space" one gesture.
+
+   EDGE SNAPPING IS NOT HERE YET, deliberately. The knife gets it from
+   pickEdgeOnActive, which reads App.activeObjectId - and while drawing, the
+   active object is usually the curve itself or nothing. Doing it properly
+   means asking each hit object for its own topology, which is a real piece of
+   work and not what makes the first version good. Vertex and surface cover
+   "snap to a component"; an edge is the obvious next rung. */
+
+const CURVE_SNAP_PX = 16;
+// Below this the ray is running along the plane and the intersection flies off
+// to infinity - about 1.1 degrees.
+const CURVE_PLANE_MIN_DOT = 0.02;
+
+App.curveDraw = null;   // { pts: [Vector3 world], live, pid, plane, res, closed, editId }
+
+function curvePivotPoint() {
+  return (App.pivotMode === 'custom' && App.pivotPoint)
+    ? App.pivotPoint.clone() : new THREE.Vector3(0, 0, 0);
+}
+
+/* The plane a tap lands on when nothing else caught it. Axis names the plane
+   by its NORMAL, so Y is the ground plane the grid already draws - the one
+   already on screen is the one the chip should mean. Free is the plane facing
+   the camera, through the same origin. Both pass through the pivot when one
+   has been placed, which is the answer Array and Revolve already give. */
+function curveWorkPlane() {
+  const mode = (App.curveDraw && App.curveDraw.plane) || 'y';
+  const n = new THREE.Vector3();
+  if (mode === 'free') camera.getWorldDirection(n).negate();
+  else n[mode] = 1;
+  return new THREE.Plane().setFromNormalAndCoplanarPoint(n.normalize(), curvePivotPoint());
+}
+
+function curvePlanePoint(ev) {
+  const pl = curveWorkPlane();
+  raycaster.setFromCamera(ndcFromEvent(ev), camera);
+  // Edge on, the intersection is meaningless rather than merely far away.
+  if (Math.abs(raycaster.ray.direction.dot(pl.normal)) < CURVE_PLANE_MIN_DOT) return null;
+  const hit = new THREE.Vector3();
+  return raycaster.ray.intersectPlane(pl, hit) ? hit : null;
+}
+
+function curveResolve(ev) {
+  raycaster.setFromCamera(ndcFromEvent(ev), camera);
+  // Curves are not surfaces to land on - including the one being drawn.
+  const meshes = App.objects.filter(o => objectPickable(o) && !isCurve(o)).map(o => o.mesh);
+  const hits = meshes.length ? raycaster.intersectObjects(meshes, false) : [];
+  if (hits.length) {
+    const h = hits[0];
+    /* A CORNER WINS, and the radius is a snap radius rather than a pick
+       radius - it means "exactly this vertex", not "near enough", which is
+       the same distinction KNIFE_SNAP_PX draws. The triangle's own three
+       corners are real vertices of the mesh, so no topology lookup is needed
+       for this rung. */
+    if (h.face && h.object.geometry.attributes.position) {
+      const pa = h.object.geometry.attributes.position;
+      const px = pointerPx(ev);
+      let best = null, bestD = CURVE_SNAP_PX;
+      [h.face.a, h.face.b, h.face.c].forEach(ai => {
+        const w = new THREE.Vector3(pa.getX(ai), pa.getY(ai), pa.getZ(ai))
+          .applyMatrix4(h.object.matrixWorld);
+        const s = worldToScreenPx(w);
+        if (!s) return;
+        const d = Math.hypot(s.x - px.x, s.y - px.y);
+        if (d < bestD) { bestD = d; best = w; }
+      });
+      if (best) return { p: best, snap: 'vertex' };
+    }
+    return { p: h.point.clone(), snap: 'surface' };
+  }
+  const pp = curvePlanePoint(ev);
+  if (pp) return { p: pp, snap: 'plane' };
+  return null;
+}
+
+
+/* What you see while drawing: the points you have placed, the curve they
+   already make, and - in Axis mode - the plane they are landing on. All three
+   live in the scene rather than on a screen overlay, so they stay where they
+   were put when the camera moves. Only the plane rectangle respects depth;
+   the dots and the draft line do not, because a point behind the model is
+   still a point you placed. */
+const curveDotMat = new THREE.PointsMaterial({
+  size: VERTEX_DOT_PX * 3 * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1),
+  color: 0x6fd3ff, sizeAttenuation: false,
+  map: vertexDotTexture(), alphaTest: 0.4, transparent: true,
+  depthTest: false, depthWrite: false, fog: false
+});
+const curveDots = new THREE.Points(new THREE.BufferGeometry(), curveDotMat);
+curveDots.renderOrder = 999;
+curveDots.visible = false;
+curveDots.frustumCulled = false;
+scene.add(curveDots);
+
+const curveDraftMat = new LineMaterial({
+  color: 0x6fd3ff, linewidth: 2.5, worldUnits: false,
+  transparent: true, depthTest: false, depthWrite: false
+});
+curveDraftMat.resolution.set(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
+const curveDraft = new Line2(new LineGeometry().setPositions([0, 0, 0, 0, 0, 0]), curveDraftMat);
+curveDraft.renderOrder = 999;
+curveDraft.visible = false;
+curveDraft.frustumCulled = false;
+scene.add(curveDraft);
+gizmoStrokes.push(curveDraft);
+
+const curvePlaneMat = new LineMaterial({
+  color: 0xffffff, linewidth: 1.5, worldUnits: false,
+  transparent: true, opacity: 0.35, depthTest: false, depthWrite: false
+});
+curvePlaneMat.resolution.set(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
+const curvePlaneRect = new Line2(new LineGeometry().setPositions([0, 0, 0, 0, 0, 0]), curvePlaneMat);
+curvePlaneRect.renderOrder = 997;
+curvePlaneRect.visible = false;
+curvePlaneRect.frustumCulled = false;
+scene.add(curvePlaneRect);
+gizmoStrokes.push(curvePlaneRect);
+
+function setCurveDots(flat) {
+  if (!flat.length) { curveDots.visible = false; return; }
+  curveDotMat.size = VERTEX_DOT_PX * 3 * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1);
+  curveDots.geometry.dispose();
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(flat, 3));
+  curveDots.geometry = g;
+  curveDots.visible = true;
+}
+
+/* THE PLANE, DRAWN. A mode you cannot see is a mode you have to remember, and
+   the whole point of the Axis chips is that a tap lands somewhere predictable
+   - so the plane says where. Sized off the camera distance so it is always
+   about half the screen whatever the zoom, and not drawn at all in Free mode,
+   where the plane IS the screen and an outline round it would be noise. */
+function refreshCurvePlaneRect() {
+  const cd = App.curveDraw;
+  if (!cd || cd.plane === 'free') { curvePlaneRect.visible = false; return; }
+  const c = curvePivotPoint();
+  const u = new THREE.Vector3(), v = new THREE.Vector3();
+  if (cd.plane === 'y') { u.set(1, 0, 0); v.set(0, 0, 1); }
+  else if (cd.plane === 'x') { u.set(0, 1, 0); v.set(0, 0, 1); }
+  else { u.set(1, 0, 0); v.set(0, 1, 0); }
+  const r = Math.max(0.5, camera.position.distanceTo(c) * 0.45);
+  const corners = [
+    c.clone().addScaledVector(u, -r).addScaledVector(v, -r),
+    c.clone().addScaledVector(u, r).addScaledVector(v, -r),
+    c.clone().addScaledVector(u, r).addScaledVector(v, r),
+    c.clone().addScaledVector(u, -r).addScaledVector(v, r)
+  ];
+  corners.push(corners[0].clone());
+  const flat = [];
+  corners.forEach(p => flat.push(p.x, p.y, p.z));
+  curvePlaneRect.geometry.dispose();
+  curvePlaneRect.geometry = new LineGeometry().setPositions(flat);
+  curvePlaneRect.visible = true;
+}
+
+function refreshCurvePreview() {
+  const cd = App.curveDraw;
+  if (!cd) {
+    /* NOT DRAWING, and the dots still have a job: they show the control
+       points of any SELECTED curve. A Bezier drawn through its points looks
+       like a line with no structure until you can see what is holding it,
+       and this is also how you tell a curve from a wireframe at a glance. */
+    const flat = [];
+    Array.from(App.selectedObjectIds).map(id => findObject(id)).filter(isCurve)
+      .forEach(o => {
+        o.mesh.updateMatrixWorld();
+        (o.mesh.userData.kubikCurve.pts || []).forEach(a => {
+          const w = new THREE.Vector3(a[0], a[1], a[2]).applyMatrix4(o.mesh.matrixWorld);
+          flat.push(w.x, w.y, w.z);
+        });
+      });
+    setCurveDots(flat);
+    curveDraft.visible = false;
+    curvePlaneRect.visible = false;
+    return;
+  }
+  const list = cd.pts.slice();
+  if (cd.live) list.push(cd.live.p);
+  const flat = [];
+  list.forEach(p => flat.push(p.x, p.y, p.z));
+  setCurveDots(flat);
+  // The DRAFT is the real curve, sampled the way the finished one will be, so
+  // a Bezier looks like itself while it is being drawn rather than after.
+  const sampled = curveSamplePoints({
+    pts: list.map(p => [p.x, p.y, p.z]), closed: cd.closed, type: cd.type, res: cd.res
+  });
+  if (sampled.length >= 2) {
+    const sf = [];
+    sampled.forEach(p => sf.push(p.x, p.y, p.z));
+    curveDraft.geometry.dispose();
+    curveDraft.geometry = new LineGeometry().setPositions(sf);
+    curveDraft.visible = true;
+  } else {
+    curveDraft.visible = false;
+  }
+  refreshCurvePlaneRect();
+}
+
+
+/* The bar, borrowed the way the knife borrows it: no slider, no segments,
+   the count in the label so you can watch the curve grow.
+
+   FOUR CHIPS AND ONE BUTTON, and what is NOT here is deliberate. Bezier /
+   Poly and the resolution are properties of a FINISHED curve - you want to
+   see the whole shape change when you flip them, which you cannot while half
+   of it is still under your thumb - so they live on the curve ring instead.
+   What belongs here is the one thing that changes what the NEXT tap means. */
+function showCurveBar() {
+  mirrorChooser = null;
+  booleanChooser = null;
+  const el = document.getElementById('opGrouping');
+  el.innerHTML = '';
+  el.style.display = 'inline-flex';
+  [['x', 'X'], ['y', 'Y'], ['z', 'Z'], ['free', 'Free']].forEach(pair => {
+    const key = pair[0];
+    const b = document.createElement('button');
+    b.textContent = pair[1];
+    b.title = key === 'free'
+      ? 'Points land on the plane facing the camera'
+      : 'Points land on the ' + pair[1] + ' plane, through the pivot';
+    if (App.curveDraw && App.curveDraw.plane === key) b.classList.add('active');
+    b.addEventListener('click', () => {
+      if (!App.curveDraw) return;
+      App.curveDraw.plane = key;
+      App.curvePlane = key;      // remembered for the next curve
+      showCurveBar();            // re-rendered so the chosen chip says so
+      refreshCurvePreview();
+    });
+    el.appendChild(b);
+  });
+  const wrap = document.getElementById('opToggleWrap');
+  const btn = document.getElementById('opToggle');
+  wrap.style.display = 'inline-flex';
+  btn.textContent = 'Back';
+  btn.title = 'Remove the last point';
+  btn.classList.remove('active');
+  ['opSlider', 'opValue', 'opHint', 'opSegments'].forEach(id => {
+    document.getElementById(id).style.display = 'none';
+  });
+  document.getElementById('opOk').style.display = '';
+  surfaceIn(opBarEl);
+  refreshCurveBar();
+}
+
+function refreshCurveBar() {
+  if (!App.curveDraw) return;
+  const n = App.curveDraw.pts.length;
+  document.getElementById('opLabel').textContent =
+    'Curve · ' + n + (n === 1 ? ' point' : ' points');
+}
+
+function hideCurveBar() {
+  hideOpBar();
+  document.getElementById('opGrouping').style.display = 'none';
+  document.getElementById('opToggleWrap').style.display = 'none';
+}
+
+function startCurveDraw(editObj) {
+  if (App.pendingOp) {
+    toast('Finish the ' + ((OP_SPECS[App.pendingOp.kind] || {}).label || 'operation') + ' first');
+    return;
+  }
+  if (App.knife) cancelKnife(true);
+  if (App.geoSetup) finishGeoSetup(true);
+  /* setMode, not an assignment - the same reason startGeoSetup gives. It is
+     also what clears a component selection whose dots would otherwise hang
+     over the model for the whole draw. Called BEFORE the state exists, so its
+     own abandon-a-draw guard cannot eat the draw we are about to start. */
+  setMode('object');
+  const cv = editObj ? editObj.mesh.userData.kubikCurve : null;
+  const pts = [];
+  if (editObj) {
+    editObj.mesh.updateMatrixWorld();
+    (cv.pts || []).forEach(a => pts.push(
+      new THREE.Vector3(a[0], a[1], a[2]).applyMatrix4(editObj.mesh.matrixWorld)));
+  }
+  App.curveDraw = {
+    pts: pts, live: null, pid: null,
+    plane: App.curvePlane || 'y',
+    type: cv ? cv.type : 'bezier',
+    res: cv ? cv.res : CURVE_RES_DEF,
+    closed: cv ? !!cv.closed : false,
+    editId: editObj ? editObj.id : null
+  };
+  refreshCurvePreview();
+  showCurveBar();
+  refreshUI();
+  hideRadialMenu();
+  toast(editObj ? 'Adding to ' + editObj.name + ' - tap to place, then OK'
+                : 'Tap to place points, then OK');
+}
+
+function cancelCurveDraw(quiet) {
+  if (!App.curveDraw) return;
+  App.curveDraw = null;
+  // Whatever ends a draw hands the camera back, for the reason cancelKnife
+  // records: a press that ends off-canvas never sees a pointerup.
+  orbit.enabled = true;
+  hideCurveBar();
+  refreshCurvePreview();
+  refreshUI();
+  if (!quiet) toast('Curve cancelled');
+}
+
+function applyCurveDraw() {
+  const cd = App.curveDraw;
+  if (!cd) return;
+  const pts = cd.pts.slice();
+  const editId = cd.editId;
+  const opts = { closed: cd.closed, type: cd.type, res: cd.res };
+  App.curveDraw = null;
+  orbit.enabled = true;
+  hideCurveBar();
+  if (pts.length < 2) {
+    refreshCurvePreview(); refreshUI();
+    toast('A curve needs at least two points');
+    return;
+  }
+  /* THE CENTROID IS THE PIVOT, and the points are stored relative to it. That
+     is what makes a curve draggable like anything else in the scene, and it
+     matches where a primitive's origin sits.
+
+     An EDITED curve has its transform reset to identity here on purpose: the
+     points were read out through matrixWorld, so every one of them is already
+     where it appears to be. Keeping an old rotation and re-storing world
+     points under it would move the whole curve the moment it was rebuilt. */
+  const centre = new THREE.Vector3();
+  pts.forEach(p => centre.add(p));
+  centre.divideScalar(pts.length);
+  const local = pts.map(p => p.clone().sub(centre));
+  const prev = editId ? findObject(editId) : null;
+  let obj;
+  if (prev && isCurve(prev)) {
+    prev.mesh.position.copy(centre);
+    prev.mesh.quaternion.identity();
+    prev.mesh.scale.set(1, 1, 1);
+    prev.mesh.userData.kubikCurve.pts = local.map(p => [p.x, p.y, p.z]);
+    rebuildCurveGeometry(prev);
+    obj = prev;
+  } else {
+    obj = createCurveObject('Curve', centre, local, opts);
+  }
+  App.selectedObjectIds = new Set([obj.id]);
+  App.activeObjectId = null;
+  detachAllGizmos();
+  refreshCurvePreview();
+  refreshUI();
+  refreshGizmoAttachment();
+  pushHistory();
+  toast((prev ? 'Curve updated · ' : 'Curve · ') + local.length + ' points');
+}
+
+/* Press to aim, slide to place, lift to commit - the knife's rule, and for
+   the knife's reason: on a phone that is the difference between a point where
+   you meant it and a point a thumb-width away. */
+function curvePointerDown(ev) {
+  App.curveDraw.pid = ev.pointerId;
+  App.curveDraw.live = curveResolve(ev);
+  refreshCurvePreview();
+}
+
+function curvePointerMove(ev) {
+  if (App.curveDraw.pid !== ev.pointerId) return;
+  const r = curveResolve(ev);
+  if (r) App.curveDraw.live = r;
+  refreshCurvePreview();
+}
+
+function curvePointerUp() {
+  const live = App.curveDraw.live;
+  const plane = App.curveDraw.plane;
+  App.curveDraw.live = null;
+  App.curveDraw.pid = null;
+  if (live) App.curveDraw.pts.push(live.p);
+  /* THE ONLY WAY A TAP CATCHES NOTHING is a work plane seen edge on, where
+     the ray runs along it and the intersection is meaningless. Say which
+     plane and what to do about it - "nothing under that tap" would be a lie,
+     because there is a plane there, you just cannot aim at it from here. */
+  else toast(plane === 'free'
+    ? 'Nothing under that tap'
+    : 'You are looking along the ' + plane.toUpperCase() +
+      ' plane - turn the view, or switch to Free');
+  refreshCurvePreview();
+  refreshCurveBar();
+}
+
+
 /* Where the current selection sits on screen: its points, and the segments
    joining them. Measured only against SELECTED components, so an unselected
    neighbour that happens to lie nearer the finger can no longer steal the
@@ -21437,6 +21935,7 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     closeToolRing(false);
     // The camera is taking over, so the half-placed point is not a point.
     if (App.knife) { App.knife.live = null; App.knife.pid = null; refreshKnifePreview(); }
+    if (App.curveDraw) { App.curveDraw.live = null; App.curveDraw.pid = null; refreshCurvePreview(); }
     directCandidate = null;
     endAmountDrag();   // a2.102: a second finger is the camera, not the amount
     orbit.enabled = true;
@@ -21460,6 +21959,9 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   /* The knife owns every single-finger gesture while it is open: press to
      aim, slide to place, lift to commit. Two fingers still reach the camera,
      because the bail-out above runs first. */
+  // A curve draw owns the single finger exactly as the knife does, and for
+  // exactly as long - the two-finger bail above still reaches the camera.
+  if (App.curveDraw) { orbit.enabled = false; curvePointerDown(ev); return; }
   if (App.knife) { orbit.enabled = false; knifePointerDown(ev); return; }
 
   /* Placing the pivot owns every single-finger press while its bar is open -
@@ -21582,6 +22084,7 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
     return;
   }
   if (pivotDrag) { updatePivotDrag(ev); return; }
+  if (App.curveDraw) { curvePointerMove(ev); return; }
   if (App.knife) { knifePointerMove(ev); return; }
   if (toolRingActive) { updateToolRingHover(ev); return; }
   if (extrudeDrag) { updateExtrudeDrag(ev); return; }
@@ -21654,6 +22157,19 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
   // fires must cancel it outright, or a bloom would appear over a finger
   // that's already lifted.
   clearToolRingTimer();
+  if (App.curveDraw) {
+    // Same rule as the knife below: only the finger that started it commits,
+    // and only if it is the last one down. Read BEFORE trackPointerUp, which
+    // is what removes this pointer from the tracker.
+    const soloC = App.curveDraw.pid === ev.pointerId && activePointers.size === 1;
+    trackPointerUp(ev);
+    if (soloC) curvePointerUp();
+    else { App.curveDraw.live = null; App.curveDraw.pid = null; refreshCurvePreview(); }
+    orbit.enabled = true;
+    pointerDown = null;
+    directCandidate = null;
+    return;
+  }
   if (App.knife) {
     /* Only the finger that started the cut commits a point, and only if it
        is the last one down. Lift the first of two fingers after orbiting to
@@ -22971,6 +23487,7 @@ function mirrorSelectedObjects(axis, apart) {
   // thing - the axis the Symmetry pill is already set to.
   axis = axis || primarySymAxis() || 'y';
   if (App.mode !== 'object') { toast('Mirror works in Object mode'); return; }
+  if (refuseCurves('Mirror')) return;
   const ids = Array.from(App.selectedObjectIds);
   if (!ids.length) { toast('Select an object to mirror'); return; }
 
@@ -23063,6 +23580,7 @@ function mirrorSelectedObjects(axis, apart) {
    object and completely different for one that has drifted. */
 function flipSelectedObjects(axis) {
   if (App.mode !== 'object') { toast('Flip works in Object mode'); return; }
+  if (refuseCurves('Flip')) return;
   const ids = Array.from(App.selectedObjectIds);
   if (!ids.length) { toast('Select an object to flip'); return; }
 
@@ -23178,6 +23696,7 @@ function centreSelectionToOrigin() {
    bridged are one. That is the same question Join answered, asked backwards. */
 function separateSelection() {
   if (App.mode !== 'object') { toast('Separate works in Object mode'); return; }
+  if (refuseCurves('Separate')) return;
   const ids = Array.from(App.selectedObjectIds);
   if (!ids.length) { toast('Select an object to separate'); return; }
 
@@ -23427,6 +23946,7 @@ function moveMarkKeys(src, dst, m) {
 
 function arraySelection() {
   if (App.mode !== 'object') { toast('Array works in Object mode'); return; }
+  if (refuseCurves('Array')) return;
   if (App.selectedObjectIds.size !== 1) {
     toast(App.selectedObjectIds.size ? 'Array works on one object - Join them first' : 'Select an object to array');
     return;
@@ -23724,6 +24244,7 @@ function remapMarksByPoint(src, dst, pointMap, skip) {
 
 function solidifySelection() {
   if (App.mode !== 'object') { toast('Solidify works in Object mode'); return; }
+  if (refuseCurves('Solidify')) return;
   if (App.selectedObjectIds.size !== 1) {
     toast(App.selectedObjectIds.size ? 'Solidify works on one object at a time' : 'Select an object to solidify');
     return;
@@ -23739,6 +24260,7 @@ function solidifySelection() {
 
 function joinSelection() {
   if (App.mode !== 'object') { toast('Join works in Object mode'); return; }
+  if (refuseCurves('Join')) return;
   const ids = Array.from(App.selectedObjectIds);
   if (ids.length < 2) { toast('Select 2+ objects to join'); return; }
   const objs = ids.map(id => findObject(id));
@@ -23752,6 +24274,183 @@ function joinSelection() {
   refreshGizmoAttachment();
   pushHistory();
   toast('Joined ' + ids.length + ' objects');
+}
+
+/* ================= CURVES (v2.14) =================
+
+   A curve is a METACOMPONENT: not one op but a new kind of thing the scene
+   holds, with operations built around it. Lathe and Tube are the first two.
+
+   THE DECISION THIS WHOLE FEATURE RESTS ON: a curve is an ordinary entry in
+   App.objects - { id, name, mesh } - and its `mesh` is a Line2.
+
+   The obvious alternative, a second array beside App.objects, was checked
+   against the code and rejected. App.objects is read at 67 sites and about
+   twenty touch `o.mesh` with no guard: pickObjectAt, disposeObject,
+   duplicateObject, centreSelectionToOrigin, frameBox, region select, the
+   isolation counts, the outliner swatch - and flattenEntries, which REBUILDS
+   App.objects from the outliner's drag order, so a parallel array would be
+   either invisible to reordering or silently reordered out of existence.
+   Worse, pushHistory's modelSig hashes { objects, groups, environment,
+   materialLib }: a curve outside `objects` would record no undo step at all,
+   which is verbatim the a2.93 groups bug.
+
+   Line2 is not a trick to get around that. It extends LineSegments2 extends
+   THREE.Mesh, so it has geometry, material, userData, a transform, a real
+   matrixWorld and its own raycast() with a screen-space threshold. Picking,
+   framing, box select, hide, isolate, group, reorder, duplicate, undo and the
+   outliner all work with no new branch. Line2 and LineGeometry were already
+   imported and five things in the app already draw with them.
+
+   What needs a branch is the short list, and it is all in this file section
+   plus the serialiser: dispose (the material has to leave gizmoStrokes),
+   clone, save/load, the outliner swatch, and a refusal in every op that would
+   otherwise hand a Line2 to toEditable - which would not throw, it would
+   return nonsense, which is worse. */
+
+const CURVE_COLOR = 0x6fd3ff;
+const CURVE_RES_DEF = 8;
+const CURVE_RES_MAX = 32;
+
+function isCurve(obj) {
+  return !!(obj && obj.mesh && obj.mesh.userData && obj.mesh.userData.kubikCurve);
+}
+
+/* Every op that edits a mesh asks this first. The ring already hides the mesh
+   tools when the selection is all curves (see currentHubTools), so this is
+   for the MIXED selection - a curve and a cube picked together - where the
+   object ring is still the right ring and one of the two is not a mesh.
+
+   It names the op and the curve, because "Join works in Object mode" when you
+   are already in Object mode is the kind of refusal that reads as a bug. */
+function refuseCurves(what) {
+  const bad = Array.from(App.selectedObjectIds).map(findObject).filter(isCurve);
+  if (!bad.length) return false;
+  toast(what + ' works on meshes - ' +
+        (bad.length === 1 ? bad[0].name + ' is a curve' : bad.length + ' of these are curves'));
+  return true;
+}
+
+function cubicPointAt(p0, c1, c2, p1, t, out) {
+  const u = 1 - t;
+  const a = u * u * u, b = 3 * u * u * t, c = 3 * u * t * t, d = t * t * t;
+  return out.set(
+    a * p0.x + b * c1.x + c * c2.x + d * p1.x,
+    a * p0.y + b * c1.y + c * c2.y + d * p1.y,
+    a * p0.z + b * c1.z + c * c2.z + d * p1.z);
+}
+
+/* THE CURVE, SAMPLED - and in a low-poly modeller this is not a display
+   setting. `res` is the segment count per span, and it is exactly the segment
+   count of the surface a Lathe or a Tube will build from it, which is why it
+   sits on the bar next to the type rather than hidden in the drawer.
+
+   Bezier handles are DERIVED, not stored: the Catmull-Rom tangent through
+   each point, written as the two cubic control points either side of it
+   (the standard 1/6 form). That is what keeps drawing to taps alone - you get
+   a real Bezier without touching a handle. The data model carries hIn/hOut
+   from the start, unused, so dragging handles can be added later without
+   changing a single saved file. */
+function curveSamplePoints(cv) {
+  const P = (cv.pts || []).map(a => new THREE.Vector3(a[0], a[1], a[2]));
+  const n = P.length;
+  if (n < 2) return P.slice();
+  if (cv.type !== 'bezier') {
+    const out = P.slice();
+    if (cv.closed) out.push(P[0].clone());
+    return out;
+  }
+  const res = Math.max(1, Math.min(CURVE_RES_MAX, (cv.res | 0) || CURVE_RES_DEF));
+  // An open curve's virtual neighbour is the endpoint itself, which makes the
+  // first and last spans leave the end straight rather than overshoot it.
+  const at = (i) => cv.closed ? P[((i % n) + n) % n] : P[Math.max(0, Math.min(n - 1, i))];
+  const spans = cv.closed ? n : n - 1;
+  const out = [];
+  for (let s = 0; s < spans; s++) {
+    const p0 = at(s - 1), p1 = at(s), p2 = at(s + 1), p3 = at(s + 2);
+    const c1 = p1.clone().add(p2.clone().sub(p0).multiplyScalar(1 / 6));
+    const c2 = p2.clone().sub(p3.clone().sub(p1).multiplyScalar(1 / 6));
+    for (let k = 0; k < res; k++) {
+      out.push(cubicPointAt(p1, c1, c2, p2, k / res, new THREE.Vector3()).clone());
+    }
+  }
+  out.push(at(cv.closed ? 0 : n - 1).clone());
+  return out;
+}
+
+/* The drawable. A fresh LineGeometry every rebuild rather than poked
+   attributes: fat-line endpoints live in an interleaved INSTANCE buffer, so
+   setPositions is the only honest way to move them, and the sample count
+   changes whenever `res` or a point does. */
+function rebuildCurveGeometry(obj) {
+  const cv = obj.mesh.userData.kubikCurve;
+  const pts = curveSamplePoints(cv);
+  const flat = [];
+  pts.forEach(p => flat.push(p.x, p.y, p.z));
+  /* A one-point curve has no line to draw and, worse, would give LineGeometry
+     an empty instance buffer whose bounding sphere is NaN - which then
+     poisons Box3.setFromObject, framing and every raycast in the scene.
+     Doubling the single point keeps all of that finite at radius zero.
+
+     THE TWO CONDITIONS ARE SEPARATE, and running them together was a real bug
+     the probe caught: the doubled point takes `flat` to exactly 6, so a
+     length test alone said "long enough to draw" about the very case the
+     doubling exists to hide. What makes it drawable is having two DISTINCT
+     points; what makes it safe is having six numbers. */
+  const degenerate = pts.length < 2;
+  if (pts.length === 1) flat.push(pts[0].x, pts[0].y, pts[0].z);
+  if (flat.length < 6) { obj.mesh.visible = false; return; }
+  obj.mesh.visible = !degenerate && !App.hidden.has(obj.id);
+  obj.mesh.geometry.dispose();
+  const g = new LineGeometry();
+  g.setPositions(flat);
+  g.computeBoundingBox();
+  g.computeBoundingSphere();
+  obj.mesh.geometry = g;
+}
+
+function createCurveObject(name, position, ptsLocal, opts) {
+  const o = opts || {};
+  const mat = new LineMaterial({
+    color: CURVE_COLOR, linewidth: 3, worldUnits: false,
+    transparent: true, depthTest: true, depthWrite: false
+  });
+  mat.resolution.set(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
+  const mesh = new Line2(new LineGeometry().setPositions([0, 0, 0, 0, 0, 0]), mat);
+  mesh.frustumCulled = false;
+  mesh.position.copy(position);
+  const obj = { id: App.nextId++, name: name, mesh: mesh };
+  mesh.userData.objId = obj.id;
+  mesh.userData.kubikCurve = {
+    pts: ptsLocal.map(p => [p.x, p.y, p.z]),
+    closed: !!o.closed,
+    type: o.type === 'poly' ? 'poly' : 'bezier',
+    res: Math.max(1, Math.min(CURVE_RES_MAX, (o.res | 0) || CURVE_RES_DEF))
+  };
+  /* Its material joins the resize list, and disposeObject SPLICES IT OUT
+     again. Every LineMaterial in the viewport needs its `resolution` kept in
+     step or the line's width drifts with the window - and disposeSelectionOverlay
+     records what happens to anything that joins this array and never leaves. */
+  scene.add(mesh);
+  gizmoStrokes.push(mesh);
+  App.objects.push(obj);
+  rebuildCurveGeometry(obj);
+  return obj;
+}
+
+/* The curve's own bounding box, in world space. Line2's geometry keeps its
+   points in an instance buffer, and Box3.setFromObject does read that
+   correctly - but only once computeBoundingBox has run, which rebuildCurveGeometry
+   does. This exists so callers that want the box without a matrixWorld update
+   still get a true one. */
+function curveWorldBox(obj) {
+  obj.mesh.updateMatrixWorld();
+  const box = new THREE.Box3();
+  const v = new THREE.Vector3();
+  (obj.mesh.userData.kubikCurve.pts || []).forEach(a => {
+    box.expandByPoint(v.set(a[0], a[1], a[2]).applyMatrix4(obj.mesh.matrixWorld));
+  });
+  return box;
 }
 
 /* ---------------- Booleans (v2.13) ----------------
@@ -23795,6 +24494,8 @@ function loadCSG() {
    object and how many - and Cap holes is one seat away in the same door. */
 function booleanSurvey(objs) {
   for (let i = 0; i < objs.length; i++) {
+    // Ahead of auditWinding, which would hand a Line2 to toEditable.
+    if (isCurve(objs[i])) return objs[i].name + ' is a curve - booleans need meshes';
     const o = objs[i], a = auditWinding(o);
     if (a.boundary > 0) {
       return o.name + ' is not closed - ' + a.boundary + ' open edge' +
@@ -24459,7 +25160,12 @@ const HUB_TOOLS_GEO = [
   { key: 'geocyl', icon: 'cylinder', label: 'Cylinder', run: () => startGeoSetup('cylinder') },
   { key: 'geosphere', icon: 'sphere', label: 'Sphere', run: () => startGeoSetup('sphere') },
   { key: 'geotorus', icon: 'torus', label: 'Torus', run: () => startGeoSetup('torus') },
-  { key: 'geoplane', icon: 'plane', label: 'Plane', run: () => startGeoSetup('plane') }
+  { key: 'geoplane', icon: 'plane', label: 'Plane', run: () => startGeoSetup('plane') },
+  /* A curve is a thing you ADD to the scene, so it is added where things are
+     added (v2.14). It is the one item here that does not call startGeoSetup:
+     a primitive appears finished and is then adjusted, a curve does not exist
+     until you have placed its points. */
+  { key: 'geocurve', icon: 'curve', label: 'Curve', run: () => startCurveDraw(null) }
 ];
 
 /* Four ways to set it, on a ring of their own - the same one-ring-replacing-
@@ -24754,6 +25460,29 @@ function serializeDoc() {
     groups: App.groups.map(g => ({ id: g.id, name: g.name, childIds: g.childIds.slice() })),
     objects: App.objects.map(o => {
       const g = o.mesh.geometry;
+      /* A CURVE WRITES ITS POINTS AND NOTHING ELSE (v2.14). No geometry
+         block, because the drawable is derived from these four fields; no
+         materials, because a curve's colour is not the user's to set yet.
+
+         `curve` being PRESENT is what marks the record, which is the
+         migration convention this whole file uses - `version: 1` is written
+         and never read, and every reader tests for a field instead. */
+      if (isCurve(o)) {
+        const cv = o.mesh.userData.kubikCurve;
+        return {
+          id: o.id,
+          name: o.name,
+          position: o.mesh.position.toArray(),
+          quaternion: o.mesh.quaternion.toArray(),
+          scale: o.mesh.scale.toArray(),
+          curve: {
+            pts: cv.pts.map(a => [a[0], a[1], a[2]]),   // copies, not the live rows
+            closed: !!cv.closed,
+            type: cv.type === 'poly' ? 'poly' : 'bezier',
+            res: cv.res
+          }
+        };
+      }
       const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
       return {
         id: o.id,
@@ -24844,6 +25573,9 @@ function restoreDoc(doc, opts = {}) {
      and the yellow line went on hanging in space over the reverted model.
      Abandon it rather than let OK cut somewhere nobody chose. */
   if (App.knife) cancelKnife(true);
+  // And a curve half drawn, for the same reason: undo moves the scene the
+  // points were aimed into, and the draft would go on hanging over it.
+  if (App.curveDraw) cancelCurveDraw(true);
   /* Every object is about to be disposed and rebuilt from the file, and ids
      come from the DOCUMENT - so a setup bar left open would go on pointing
      at "object 2" and quietly retarget whatever object in the LOADED model
@@ -25021,6 +25753,22 @@ function restoreDoc(doc, opts = {}) {
   App.activeObjectId = null;
 
   doc.objects.forEach(od => {
+    // v2.14, by field presence like every other migration here.
+    if (od.curve && Array.isArray(od.curve.pts)) {
+      const cobj = createCurveObject(od.name,
+        new THREE.Vector3().fromArray(od.position),
+        od.curve.pts.map(a => new THREE.Vector3(a[0], a[1], a[2])),
+        { closed: od.curve.closed, type: od.curve.type, res: od.curve.res });
+      /* Its own id back, not the one createCurveObject minted. App.nextId is
+         restored from the doc a few lines below, so the spent number costs
+         nothing - and a curve keeping its id is what lets groups, the
+         selection and the outliner's order survive a reload. */
+      cobj.id = od.id;
+      cobj.mesh.userData.objId = od.id;
+      cobj.mesh.quaternion.fromArray(od.quaternion);
+      cobj.mesh.scale.fromArray(od.scale);
+      return;
+    }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(od.geometry.position, 3));
     geo.setIndex(od.geometry.index);
@@ -27194,7 +27942,17 @@ const ICON = {
      in common - the op bar says WHICH of the overlap survives. Square and
      circle rather than two squares so the two shapes stay tellable apart at
      20px, and nothing here is finer than the 1.8-unit floor. */
-  boolop:  '<rect x="2.8" y="7.6" width="10.6" height="10.6" rx="1.2"/><circle cx="15.2" cy="10.4" r="5.6"/>'
+  boolop:  '<rect x="2.8" y="7.6" width="10.6" height="10.6" rx="1.2"/><circle cx="15.2" cy="10.4" r="5.6"/>',
+  /* THE CURVE FAMILY (v2.14). One shape - an S running low-left to high-right
+     with a dot at each end - so the four read as one set at a glance, and each
+     one says which of the four it is by what is ADDED to that shape rather
+     than by being a different drawing. Nothing here is finer than the
+     1.8-unit floor and nothing is dashed. */
+  curve:      '<path d="M3.5 18c4-10.5 13 3.5 17-7"/><circle cx="3.5" cy="18" r="1.7"/><circle cx="20.5" cy="11" r="1.7"/>',
+  curveadd:   '<path d="M3 16.5c3.5-9 10.5-1 12.5-4.5"/><circle cx="3" cy="16.5" r="1.6"/><path d="M18.5 14.5v6M15.5 17.5h6"/>',
+  curveclose: '<path d="M12 4.5c5.6 0 8.2 3.6 8.2 7.5s-2.6 7.5-8.2 7.5-8.2-3.6-8.2-7.5S6.4 4.5 12 4.5Z"/><circle cx="12" cy="4.5" r="1.7"/>',
+  curvetype:  '<path d="M4 18c4-10.5 12 3.5 16-8"/><circle cx="4" cy="18" r="1.6"/><circle cx="20" cy="10" r="1.6"/><path d="M4 18l4.5-3.4M20 10l-4.5 3.4"/>',
+  curveres:   '<path d="M3.5 18c4-10.5 13 3.5 17-7"/><path d="M7.6 12.6v3.4M11.4 11.6v3M15.2 12.6v3"/>'
 };
 
 // Wraps a pictogram in an svg at the size the caller needs.
@@ -27401,6 +28159,92 @@ function groupingSeatApplies() {
   return groupingSeatUngroups() || App.selectedObjectIds.size > 1;
 }
 
+/* ---------------- Working on a curve (v2.14) ----------------
+
+   These are the ops that only mean anything to a curve, and they have a ring
+   of their own rather than seats in the Object ring - see currentHubTools.
+   Each one changes the curve and shows the answer immediately, which is why
+   Bezier/Poly and the resolution live here rather than on the drawing bar:
+   you want to see the WHOLE shape change when you flip them. */
+function selectedCurves() {
+  return Array.from(App.selectedObjectIds).map(id => findObject(id)).filter(isCurve);
+}
+
+function oneCurve(what) {
+  const s = selectedCurves();
+  if (s.length !== 1) {
+    toast(s.length ? what + ' works on one curve at a time' : 'Select a curve first');
+    return null;
+  }
+  return s[0];
+}
+
+function curveAddPoints() {
+  const c = oneCurve('Add points');
+  if (c) startCurveDraw(c);
+}
+
+function toggleCurveType() {
+  const s = selectedCurves();
+  if (!s.length) { toast('Select a curve first'); return; }
+  /* One answer for the whole selection, taken from the FIRST curve, so a
+     mixed selection lands somewhere predictable instead of each curve
+     flipping to its own opposite. */
+  const to = s[0].mesh.userData.kubikCurve.type === 'bezier' ? 'poly' : 'bezier';
+  s.forEach(o => { o.mesh.userData.kubikCurve.type = to; rebuildCurveGeometry(o); });
+  refreshUI();
+  pushHistory();
+  toast(to === 'bezier' ? 'Bézier' : 'Poly - straight between points');
+}
+
+function toggleCurveClosed() {
+  const s = selectedCurves();
+  if (!s.length) { toast('Select a curve first'); return; }
+  const to = !s[0].mesh.userData.kubikCurve.closed;
+  s.forEach(o => { o.mesh.userData.kubikCurve.closed = to; rebuildCurveGeometry(o); });
+  refreshUI();
+  pushHistory();
+  toast(to ? 'Closed' : 'Open');
+}
+
+/* A CYCLE, NOT A SLIDER. The resolution has five useful values and the shape
+   redraws on the tap, so a tap that steps through them shows you the answer
+   faster than a bar you have to open, aim at and dismiss - and it costs one
+   seat instead of a whole op. It is also the number of segments a Lathe or a
+   Tube will build from this curve, which is why it says so out loud. */
+const CURVE_RES_STEPS = [2, 4, 8, 16, 32];
+
+function cycleCurveRes() {
+  const s = selectedCurves();
+  if (!s.length) { toast('Select a curve first'); return; }
+  const cur = s[0].mesh.userData.kubikCurve.res;
+  let i = CURVE_RES_STEPS.indexOf(cur);
+  if (i < 0) i = CURVE_RES_STEPS.findIndex(v => v >= cur);
+  const to = CURVE_RES_STEPS[(i + 1) % CURVE_RES_STEPS.length];
+  s.forEach(o => { o.mesh.userData.kubikCurve.res = to; rebuildCurveGeometry(o); });
+  refreshUI();
+  pushHistory();
+  toast(to + ' segments per span');
+}
+
+/* The ring a curve selection gets. Seats 6 and 7 are held for Lathe and Tube
+   - the two ops this whole metacomponent exists to make possible - so they
+   are free on purpose and should not be filled with anything else. */
+const HUB_TOOLS_CURVE = [
+  { key: 'curveadd', icon: 'curveadd', label: 'Add points', seat: 0, run: curveAddPoints },
+  { key: 'curvetype', icon: 'curvetype', seat: 1,
+    label: () => (selectedCurves()[0] &&
+      selectedCurves()[0].mesh.userData.kubikCurve.type === 'bezier') ? 'Poly' : 'Bézier',
+    run: toggleCurveType },
+  { key: 'curveclose', icon: 'curveclose', seat: 2,
+    label: () => (selectedCurves()[0] &&
+      selectedCurves()[0].mesh.userData.kubikCurve.closed) ? 'Open' : 'Close',
+    run: toggleCurveClosed },
+  { key: 'curveres', icon: 'curveres', label: 'Segments', seat: 3, run: cycleCurveRes },
+  { key: 'delete', icon: 'del', label: 'Delete', seat: 4, run: deleteSelection },
+  { key: 'duplicate', icon: 'dupe', label: 'Duplicate', seat: 7, run: duplicateSelection }
+];
+
 const HUB_TOOLS_EMPTY = [
   { key: 'addgeo', icon: 'object', label: 'Add geo', ring: 0, run: openGeoRing },
   { key: 'save', icon: 'save', label: 'Save', ring: 0, run: saveProjectFile },
@@ -27492,6 +28336,18 @@ function currentHubTools() {
        moving (a2.110) that showed up as a hole in the commonest state the app
        has. Which of the two ops it is stays the seat's own business; see
        HUB_TOOL_GROUPING. */
+    /* A CURVE SELECTION GETS THE CURVE RING (v2.14). This is "the selection
+       follows the mode" (a2.59) asked of the selection's TYPE rather than of
+       App.mode, and it is what keeps Lathe and Tube out of an Object ring
+       that has been full at 0-7 since Array took seat 1.
+
+       ALL of them, not any: a mixed selection is still an object selection -
+       Group, Delete and Duplicate all mean something across the two - and the
+       mesh ops it offers refuse the curves in it by name (see refuseCurves).
+       Grouping rides along, because grouping a curve with a mesh is exactly
+       the kind of thing a curve is for. */
+    const sel = Array.from(App.selectedObjectIds).map(id => findObject(id)).filter(Boolean);
+    if (sel.length && sel.every(isCurve)) return HUB_TOOLS_CURVE.concat(HUB_TOOL_GROUPING);
     return HUB_TOOLS_OBJECT_BASE.concat(HUB_TOOL_GROUPING);
   }
   if (App.mode === 'vertex') return HUB_TOOLS_VERTEX;
@@ -29530,7 +30386,18 @@ function buildObjectSlot(o, isChild) {
   const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
   const sw = document.createElement('div');
   sw.className = 'swatch';
-  sw.style.background = '#' + mats[0].color.getHexString();
+  /* A CURVE'S SWATCH IS AN OUTLINE, not a filled square (v2.14). The fill
+     works - a Line2's material has a colour like any other - but a solid blue
+     tile beside a solid blue cube says the same thing about two things that
+     are not the same kind of thing at all, and the icons feedback was that
+     every glyph should say what it is. Inline rather than a class: it is two
+     properties and it keeps the rule beside the reason. */
+  if (isCurve(o)) {
+    sw.style.background = 'transparent';
+    sw.style.border = '2px solid #' + mats[0].color.getHexString();
+  } else {
+    sw.style.background = '#' + mats[0].color.getHexString();
+  }
 
   const name = document.createElement('span');
   name.className = 'outName';
@@ -30703,6 +31570,11 @@ document.getElementById('btnInspector').addEventListener('click', (ev) => {
 });
 
 function refreshUI() {
+  /* The selected curves' control points are part of the UI, not of any one
+     op - they follow the selection, so they are refreshed where every other
+     selection-shaped thing is. Cheap: it is one dispose and one small
+     attribute unless something is actually selected. */
+  refreshCurvePreview();
   invalidate();   // see On-demand rendering
   /* The mode, published to CSS (a2.58). Every accented control in the file
      reads --accent, and --accent is defined per [data-mode], so this one
@@ -31711,6 +32583,13 @@ if (PICK_DEBUG) {
        together rather than hand-rolling a cube and getting the winding
        wrong - which is the one thing a winding probe must not do. */
     THREE, buildPrimitiveEditable,   // makeMaterialSet is already up there
+    // v2.14: the curve entity, its drawing tool and its ring.
+    isCurve, refuseCurves, curveSamplePoints, createCurveObject,
+    rebuildCurveGeometry, curveWorldBox, selectedCurves,
+    startCurveDraw, cancelCurveDraw, applyCurveDraw, curveResolve,
+    curveWorkPlane, curvePlanePoint, toggleCurveType, toggleCurveClosed,
+    cycleCurveRes, curveAddPoints, HUB_TOOLS_CURVE, CURVE_RES_STEPS,
+    get curveDraw() { return App.curveDraw; },
     get activePointers() { return activePointers; },
     get directDrag() { return directDrag; },
     finishGeoSetup,
