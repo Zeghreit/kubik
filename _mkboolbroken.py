@@ -35,5 +35,33 @@ sub('''function booleanSurvey(objs) {
   for (let i = 0; i < objs.length; i++) {''',
     '3. survey never refuses')
 
+# v2.17: the preview itself. Sections 16 and 17 exist for these three.
+sub("""  if (s.inputIds) {
+    s.inputIds.forEach(id => {""",
+    """  if (false && s.inputIds) {                           // BROKEN: nothing hides
+    s.inputIds.forEach(id => {""",
+    '4. the inputs are not hidden behind the preview')
+
+sub("""  if (spec.renames) {
+    const nm = spec.name(s);""",
+    """  if (false && spec.renames) {                         // BROKEN: stale name
+    const nm = spec.name(s);""",
+    '5. the name no longer follows the chips')
+
+sub("""      if (s.inputIds && !s.p.keep) {""",
+    """      if (s.inputIds) {                                // BROKEN: Keep ignored""",
+    '6. OK consumes the inputs even with Keep originals on')
+
+sub("""  if (App.opSetup) { finishOpSetup(false); return; }
+  /* A live op has pushed NOTHING onto the history yet""",
+    """  /* BROKEN: Undo no longer knows a setup is open.
+     A live op has pushed NOTHING onto the history yet""",
+    '7. Undo takes the step under the preview as well')
+
+sub("""    s.p = Object.assign({}, s.built);
+    showOpSetupBar();""",
+    """    /* BROKEN: the refused setting stays on the bar */""",
+    '8. a refused chip stays lit over the shape it did not make')
+
 io.open(ROOT + r'\_bak_boolbroken.html', 'w', encoding='utf-8', newline='').write(src)
 print('WROTE _bak_boolbroken.html')

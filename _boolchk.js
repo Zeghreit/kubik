@@ -69,6 +69,27 @@
 
   function only() { return K.App.objects[K.App.objects.length - 1]; }
 
+  /* BOOLEAN IS A SETUP NOW (v2.17): the result appears at once, the chips
+     switch between the three live, and OK is the first moment anything is
+     destroyed. Driven here the way a finger drives it - open, chip, OK -
+     so every section below exercises the real path rather than a shortcut
+     past the bar. The first call of a session waits on the CSG import; the
+     rest open with no wait at all. */
+  async function runBool(kind, keep) {
+    K.App.boolKeep = !!keep;
+    K.booleanSelection();
+    for (let i = 0; i < 240 && !K.opSetup; i++) {
+      await new Promise(r => setTimeout(r, 25));
+    }
+    if (!K.opSetup) return false;
+    if (K.opSetup.p.kind !== kind) {
+      K.opSetup.p.kind = kind;
+      K.refreshOpSetupMesh();
+    }
+    K.finishOpSetup(true);
+    return true;
+  }
+
   // Every face group is either a single triangle or a region whose boundary
   // is ONE simple loop. This is the assertion the whole post-pass exists for:
   // a merged region with a hole in it is a face Inset would pull inward while
@@ -90,8 +111,9 @@
     K = window.__kubik;
     if (!K) { finish('__kubik is undefined - the app never started'); return; }
     ok('0.boot  app up, boolean exported',
-       !!K.App && typeof K.runBoolean === 'function' && typeof K.booleanSurvey === 'function');
-    if (typeof K.runBoolean !== 'function') { finish(); return; }
+       !!K.App && typeof K.booleanBuild === 'function' &&
+       typeof K.booleanSelection === 'function' && typeof K.booleanSurvey === 'function');
+    if (typeof K.booleanSelection !== 'function') { finish(); return; }
     mark('0.boot');
 
     // 1 -- two overlapping cubes, Union ---------------------------------
@@ -99,7 +121,7 @@
     let a = mk('A', 'cube'), b = mk('B', 'cube');
     b.mesh.position.set(0.5, 0.5, 0.5); b.mesh.updateMatrixWorld(true);
     select([a, b]);
-    await K.runBoolean('union', false);
+    await runBool('union', false);
     let r = only(), x = r && w(r);
     ok('1.union  inputs consumed, one object left', K.App.objects.length === 1,
        'objects=' + K.App.objects.length);
@@ -118,7 +140,7 @@
     let rod = mk('Rod', 'cylinder');
     rod.mesh.scale.set(0.3, 2.2, 0.3); rod.mesh.updateMatrixWorld(true);
     select([a, rod]);
-    await K.runBoolean('difference', false);
+    await runBool('difference', false);
     r = only(); x = r && w(r);
     const h = r ? holedFaces(r) : null;
     ok('2.hole   watertight', !!x && x.boundary === 0, x && ('boundary=' + x.boundary));
@@ -136,7 +158,7 @@
     let sph = mk('Sphere', 'sphere');
     sph.mesh.position.set(0.3, 0.3, 0); sph.mesh.updateMatrixWorld(true);
     select([a, sph]);
-    await K.runBoolean('intersect', false);
+    await runBool('intersect', false);
     r = only(); x = r && w(r);
     ok('3.inter  something survived', K.App.objects.length === 1 && !!r && groupCount(r) > 0,
        r && ('groups=' + groupCount(r)));
@@ -152,7 +174,7 @@
     a = mk('A', 'cube'); b = mk('B', 'cube');
     b.mesh.position.set(1, 0, 0); b.mesh.updateMatrixWorld(true);
     select([a, b]);
-    await K.runBoolean('union', false);
+    await runBool('union', false);
     r = only(); x = r && w(r);
     ok('4.coplan watertight', !!x && x.boundary === 0, x && ('boundary=' + x.boundary));
     ok('4.coplan one shell, no shared wall left inside',
@@ -164,7 +186,7 @@
     a = mk('A', 'cube'); b = mk('B', 'cube');
     b.mesh.position.set(3, 0, 0); b.mesh.updateMatrixWorld(true);
     select([a, b]);
-    await K.runBoolean('union', false);
+    await runBool('union', false);
     r = only(); x = r && w(r);
     ok('5.apart  union of two disjoint solids is two shells',
        !!x && x.shells === 2 && x.boundary === 0, x && JSON.stringify(x));
@@ -173,7 +195,7 @@
     a = mk('A', 'cube'); b = mk('B', 'cube');
     b.mesh.position.set(3, 0, 0); b.mesh.updateMatrixWorld(true);
     select([a, b]);
-    await K.runBoolean('difference', false);
+    await runBool('difference', false);
     r = only();
     ok('5.apart  difference by something that misses leaves A alone',
        !!r && groupCount(r) === 6, r && ('groups=' + groupCount(r)));
@@ -189,7 +211,7 @@
     b.mesh.position.set(0.5, 0.4, 0.4);
     b.mesh.updateMatrixWorld(true);
     select([a, b]);
-    await K.runBoolean('union', false);
+    await runBool('union', false);
     r = only(); x = r && w(r);
     ok('6.mirror watertight', !!x && x.boundary === 0, x && ('boundary=' + x.boundary));
     ok('6.mirror nothing came out inside-out',
@@ -205,7 +227,7 @@
     b.mesh.position.set(0.4, 0.4, 0.2); b.mesh.updateMatrixWorld(true);
     const aBox = new K.THREE.Box3().setFromObject(a.mesh);
     select([a, b]);
-    await K.runBoolean('union', false);
+    await runBool('union', false);
     r = only(); x = r && w(r);
     const rBox = r ? new K.THREE.Box3().setFromObject(r.mesh) : null;
     ok('7.xform  watertight', !!x && x.boundary === 0, x && ('boundary=' + x.boundary));
@@ -234,8 +256,8 @@
     const pl2 = mk('Plane', 'plane');
     select([a, pl2]);
     K.hideOpBar();
-    K.showBooleanChooser();
-    ok('8.refuse the op bar never opened on a refused pair', !K.booleanChooser);
+    K.booleanSelection();
+    ok('8.refuse the preview never opened on a refused pair', !K.opSetup);
     mark('8.refuse');
 
     // 9 -- Keep originals --------------------------------------------------
@@ -243,7 +265,7 @@
     a = mk('A', 'cube'); b = mk('B', 'cube');
     b.mesh.position.set(0.5, 0.5, 0.5); b.mesh.updateMatrixWorld(true);
     select([a, b]);
-    await K.runBoolean('union', true);
+    await runBool('union', true);
     ok('9.keep   both inputs still standing beside the result',
        K.App.objects.length === 3 && !!K.findObject(a.id) && !!K.findObject(b.id),
        'objects=' + K.App.objects.length);
@@ -255,7 +277,7 @@
     a = mk('A', 'cube'); b = mk('B', 'cube');
     b.mesh.position.set(0.5, 0.5, 0.5); b.mesh.updateMatrixWorld(true);
     select([a, b]);
-    await K.runBoolean('union', false);
+    await runBool('union', false);
     r = only();
     const mats = r && (Array.isArray(r.mesh.material) ? r.mesh.material : [r.mesh.material]);
     const fin = r && (r.mesh.userData.finishes || {});
@@ -277,7 +299,7 @@
     b.mesh.position.set(0.5, 0.5, 0.5); b.mesh.updateMatrixWorld(true);
     K.pushHistory();
     select([a, b]);
-    await K.runBoolean('union', false);
+    await runBool('union', false);
     const after = K.App.objects.length;
     K.undo();
     ok('11.undo  the two inputs come back',
@@ -295,7 +317,7 @@
     a = mk('A', 'cube'); b = mk('B', 'cube');
     b.mesh.position.set(0.6, 0, 0); b.mesh.updateMatrixWorld(true);
     select([a, b]);
-    await K.runBoolean('union', false);
+    await runBool('union', false);
     r = only(); x = r && w(r);
     ok('12.seam  a box unioned with a box is a box', !!r && groupCount(r) === 6,
        r && ('groups=' + groupCount(r)));
@@ -325,7 +347,7 @@
     b.mesh.position.set(0.5, 0, 0);
     b.mesh.updateMatrixWorld(true);
     select([a, b]);
-    await K.runBoolean('difference', false);
+    await runBool('difference', false);
     r = only(); x = r && w(r);
     let box = r ? new K.THREE.Box3().setFromObject(r.mesh) : null;
     let size = box ? box.getSize(new K.THREE.Vector3()) : null;
@@ -345,7 +367,7 @@
     rod = mk('Rod', 'cylinder');
     rod.mesh.scale.set(0.3, 2.2, 0.3); rod.mesh.updateMatrixWorld(true);
     select([a, rod]);
-    await K.runBoolean('difference', false);
+    await runBool('difference', false);
     const first = only();
     ok('15.chain the first result is not refused by the survey',
        K.booleanSurvey([first, mk('C', 'cube')]) === null,
@@ -353,12 +375,168 @@
     const c2 = K.App.objects[K.App.objects.length - 1];
     c2.mesh.position.set(0.4, 0.4, 0.4); c2.mesh.updateMatrixWorld(true);
     select([first, c2]);
-    await K.runBoolean('difference', false);
+    await runBool('difference', false);
     r = only(); x = r && w(r);
     ok('15.chain the second boolean also comes back closed',
        !!x && x.boundary === 0 && x.nonManifold === 0 && x.conflictEdges === 0,
        x && JSON.stringify(x));
     mark('15.chain');
+
+    /* 16 -- THE PREVIEW ITSELF (v2.17) -------------------------------------
+       Union, difference and intersect are three answers you cannot tell apart
+       without looking at them, and this used to commit on the tap and delete
+       both inputs on the way out. What has to be true now: the result stands
+       before anything is destroyed, a chip rebuilds it in place, and Cancel
+       gives back exactly what went in - visible, not just present. */
+    clearScene();
+    a = mk('A', 'cube'); b = mk('B', 'cube');
+    b.mesh.position.set(0.5, 0.5, 0.5); b.mesh.updateMatrixWorld(true);
+    select([a, b]);
+    K.pushHistory();
+    K.App.boolKeep = false;
+    K.booleanSelection();
+    ok('16.preview the result is there the moment you tap it',
+       !!K.opSetup && K.App.objects.length === 3, 'objects=' + K.App.objects.length);
+    ok('16.preview and it opens on Union',
+       !!K.opSetup && K.opSetup.p.kind === 'union', K.opSetup && K.opSetup.p.kind);
+    ok('16.preview both inputs are out of the way while it stands',
+       K.App.hidden.has(a.id) && K.App.hidden.has(b.id),
+       'hidden=' + K.App.hidden.size);
+    ok('16.preview but NOTHING has been destroyed yet',
+       !!K.findObject(a.id) && !!K.findObject(b.id));
+
+    let pvw = K.findObject(K.opSetup.objId);
+    const unionX = new K.THREE.Box3().setFromObject(pvw.mesh)
+                     .getSize(new K.THREE.Vector3()).x;
+    K.opSetup.p.kind = 'difference';
+    K.refreshOpSetupMesh();
+    pvw = K.findObject(K.opSetup.objId);
+    const diffX = new K.THREE.Box3().setFromObject(pvw.mesh)
+                    .getSize(new K.THREE.Vector3()).x;
+    ok('16.preview a chip rebuilds it in place - still one result, smaller',
+       K.App.objects.length === 3 && diffX < unionX - 0.1,
+       'union x=' + unionX.toFixed(3) + ' difference x=' + diffX.toFixed(3));
+    ok('16.preview and the NAME followed the chip', /cut$/.test(pvw.name), pvw.name);
+
+    K.finishOpSetup(false);
+    ok('16.preview Cancel gives both inputs back, visible and selected',
+       K.App.objects.length === 2 &&
+       !K.App.hidden.has(a.id) && !K.App.hidden.has(b.id) &&
+       K.App.selectedObjectIds.has(a.id) && K.App.selectedObjectIds.has(b.id),
+       'objects=' + K.App.objects.length + ' hidden=' + K.App.hidden.size);
+    mark('16.preview');
+
+    /* 17 -- OK IS ONE STEP, AND KEEP DECIDES WHAT SURVIVES IT --------------
+       Every chip tried on the way is a rebuild, not an edit: one undo has to
+       put both inputs back whatever route the preview took to get here. */
+    clearScene();
+    a = mk('A', 'cube'); b = mk('B', 'cube');
+    b.mesh.position.set(0.5, 0.5, 0.5); b.mesh.updateMatrixWorld(true);
+    select([a, b]);
+    K.pushHistory();
+    K.App.boolKeep = false;
+    K.booleanSelection();
+    K.opSetup.p.kind = 'intersect'; K.refreshOpSetupMesh();
+    K.opSetup.p.kind = 'union'; K.refreshOpSetupMesh();
+    K.finishOpSetup(true);
+    const left = K.App.objects.length;
+    ok('17.commit and nothing is left hidden behind it',
+       K.App.hidden.size === 0, 'hidden=' + K.App.hidden.size);
+    K.undo();
+    ok('17.commit OK consumes the inputs, and one undo brings both back',
+       left === 1 && K.App.objects.length === 2,
+       left + ' -> ' + K.App.objects.length);
+
+    // Keep originals is a question about what SURVIVES, not what you look at.
+    clearScene();
+    a = mk('A', 'cube'); b = mk('B', 'cube');
+    b.mesh.position.set(0.5, 0.5, 0.5); b.mesh.updateMatrixWorld(true);
+    select([a, b]);
+    K.App.boolKeep = true;
+    K.booleanSelection();
+    ok('17.commit the inputs are hidden while it previews even with Keep on',
+       K.App.hidden.has(a.id) && K.App.hidden.has(b.id));
+    K.finishOpSetup(true);
+    ok('17.commit ...and standing, visible, beside the result afterwards',
+       K.App.objects.length === 3 && K.App.hidden.size === 0 &&
+       !!K.findObject(a.id) && !!K.findObject(b.id),
+       'objects=' + K.App.objects.length + ' hidden=' + K.App.hidden.size);
+    K.App.boolKeep = false;
+    mark('17.commit');
+
+    /* 18 -- WHAT A PREVIEW HAS TO SURVIVE (v2.17, all six found in review) --
+       A refused chip, an Undo, another op opening on top of it, a primitive
+       already half made, and a document that changed while the engine was
+       still on its way. */
+    clearScene();
+    a = mk('A', 'cube'); b = mk('B', 'cube');
+    b.mesh.position.set(4, 0, 0); b.mesh.updateMatrixWorld(true);   // they miss
+    select([a, b]);
+    K.booleanSelection();
+    let pw = K.findObject(K.opSetup.objId);
+    const g0 = pw.mesh.geometry.groups.length;
+    K.opSetup.p.kind = 'intersect';      // two solids that miss share nothing
+    K.refreshOpSetupMesh();
+    pw = K.findObject(K.opSetup.objId);
+    ok('18.guard a refused chip leaves BOTH the shape and the chip on Union',
+       K.opSetup.p.kind === 'union' && pw.mesh.geometry.groups.length === g0,
+       K.opSetup.p.kind + ' ' + pw.mesh.geometry.groups.length + '/' + g0);
+    K.finishOpSetup(false);
+    mark('18.guard.chip');
+
+    // Undo takes back the preview, and NOT the committed step under it.
+    clearScene();
+    a = mk('A', 'cube'); b = mk('B', 'cube');
+    b.mesh.position.set(0.5, 0.5, 0.5); b.mesh.updateMatrixWorld(true);
+    select([a, b]);
+    K.pushHistory();
+    K.booleanSelection();
+    K.undo();
+    ok('18.guard Undo takes back the preview and nothing else',
+       !K.opSetup && K.App.objects.length === 2 && K.App.hidden.size === 0,
+       'objects=' + K.App.objects.length + ' setup=' + !!K.opSetup);
+
+    // No slider op opens on top of it - they would share one bar and one OK.
+    clearScene();
+    a = mk('A', 'cube'); b = mk('B', 'cube');
+    b.mesh.position.set(0.5, 0.5, 0.5); b.mesh.updateMatrixWorld(true);
+    select([a, b]);
+    K.booleanSelection();
+    const faces0 = K.findObject(K.opSetup.objId).mesh.geometry.groups.length;
+    K.subdivideSelection();
+    ok('18.guard Subdivide will not open over a preview',
+       !K.App.pendingOp && !!K.opSetup &&
+       K.findObject(K.opSetup.objId).mesh.geometry.groups.length === faces0,
+       'pendingOp=' + !!K.App.pendingOp);
+    K.finishOpSetup(false);
+
+    // ...and a boolean will not open over a primitive that is still being set.
+    clearScene();
+    a = mk('A', 'cube'); b = mk('B', 'cube');
+    b.mesh.position.set(0.5, 0.5, 0.5); b.mesh.updateMatrixWorld(true);
+    K.startGeoSetup('cube');
+    select([a, b]);
+    K.booleanSelection();
+    ok('18.guard a boolean will not open over a half-made primitive',
+       !K.opSetup && !!K.App.geoSetup, 'setup=' + !!K.opSetup);
+    K.finishGeoSetup(false);
+    mark('18.guard.states');
+
+    /* THE FAR SIDE OF THE WAIT. Ids are handed out from 1 and a load renumbers
+       from 1, so the same two ids can name two entirely different meshes by
+       the time the engine lands. Reproduced exactly: same ids, new objects. */
+    clearScene();
+    a = mk('A', 'cube'); b = mk('B', 'cube');
+    const stale = [a, b];
+    clearScene();
+    K.App.nextId = stale[0].id;
+    const a2 = mk('A', 'cube'); mk('B', 'cube');
+    ok('18.guard (the ids really were handed back out)',
+       K.findObject(stale[0].id) === a2 && a2 !== stale[0]);
+    K.openBooleanSetup(stale);
+    ok('18.guard a document swapped under the wait is refused by identity',
+       !K.opSetup, 'setup=' + !!K.opSetup);
+    mark('18.guard.wait');
 
     finish();
   }

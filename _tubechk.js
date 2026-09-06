@@ -211,22 +211,22 @@
     K.App.selectedObjectIds = new Set([sc.id]);
     K.tubeSelection();
     ok('7.setup  a tube appears the moment you tap it',
-       !!K.tubeSetup && K.App.objects.length === 2, 'objects=' + K.App.objects.length);
-    let tobj = K.tubeSetup ? K.findObject(K.tubeSetup.objId) : null;
+       !!K.opSetup && K.App.objects.length === 2, 'objects=' + K.App.objects.length);
+    let tobj = K.opSetup ? K.findObject(K.opSetup.objId) : null;
     const faces0 = tobj ? tobj.mesh.geometry.groups.length : -1;
-    const r0 = K.tubeSetup ? K.tubeSetup.radius : -1;
+    const r0 = K.opSetup ? K.opSetup.p.radius : -1;
 
-    K.stepTubeSides(4);
-    tobj = K.tubeSetup ? K.findObject(K.tubeSetup.objId) : null;
+    K.stepOpSetup(4);
+    tobj = K.opSetup ? K.findObject(K.opSetup.objId) : null;
     ok('7.setup  the stepper changes how many sides it has',
-       !!K.tubeSetup && K.tubeSetup.sides === 12 &&
+       !!K.opSetup && K.opSetup.p.sides === 12 &&
        tobj && tobj.mesh.geometry.groups.length > faces0,
-       (K.tubeSetup && K.tubeSetup.sides) + ' sides, ' +
+       (K.opSetup && K.opSetup.p.sides) + ' sides, ' +
        faces0 + ' -> ' + (tobj && tobj.mesh.geometry.groups.length));
 
     const box0 = tobj ? new K.THREE.Box3().setFromObject(tobj.mesh) : null;
-    K.setTubeRadius(r0 * 3);
-    tobj = K.tubeSetup ? K.findObject(K.tubeSetup.objId) : null;
+    K.setOpSetupAmount(r0 * 3);
+    tobj = K.opSetup ? K.findObject(K.opSetup.objId) : null;
     const box1 = tobj ? new K.THREE.Box3().setFromObject(tobj.mesh) : null;
     ok('7.setup  and the slider actually makes it fatter',
        !!box0 && !!box1 &&
@@ -235,18 +235,18 @@
                        box1.getSize(new K.THREE.Vector3()).z.toFixed(3)) : 'no box');
 
     const capsBefore = K.auditWinding(tobj).boundary;
-    K.tubeSetup.caps = false;
-    K.refreshTubeMesh();
-    tobj = K.findObject(K.tubeSetup.objId);
+    K.opSetup.p.caps = false;
+    K.refreshOpSetupMesh();
+    tobj = K.findObject(K.opSetup.objId);
     ok('7.setup  turning the caps off opens the two ends',
        capsBefore === 0 && K.auditWinding(tobj).boundary > 0,
        capsBefore + ' -> ' + K.auditWinding(tobj).boundary);
     mark('7.setup');
 
     // 8 -- Cancel takes it away, OK keeps it and is one undo step -----------
-    K.finishTubeSetup(false);
+    K.finishOpSetup(false);
     ok('8.commit Cancel removes the tube and leaves the curve',
-       !K.tubeSetup && K.App.objects.length === 1 && K.isCurve(K.App.objects[0]),
+       !K.opSetup && K.App.objects.length === 1 && K.isCurve(K.App.objects[0]),
        'objects=' + K.App.objects.length);
 
     clearScene();
@@ -254,9 +254,9 @@
     K.App.selectedObjectIds = new Set([sc2.id]);
     K.pushHistory();
     K.tubeSelection();
-    K.stepTubeSides(2);
-    K.setTubeRadius(0.3);
-    K.finishTubeSetup(true);
+    K.stepOpSetup(2);
+    K.setOpSetupAmount(0.3);
+    K.finishOpSetup(true);
     const kept = K.App.objects.length;
     K.undo();
     ok('8.commit OK keeps it, and every radius tried on the way is ONE step',

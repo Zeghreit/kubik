@@ -2362,7 +2362,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.16</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.17</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -12879,6 +12879,18 @@ function decideLoopCutFlip(obj, pa, pb, mpa, mpb, sym) {
 }
 
 function beginPendingOp(kind, obj, payload, init) {
+  /* NOT ON TOP OF A SETUP (v2.17, found in review). A Lathe, Tube or Boolean
+     preview leaves exactly what an object-mode op wants - one object
+     selected, Object mode - so Subdivide, Clean up, Array and Solidify could
+     all open over a preview that had accepted nothing, and then share its
+     bar. OK committed the preview with the un-accepted op baked into it; ✕
+     deleted the very object the pending op still pointed at, leaving a
+     pendingOp with no bar that swallowed every keystroke after it.
+     startOpSetup already refuses the other way round. */
+  if (App.opSetup) {
+    toast('Finish the ' + OP_SETUP[App.opSetup.kind].label + ' first');
+    return;
+  }
   const spec = OP_SPECS[kind];
   App.pendingOp = {
     kind, objId: obj.id, payload,
@@ -13452,8 +13464,6 @@ const opValueEl = document.getElementById('opValue');
 function showOpBar() {
   // Whatever this bar was showing before, it is an op now - see cancelPendingOp.
   mirrorChooser = null;
-  booleanChooser = null;
-  latheChooser = null;
   const op = App.pendingOp;
   if (!op) return;
   const spec = OP_SPECS[op.kind];
@@ -13530,8 +13540,9 @@ function refreshOpToggle() {
 }
 
 document.getElementById('opToggle').addEventListener('click', () => {
-  /* THE BOOLEAN CHOOSER BORROWS THIS SWITCH (v2.13). It has no pending op
-     and so no OP_SPECS entry, and the spec lookup below would return early -
+  /* THE SETUPS BORROW THIS SWITCH (v2.13, rewritten v2.17). Tube's Caps and
+     Boolean's Keep originals have no pending op and so no OP_SPECS entry,
+     and the spec lookup below would return early -
      leaving a switch that looks live and does nothing, on the one control
      whose entire job is to say which of two things is about to happen. A
      silent no-op is the worst failure mode this file records; this is that
@@ -13539,21 +13550,11 @@ document.getElementById('opToggle').addEventListener('click', () => {
   /* Back, while a curve is being drawn. The bar has one independent button
      slot and Back is what a drawing hand reaches for most; Bezier/Poly and
      the resolution are properties of the finished curve and live on its ring. */
-  if (App.tubeSetup && !App.pendingOp) {
-    App.tubeSetup.caps = !App.tubeSetup.caps;
-    document.getElementById('opToggle').classList.toggle('active', !!App.tubeSetup.caps);
-    refreshTubeMesh();
-    return;
-  }
+  if (App.opSetup && !App.pendingOp) { toggleOpSetupSwitch(); return; }
   if (App.curveDraw && !App.pendingOp) {
     if (App.curveDraw.pts.length) App.curveDraw.pts.pop();
     refreshCurvePreview();
     refreshCurveBar();
-    return;
-  }
-  if (booleanChooser && !App.pendingOp) {
-    App.boolKeep = !App.boolKeep;
-    document.getElementById('opToggle').classList.toggle('active', !!App.boolKeep);
     return;
   }
   const op = App.pendingOp;
@@ -13706,17 +13707,10 @@ function refreshOpAmountVisibility() {
    needs its own handle: something for the ✕ to close, and somewhere to keep
    the selection it was opened for. */
 let mirrorChooser = null;
-/* Boolean's chooser, kept beside Mirror's and cleared everywhere Mirror's is
-   (v2.13). Mirror's note records what happens when a chooser outlives its
-   bar: it sits through any amount of later work and then runs on whatever
-   happens to be selected. Same capture, same clears. */
-let booleanChooser = null;
 
 function hideOpBar() {
   endAmountDrag();   // a2.102: never leave orbit off behind a finished op
   mirrorChooser = null;
-  booleanChooser = null;
-  latheChooser = null;
   submergeOut(opBarEl);
   // The chooser bars (Mirror, Extrude grouping) drive this bar by hand and
   // know nothing about the toggle, so it goes away with the bar itself.
@@ -13774,7 +13768,7 @@ function setPendingAmount(v, defer) {
   // The tube setup borrows the slider and the value box. Without this branch
   // both would look live and do nothing, which is the failure this file names
   // as its worst - and it is the same branch the boolean toggle needed.
-  if (App.tubeSetup && !App.pendingOp) { setTubeRadius(v); return; }
+  if (App.opSetup && !App.pendingOp) { setOpSetupAmount(v); return; }
   const op = App.pendingOp;
   if (!op) return;
   const spec = OP_SPECS[op.kind];
@@ -13803,7 +13797,7 @@ function setPendingAmount(v, defer) {
 
 opSliderEl.addEventListener('input', () => setPendingAmount(parseFloat(opSliderEl.value), true));
 function stepSegments(delta) {
-  if (App.tubeSetup && !App.pendingOp) { stepTubeSides(delta); return; }
+  if (App.opSetup && !App.pendingOp) { stepOpSetup(delta); return; }
   if (!App.pendingOp) return;
   const cap = (OP_SPECS[App.pendingOp.kind] || {}).maxSegments || 10;
   const n = Math.max(1, Math.min(cap, (App.pendingOp.segments || 1) + delta));
@@ -13850,11 +13844,14 @@ opValueEl.addEventListener('keydown', (ev) => {
 opValueEl.addEventListener('blur', () => {
   if (App.pendingOp) opValueEl.value = amountText(App.pendingOp, App.pendingOp.amount);
   /* And the same for a tube's radius (found in review). Half-typed text -
-     "1.2.3", "-", an empty box - is rejected by setTubeRadius, which left the
-     box reading what was typed while the model kept its old radius. A readout
-     that lies about what OK is going to commit is exactly what this handler
-     exists to prevent. */
-  else if (App.tubeSetup) opValueEl.value = Number(App.tubeSetup.radius.toFixed(3));
+     "1.2.3", "-", an empty box - is rejected by setOpSetupAmount, which left
+     the box reading what was typed while the model kept its old value. A
+     readout that lies about what OK is going to commit is exactly what this
+     handler exists to prevent. */
+  else if (App.opSetup && opSetupSpec() && opSetupSpec().slider) {
+    const sl = opSetupSpec().slider;
+    opValueEl.value = Number(App.opSetup.p[sl.key].toFixed(sl.decimals));
+  }
 });
 document.getElementById('opOk').addEventListener('click', confirmPendingOp);
 document.getElementById('opCancel').addEventListener('click', cancelPendingOp);
@@ -13862,7 +13859,7 @@ document.getElementById('opCancel').addEventListener('click', cancelPendingOp);
 function confirmPendingOp() {
   flushPendingApply();   // accept what the slider asked for, not the last frame
   flushMatBin();         // everything the re-runs abandoned, released in one go
-  if (App.tubeSetup) { finishTubeSetup(true); toast('Tube kept'); return; }
+  if (App.opSetup) { finishOpSetup(true); return; }
   if (App.curveDraw) { applyCurveDraw(); return; }
   if (App.knife) { applyKnife(); return; }
   const op = App.pendingOp;
@@ -14013,7 +14010,7 @@ function confirmPendingOp() {
 }
 
 function cancelPendingOp() {
-  if (App.tubeSetup) { finishTubeSetup(false); return; }
+  if (App.opSetup) { finishOpSetup(false); return; }
   if (App.curveDraw) { cancelCurveDraw(); return; }
   if (App.knife) { cancelKnife(); return; }
   flushPendingApply();
@@ -14028,7 +14025,7 @@ function cancelPendingOp() {
      it - and then ✕ hid the bar and returned, leaving the bevel preview baked
      into the mesh with no bar left to accept or reject it. A real op always
      wins this guard now, and showOpBar clears the flag as well. */
-  if ((mirrorChooser || booleanChooser || latheChooser) && !App.pendingOp) { hideOpBar(); return; }
+  if (mirrorChooser && !App.pendingOp) { hideOpBar(); return; }
   const op = App.pendingOp;
   if (!op) return;
   const obj = findObject(op.objId);
@@ -17364,7 +17361,7 @@ function setMode(mode) {
       if (App.pendingOp && App.pendingOp.live) confirmPendingOp();
       else if (App.pendingOp) cancelPendingOp();
       if (App.geoSetup) finishGeoSetup(true);
-      if (App.tubeSetup) finishTubeSetup(true);
+      if (App.opSetup) finishOpSetup(true);
       toast('A curve has no vertices, edges or faces - pick a mesh to edit');
       return;
     }
@@ -17387,7 +17384,7 @@ function setMode(mode) {
   // A setup is real work in the scene, so switching mode keeps it - the same
   // call a live op gets one line above.
   if (App.geoSetup) finishGeoSetup(true);
-  if (App.tubeSetup) finishTubeSetup(true);
+  if (App.opSetup) finishOpSetup(true);
   /* Object mode has no components to fall off from, so Soft cannot survive
      the trip. Coming back through the button re-enters Component, not Soft,
      which is what makes the three positions a cycle rather than a memory. */
@@ -19397,8 +19394,6 @@ gizmoStrokes.push(knifeLine);   // so a resize keeps the line's width honest
    count in the label so you can see the cut growing. */
 function showKnifeBar() {
   mirrorChooser = null;   // same reasoning as showOpBar
-  booleanChooser = null;
-  latheChooser = null;
   const el = document.getElementById('opGrouping');
   el.innerHTML = '';
   el.style.display = 'inline-flex';
@@ -19831,8 +19826,6 @@ function refreshCurvePreview() {
    What belongs here is the one thing that changes what the NEXT tap means. */
 function showCurveBar() {
   mirrorChooser = null;
-  booleanChooser = null;
-  latheChooser = null;   // it was missed; see the v2.13 note in hideOpBar
   const el = document.getElementById('opGrouping');
   el.innerHTML = '';
   el.style.display = 'inline-flex';
@@ -20913,7 +20906,7 @@ function endDirectDrag() {
      dragging it into place pushed a step containing a tube that Cancel then
      removed - one Undo brought the discarded tube back, and the autosave had
      it too. */
-  if (!App.geoSetup && !App.tubeSetup) pushHistory();
+  if (!App.geoSetup && !App.opSetup) pushHistory();
 }
 
 // Which handle, if any, is under this pointer.
@@ -24739,7 +24732,7 @@ function booleanBrushOf(CSG, o) {
      on it moved half the plane.
 
      Nothing is shared with a deleted input as a result: the output materials
-     are cloned per face group in runBoolean, which is where the clone always
+     are cloned per face group in booleanBuild, which is where the clone always
      belonged. */
   const b = new CSG.Brush(g, srcMats);
   b.updateMatrixWorld(true);   // identity - the transform is already in the vertices
@@ -25049,47 +25042,20 @@ const BOOL_OPS = {
   intersect:  { label: 'Intersect', suffix: 'intersection' }
 };
 
-/* FOLDED LEFT: A op B op C. Union and Intersect are order-free; Difference
-   is not, and A is ids[0] - the FIRST object you tapped. That is the rule
+/* THE BOOLEAN ITSELF, and nothing around it: objects in, one editable out.
+   No scene, no history, no toast - because the setup calls this again on
+   every chip tap, and the only thing OK adds is that it stops calling it.
+
+   SYNCHRONOUS on purpose. The engine is fetched once, before the bar opens,
+   so a rebuild mid-preview can never end up waiting on a network.
+
+   FOLDED LEFT: A op B op C. Union and Intersect are order-free; Difference
+   is not, and A is objs[0] - the FIRST object you tapped. That is the rule
    Solidify and the material tools already use for "the one you mean", and
-   the toast names both sides afterwards so a boolean that came out backwards
-   says so rather than looking like a broken cut. */
-async function runBoolean(kind, keep) {
-  if (App.mode !== 'object') { toast('Boolean works in Object mode'); return; }
-  const ids = Array.from(App.selectedObjectIds);
-  if (ids.length < 2) { toast('Select 2+ objects for a boolean'); return; }
-  let objs = ids.map(id => findObject(id)).filter(Boolean);
-  if (objs.length < 2) { toast('Select 2+ objects for a boolean'); return; }
-
-  const why = booleanSurvey(objs);
-  if (why) { toast(why); return; }
-
-  let CSG;
-  try {
-    CSG = await loadCSG();
-  } catch (err) {
-    console.warn('[boolean] load failed', err);
-    toast('Boolean needs the network the first time it runs');
-    return;
-  }
-  /* RE-RESOLVED AFTER THE AWAIT. The first boolean of a session waits on a
-     network fetch, and everything stays live while it does - undo, delete,
-     another op. Running against objects captured before the wait is how an
-     op deletes something that is no longer there. */
-  objs = ids.map(id => findObject(id)).filter(Boolean);
-  if (objs.length < 2) { toast('The selection changed - pick them again'); return; }
-  /* AND THE MODE, AND THE SURVEY, AGAIN (found in review). Re-resolving the
-     objects was not enough: the whole app stays live through that wait, so a
-     double-tap into Vertex mode and one deleted face is all it takes to
-     arrive here with an OPEN brush that was surveyed while it was closed -
-     and the library does not throw on one, it returns a plausible wrong
-     solid. Worse, removeObjects below would then delete the object being
-     edited while the mode, the element selection and the helpers still point
-     into it. Ask both questions again on this side of the await. */
-  if (App.mode !== 'object') { toast('Boolean works in Object mode'); return; }
-  const whyNow = booleanSurvey(objs);
-  if (whyNow) { toast(whyNow); return; }
-
+   the Difference chip says so in its own tooltip. */
+function booleanBuild(objs, kind) {
+  const CSG = csgMod;
+  if (!CSG) return { ok: false, why: 'The boolean engine is still loading' };
   const OP = kind === 'union' ? CSG.ADDITION
            : kind === 'difference' ? CSG.SUBTRACTION
            : CSG.INTERSECTION;
@@ -25121,165 +25087,100 @@ async function runBoolean(kind, keep) {
     mats = Array.isArray(res.material) ? res.material : [res.material];
   } catch (err) {
     console.warn('[boolean]', err);
-    toast('That boolean failed - try Clean up on the inputs first');
-    return;
+    return { ok: false, why: 'That boolean failed - try Clean up on the inputs first' };
   }
 
   const ed = editableFromCSGResult(res);
-  if (ed && ed.why) { toast(ed.why); return; }
-  if (!ed || !ed.groups.length) { toast('That boolean left nothing behind'); return; }
+  if (ed && ed.why) return { ok: false, why: ed.why };
+  if (!ed || !ed.groups.length) return { ok: false, why: 'That boolean leaves nothing behind' };
   /* THE SAME BUDGET THE IMPORTER HAS, for the same reason: every face is a
      geometry group, a material and a draw call, and a boolean can multiply
      them the way a scanned mesh does. Counted after the merge, because
      before it there is nothing to count. */
   if (ed.groups.length > IMPORT_FACE_BUDGET) {
-    toast(ed.groups.length + ' faces - too many to edit (limit ' +
-          IMPORT_FACE_BUDGET + ')');
-    return;
+    return { ok: false, why: ed.groups.length + ' faces - too many to edit (limit ' +
+                            IMPORT_FACE_BUDGET + ')' };
   }
 
   const outMats = ed.groups.map(g => {
     const src = mats[g.mat] || mats[0];
     return src ? src.clone() : new THREE.MeshStandardMaterial();
   });
-
-  /* The RESULT's own bounding-box centre is its pivot - what exists now,
-     not the average of where the things that made it used to be. */
-  const box = new THREE.Box3(), v = new THREE.Vector3();
-  for (let i = 0; i < ed.positions.length; i += 3) {
-    box.expandByPoint(v.set(ed.positions[i], ed.positions[i + 1], ed.positions[i + 2]));
-  }
-  const centre = box.getCenter(new THREE.Vector3());
-  for (let i = 0; i < ed.positions.length; i += 3) {
-    ed.positions[i] -= centre.x;
-    ed.positions[i + 1] -= centre.y;
-    ed.positions[i + 2] -= centre.z;
-  }
-
-  const made = createObjectFromEditable(
-    objs[0].name + ' ' + BOOL_OPS[kind].suffix, centre,
-    { positions: ed.positions, groups: ed.groups }, outMats, {});
-  if (!made) { toast('That boolean left nothing behind'); return; }
-
-  /* The result wears A's smoothing. It is a per-object angle, not a per-face
-     map, so unlike smoothGroups it carries across a renumber without meaning
-     anything different - and a union of two smooth objects coming back flat,
-     silently, is the kind of thing you notice a session later. */
-  const smoothA = objs[0].mesh.userData.autoSmoothAngle;
-  if (typeof smoothA === 'number') {
-    made.mesh.userData.autoSmoothAngle = smoothA;
-    applyShading(made);
-  }
-
-  if (!keep) removeObjects(objs);
-  App.selectedObjectIds = new Set([made.id]);
-  App.activeObjectId = null;
-  detachAllGizmos();
-  hideRadialMenu();
-  refreshUI();
-  refreshGizmoAttachment();
-  pushHistory();
-
-  /* SAID OUT LOUD, both ways round. three-bvh-csg's own README warns the
-     result may not come back perfectly two-manifold, so it is MEASURED here
-     rather than assumed - and reported, because a mesh that needs a Clean up
-     and does not say so is a mesh you find out about three ops later. */
-  const w = auditWinding(made);
-  if (PICK_DEBUG) console.log('[winding]', JSON.stringify(w));
-  /* OPEN EDGES INCLUDED, which is the whole point (found in review, by both
-     reviewers). This used to count only nonManifold and conflictEdges - and
-     an open edge is the one defect a boolean actually produces, the reason
-     healTJunctions exists, and precisely what booleanSurvey will refuse the
-     NEXT time. Reporting everything except it meant you learned about it one
-     op later, from a refusal that named a shape you thought was finished. */
-  const trouble = [];
-  if (w.boundary) trouble.push(w.boundary + ' open edge' + (w.boundary === 1 ? '' : 's'));
-  if (w.nonManifold) trouble.push(w.nonManifold + ' non-manifold');
-  if (w.conflictEdges) trouble.push(w.conflictEdges + ' reversed');
-  if (ed.capped) trouble.push('too tangled to close fully');
-  const which = kind === 'difference'
-    ? objs[0].name + ' - ' + objs.slice(1).map(o => o.name).join(' - ')
-    : objs.map(o => o.name).join(' + ');
-  toast(BOOL_OPS[kind].label + ': ' + which + ', ' + ed.groups.length + ' faces' +
-        (trouble.length ? ' - ' + trouble.join(', ') + '. Clean up first.' : ''));
+  /* SAID OUT LOUD ON OK, not here. three-bvh-csg's own README warns the result
+     may not come back perfectly two-manifold, so finishOpSetup measures what
+     it kept and names it - a mesh that needs a Clean up and does not say so
+     is a mesh you find out about three ops later. `note` carries the one
+     thing auditWinding cannot see afterwards: a hole the merge gave up on. */
+  return {
+    ok: true,
+    ed: { positions: ed.positions, groups: ed.groups },
+    mats: outMats,
+    note: ed.capped ? 'too tangled to close fully' : ''
+  };
 }
 
-/* THREE ANSWERS TO ONE QUESTION, asked the way Mirror asks Joined / Apart /
-   Flip: chips on the op bar, one tap, no dialog and no OK button. Three ring
-   seats for one idea would have spent half the MESH door on it.
+/* A PREVIEW, NOT A COMMITTED OP (v2.17). Union, difference and intersect are
+   three answers you cannot tell apart without looking at them, and this used
+   to commit on the tap and delete both inputs on the way out. Now the result
+   appears at once, the chips switch between the three live, and OK is the
+   first moment anything is destroyed.
 
-   Union leads because it is the one that cannot come out backwards. Keep
-   originals is the bar's independent switch rather than a fourth chip - it
-   is not a fourth thing to do, it changes what the other three leave behind,
-   and it is remembered so a session that wants it does not re-tap it. */
-function showBooleanChooser() {
+   The engine still has to arrive before the bar can open - a preview that
+   waits on a fetch is not a preview - so the load happens here, once, and
+   every boolean after the first one opens with no wait at all. */
+function booleanSelection() {
   if (App.mode !== 'object') { toast('Boolean works in Object mode'); return; }
   const ids = Array.from(App.selectedObjectIds);
   if (ids.length < 2) { toast('Select 2+ objects for a boolean'); return; }
   const objs = ids.map(id => findObject(id)).filter(Boolean);
   if (objs.length < 2) { toast('Select 2+ objects for a boolean'); return; }
-  /* Surveyed BEFORE the bar opens, not after a chip is pressed. An op bar
-     that appears and then refuses everything on it has wasted the tap and
-     told you nothing about which object is the problem. */
+  /* Surveyed BEFORE anything is fetched, not after. A bar that appears and
+     then refuses everything on it has wasted the tap and told you nothing
+     about which object is the problem. */
   const why = booleanSurvey(objs);
   if (why) { toast(why); return; }
 
-  /* Captured NOW, the a2.109 rule: the bar has no exit, so it could sit
-     through any amount of later work and then run on whatever happened to be
-     selected by the time a chip was pressed. */
-  booleanChooser = { ids: ids };
-
-  const rest = objs.slice(1).map(o => o.name).join(', ');
-  const opts = [
-    ['union', 'Union', 'One solid - everything either shape encloses'],
-    ['difference', 'Difference', 'Cut ' + rest + ' out of ' + objs[0].name],
-    ['intersect', 'Intersect', 'Only what every shape encloses']
-  ];
-  const el = document.getElementById('opGrouping');
-  el.innerHTML = '';
-  el.style.display = 'inline-flex';
-  opts.forEach(entry => {
-    const key = entry[0];
-    const b = document.createElement('button');
-    b.textContent = entry[1];
-    b.title = entry[2];
-    b.addEventListener('click', () => {
-      /* Checked HERE, before the captured selection is restored - the same
-         ordering Mirror's chooser records: a mode guard inside the op fires
-         after this handler has already replaced the live selection, so a
-         chooser left open across a mode switch wiped what you had picked and
-         then refused to do anything with it. */
-      if (App.mode !== 'object') { hideOpBar(); toast('Boolean works in Object mode'); return; }
-      const saved = (booleanChooser && booleanChooser.ids) || null;
-      const keep = !!App.boolKeep;
-      hideOpBar();                                   // clears booleanChooser
-      if (saved) App.selectedObjectIds = new Set(saved.filter(findObject));
-      if (App.selectedObjectIds.size < 2) { toast('Nothing left to combine'); return; }
-      /* CAUGHT (found in review). runBoolean is async and only its load and
-         its evaluate were guarded, so a throw anywhere after them became an
-         unhandled rejection: the op bar had already closed, so the tap looked
-         like it had done nothing at all and the only trace was the console. */
-      runBoolean(key, keep).catch(err => {
-        console.warn('[boolean]', err);
-        toast('That boolean failed - try Clean up on the inputs first');
-      });
-    });
-    el.appendChild(b);
+  if (csgMod) { openBooleanSetup(objs); return; }
+  toast('Loading the boolean engine');
+  /* TWO HANDLERS, NOT ONE CHAIN (found in review). A .catch after the .then
+     also swallows anything thrown on the far side and reports it as a network
+     failure - the one message guaranteed to send you looking in the wrong
+     place. The rejection handler sees the load; the catch sees the rest. */
+  loadCSG().then(
+    () => openBooleanSetup(objs),
+    (err) => {
+      console.warn('[boolean] load failed', err);
+      toast('Boolean needs the network the first time it runs');
+    }
+  ).catch(err => {
+    console.warn('[boolean]', err);
+    toast('That boolean failed - try Clean up on the inputs first');
   });
+}
 
-  document.getElementById('opLabel').textContent = 'Boolean';
-  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opOk'].forEach(id => {
-    document.getElementById(id).style.display = 'none';
-  });
-  // Wired by hand: the chooser bars do not go through OP_SPECS, so the
-  // toggle's own listener has a branch for this - see there.
-  const wrap = document.getElementById('opToggleWrap');
-  const btn = document.getElementById('opToggle');
-  wrap.style.display = 'inline-flex';
-  btn.textContent = 'Keep originals';
-  btn.title = 'Leave the objects that went in standing beside the result';
-  btn.classList.toggle('active', !!App.boolKeep);
-  surfaceIn(opBarEl);
+/* EVERY QUESTION ASKED AGAIN ON THIS SIDE OF THE WAIT. The first boolean of
+   a session waits on a network fetch and the whole app stays live while it
+   does - undo, delete, a mode switch, another op. Re-resolving the objects
+   is not enough on its own: a double-tap into Vertex mode and one deleted
+   face is all it takes to arrive here with an OPEN brush that was surveyed
+   while it was closed, and the library does not throw on one - it returns a
+   plausible wrong solid. */
+function openBooleanSetup(objs) {
+  if (App.mode !== 'object') { toast('Boolean works in Object mode'); return; }
+  /* THE SAME OBJECTS, not merely the same ids (found in review). Ids are small
+     integers handed out from 1, and opening a file renumbers from 1 into a
+     brand new document - so a load landing while the engine was still
+     fetching left ids 3 and 4 naming two unrelated meshes in the model you
+     had just opened, and the boolean stood itself in the middle of them.
+     Object identity survives none of that: a load, an undo and a delete all
+     replace the record, and all three mean the same answer here. */
+  const live = objs.filter(o => findObject(o.id) === o);
+  if (live.length !== objs.length || live.length < 2) {
+    toast('The selection changed - pick them again'); return;
+  }
+  const why = booleanSurvey(live);
+  if (why) { toast(why); return; }
+  startOpSetup('boolean', { inputIds: live.map(o => o.id) });
 }
 
 
@@ -25390,7 +25291,7 @@ function startGeoSetup(kind) {
      selection nothing on screen still referred to. Its OK button would then
      have applied the bevel to it. */
   if (App.knife) cancelKnife(true);
-  if (App.tubeSetup) finishTubeSetup(true);
+  if (App.opSetup) finishOpSetup(true);
   if (App.pendingOp && App.pendingOp.live) confirmPendingOp();
   else if (App.pendingOp) cancelPendingOp();
   /* setMode, not `App.mode = 'object'`. The assignment is what Add Cube has
@@ -25728,7 +25629,7 @@ function restoreDoc(doc, opts = {}) {
      the radius slider rebuilt an unrelated mesh as a tube, and OK pushed the
      damage to history. After a File open it is worse: the id resolves to a
      mesh and tubeCurveOp reads kubikCurve off it, undefined. */
-  abandonTubeSetup();
+  abandonOpSetup();
   /* Every object is about to be disposed and rebuilt from the file, and ids
      come from the DOCUMENT - so a setup bar left open would go on pointing
      at "object 2" and quietly retarget whatever object in the LOADED model
@@ -26149,6 +26050,12 @@ function undo() {
      the history, so there is no step for this press to step back to. Undo
      means "take back what is on screen", and here that is the primitive. */
   if (App.geoSetup) { finishGeoSetup(false); return; }
+  /* AND THE SAME FOR A SETUP (v2.17, found in review). Lathe, Tube and
+     Boolean push nothing until OK either, so this press had nothing to step
+     back to - it dropped the preview through restoreDoc's abandon AND took
+     the committed step underneath it. That is the v2.3b bug described two
+     comments down, in a state that did not exist when it was fixed. */
+  if (App.opSetup) { finishOpSetup(false); return; }
   /* A live op has pushed NOTHING onto the history yet - what is in front of
      you is a preview sitting on top of the last committed step. Stepping the
      index back here would take away that step as well as the preview, and
@@ -26186,6 +26093,11 @@ function redo() {
      So Redo declines while a setup is open, and says why. Nothing is lost
      either way, and Done is one tap. */
   if (App.geoSetup) { toast('Finish the shape first'); return; }
+  // Word for word the same for a setup, and for the same reason: committing
+  // it would truncate the very steps Redo was asked to walk forward into.
+  if (App.opSetup) {
+    toast('Finish the ' + OP_SETUP[App.opSetup.kind].label + ' first'); return;
+  }
   // Same reasoning as undo: close the preview first, on its own terms.
   if (App.pendingOp && App.pendingOp.live) {
     const settled = App.pendingOp.settled;
@@ -28271,7 +28183,7 @@ const HUB_TOOLS_OBJECT_BASE = [
        for a selection of one, the a2.112 rule: a boolean you cannot make is
        visibly one you cannot make. */
     { key: 'boolean', icon: 'boolop', label: 'Boolean', seat: 6,
-      enabled: () => App.selectedObjectIds.size > 1, run: showBooleanChooser }
+      enabled: () => App.selectedObjectIds.size > 1, run: booleanSelection }
   ] },
   { key: 'finish', label: 'Finish', seat: 7, door: [
     { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 0,
@@ -28598,60 +28510,138 @@ function tubeCurveOp(curveObj, radius, sides, caps) {
   return { ok: true, ed: ed, mats: mats, count: ed.groups.length, sides: N };
 }
 
-let latheChooser = null;
+/* ---------------- The op setup bar (v2.17) ----------------
 
-/* THE SETUP BAR, and it is startGeoSetup's shape rather than a pendingOp's.
+   ONE STATE FOR BOTH, and that is the point rather than a tidiness. Lathe and
+   Tube are the same interaction - make the mesh at once, dial it in on the
+   bar, history only on OK - and the v2.16 review found SIX lifecycle sites
+   that had to learn about a setup being open: restoreDoc, the keydown
+   shortcuts, endDirectDrag, setMode, startGeoSetup and the shared bar's three
+   listeners. Every one of them was a bug when the tube arrived. Adding a
+   second variable for the lathe means auditing all six again and getting it
+   right twice; one variable means they keep the answer they already have.
 
-   A pendingOp re-runs itself from a snapshot of the object it edits. A tube
-   has no such object: it MAKES one, out of a curve, and there is nothing to
-   snapshot. So it follows the primitive setup instead - the mesh is made the
-   moment you tap Tube, and the bar is a set of handles on the thing itself,
-   sitting in the scene at the size it will keep. Nothing reaches history
-   until OK, or every radius you tried on the way would be its own undo step.
+   What differs between the two ops is only the bar's contents and the
+   function that builds the mesh, so that is all the table below holds. */
+App.opSetup = null;   // { kind, curveId, objId, p:{...}, span } while open
 
-   It borrows the op bar's slider and stepper by hand, which cost two branches
-   in setPendingAmount and stepSegments - both of which bail on "no pending
-   op" and would otherwise have left a live-looking slider doing nothing. */
-App.tubeSetup = null;   // { curveId, objId, radius, sides, caps } while open
+const OP_SETUP = {
+  lathe: {
+    label: 'Lathe',
+    chips: [['x', 'X'], ['y', 'Y'], ['z', 'Z']],
+    chipKey: 'axis',
+    chipTip: (k) => 'Turn about the ' + k.toUpperCase() + ' axis',
+    /* DEGREES, so half a ring - or less - is the same tool as a full wheel.
+       15 to 360 in fifteens: every useful stop is on a step, and the ones
+       people actually reach for (90, 180, 270) land exactly. */
+    slider: { key: 'sweep', min: () => 15, max: () => 360, step: () => 15, decimals: 0, unit: '°' },
+    /* THE SEGMENT COUNT IS WHAT MAKES IT ROUND, which is why it is a stepper
+       you hold rather than a number in a drawer. Its floor moves with the
+       angle: a full turn in fewer than three comes back onto itself, an arc
+       is fine at one. Clamped rather than refused - a control that stops is
+       kinder than one that argues. */
+    stepper: { key: 'segs', max: () => 64, min: (p) => (p.sweep >= 359.5 ? 3 : 1) },
+    toggle: null,
+    defaults: (s) => {
+      const c = findObject(s.curveId);
+      return {
+        axis: App.latheAxis || 'y',
+        sweep: 360,
+        segs: Math.max(3, (c.mesh.userData.kubikCurve.res | 0) || 8)
+      };
+    },
+    build: (s) => {
+      const c = findObject(s.curveId);
+      return c ? latheCurveOp(c, s.p.axis, s.p.sweep, s.p.segs, 1)
+               : { ok: false, why: 'the curve is gone' };
+    },
+    name: (s) => (findObject(s.curveId) || { name: 'Curve' }).name + ' lathe',
+    onChip: (k) => { App.latheAxis = k; }
+  },
+  tube: {
+    label: 'Tube',
+    chips: null,
+    slider: {
+      key: 'radius', min: () => 0.005,
+      max: (p, s) => Math.max(0.05, s.span * 0.5),
+      step: (p, s) => Math.max(0.001, s.span * 0.002),
+      decimals: 3, unit: ''
+    },
+    stepper: { key: 'sides', max: () => TUBE_SIDES_MAX, min: () => 3 },
+    toggle: { key: 'caps', label: 'Caps', tip: 'Close the two ends' },
+    defaults: (s) => ({ radius: Math.max(0.01, s.span * 0.06), sides: 8, caps: true }),
+    build: (s) => {
+      const c = findObject(s.curveId);
+      return c ? tubeCurveOp(c, s.p.radius, s.p.sides, s.p.caps)
+               : { ok: false, why: 'the curve is gone' };
+    },
+    name: (s) => (findObject(s.curveId) || { name: 'Curve' }).name + ' tube',
+    onChip: null
+  },
+  /* BOOLEAN IS THE SAME INTERACTION TOO (v2.17), and it needed it more than
+     either curve op did: union, difference and intersect are three answers
+     you cannot tell apart without looking, and it used to commit on the tap
+     and delete both inputs. Now it previews, the chips switch between the
+     three live, and nothing is deleted until OK.
 
-function tubeSelection() {
-  if (App.mode !== 'object') { toast('Tube works in Object mode'); return; }
-  /* ONE EDITING STATE AT A TIME (found in review). Every branch added for the
-     tube reads `App.tubeSetup && !App.pendingOp`, so a pending op left open
-     underneath it meant the tube's slider re-ran the OTHER op, the stepper
-     changed its segment count, and the Caps button fell through to a spec
-     with no toggle and did nothing at all - a live-looking switch that is
-     inert, which this file calls its worst failure mode. Resolved the way
-     startGeoSetup resolves it. */
-  if (App.knife) cancelKnife(true);
-  if (App.pendingOp) {
-    toast('Finish the ' + ((OP_SPECS[App.pendingOp.kind] || {}).label || 'operation') + ' first');
-    return;
+     The inputs are HIDDEN while the preview stands, even when Keep originals
+     is on. Two solids and the thing made out of them, all in the same place,
+     is not a preview of anything - and Keep is a question about what survives
+     the op, not about what you look at while deciding. */
+  boolean: {
+    label: 'Boolean',
+    chips: [['union', 'Union'], ['difference', 'Difference'], ['intersect', 'Intersect']],
+    chipKey: 'kind',
+    chipTip: (k) => (k === 'union' ? 'Everything either shape encloses'
+                   : k === 'difference' ? 'Cut the others out of the first one you tapped'
+                   : 'Only what every shape encloses'),
+    slider: null,
+    stepper: null,
+    toggle: { key: 'keep', label: 'Keep originals',
+              tip: 'Leave what went in standing beside the result', norebuild: true },
+    defaults: () => ({ kind: 'union', keep: !!App.boolKeep }),
+    build: (s) => {
+      const objs = s.inputIds.map(id => findObject(id)).filter(Boolean);
+      if (objs.length < 2) return { ok: false, why: 'the selection changed - pick them again' };
+      return booleanBuild(objs, s.p.kind);
+    },
+    name: (s) => {
+      const a = findObject(s.inputIds[0]);
+      return (a ? a.name : 'Boolean') + ' ' + BOOL_OPS[s.p.kind].suffix;
+    },
+    onChip: null,
+    renames: true,
+    // Which of the three it was. The shared label says only "Boolean", and
+    // the three are told apart by nothing else once the bar has gone.
+    doneLabel: (s) => BOOL_OPS[s.p.kind].label,
+    /* The result wears A's smoothing (v2.13). It is a per-object angle, not
+       a per-face map, so unlike smoothGroups it carries across a renumber
+       without meaning anything different - and a union of two smooth objects
+       coming back flat, silently, is the kind of thing you notice a session
+       later. */
+    after: (s, obj) => {
+      const a = findObject(s.inputIds[0]);
+      const ang = a && a.mesh.userData.autoSmoothAngle;
+      if (typeof ang === 'number') {
+        obj.mesh.userData.autoSmoothAngle = ang;
+        applyShading(obj);
+      }
+    },
+    onToggle: (s) => { App.boolKeep = !!s.p.keep; }
   }
-  const c = oneCurve('Tube');
-  if (!c) return;
-  if (App.tubeSetup) finishTubeSetup(true);
-  const box = curveWorldBox(c);
-  const span = box.getSize(new THREE.Vector3()).length();
-  /* A radius you can SEE on this curve, not a constant. A tenth of the
-     curve's own reach reads as a pipe at any scale, and the slider's range is
-     set from the same number so the whole of it is useful. */
-  const radius = Math.max(0.01, span * 0.06);
-  const made = buildTubeObject(c, radius, 8, true);
-  if (!made) return;
-  App.tubeSetup = { curveId: c.id, objId: made.id, radius: radius, sides: 8, caps: true, span: span };
-  App.selectedObjectIds = new Set([made.id]);
-  App.activeObjectId = null;
-  detachAllGizmos();
-  hideRadialMenu();
-  refreshUI();
-  refreshGizmoAttachment();
-  showTubeBar();
+};
+
+function opSetupSpec() {
+  return App.opSetup ? OP_SETUP[App.opSetup.kind] : null;
 }
 
-function buildTubeObject(curveObj, radius, sides, caps) {
-  const r = tubeCurveOp(curveObj, radius, sides, caps);
+/* Every op here turns a curve into a mesh, and every one of them wants the
+   result centred on itself rather than on the curve that made it. */
+function buildOpSetupObject(spec, s) {
+  const r = spec.build(s);
   if (!r.ok) { toast(r.why); return null; }
+  s.note = r.note || '';
+  s.built = Object.assign({}, s.p);
   const box = new THREE.Box3(), v = new THREE.Vector3();
   for (let i = 0; i < r.ed.positions.length; i += 3) {
     box.expandByPoint(v.set(r.ed.positions[i], r.ed.positions[i + 1], r.ed.positions[i + 2]));
@@ -28662,16 +28652,109 @@ function buildTubeObject(curveObj, radius, sides, caps) {
     r.ed.positions[i + 1] -= c.y;
     r.ed.positions[i + 2] -= c.z;
   }
-  return createObjectFromEditable(curveObj.name + ' tube', c, r.ed, r.mats, {});
+  const obj = createObjectFromEditable(spec.name(s), c, r.ed, r.mats, {});
+  /* Whatever the op wants carried over from what it was made of. Only the
+     boolean has one: its result wears A's smoothing. */
+  if (spec.after) spec.after(s, obj);
+  return { obj: obj, res: r };
 }
 
-function refreshTubeMesh() {
-  const t = App.tubeSetup;
-  if (!t) return;
-  const c = findObject(t.curveId), o = findObject(t.objId);
-  if (!c || !o) { finishTubeSetup(true); return; }
-  const r = tubeCurveOp(c, t.radius, t.sides, t.caps);
-  if (!r.ok) { toast(r.why); return; }
+function startOpSetup(kind, seed) {
+  const spec = OP_SETUP[kind];
+  if (App.mode !== 'object') { toast(spec.label + ' works in Object mode'); return; }
+  if (App.knife) cancelKnife(true);
+  if (App.opSetup) finishOpSetup(true);
+  if (App.pendingOp) {
+    toast('Finish the ' + ((OP_SPECS[App.pendingOp.kind] || {}).label || 'operation') + ' first');
+    return;
+  }
+  /* AND THE TWO OTHER EDITING STATES (v2.17, found in review). Boolean is the
+     one op here that can arrive LATE - it waits on the CSG fetch the first
+     time it runs - so a primitive or a curve started during that wait would
+     have been live underneath this one, sharing the same bar and the same two
+     buttons. Every other door closes these on the way in; this is that door
+     in the direction nothing had needed before. */
+  if (App.geoSetup) { toast('Finish the shape first'); return; }
+  if (App.curveDraw) { toast('Finish the curve first'); return; }
+  const s = {
+    kind: kind,
+    curveId: seed.curveId != null ? seed.curveId : null,
+    inputIds: seed.inputIds ? seed.inputIds.slice() : null,
+    objId: null, p: null, span: 0, hidHere: []
+  };
+  if (s.curveId != null) {
+    const c = findObject(s.curveId);
+    if (!c) return;
+    s.span = curveWorldBox(c).getSize(new THREE.Vector3()).length();
+  }
+  s.p = spec.defaults(s);
+  const made = buildOpSetupObject(spec, s);
+  if (!made) return;                                // refused, and it said why
+  s.objId = made.obj.id;
+  /* HIDDEN ONLY ONCE THE RESULT EXISTS (v2.17a, found by the probe). The
+     first draft hid them first, which reads better and is wrong: isolation's
+     last rule is that hiding everything is never allowed, so with the two
+     inputs the only objects in the scene, App.hidden went from empty to both
+     of them to empty again on the spot - and the preview stood on top of its
+     own inputs, which is a preview of nothing. One object later in the order
+     and the same two lines hold.
+
+     Only the ones this preview hid, so an object you had already hidden stays
+     hidden when it ends. App.hidden is the supported way - setting
+     mesh.visible directly is undone by the next reconcileIsolation - and
+     every exit path below puts these back. */
+  if (s.inputIds) {
+    s.inputIds.forEach(id => {
+      if (!App.hidden.has(id)) { App.hidden.add(id); s.hidHere.push(id); }
+    });
+    reconcileIsolation();
+  }
+  App.opSetup = s;
+  App.selectedObjectIds = new Set([made.obj.id]);
+  App.activeObjectId = null;
+  detachAllGizmos();
+  hideRadialMenu();
+  refreshUI();
+  refreshGizmoAttachment();
+  showOpSetupBar();
+}
+
+/* Only what this preview hid. Called on every way out, including the one
+   restoreDoc takes - which runs BEFORE the scene is rebuilt, so the ids still
+   mean what they meant when they were hidden. */
+function unhideOpSetupInputs(s) {
+  if (!s || !s.hidHere || !s.hidHere.length) return;
+  s.hidHere.forEach(id => App.hidden.delete(id));
+  s.hidHere = [];
+  reconcileIsolation();
+}
+
+function refreshOpSetupMesh() {
+  const s = App.opSetup;
+  if (!s) return;
+  const spec = OP_SETUP[s.kind];
+  const o = findObject(s.objId);
+  if (!o) { finishOpSetup(true); return; }
+  const r = spec.build(s);
+  /* REFUSED MID-DIAL KEEPS WHAT IS ON SCREEN. The settings can pass through a
+     combination the op cannot make - a profile that lies on the axis at one
+     angle, say - and blanking the model at that moment would read as the tool
+     breaking. Say why, leave the last good shape standing, and the next step
+     of the stepper fixes it.
+
+     AND THE CONTROLS GO BACK TO THAT SHAPE (v2.17, found in review). Keeping
+     the mesh was only half of it: a chip is written and lit BEFORE the build
+     runs, so a refused Intersect left the Intersect chip active over a Union
+     - and OK commits the MESH, not the chips. A control saying one thing
+     while OK does another is the failure this file names as its worst. */
+  if (!r.ok) {
+    toast(r.why);
+    s.p = Object.assign({}, s.built);
+    showOpSetupBar();
+    return;
+  }
+  s.note = r.note || '';
+  s.built = Object.assign({}, s.p);
   const box = new THREE.Box3(), v = new THREE.Vector3();
   for (let i = 0; i < r.ed.positions.length; i += 3) {
     box.expandByPoint(v.set(r.ed.positions[i], r.ed.positions[i + 1], r.ed.positions[i + 2]));
@@ -28688,86 +28771,171 @@ function refreshTubeMesh() {
      the old one would leave the new faces unstamped. */
   o.mesh.material = r.mats.length > 1 ? r.mats : r.mats[0];
   rebuildFromEditable(o, r.ed);
+  /* THE NAME FOLLOWS THE CHIPS (v2.17). A boolean opened on Union and
+     finished on Difference kept "A union" in the outliner - the one part of
+     the preview that did not move with the chip. Only an op whose name
+     depends on its settings asks for this. */
+  if (spec.renames) {
+    const nm = spec.name(s);
+    if (nm && o.name !== nm) { o.name = nm; o.mesh.name = nm; }
+  }
   refreshUI();
   refreshGizmoAttachment();
 }
 
-function setTubeRadius(v) {
-  const t = App.tubeSetup;
-  if (!t || !Number.isFinite(v)) return;
-  const hi = Math.max(0.05, t.span * 0.5);
-  t.radius = Math.max(0.005, Math.min(hi, v));
-  document.getElementById('opValue').value = Number(t.radius.toFixed(3));
-  document.getElementById('opSlider').value = t.radius;
-  refreshTubeMesh();
+function setOpSetupAmount(v) {
+  const s = App.opSetup, spec = opSetupSpec();
+  if (!s || !spec || !spec.slider || !Number.isFinite(v)) return;
+  const sl = spec.slider;
+  const lo = sl.min(s.p, s), hi = sl.max(s.p, s);
+  s.p[sl.key] = Math.max(lo, Math.min(hi, v));
+  const shown = Number(s.p[sl.key].toFixed(sl.decimals));
+  document.getElementById('opValue').value = shown;
+  document.getElementById('opSlider').value = s.p[sl.key];
+  syncOpSetupStepper();
+  refreshOpSetupMesh();
 }
 
-function stepTubeSides(delta) {
-  const t = App.tubeSetup;
-  if (!t) return;
-  const n = Math.max(3, Math.min(TUBE_SIDES_MAX, t.sides + delta));
-  if (n === t.sides) return;
-  t.sides = n;
+function stepOpSetup(delta) {
+  const s = App.opSetup, spec = opSetupSpec();
+  if (!s || !spec || !spec.stepper) return;
+  const st = spec.stepper;
+  const n = Math.max(st.min(s.p, s), Math.min(st.max(s.p, s), (s.p[st.key] | 0) + delta));
+  if (n === s.p[st.key]) return;
+  s.p[st.key] = n;
   document.getElementById('opSegValue').textContent = n;
-  refreshTubeMesh();
+  refreshOpSetupMesh();
 }
 
-function showTubeBar() {
+/* The floor moves with the angle, so the number on screen has to move with
+   it too - dropping to an arc and back at two segments would otherwise leave
+   the readout saying 2 while the sweep used 3. */
+function syncOpSetupStepper() {
+  const s = App.opSetup, spec = opSetupSpec();
+  if (!s || !spec || !spec.stepper) return;
+  const st = spec.stepper;
+  const n = Math.max(st.min(s.p, s), Math.min(st.max(s.p, s), s.p[st.key] | 0));
+  if (n !== s.p[st.key]) s.p[st.key] = n;
+  document.getElementById('opSegValue').textContent = n;
+}
+
+function toggleOpSetupSwitch() {
+  const s = App.opSetup, spec = opSetupSpec();
+  if (!s || !spec || !spec.toggle) return;
+  s.p[spec.toggle.key] = !s.p[spec.toggle.key];
+  document.getElementById('opToggle').classList.toggle('active', !!s.p[spec.toggle.key]);
+  if (spec.onToggle) spec.onToggle(s);
+  // Keep originals changes what SURVIVES, not what the preview looks like.
+  if (!spec.toggle.norebuild) refreshOpSetupMesh();
+}
+
+function showOpSetupBar() {
   mirrorChooser = null;
-  booleanChooser = null;
-  latheChooser = null;
-  const t = App.tubeSetup;
+  const s = App.opSetup, spec = opSetupSpec();
+  if (!s || !spec) return;
   const el = document.getElementById('opGrouping');
   el.innerHTML = '';
-  el.style.display = 'none';
-  document.getElementById('opLabel').textContent = 'Tube · radius';
+  if (spec.chips) {
+    el.style.display = 'inline-flex';
+    spec.chips.forEach(pair => {
+      const key = pair[0];
+      const b = document.createElement('button');
+      b.textContent = pair[1];
+      b.title = spec.chipTip ? spec.chipTip(key) : '';
+      if (s.p[spec.chipKey] === key) b.classList.add('active');
+      b.addEventListener('click', () => {
+        if (!App.opSetup) return;
+        App.opSetup.p[spec.chipKey] = key;
+        if (spec.onChip) spec.onChip(key);
+        showOpSetupBar();          // re-rendered so the chosen chip says so
+        refreshOpSetupMesh();
+      });
+      el.appendChild(b);
+    });
+  } else {
+    el.style.display = 'none';
+  }
+
   const sl = document.getElementById('opSlider');
-  sl.style.display = '';
-  sl.min = 0.005;
-  sl.max = Math.max(0.05, t.span * 0.5);
-  sl.step = Math.max(0.001, t.span * 0.002);
-  sl.value = t.radius;
   const val = document.getElementById('opValue');
-  val.style.display = '';
-  val.value = Number(t.radius.toFixed(3));
+  if (spec.slider) {
+    sl.style.display = ''; val.style.display = '';
+    sl.min = spec.slider.min(s.p, s);
+    sl.max = spec.slider.max(s.p, s);
+    sl.step = spec.slider.step(s.p, s);
+    sl.value = s.p[spec.slider.key];
+    val.value = Number(s.p[spec.slider.key].toFixed(spec.slider.decimals));
+  } else {
+    sl.style.display = 'none'; val.style.display = 'none';
+  }
   document.getElementById('opHint').style.display = 'none';
-  document.getElementById('opSegments').style.display = '';
-  document.getElementById('opSegValue').textContent = t.sides;
+  document.getElementById('opSegments').style.display = spec.stepper ? '' : 'none';
+  if (spec.stepper) document.getElementById('opSegValue').textContent = s.p[spec.stepper.key];
+
   const wrap = document.getElementById('opToggleWrap');
   const btn = document.getElementById('opToggle');
-  wrap.style.display = 'inline-flex';
-  btn.textContent = 'Caps';
-  btn.title = 'Close the two ends';
-  btn.classList.toggle('active', !!t.caps);
+  if (spec.toggle) {
+    wrap.style.display = 'inline-flex';
+    btn.textContent = spec.toggle.label;
+    btn.title = spec.toggle.tip || '';
+    btn.classList.toggle('active', !!s.p[spec.toggle.key]);
+  } else {
+    wrap.style.display = 'none';
+  }
+  document.getElementById('opLabel').textContent =
+    spec.label + (spec.slider ? ' · ' + (spec.slider.key === 'sweep' ? 'degrees' : 'radius') : '');
   document.getElementById('opOk').style.display = '';
+  document.getElementById('opCancel').style.display = '';
   surfaceIn(opBarEl);
 }
 
 /* Dropped without touching the scene, for restoreDoc: undo and load rebuild
    every object, so there is nothing left to keep OR to remove - and either
-   branch of finishTubeSetup would reach for an object id that now means
+   branch of finishOpSetup would reach for an object id that now means
    something else entirely in the loaded document. */
-function abandonTubeSetup() {
-  if (!App.tubeSetup) return;
-  App.tubeSetup = null;
+function abandonOpSetup() {
+  if (!App.opSetup) return;
+  unhideOpSetupInputs(App.opSetup);
+  App.opSetup = null;
   hideOpBar();
   document.getElementById('opToggleWrap').style.display = 'none';
 }
 
-function finishTubeSetup(keep) {
-  const t = App.tubeSetup;
-  if (!t) return;
-  App.tubeSetup = null;
+function finishOpSetup(keep) {
+  const s = App.opSetup;
+  if (!s) return;
+  unhideOpSetupInputs(s);
+  App.opSetup = null;
   hideOpBar();
   document.getElementById('opToggleWrap').style.display = 'none';
-  const o = findObject(t.objId);
+  const o = findObject(s.objId);
   if (keep) {
-    if (o) { pushHistory(); return; }
-    /* The tube was deleted from the outliner while its bar was open, so there
-       is nothing to keep - but the bar has just gone and the outliner, the
-       object count and the gizmo are all still describing the scene as it was
-       before the delete. pushHistory is what refreshes on the normal path;
-       with nothing to push, this does it instead. */
+    if (o) {
+      /* The inputs go now, not before - so Cancel had something to give back
+         and OK is the first moment anything is destroyed. */
+      if (s.inputIds && !s.p.keep) {
+        const gone = s.inputIds.map(id => findObject(id)).filter(Boolean);
+        if (gone.length) removeObjects(gone);
+        App.selectedObjectIds = new Set([o.id]);
+      }
+      pushHistory();
+      const w = auditWinding(o);
+      if (PICK_DEBUG) console.log('[winding]', JSON.stringify(w));
+      const trouble = [];
+      if (w.boundary) trouble.push(w.boundary + ' open edge' + (w.boundary === 1 ? '' : 's'));
+      if (w.conflictEdges) trouble.push(w.conflictEdges + ' reversed');
+      if (w.nonManifold) trouble.push(w.nonManifold + ' non-manifold');
+      if (s.note) trouble.push(s.note);
+      const done = OP_SETUP[s.kind];
+      toast((done.doneLabel ? done.doneLabel(s) : done.label) +
+            ' · ' + o.mesh.geometry.groups.length + ' faces' +
+            (trouble.length ? ' - ' + trouble.join(', ') : ''));
+      return;
+    }
+    /* Deleted from the outliner while its bar was open, so there is nothing to
+       keep - but the outliner, the object count and the gizmo are all still
+       describing the scene as it was before. pushHistory is what refreshes on
+       the normal path; with nothing to push, this does it instead. */
     refreshUI();
     refreshGizmoAttachment();
     return;
@@ -28775,10 +28943,13 @@ function finishTubeSetup(keep) {
   if (o) {
     removeObjects([o]);
     App.selectedObjectIds.delete(o.id);
-    App.selectedObjectIds.add(t.curveId);
+    if (findObject(s.curveId)) App.selectedObjectIds.add(s.curveId);
+    if (s.inputIds) {
+      App.selectedObjectIds = new Set(s.inputIds.filter(id => findObject(id)));
+    }
     toast('Cancelled');
     /* The history is untouched by a discard - nothing was ever pushed - but
-       the AUTOSAVE is not the history, and the half-built tube has been in
+       the AUTOSAVE is not the history, and the half-built shape has been in
        App.objects since the first tap. The same line, for the same reason,
        that finishGeoSetup carries. */
     scheduleAutosave();
@@ -28787,102 +28958,27 @@ function finishTubeSetup(keep) {
   refreshGizmoAttachment();
 }
 
+function tubeSelection() {
+  const c = oneCurve('Tube');
+  if (c) startOpSetup('tube', { curveId: c.id });
+}
+
+/* LATHE IS A SETUP NOW, NOT A CHOOSER (v2.17). It used to ask for an axis on
+   three chips and commit on the tap - which is right when the axis is the
+   whole question, and it stopped being the whole question the moment the
+   angle and the segment count joined it. You cannot pick 240 degrees in
+   fourteen segments from a menu; you have to see it.
+
+   So it takes the shape Tube already had, and they now share it: the mesh
+   appears at once, the bar is a set of handles on it, and nothing reaches
+   history until OK. */
 function latheSelection() {
-  if (App.mode !== 'object') { toast('Lathe works in Object mode'); return; }
-  if (App.knife) cancelKnife(true);
-  if (App.tubeSetup) finishTubeSetup(true);
-  if (App.pendingOp) {
-    toast('Finish the ' + ((OP_SPECS[App.pendingOp.kind] || {}).label || 'operation') + ' first');
-    return;
-  }
   const c = oneCurve('Lathe');
   if (!c) return;
   if (curveSamplePoints(c.mesh.userData.kubikCurve).length < 2) {
     toast('That curve has nothing to turn'); return;
   }
-  showLatheChooser(c);
-}
-
-/* Three chips and no OK, the way Mirror asks Joined / Apart / Flip: the axis
-   IS the whole question, and a bar that asks it and then asks again whether
-   you meant it is a bar with a step in it that nobody wanted.
-
-   A FULL TURN, and only a full turn, in this version. An arc wants a slider,
-   and a slider wants the pendingOp machinery so that dragging it re-runs the
-   sweep live - which is the right way to build it and is its own increment.
-   Said out loud here rather than left as a surprise. */
-function showLatheChooser(curveObj) {
-  mirrorChooser = null;
-  booleanChooser = null;
-  /* Captured NOW, the a2.109 rule: this bar has no exit, so it could sit
-     through any amount of later work and then turn whatever happened to be
-     selected by the time a chip was pressed. */
-  latheChooser = { id: curveObj.id };
-  const el = document.getElementById('opGrouping');
-  el.innerHTML = '';
-  el.style.display = 'inline-flex';
-  [['x', 'X'], ['y', 'Y'], ['z', 'Z']].forEach(pair => {
-    const key = pair[0];
-    const b = document.createElement('button');
-    b.textContent = pair[1];
-    b.title = 'Turn about the ' + pair[1] + ' axis';
-    b.addEventListener('click', () => {
-      const id = latheChooser && latheChooser.id;
-      hideOpBar();                                   // clears latheChooser
-      const c = id != null ? findObject(id) : null;
-      if (!c || !isCurve(c)) { toast('That curve is gone'); return; }
-      runLathe(c, key);
-    });
-    el.appendChild(b);
-  });
-  document.getElementById('opLabel').textContent = 'Lathe · turn about';
-  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opToggleWrap', 'opOk'].forEach(id => {
-    document.getElementById(id).style.display = 'none';
-  });
-  surfaceIn(opBarEl);
-}
-
-function runLathe(curveObj, axis) {
-  const cv = curveObj.mesh.userData.kubikCurve;
-  const r = latheCurveOp(curveObj, axis, 360, cv.res, 1);
-  if (!r.ok) { toast(r.why); return; }
-
-  /* The result's own bounding-box centre is its pivot - what exists now,
-     rather than where the curve that made it happened to sit. */
-  const box = new THREE.Box3(), v = new THREE.Vector3();
-  for (let i = 0; i < r.ed.positions.length; i += 3) {
-    box.expandByPoint(v.set(r.ed.positions[i], r.ed.positions[i + 1], r.ed.positions[i + 2]));
-  }
-  const c = box.getCenter(new THREE.Vector3());
-  for (let i = 0; i < r.ed.positions.length; i += 3) {
-    r.ed.positions[i] -= c.x;
-    r.ed.positions[i + 1] -= c.y;
-    r.ed.positions[i + 2] -= c.z;
-  }
-
-  const made = createObjectFromEditable(curveObj.name + ' lathe', c, r.ed, r.mats, {});
-  if (!made) { toast('Nothing swept'); return; }
-
-  /* THE CURVE SURVIVES. It is the thing you will adjust and turn again, and
-     a lathe that eats its own profile makes that a re-draw every time. It is
-     also why the result is SELECTED and the curve is not: what you want in
-     your hand afterwards is the shape. */
-  App.selectedObjectIds = new Set([made.id]);
-  App.activeObjectId = null;
-  detachAllGizmos();
-  hideRadialMenu();
-  refreshUI();
-  refreshGizmoAttachment();
-  pushHistory();
-
-  const w = auditWinding(made);
-  if (PICK_DEBUG) console.log('[winding]', JSON.stringify(w));
-  const trouble = [];
-  if (w.boundary) trouble.push(w.boundary + ' open edge' + (w.boundary === 1 ? '' : 's'));
-  if (w.conflictEdges) trouble.push(w.conflictEdges + ' reversed');
-  if (w.nonManifold) trouble.push(w.nonManifold + ' non-manifold');
-  toast('Lathe · ' + r.count + ' faces about ' + axis.toUpperCase() +
-        (trouble.length ? ' - ' + trouble.join(', ') : ''));
+  startOpSetup('lathe', { curveId: c.id });
 }
 
 function selectedCurves() {
@@ -32420,7 +32516,7 @@ window.addEventListener('keydown', (ev) => {
 
      Undo and Redo are exempt. They have their own meaning over an open setup
      - take back what is on screen - and they enforce it themselves. */
-  if (App.geoSetup || App.tubeSetup) {
+  if (App.geoSetup || App.opSetup) {
     const undoish = (ev.ctrlKey || ev.metaKey) && 'zy'.includes(ev.key.toLowerCase());
     /* A TUBE SETUP IS THE SAME SHAPE, and was missed (found in review). Its
        object exists from the first tap and is selected, so Ctrl+D copied an
@@ -32428,7 +32524,7 @@ window.addEventListener('keydown', (ev) => {
        very object the bar was still pointing at. */
     if (!undoish) {
       if (App.geoSetup) finishGeoSetup(true);
-      if (App.tubeSetup) finishTubeSetup(true);
+      if (App.opSetup) finishOpSetup(true);
     }
   }
   if (App.pendingOp) {
@@ -33310,9 +33406,10 @@ if (PICK_DEBUG) {
     stepSegments, refreshOpGrouping, refreshOpAmountVisibility,
     activeRange, logicalPos, creaseKeyFor,
     get mirrorChooser() { return mirrorChooser; },
-    // v2.13: the boolean, its chooser and the survey that refuses ahead of it.
-    get booleanChooser() { return booleanChooser; },
-    showBooleanChooser, runBoolean, booleanSurvey, editableFromCSGResult,
+    /* v2.13, reshaped in v2.17: the ring seat, the build behind its
+       preview, and the survey that refuses ahead of both. */
+    booleanSelection, openBooleanSetup, booleanBuild, booleanSurvey,
+    editableFromCSGResult,
     /* THREE and the primitive builder, so a probe can put a real scene
        together rather than hand-rolling a cube and getting the winding
        wrong - which is the one thing a winding probe must not do. */
@@ -33325,12 +33422,13 @@ if (PICK_DEBUG) {
     cycleCurveRes, curveAddPoints, HUB_TOOLS_CURVE, CURVE_RES_STEPS,
     get curveDraw() { return App.curveDraw; },
     // v2.15: the lathe, and the sweep it now shares with Revolve.
-    revolveSweep, latheCurveOp, latheSelection, runLathe, revolveOp,
-    get latheChooser() { return latheChooser; },
+    revolveSweep, latheCurveOp, latheSelection, revolveOp,
     // v2.16: the tube, its frames and its setup bar.
-    tubeCurveOp, tubeFrames, tubeSelection, buildTubeObject, refreshTubeMesh,
-    setTubeRadius, stepTubeSides, finishTubeSetup, TUBE_SIDES_MAX,
-    get tubeSetup() { return App.tubeSetup; },
+    tubeCurveOp, tubeFrames, tubeSelection, TUBE_SIDES_MAX,
+    // v2.17: one setup for both ops.
+    OP_SETUP, startOpSetup, finishOpSetup, abandonOpSetup, refreshOpSetupMesh,
+    setOpSetupAmount, stepOpSetup, toggleOpSetupSwitch, opSetupSpec,
+    get opSetup() { return App.opSetup; },
     get activePointers() { return activePointers; },
     get directDrag() { return directDrag; },
     finishGeoSetup,

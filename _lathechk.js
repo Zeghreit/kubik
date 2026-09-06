@@ -43,6 +43,22 @@
      face's own boundary loop, against the radial at its centroid. This is the
      question revolveOp's winding block has been answering unmeasured since
      v2.11. */
+  /* Lathe is a SETUP now, not a one-tap chooser (v2.17): it makes a preview
+     you dial in and confirm. Driven here the way a finger drives it - open,
+     set, refresh, OK - so the probe exercises the real path rather than a
+     shortcut past the bar. */
+  function lathe(c, axis, sweep, segs) {
+    K.App.selectedObjectIds = new Set([c.id]);
+    K.startOpSetup('lathe', { curveId: c.id });
+    if (!K.opSetup) return null;
+    if (axis) K.opSetup.p.axis = axis;
+    if (sweep !== undefined) K.opSetup.p.sweep = sweep;
+    if (segs !== undefined) K.opSetup.p.segs = segs;
+    K.refreshOpSetupMesh();
+    K.finishOpSetup(true);
+    return K.App.objects.filter(o => !K.isCurve(o))[0];
+  }
+
   function facesOutward(obj, gi, axis) {
     const ed = K.toEditable(obj.mesh);
     const L = K.edLogical(ed);
@@ -138,7 +154,7 @@
     clearScene();
     const prof = mkCurve('Profile', [[0.6, -0.5, 0], [0.6, 0.5, 0]], { type: 'poly', res: 8 });
     K.App.selectedObjectIds = new Set([prof.id]);
-    K.runLathe(prof, 'y');
+    lathe(prof, 'y');
     let made = K.App.objects.filter(o => !K.isCurve(o))[0];
     let w = made ? K.auditWinding(made) : null;
     ok('2.turn   it made a mesh', !!made && made.name.indexOf('lathe') >= 0,
@@ -169,7 +185,7 @@
        point order is ours to reverse. */
     clearScene();
     const up = mkCurve('Up', [[0.6, -0.5, 0], [0.6, 0.5, 0]], { type: 'poly', res: 8 });
-    K.runLathe(up, 'y');
+    lathe(up, 'y');
     const mUp = K.App.objects.filter(o => !K.isCurve(o))[0];
     const dUp = mUp ? facesOutward(mUp, 0, 'y') : null;
     ok('3.facing a curve drawn UP sweeps outward', dUp !== null && dUp > 0,
@@ -177,7 +193,7 @@
 
     clearScene();
     const dn = mkCurve('Down', [[0.6, 0.5, 0], [0.6, -0.5, 0]], { type: 'poly', res: 8 });
-    K.runLathe(dn, 'y');
+    lathe(dn, 'y');
     const mDn = K.App.objects.filter(o => !K.isCurve(o))[0];
     const dDn = mDn ? facesOutward(mDn, 0, 'y') : null;
     ok('3.facing and drawn DOWN it still sweeps outward', dDn !== null && dDn > 0,
@@ -191,7 +207,7 @@
     const ring = mkCurve('Ring',
       [[0.8, -0.2, 0], [1.2, -0.2, 0], [1.2, 0.2, 0], [0.8, 0.2, 0]],
       { type: 'poly', res: 8, closed: true });
-    K.runLathe(ring, 'y');
+    lathe(ring, 'y');
     const torus = K.App.objects.filter(o => !K.isCurve(o))[0];
     const tw = torus ? K.auditWinding(torus) : null;
     ok('4.closed a closed profile turns into a closed solid',
@@ -209,7 +225,7 @@
     // the quads round it into the triangles a cone actually has.
     clearScene();
     const cone = mkCurve('Cone', [[0, 1, 0], [0.7, -0.3, 0]], { type: 'poly', res: 8 });
-    K.runLathe(cone, 'y');
+    lathe(cone, 'y');
     const cm = K.App.objects.filter(o => !K.isCurve(o))[0];
     const cw = cm ? K.auditWinding(cm) : null;
     ok('5.pole   a point on the axis makes a cone, not a collapse',
@@ -230,11 +246,31 @@
     mark('5.pole');
 
     // 6 -- the other refusals ----------------------------------------------
+    /* NOT A REFUSAL ANY MORE, A CLAMP (v2.17). The op still refuses two
+       segments on a full turn - that is arithmetic - but the bar no longer
+       lets you ask for it: the stepper's floor is 3 while the angle is 360
+       and 1 once it is an arc, so the control stops instead of arguing. */
     clearScene();
     const coarse = mkCurve('Coarse', [[0.6, -0.5, 0], [0.6, 0.5, 0]], { type: 'poly', res: 2 });
     const rC = K.latheCurveOp(coarse, 'y', 360, 2, 1);
-    ok('6.refuse a full turn in 2 segments is refused, and says what to raise',
-       rC.ok === false && /Segments/.test(rC.why || ''), JSON.stringify(rC));
+    ok('6.refuse the op itself still refuses 2 segments on a full turn',
+       rC.ok === false && /segments/i.test(rC.why || ''), JSON.stringify(rC));
+    K.App.selectedObjectIds = new Set([coarse.id]);
+    K.startOpSetup('lathe', { curveId: coarse.id });
+    const floor360 = K.opSetup ? K.opSetup.p.segs : -1;
+    if (K.opSetup) { K.stepOpSetup(-5); }
+    const clamped = K.opSetup ? K.opSetup.p.segs : -1;
+    ok('6.refuse and the bar cannot ask for it - the stepper stops at 3',
+       floor360 === 3 && clamped === 3, floor360 + ' then ' + clamped);
+    if (K.opSetup) {
+      K.setOpSetupAmount(180);
+      K.stepOpSetup(-5);
+      ok('6.refuse but an ARC may go down to one', K.opSetup.p.segs === 1,
+         'segs=' + K.opSetup.p.segs);
+      K.finishOpSetup(false);
+    } else {
+      ok('6.refuse but an ARC may go down to one', false, 'no setup');
+    }
 
     clearScene();
     const lone = mkCurve('Lone', [[0.5, 0, 0]], { type: 'poly', res: 8 });
@@ -246,7 +282,7 @@
     clearScene();
     const uc = mkCurve('U', [[0.6, -0.5, 0], [0.6, 0.5, 0]], { type: 'poly', res: 8 });
     K.pushHistory();
-    K.runLathe(uc, 'y');
+    lathe(uc, 'y');
     const n1 = K.App.objects.length;
     K.undo();
     ok('7.undo   the mesh goes and the curve stays',
@@ -332,7 +368,7 @@
         if (dir) pts.reverse();
         clearScene();
         const c = mkCurve('R', pts, { type: 'poly', res: 8, closed: true });
-        K.runLathe(c, 'y');
+        lathe(c, 'y');
         const m = K.App.objects.filter(o => !K.isCurve(o))[0];
         const v = m ? signedVolume(m) : 0;
         if (v < worstV) { worstV = v; worstName = 'start ' + start + (dir ? ' reversed' : ''); }
@@ -346,7 +382,7 @@
     // decide the whole shell.
     clearScene();
     const cup = mkCurve('Cup', [[0, 0, 0], [1, 0, 0], [1, 1, 0]], { type: 'poly', res: 8 });
-    K.runLathe(cup, 'y');
+    lathe(cup, 'y');
     const cupM = K.App.objects.filter(o => !K.isCurve(o))[0];
     const cupF = cupM ? outwardFlux(cupM, 'y') : 0;
     ok('9.orient a cup drawn from the axis faces outward, not in',
@@ -354,7 +390,7 @@
 
     clearScene();
     const cupB = mkCurve('CupB', [[0, 0, 0], [1, 0, 0], [1, 1, 0]], { type: 'bezier', res: 8 });
-    K.runLathe(cupB, 'y');
+    lathe(cupB, 'y');
     const cupBM = K.App.objects.filter(o => !K.isCurve(o))[0];
     const cupBF = cupBM ? outwardFlux(cupBM, 'y') : 0;
     ok('9.orient and so does the Bezier version, whose first leg dips',
@@ -364,7 +400,7 @@
     // 10 -- degenerate profiles the review named ---------------------------
     clearScene();
     const two = mkCurve('Two', [[0.6, 0, 0], [0.6, 1, 0]], { type: 'poly', res: 8, closed: true });
-    K.runLathe(two, 'y');
+    lathe(two, 'y');
     const twoM = K.App.objects.filter(o => !K.isCurve(o))[0];
     const twoW = twoM ? K.auditWinding(twoM) : null;
     ok('10.degen a CLOSED two-point curve is swept as the open profile it is',
@@ -373,12 +409,95 @@
 
     clearScene();
     const rep = mkCurve('Rep', [[0.6, 0, 0], [0.6, 0, 0], [0.6, 1, 0]], { type: 'poly', res: 8 });
-    K.runLathe(rep, 'y');
+    lathe(rep, 'y');
     const repM = K.App.objects.filter(o => !K.isCurve(o))[0];
     ok('10.degen a repeated point is dropped, not swept into zero-area faces',
        !!repM && repM.mesh.geometry.groups.length === 8,
        repM && ('groups=' + repM.mesh.geometry.groups.length));
     mark('10.degen');
+
+    /* 11 -- THE PREVIEW, THE DEGREES AND THE STEPPER (v2.17) ---------------
+       Lathe stopped committing on the tap. What it does now is make the mesh
+       at once and hand you handles on it, so the things to check are that the
+       handles reach the shape and that nothing reaches history until OK. */
+    clearScene();
+    const pv = mkCurve('P', [[0.6, -0.5, 0], [0.6, 0.5, 0]], { type: 'poly', res: 8 });
+    K.App.selectedObjectIds = new Set([pv.id]);
+    K.pushHistory();
+    const steps0 = K.App.objects.length;
+    K.startOpSetup('lathe', { curveId: pv.id });
+    ok('11.preview the mesh is there the moment you tap it',
+       !!K.opSetup && K.App.objects.length === 2, 'objects=' + K.App.objects.length);
+    ok('11.preview and it opened on a full turn at the curve’s own segments',
+       !!K.opSetup && K.opSetup.p.sweep === 360 && K.opSetup.p.segs === 8,
+       K.opSetup && (K.opSetup.p.sweep + '° x ' + K.opSetup.p.segs));
+
+    let pm = K.findObject(K.opSetup.objId);
+    const full = K.auditWinding(pm);
+    ok('11.preview a full turn closes round: two rims and nothing else',
+       full.boundary === 16, 'boundary=' + full.boundary);
+
+    /* DEGREES. A half turn is the same tool - and the difference is visible
+       in the topology, not just the picture: an arc has the two ends of the
+       profile standing open as well as its two rims. */
+    K.setOpSetupAmount(180);
+    pm = K.findObject(K.opSetup.objId);
+    const half = K.auditWinding(pm);
+    ok('11.preview 180 degrees leaves the profile ends open too',
+       half.boundary === 18 && half.conflictEdges === 0,
+       'boundary=' + half.boundary + ' ' + JSON.stringify(half));
+    /* Measured on Z, not X. A half turn about Y starting at +x still reaches
+       -x, so the X span is the full 1.2 either way; it is the OTHER axis that
+       only gets one side of the circle. The first draft asserted X and failed,
+       correctly, on a lathe that was right. */
+    const halfSz = new K.THREE.Box3().setFromObject(pm.mesh).getSize(new K.THREE.Vector3());
+    ok('11.preview and it only reaches half way round',
+       halfSz.z < 0.7 && halfSz.x > 1.1,
+       'x ' + halfSz.x.toFixed(3) + ' z ' + halfSz.z.toFixed(3));
+
+    // THE STEPPER is what makes it rounder, which is a face count.
+    K.setOpSetupAmount(360);
+    K.stepOpSetup(4);
+    pm = K.findObject(K.opSetup.objId);
+    ok('11.preview the stepper makes it rounder',
+       K.opSetup.p.segs === 12 && pm.mesh.geometry.groups.length === 12,
+       K.opSetup.p.segs + ' segments, ' + pm.mesh.geometry.groups.length + ' faces');
+
+    // The axis chips still work, and are remembered for the next one.
+    K.opSetup.p.axis = 'x';
+    K.refreshOpSetupMesh();
+    pm = K.findObject(K.opSetup.objId);
+    const xBox = new K.THREE.Box3().setFromObject(pm.mesh);
+    ok('11.preview turning about X sweeps the other way round',
+       xBox.getSize(new K.THREE.Vector3()).x < 0.2,
+       'x span = ' + xBox.getSize(new K.THREE.Vector3()).x.toFixed(3));
+
+    ok('11.preview and NOTHING has reached history yet',
+       K.App.objects.length === 2, 'objects=' + K.App.objects.length);
+    K.finishOpSetup(false);
+    ok('11.preview Cancel takes the mesh away and gives the curve back',
+       K.App.objects.length === steps0 && K.isCurve(K.App.objects[0]) &&
+       K.App.selectedObjectIds.has(pv.id),
+       'objects=' + K.App.objects.length);
+    mark('11.preview');
+
+    // 12 -- and OK is exactly one step, whatever you tried on the way -------
+    clearScene();
+    const ov = mkCurve('O', [[0.6, -0.5, 0], [0.6, 0.5, 0]], { type: 'poly', res: 8 });
+    K.App.selectedObjectIds = new Set([ov.id]);
+    K.pushHistory();
+    K.startOpSetup('lathe', { curveId: ov.id });
+    K.setOpSetupAmount(90);
+    K.stepOpSetup(3);
+    K.setOpSetupAmount(270);
+    K.stepOpSetup(-2);
+    K.finishOpSetup(true);
+    const kept = K.App.objects.length;
+    K.undo();
+    ok('12.commit OK keeps it, and every setting tried on the way is ONE step',
+       kept === 2 && K.App.objects.length === 1 && K.isCurve(K.App.objects[0]),
+       kept + ' -> ' + K.App.objects.length);
+    mark('12.commit');
 
     finish();
   }

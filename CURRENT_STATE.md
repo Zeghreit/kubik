@@ -16,7 +16,7 @@ work. What is gone is the implied ceiling.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.16**
+- Version at time of writing: **2.17**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -46,6 +46,100 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Preview and confirm: Lathe, Tube and Boolean (v2.17)
+
+Three ops that used to commit on the tap now make the result at once and hand
+you handles on it. Nothing reaches the history until ✓; ✕ takes it away and
+puts back what was there. This is `startGeoSetup`'s shape - the primitive that
+appears finished and is then adjusted - applied to the three ops where you
+cannot know what you asked for until you have seen it.
+
+- **Lathe** gained the two controls that make it a tool rather than a switch:
+  a **degrees slider** (15-360 in fifteens, so 90 / 180 / 270 land exactly)
+  and a **± segment stepper**. Half a ring is now the same tool as a full
+  wheel. There is no Flow option - it was scoped and dropped; the segment
+  count is what makes it round.
+- **Tube** was already a setup at v2.16 and is unchanged apart from sharing
+  the code.
+- **Boolean** stopped committing on the tap and deleting both inputs on the
+  way out. Union, difference and intersect are three answers you cannot tell
+  apart without looking at them, so now you look at them.
+
+### One state, one table
+
+`App.opSetup` is the whole thing: `{ kind, curveId, inputIds, objId, p, built,
+span, note, hidHere }`. `OP_SETUP[kind]` says what the bar holds (chips,
+slider, stepper, toggle) and which function builds the mesh; everything else -
+`startOpSetup`, `refreshOpSetupMesh`, `finishOpSetup` and the six lifecycle
+sites that have to know a setup is open - is shared.
+
+That sharing is the point rather than tidiness. The v2.16 review found SIX
+places that had to learn about the tube: `restoreDoc`, the keydown shortcuts,
+`endDirectDrag`, `setMode`, `startGeoSetup` and the shared bar's listeners. A
+second variable for the lathe would have meant auditing all six again and
+getting it right twice.
+
+### The boolean split in two
+
+`booleanBuild(objs, kind)` is the operation with nothing around it: brushes in,
+one editable out, no scene, no history, no toast. It is **synchronous** - the
+engine is fetched once by `booleanSelection` before the bar opens, so a chip
+tap can never end up waiting on a network. `booleanSelection` surveys, loads,
+and hands off to `openBooleanSetup`; the second boolean of a session opens with
+no wait at all.
+
+The inputs are **hidden** while the preview stands, even with Keep originals
+on: two solids and the thing made out of them, all in the same place, is a
+preview of nothing. Keep is a question about what survives ✓, not about what
+you look at while deciding.
+
+### Two orderings that are not free
+
+- **The result is made BEFORE the inputs are hidden.** Isolation's last rule
+  is that hiding everything is never allowed, so with the two inputs the only
+  objects in the scene, `App.hidden` went from empty to both of them to empty
+  again on the spot - and the preview stood on top of its own inputs. The
+  probe found this; the code reads worse and is right.
+- **✓ is the first moment anything is destroyed.** `finishOpSetup` unhides,
+  then removes the inputs, then pushes history - one step, whatever you tried
+  on the way.
+
+### What the review found, and it was all lifecycle
+
+Six defects, none of them in the geometry:
+
+1. **A refused chip stayed lit over the shape it did not make.** The chip is
+   written and lit before the build runs, and a refused build deliberately
+   keeps the last good mesh - so the bar said Intersect while ✓ committed the
+   Union. `s.built` is now the settings that made what is on screen, and a
+   refusal puts the controls back to them.
+2. **Undo with a setup open took back the committed step as well.** `undo`
+   knew about `geoSetup` and `pendingOp` and not about this - the exact v2.3b
+   bug, in a state that did not exist when it was fixed. Redo declines instead,
+   because committing truncates the steps it was asked to walk into.
+3. **A slider op could open on top of a preview.** Subdivide, Clean up, Array
+   and Solidify only want one object selected in Object mode, which is exactly
+   what a preview leaves. They then shared one bar and one pair of buttons: ✓
+   committed the preview with the un-accepted op baked in, ✕ deleted the object
+   the pending op still pointed at and left a `pendingOp` with no bar that
+   swallowed every keystroke after it. `beginPendingOp` now refuses.
+4. **A file opened during the CSG fetch retargeted the boolean.** Ids are
+   handed out from 1 and a load renumbers from 1, so ids 3 and 4 named two
+   unrelated meshes in the document that had just arrived. The far side of the
+   wait now checks object IDENTITY, which no load, undo or delete survives.
+5. **A primitive or a curve started during that same wait** was left live
+   underneath the setup, sharing its bar. `startOpSetup` refuses over either.
+6. **One `.catch` covered the whole chain**, so anything thrown after the load
+   was reported as a network failure.
+
+### The probe
+
+`_boolchk` is 55 checks in 18 sections; `_lathechk` 40 in 12. Both were shown
+to FAIL against `_mkboolbroken.py` / `_mklathebroken.py`, which take the fixes
+back out - 26 failures for the boolean, including every one of the new
+sections. Section 18 covers all six defects above, and reproduces the id case
+exactly: same ids, new objects, by resetting `App.nextId`.
 
 ## Tube (v2.16), and the review that reshaped all three
 
@@ -205,11 +299,10 @@ uses, so a profile had to be drawn inside a solid and the solid's own face was
 then left standing in the middle of the result. That was the fin, and a curve
 cannot have it, because a curve has no faces.
 
-Curve ring, seat 6 - held for it since v2.14. Three chips on the op bar, X / Y
-/ Z, committing on the tap the way Mirror does: the axis IS the whole
-question. **The curve's own `res` is the step count**, which is the same
-quantity in both directions of a surface of revolution and is already on the
-curve's ring where you can see it.
+Curve ring, seat 6 - held for it since v2.14. **Since v2.17 it is a preview
+setup** (see that section): X / Y / Z chips, a degrees slider and a ± segment
+stepper, all on a result that is already in the scene. The curve's own `res`
+is where the segment count STARTS; it is no longer where it ends.
 
 ### The sweep is now ONE piece of code
 
@@ -508,16 +601,14 @@ The MESH door in the Object ring, seat 6, one seat in from Join - the two
 answer the same question and differ only in whether the overlap survives.
 Disabled rather than absent for a selection of one (the a2.112 rule).
 
-One seat, not three. Tapping it opens an op-bar chooser - **Union /
-Difference / Intersect** - the way Mirror asks Joined / Apart / Flip. **Keep
-originals** is the bar's independent toggle (`App.boolKeep`, remembered),
-wired by hand because the chooser bars do not go through `OP_SPECS`; the
-`#opToggle` listener has a branch for it, because a switch that looks live and
-does nothing is the worst failure mode this file records.
+One seat, not three. **Since v2.17 it is a preview setup, not a chooser** -
+see that section below. The three chips are still Union / Difference /
+Intersect, but they switch a result that is already standing in the scene, and
+nothing is destroyed until ✓.
 
-A is `ids[0]` - the first object you tapped, the same rule Solidify uses - and
-the toast names both sides afterwards, so a Difference that came out backwards
-says so rather than looking like a broken cut.
+A is `inputIds[0]` - the first object you tapped, the same rule Solidify uses -
+and the Difference chip's own tooltip says so, so a cut that came out backwards
+says which way round it went rather than looking broken.
 
 ### Refusals, and the budgets
 
