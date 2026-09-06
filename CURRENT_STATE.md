@@ -16,7 +16,7 @@ work. What is gone is the implied ceiling.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.20**
+- Version at time of writing: **2.21**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -46,6 +46,49 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Undo works INSIDE a bar (v2.21)
+
+A bar you sit in for a minute needs a way to take back one thing. Until now
+the only answer to a mis-drag was ✕, which threw away the whole tube and every
+good decision in it — so the fix for one wrong move was to start again, which
+is not a fix. Zeghreit's words: "it's troubling to cancel and start tube again
+every time I do something wrong".
+
+**It rides on the button that already means this.** While a setup or the point
+editor is open, `undo` steps back inside it rather than through the document —
+which has nothing of this in it yet. No new control, no bar space, and on a
+phone it is the button your thumb already goes to.
+
+Keep pressing and the stack empties into the behaviour that was there before:
+the last press backs out of the op itself. So Undo means the same thing all
+the way down, ✕ is still the one press that drops everything at once, and
+every probe check written against the old behaviour still passes.
+
+### A step is a GESTURE, not a frame
+
+One drag of the radius is one step however many times it redrew on the way —
+a step you have to press forty times to cross is not a step. Marked at the
+START of each gesture, so what comes back is the state you were looking at
+before you touched it:
+
+- the slider, on `pointerdown` and on `keydown` (the arrows send no pointer
+  event at all, and marking on `input` would push one step per pixel)
+- the value box, on focus
+- each counter tap, each chip, the toggle
+- a point drag, when the press claims a point
+- a point added, inserted or deleted
+- a radius ring drag, when it takes hold
+
+`opSetupMark` / `opSetupStepBack` keep `{p, snapshot}` pairs; the standalone
+point editor keeps `{pts, radii, sel}` in `curveEditMark` / `curveEditStepBack`.
+A hosted point editor has no stack of its own — the bar it sits in already
+answers for its points, which is what `editStepMark` routes. Forty steps, then
+the oldest go: a bar is a minute's work, not a session's.
+
+One thing that had to move with it: `btnUndo` was disabled whenever the
+document had no history, which is exactly the state the first tube in an empty
+scene is in. It now also asks whether an open bar has steps to give back.
 
 ## A tube stays a tube until you bake it (v2.20)
 

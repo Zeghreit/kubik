@@ -399,6 +399,54 @@
     ok('9.keys   and Escape still does', !K.curveEdit);
     mark('9.review');
 
+    /* 10 -- STEPPING BACK, HERE TOO (v2.21). The point editor is the other
+       bar you sit in, and it had the same problem: one mis-drag and ✕ was
+       the only way out, which took every good point with it. */
+    clearScene();
+    const cS = mkCurve('S', [[-1, 0, 0], [0, 0, 0], [1, 0, 0]], { type: 'poly', res: 4 });
+    K.App.selectedObjectIds = new Set([cS.id]);
+    K.pushHistory();
+    K.startCurveEdit(cS);
+    K.curveEdit.plane = 'z';
+    ok('10.back  a fresh editor has nothing to step back yet',
+       !K.curveEditHasSteps());
+
+    tap(at(V(-0.5, 0, 0)));                      // insert
+    tap(at(V(2, 1, 0)));                         // append
+    ok('10.back  two edits are two steps',
+       pts(cS).length === 5 && K.curveEdit.steps.length === 2,
+       'points=' + pts(cS).length + ' steps=' + K.curveEdit.steps.length);
+
+    K.undo();
+    ok('10.back  Undo takes back the last edit and stays in the editor',
+       !!K.curveEdit && pts(cS).length === 4,
+       'points=' + pts(cS).length + ' edit=' + !!K.curveEdit);
+    K.undo();
+    ok('10.back  and then the one before it',
+       !!K.curveEdit && pts(cS).length === 3 &&
+       Math.abs(pts(cS)[1][0]) < 1e-9,
+       JSON.stringify(pts(cS)));
+
+    K.undo();
+    ok('10.back  with nothing left inside, Undo backs out of the editor',
+       !K.curveEdit && pts(cS).length === 3,
+       'edit=' + !!K.curveEdit + ' points=' + pts(cS).length);
+
+    // A drag is ONE step, however many frames it took.
+    K.startCurveEdit(cS);
+    K.curveEdit.plane = 'z';
+    const mid10 = at(V(0, 0, 0));
+    drag(mid10, { x: mid10.x, y: mid10.y - 80 });
+    ok('10.back  a whole drag is one step',
+       K.curveEdit.steps.length === 1 && Math.abs(pts(cS)[1][1]) > 0.05,
+       'steps=' + K.curveEdit.steps.length + ' y=' + pts(cS)[1][1].toFixed(3));
+    K.undo();
+    ok('10.back  and one press puts it back where it was',
+       !!K.curveEdit && Math.abs(pts(cS)[1][1]) < 1e-9,
+       'y=' + pts(cS)[1][1]);
+    K.finishCurveEdit(false);
+    mark('10.back');
+
     finish();
   }
 

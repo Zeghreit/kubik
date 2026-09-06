@@ -2375,7 +2375,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.20</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.21</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -13847,6 +13847,12 @@ function setPendingAmount(v, defer) {
 }
 
 opSliderEl.addEventListener('input', () => setPendingAmount(parseFloat(opSliderEl.value), true));
+/* ONE MARK PER GRAB (v2.21). 'input' fires all the way through a drag, so
+   marking there would fill the stack with one step per pixel. Both openings
+   are covered: a finger or mouse on the track, and the arrow keys, which
+   never send a pointer event at all. */
+opSliderEl.addEventListener('pointerdown', () => { if (App.opSetup) opSetupMark(); });
+opSliderEl.addEventListener('keydown', () => { if (App.opSetup) opSetupMark(); });
 function stepSegments(delta) {
   if (App.opSetup && !App.pendingOp) { stepOpSetup(delta); return; }
   if (!App.pendingOp) return;
@@ -13876,6 +13882,7 @@ document.getElementById('opExtra').addEventListener('click', () => {
 });
 // A comma is what half the world's keyboards put there, so take it.
 function parseAmount(v) { return parseFloat(String(v).replace(',', '.')); }
+opValueEl.addEventListener('focus', () => { if (App.opSetup) opSetupMark(); });
 opValueEl.addEventListener('input', () => setPendingAmount(parseAmount(opValueEl.value)));
 opValueEl.addEventListener('keydown', (ev) => {
   if (ev.key === 'Enter') { ev.preventDefault(); confirmPendingOp(); }
@@ -20198,6 +20205,101 @@ function startCurveDraw(editObj) {
    its own - the host's ✓ and ✕ already answer for the points, because the
    host's snapshot carries them. What it still owns is the gestures, and
    those are the whole reason not to write them a second time. */
+/* ---------------- Stepping back inside a setup (v2.21) ----------------
+
+   A bar you sit in for a minute needs a way to take back ONE thing. Until now
+   the only answer to a mis-drag was ✕, which threw away the whole tube and
+   every good decision in it - so the fix for one wrong move was to start
+   again, which is not a fix.
+
+   It rides on the button that already means this. `undo` is what a hand
+   reaches for, on a phone as well as a keyboard, and while a bar is open it
+   steps back inside the bar rather than through the document - the document
+   has nothing of this in it yet. Keep pressing and the stack empties into the
+   behaviour that was there before: the last press backs out of the op itself.
+   So Undo means the same thing all the way down, and ✕ is still the one press
+   that drops everything at once.
+
+   A STEP IS A GESTURE, not a frame. One drag of the radius is one step
+   however many times it redrew on the way, because a step you have to press
+   forty times to cross is not a step. Marked at the START of each gesture, so
+   what comes back is the state you were looking at before you touched it. */
+const OP_STEPS_MAX = 40;
+
+function opSetupHasSteps() {
+  return !!(App.opSetup && App.opSetup.steps && App.opSetup.steps.length);
+}
+
+function curveEditHasSteps() {
+  return !!(App.curveEdit && !App.curveEdit.hosted &&
+            App.curveEdit.steps && App.curveEdit.steps.length);
+}
+
+// Whichever editor owns this gesture. A hosted point editor has no stack of
+// its own - the bar it is sitting in already answers for its points.
+function editStepMark() {
+  if (App.curveEdit && !App.curveEdit.hosted) curveEditMark();
+  else if (App.opSetup) opSetupMark();
+}
+
+function opSetupMark() {
+  const s = App.opSetup, spec = opSetupSpec();
+  if (!s || !spec) return;
+  if (!s.steps) s.steps = [];
+  s.steps.push({
+    p: Object.assign({}, s.p),
+    snap: spec.snapshot ? spec.snapshot(s) : null
+  });
+  // A bar is a minute's work, not a session's. The oldest go.
+  if (s.steps.length > OP_STEPS_MAX) s.steps.shift();
+}
+
+function opSetupStepBack() {
+  const s = App.opSetup, spec = opSetupSpec();
+  if (!s || !spec || !s.steps || !s.steps.length) return false;
+  const st = s.steps.pop();
+  s.p = Object.assign({}, st.p);
+  s.built = Object.assign({}, st.p);
+  if (spec.restore) spec.restore(s, st.snap);
+  refreshOpSetupMesh();
+  showOpSetupBar();     // the controls have to follow the shape back
+  refreshCurvePreview();
+  refreshUI();
+  toast('Stepped back');
+  return true;
+}
+
+function curveEditMark() {
+  const ce = App.curveEdit, obj = curveEditObj();
+  if (!ce || ce.hosted || !obj || !hasCurveData(obj)) return;
+  const cv = curveDataOf(obj);
+  if (!ce.steps) ce.steps = [];
+  ce.steps.push({
+    pts: cv.pts.map(a => [a[0], a[1], a[2]]),
+    radii: normaliseCurveRadii(cv).slice(),
+    sel: ce.sel
+  });
+  if (ce.steps.length > OP_STEPS_MAX) ce.steps.shift();
+}
+
+function curveEditStepBack() {
+  const ce = App.curveEdit, obj = curveEditObj();
+  if (!ce || ce.hosted || !ce.steps || !ce.steps.length) return false;
+  if (!obj || !hasCurveData(obj)) return false;
+  const st = ce.steps.pop();
+  const cv = curveDataOf(obj);
+  cv.pts = st.pts.map(a => [a[0], a[1], a[2]]);
+  cv.radii = st.radii.slice();
+  ce.sel = Math.min(st.sel, cv.pts.length - 1);
+  ce.drag = null;
+  rebuildCurveGeometry(obj);
+  refreshCurvePreview();
+  refreshCurveEditBar();
+  refreshUI();
+  toast('Stepped back');
+  return true;
+}
+
 function startCurveEdit(obj, host) {
   if (!hasCurveData(obj)) return;
   if (host) {
@@ -20206,7 +20308,7 @@ function startCurveEdit(obj, host) {
       objId: obj.id, hosted: true,
       plane: App.curvePlane || 'y',
       sel: -1, pid: null, drag: null, x0: 0, y0: 0, moved: false,
-      pts0: null, radii0: null
+      pts0: null, radii0: null, steps: []
     };
     refreshCurvePreview();
     return;
@@ -20233,7 +20335,8 @@ function startCurveEdit(obj, host) {
     // has to be able to hand back what was there before any of it.
     pts0: cv.pts.map(a => [a[0], a[1], a[2]]),
     radii0: cv.radii.slice(),
-    hosted: false
+    hosted: false,
+    steps: []
   };
   App.selectedObjectIds = new Set([obj.id]);
   App.activeObjectId = null;
@@ -20325,6 +20428,7 @@ function curveEditDelete() {
      sweep, no tangent to frame and nothing to draw - and the sampler's own
      rule about two points is written for the pair, not for a single. */
   if (cv.pts.length <= 2) { toast('A curve needs at least two points'); return; }
+  editStepMark();
   normaliseCurveRadii(cv);
   cv.pts.splice(ce.sel, 1);
   cv.radii.splice(ce.sel, 1);
@@ -20428,6 +20532,7 @@ function curveEditPointerDown(ev) {
      through the origin. */
   ce.drag = hit ? { i: hit.i, from: hit.world.clone() } : null;
   if (hit) {
+    editStepMark();
     ce.sel = hit.i;
     refreshCurvePreview();
     if (!ce.hosted) refreshCurveEditBar();
@@ -20496,6 +20601,7 @@ function curveEditPointerUp(ev) {
      thing that knows which two control points that piece of line ran between. */
   const on = pickCurveSpanOn(obj, ev, CURVE_LINE_PX);
   if (on) {
+    editStepMark();
     ce.sel = curveEditInsert(obj, on.span, on.local, on.w);
     curveEditChanged();
     refreshUI();
@@ -20511,6 +20617,7 @@ function curveEditPointerUp(ev) {
     ? new THREE.Vector3(tail[0], tail[1], tail[2]).applyMatrix4(obj.mesh.matrixWorld)
     : null);
   if (!r) { toast('That plane is edge on - turn the view, or pick another'); return; }
+  editStepMark();
   ce.sel = curveEditAppend(obj, obj.mesh.worldToLocal(r.p.clone()));
   curveEditChanged();
   refreshUI();
@@ -26880,10 +26987,21 @@ function undo() {
      back to - it dropped the preview through restoreDoc's abandon AND took
      the committed step underneath it. That is the v2.3b bug described two
      comments down, in a state that did not exist when it was fixed. */
-  if (App.opSetup) { finishOpSetup(false); return; }
-  // Same again: the points are not in the history until OK, so this press
-  // has nothing of theirs to step back to.
-  if (App.curveEdit) { finishCurveEdit(false); return; }
+  /* INSIDE THE BAR FIRST (v2.21). One wrong drag used to cost the whole
+     setup, because the only way back was ✕ - so the fix for one bad move was
+     to start the tube again. This steps back one gesture; when there is
+     nothing left to step back the press falls through to what it always did,
+     which is back out of the op itself. */
+  if (App.opSetup) {
+    if (opSetupStepBack()) return;
+    finishOpSetup(false);
+    return;
+  }
+  if (App.curveEdit) {
+    if (curveEditStepBack()) return;
+    finishCurveEdit(false);
+    return;
+  }
   /* A live op has pushed NOTHING onto the history yet - what is in front of
      you is a preview sitting on top of the last committed step. Stepping the
      index back here would take away that step as well as the preview, and
@@ -29660,6 +29778,7 @@ function startOpSetup(kind, seed) {
     curveId: seed.curveId != null ? seed.curveId : null,
     inputIds: seed.inputIds ? seed.inputIds.slice() : null,
     objId: null, p: null, span: 0, hidHere: [],
+    steps: [],          // v2.21: what Undo gives back, one gesture at a time
     // v2.20: re-opened on an object that already exists, rather than making
     // one. Everything else about the bar is the same.
     adopted: false, p0: null
@@ -29858,6 +29977,7 @@ function setOpSetupAmount(v) {
 function stepOpSetup(delta) {
   const s = App.opSetup, spec = opSetupSpec();
   if (!s || !spec || !spec.stepper) return;
+  opSetupMark();
   const st = spec.stepper;
   const n = Math.max(st.min(s.p, s), Math.min(st.max(s.p, s), (s.p[st.key] | 0) + delta));
   if (n === s.p[st.key]) return;
@@ -29872,6 +29992,7 @@ function stepOpSetup(delta) {
 function stepOpSetup2(delta) {
   const s = App.opSetup, spec = opSetupSpec();
   if (!s || !spec || !spec.stepper2) return;
+  opSetupMark();
   const st = spec.stepper2;
   const n = Math.max(st.min(s.p, s), Math.min(st.max(s.p, s), (s.p[st.key] | 0) + delta));
   if (n === s.p[st.key]) return;
@@ -29895,6 +30016,7 @@ function syncOpSetupStepper() {
 function toggleOpSetupSwitch() {
   const s = App.opSetup, spec = opSetupSpec();
   if (!s || !spec || !spec.toggle) return;
+  opSetupMark();
   s.p[spec.toggle.key] = !s.p[spec.toggle.key];
   document.getElementById('opToggle').classList.toggle('active', !!s.p[spec.toggle.key]);
   if (spec.onToggle) spec.onToggle(s);
@@ -29918,6 +30040,7 @@ function showOpSetupBar() {
       if (s.p[spec.chipKey] === key) b.classList.add('active');
       b.addEventListener('click', () => {
         if (!App.opSetup) return;
+        opSetupMark();
         App.opSetup.p[spec.chipKey] = key;
         if (spec.onChip) spec.onChip(key);
         showOpSetupBar();          // re-rendered so the chosen chip says so
@@ -30296,6 +30419,7 @@ function beginTubeRadiusDragOn(ev, i, sp, world) {
   const hit = { i: i, sp: sp, world: world };
   const c = findObject(s.curveId);
   if (!c || !hasCurveData(c)) return false;
+  opSetupMark();   // the whole drag is one step, taken from here
   const cv = c.mesh.userData.kubikCurve;
   normaliseCurveRadii(cv);
   const p = pointerPx(ev);
@@ -33915,7 +34039,10 @@ function refreshUI() {
   refreshPivotMarker();
   refreshObjComponentBtn();
   refreshToolIndicator();   // the readout carries the selection now (a2.100)
-  document.getElementById('btnUndo').disabled = App.historyIndex <= 0;
+  /* An open bar has its own steps to give back, and they exist before the
+     document has any at all - the first tube in an empty scene (v2.21). */
+  document.getElementById('btnUndo').disabled =
+    App.historyIndex <= 0 && !opSetupHasSteps() && !curveEditHasSteps();
   document.getElementById('btnRedo').disabled = App.historyIndex >= App.history.length - 1;
 
   const hasSel = App.mode === 'object' ? App.selectedObjectIds.size > 0 : App.selectedElements.size > 0;
@@ -34929,6 +35056,9 @@ if (PICK_DEBUG) {
     tubeDataOf, isLiveTube, makeTubeGeo, absorbCurveInto, cloneObjectInto,
     hasCurveData, curveDataOf,
     refreshTubeRings, pickTubeRingPx, stepOpSetup2,
+    // v2.21: stepping back inside a bar, without leaving it.
+    opSetupMark, opSetupStepBack, opSetupHasSteps,
+    curveEditMark, curveEditStepBack, curveEditHasSteps,
     get tubeRingPts() { return tubeRingPts; },
     get tubeRadiusDrag() { return tubeRadiusDrag; },
     // v2.17: one setup for both ops.

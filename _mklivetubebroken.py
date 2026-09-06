@@ -64,5 +64,14 @@ sub("""  if (srcT && srcC) {
     newMesh.userData.kubikTube = { p: Object.assign({}, srcT.p) };""",
     '8. a duplicate of a tube is not a tube')
 
+sub("""    if (opSetupStepBack()) return;""",
+    """    if (false) return;                        // BROKEN: Undo drops the lot""",
+    '9. Undo throws the whole setup away again')
+
+sub("""  if (!s || !spec || !spec.stepper) return;
+  opSetupMark();""",
+    """  if (!s || !spec || !spec.stepper) return;   // BROKEN: the counter marks nothing""",
+    '10. a counter tap is not a step')
+
 io.open(ROOT + '\\' + OUT, 'w', encoding='utf-8', newline='').write(src)
 print('WROTE ' + OUT)

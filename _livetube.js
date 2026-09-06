@@ -279,6 +279,56 @@
        K.tubeRingPts.length === 0, 'rings=' + K.tubeRingPts.length);
     mark('8.release');
 
+    /* 9 -- STEPPING BACK INSIDE THE BAR (v2.21) ----------------------------
+       One wrong drag used to cost the whole setup: the only way back was ✕,
+       so the fix for a single bad move was to start the tube again. Undo now
+       steps back one GESTURE at a time, and only backs out of the op once
+       there is nothing left inside it to give back. */
+    clearScene();
+    const c9 = mkCurve('C', [[0, 0, 0], [0, 1, 0], [0, 2, 0]], { type: 'bezier', res: 6 });
+    const t9 = makeTube(c9);
+    K.App.selectedObjectIds = new Set([t9.id]);
+    K.setMode('vertex');
+    ok('9.back   a fresh bar has nothing to step back yet',
+       !K.opSetupHasSteps(), 'steps=' + !!K.opSetupHasSteps());
+
+    const sides0 = tubeP(t9).sides;
+    K.stepOpSetup(4);
+    K.stepOpSetup2(2);
+    ok('9.back   two counter taps are two steps',
+       K.opSetup.steps.length === 2 && K.opSetup.p.sides === sides0 + 4,
+       'steps=' + K.opSetup.steps.length + ' sides=' + K.opSetup.p.sides);
+
+    K.undo();
+    ok('9.back   Undo takes back the LAST one, and stays in the bar',
+       !!K.opSetup && K.opSetup.p.res === 6 && K.opSetup.p.sides === sides0 + 4,
+       K.opSetup && ('res=' + K.opSetup.p.res + ' sides=' + K.opSetup.p.sides));
+    K.undo();
+    ok('9.back   and then the one before it',
+       !!K.opSetup && K.opSetup.p.sides === sides0,
+       K.opSetup && ('sides=' + K.opSetup.p.sides));
+
+    /* A POINT EDIT IS A STEP TOO, and it is the one that hurt: a mis-drag
+       used to mean starting over. */
+    K.curveEdit.plane = 'z';
+    const n9 = cvOf(t9).pts.length;
+    tap(at(V(2.5, 1, 0)));
+    ok('9.back   adding a point is one step',
+       cvOf(t9).pts.length === n9 + 1 && K.opSetup.steps.length === 1,
+       'points=' + cvOf(t9).pts.length + ' steps=' + K.opSetup.steps.length);
+    K.undo();
+    ok('9.back   Undo takes the point back without closing anything',
+       !!K.opSetup && !!K.curveEdit && cvOf(t9).pts.length === n9,
+       'points=' + cvOf(t9).pts.length + ' setup=' + !!K.opSetup);
+
+    // ...and the last press, with the stack empty, backs out of the op.
+    ok('9.back   the stack is empty again', !K.opSetupHasSteps());
+    K.undo();
+    ok('9.back   with nothing left inside, Undo backs out of the op',
+       !K.opSetup && !!K.findObject(t9.id) && K.isLiveTube(t9),
+       'setup=' + !!K.opSetup + ' tube=' + K.isLiveTube(t9));
+    mark('9.back');
+
     finish();
   }
 

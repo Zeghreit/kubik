@@ -50,10 +50,16 @@ sub("""    cv.pts = ce.pts0.map(a => [a[0], a[1], a[2]]);
     """    /* BROKEN: Cancel keeps everything it was asked to throw away */""",
     '7. Cancel does not put the points back')
 
-sub("""  if (App.curveEdit) { finishCurveEdit(false); return; }
-  /* A live op has pushed NOTHING onto the history yet""",
-    """  /* BROKEN: Undo does not know the editor is open.
-     A live op has pushed NOTHING onto the history yet""",
+# Only the fall-through, so break 17 below still has its own anchor: with
+# this out, an Undo on an empty stack steps the DOCUMENT while the editor is
+# still open, which is the v2.19 defect this line was written for.
+sub("""    if (curveEditStepBack()) return;
+    finishCurveEdit(false);
+    return;
+  }""",
+    """    if (curveEditStepBack()) return;
+    /* BROKEN: and now it falls through to the document */
+  }""",
     '8. Undo takes the step under an open editor as well')
 
 # --- and the nine the review found ------------------------------------------
@@ -72,11 +78,13 @@ sub("""  if (App.curveEdit && objs.some(o => o && o.id === App.curveEdit.objId))
     """  /* BROKEN: the editor outlives what it edits */""",
     '11. deleting the curve strands the editor')
 
-sub("""  if (App.curveEdit && App.curveEdit.objId !== id) finishCurveEdit(true);""",
+sub("""  if (App.curveEdit && !App.curveEdit.hosted && App.curveEdit.objId !== id) {
+    finishCurveEdit(true);
+  }""",
     """  /* BROKEN: two curves, one editor */""",
     '12. picking another object leaves the editor on the first')
 
-sub("""  if (App.curveEdit) {
+sub("""  if (App.curveEdit && !App.curveEdit.hosted) {
     App.curveEdit = null;
     orbit.enabled = true;
     hideCurveEditBar();
@@ -94,11 +102,20 @@ sub("""  if (hadPoint || pickCurvePointOn(obj, ev, GRAB_RADIUS_PX)) { refreshUI(
     """  if (pickCurvePointOn(obj, ev, GRAB_RADIUS_PX)) { refreshUI(); return; }""",
     '15. a grab that drifts adds a point')
 
-sub("""  if (App.geoSetup || App.opSetup) {
+sub("""  if ((App.geoSetup || App.opSetup) && !App.curveEdit) {
     const undoish""",
     """  if (App.geoSetup || App.opSetup || App.curveEdit) {   // BROKEN: any key ends it
     const undoish""",
     '16. a bare modifier commits the session')
+
+sub("""    if (curveEditStepBack()) return;""",
+    """    if (false) return;                        // BROKEN: Undo drops the lot""",
+    '17. Undo throws the whole editing session away again')
+
+sub("""  editStepMark();
+  ce.sel = curveEditAppend(obj, obj.mesh.worldToLocal(r.p.clone()));""",
+    """  ce.sel = curveEditAppend(obj, obj.mesh.worldToLocal(r.p.clone()));""",
+    '18. an added point cannot be stepped back')
 
 io.open(ROOT + r'\_bak_pteditbroken.html', 'w', encoding='utf-8', newline='').write(src)
 print('WROTE _bak_pteditbroken.html')
