@@ -16,7 +16,7 @@ work. What is gone is the implied ceiling.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~32,800 lines)
-- Version at time of writing: **2.14**
+- Version at time of writing: **2.15**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -46,6 +46,96 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Lathe (v2.15)
+
+Turn a curve about an axis. Three versions in the making: Revolve shipped
+WORKING at v2.11 and was taken straight back off the ring at v2.12, because
+there was no way to make a profile - this app cannot hold an edge no face
+uses, so a profile had to be drawn inside a solid and the solid's own face was
+then left standing in the middle of the result. That was the fin, and a curve
+cannot have it, because a curve has no faces.
+
+Curve ring, seat 6 - held for it since v2.14. Three chips on the op bar, X / Y
+/ Z, committing on the tap the way Mirror does: the axis IS the whole
+question. **The curve's own `res` is the step count**, which is the same
+quantity in both directions of a surface of revolution and is already on the
+curve's ring where you can see it.
+
+### The sweep is now ONE piece of code
+
+`revolveSweep` was lifted out of `revolveOp` - **sliced, not retyped**, so the
+measured code is still the same code - and Revolve and Lathe both call it. The
+pole rule, the seam weld and the quad emission have one implementation and one
+set of numbers. Everything `revolveOp` read from its own scope is a parameter;
+the only thing a curve changes is that it passes an EMPTY `dirTaken`, because
+it has no faces to read rim directions from.
+
+**A full turn only, in this version.** An arc wants a slider, and a slider
+wants the `pendingOp` machinery so a drag re-runs the sweep live. That is the
+right way to build it and it is its own increment; it is said out loud here
+rather than left as a surprise.
+
+### THE v2.11 LOOSE END IS CLOSED, and the answer is that the block was right
+
+The v2.11 note said this, in writing: the rim rule carries no information when
+the profile edge has two faces, so a geometric answer was put in - the first
+quad's normal against the outward radial - and marked **"reasoned, not
+measured"**, because `_spinchk` passed with the block disabled. It asked for
+one thing: *"to prove it, find a profile whose chain walk runs the other way -
+that is the case this could not construct."*
+
+**A curve is that profile.** It has no rim at all, so the geometric answer is
+the only thing deciding which way the shell faces, and its point order is the
+user's to reverse. `_lathechk` section 3 turns the same profile drawn UP and
+drawn DOWN and measures the first face's normal against the outward radial.
+
+Measured, with the block ON and then OFF:
+
+| profile | block enabled | block disabled |
+|---|---|---|
+| drawn up   | +0.5543 | **-0.5543** |
+| drawn down | +0.5543 | +0.5543 |
+
+So it is **load-bearing**, and it took a curve to show it. Without it a
+profile drawn one way round comes out inside out - watertight, consistently
+wound, and invisible to `auditWinding` by design, which is the whole reason
+this mattered. The v2.11 wording can now be retired: it is measured, and
+`_mklathebroken.py` keeps it measured.
+
+### And a stale claim, corrected
+
+CURRENT_STATE said Revolve was "guarded by `_spinchk.py`, 35 checks". **It is
+not.** `_spinchk` tests **Spin Edge** - v2.12 took the name and the file - and
+of its 24 checks the only two that mention Revolve assert that it is still in
+the code and off every ring. Lifting the sweep out of `revolveOp` was
+therefore unguarded work on measured code with no live measurements, which is
+exactly the trap this file's own history keeps recording: a note gets believed
+for a year. `_lathechk` section 1 restores it, with the v2.11 numbers - a
+one-edge profile in 8 steps is 8 faces and **14** new vertices, because a full
+turn's seam welds onto the profile itself, and an arc of 180 in 8 steps is
+**16**, because nothing welds.
+
+*And one trap inside that check, worth keeping:* the plane it turns sits at
+x = 2 on purpose. At the origin its four corners lie on one circle 45 degrees
+apart, so eight steps of 45 rotate them onto each other and onto their own
+ring copies - the honest answer there is 4 new vertices, not 14. The first
+draft read that as a regression when it was the geometry.
+
+### What the probe covers
+
+`_lathechk.py` / `.js`, 26 assertions, verified against `_mklathebroken.py`'s
+copy which fails 7 of them. Revolve unchanged; a curve turned into a tube with
+its two rims open and nothing else; both point orders facing outward; a closed
+profile giving a CLOSED solid (4 sides x 8 segments = 32 faces, boundary 0); a
+pole giving 8 single-triangle faces rather than a collapse; four refusals that
+name what to do (a profile on the axis, a full turn in two segments naming the
+curve's own Segments control, a one-point curve); undo taking the mesh and
+leaving the curve; and Lathe being on the curve ring and nowhere else.
+
+**The curve survives a lathe.** It is the thing you adjust and turn again, and
+an op that eats its own profile makes that a redraw every time. The RESULT is
+what ends up selected, because that is what you want in your hand.
 
 ## Curves, the metacomponent (v2.14)
 
@@ -528,11 +618,19 @@ normal against the outward radial. **That block is reasoned, not measured.**
 passes with the block disabled — on every profile that could be built to test
 it, `flip` already fell the right way. It is kept because removing it puts an
 incidental answer back where a measured one is now, and it costs one quad's
-arithmetic. It is not claimed to be proven. **To prove it, find a profile
+arithmetic. It is not claimed to be proven. ~~**To prove it, find a profile
 whose chain walk runs the other way** — that is the case this could not
-construct.
+construct.~~ **DONE at v2.15.** A CURVE is that
+profile: no rim at all, and a point order you choose. The block is
+load-bearing - the same profile drawn the other way comes out inside out
+without it - and `_lathechk` section 3 measures it both ways. See the Lathe
+section above.
 
-Guarded by `_spinchk.py`, 35 checks: a 1-edge profile in 8 steps is 8 faces
+~~Guarded by `_spinchk.py`, 35 checks:~~ **NOT ANY MORE, and this note was
+believed for two versions.** `_spinchk` tests **Spin Edge**; v2.12 took the
+name and the file, and of its 24 checks the only ones naming Revolve assert
+that it is still in the code and off every ring. The sweep's own guard is
+`_lathechk` section 1 (v2.15). What the retired suite asserted: a 1-edge profile in 8 steps is 8 faces
 and 14 new vertices (not 16 — the seam welds), an arc is 16 (nothing welds),
 a pole is 7 and 8 triangles, the live re-run returns to exactly where it was,
 both refusals, and the ring seats on both sides of the swap. Suite: **35 of 35
@@ -11134,6 +11232,7 @@ optional target filename, so a `_bak_*.html` gives a before number:
 | `_matperf.py` | `toDataURL` calls per material-slider release, and `refreshUI` |
 | `_boolchk.py` | the booleans, all fifteen sections (v2.13) |
 | `_curvechk.py` | the curve entity, its guards and its ring (v2.14) |
+| `_lathechk.py` | Lathe, and the Revolve sweep `_spinchk` never covered (v2.15) |
 
 `_fixchk.py` is the one to copy the shape of: it prints `VERDICT=PASS/FAIL`
 and it is **verified against the broken copy** - run it against
@@ -11675,8 +11774,8 @@ Zeghreit's words: these are what "elevate the app to the next level".
    see the section above, including the two defects that were watertight and
    wrong.
 2. **Curves, as a METACOMPONENT** - the ENTITY shipped at v2.14, see above.
-   Lathe and Tube are what remains, and seat 6 of the curve ring is held for
-   the first of them.
+   **Lathe shipped at v2.15** and holds seat 6. Tube is what remains, and
+   seat 7 of the curve ring is where it goes.
 
    Originally: - not one op but a new kind of thing the app
    holds, with a whole set of operations built around it. Lathe is one of

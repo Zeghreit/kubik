@@ -2362,7 +2362,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.14</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.15</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -10697,56 +10697,32 @@ const _revAx = new THREE.Vector3(), _revRel = new THREE.Vector3();
 const _revPrj = new THREE.Vector3(), _revQ = new THREE.Quaternion();
 const _revP = new THREE.Vector3();
 
-function revolveOp(obj, logicalPairs, steps, sweepDeg, axis, dir) {
-  const mesh = obj.mesh;
-  const ed = toEditable(mesh);
-  const mats = Array.isArray(mesh.material) ? mesh.material : (mesh.material = [mesh.material]);
-  const L = edLogical(ed);
-  const attrFor = (l) => L.logicalGroups[l][0];
+/* ---- THE SWEEP ITSELF, shared by Revolve and Lathe (v2.15) ----
 
-  /* ONE run, not two. Bridge needs a pair because it joins them; a revolve has
-     only a profile, so a second run is a different sweep and not this one. */
-  const chains = edgeChains(ed, logicalPairs);
-  if (chains.length !== 1) {
-    return { ok: false, why: 'select ONE run of edges to revolve (found ' + chains.length + ')' };
-  }
-  const chain = chains[0];
-  const closed = !!chain.closed;
-  const profile = chain.map(attrFor);
-  if (profile.length < 2) return { ok: false, why: 'a profile needs at least one edge' };
+   Lifted out of revolveOp unchanged - sliced, not retyped, because the whole
+   value of sharing it is that the measured code is still the same code.
+   `_spinchk`'s 35 checks are the guard on that and must still pass byte for
+   byte. Everything revolveOp used to read from its own scope is a parameter
+   now, and one boolean (`full`) is recomputed rather than passed, which is
+   cheaper than another argument.
 
-  const segs = Math.max(1, Math.round(steps || 1));
+   The one thing a CURVE changes is `dirTaken`. Revolve reads it from the
+   faces already touching the profile; a curve has none, so it passes an empty
+   set - and that is not a degraded case, it is the case the v2.11 note asks
+   for. With no rim to read, `rimSpoke` is false and the geometric answer
+   below - the first quad's normal against the outward radial - is the ONLY
+   thing deciding which way the shell faces. That block has been in the file
+   since v2.11 marked "reasoned, not measured", passing with itself disabled
+   because no profile could be built that needed it. A curve profile is that
+   profile. */
+function revolveSweep(ed, mats, profile, o) {
+  const L = o.L, centre = o.centre, axisVec = o.axisVec;
+  const sweepDeg = o.sweepDeg, segs = o.segs, dir = o.dir, closed = o.closed;
+  const dirTaken = o.dirTaken || new Set();
   const full = sweepDeg >= 359.5;
-  /* A FULL TURN AT ONE OR TWO STEPS IS NOT A SHAPE. The first band would
-     come straight back onto the profile, or fold flat across it. Refused
-     rather than drawn, because the drawing is indistinguishable from a bug. */
-  if (full && segs < 3) return { ok: false, why: 'a full turn needs at least 3 steps' };
-
-  /* EVEN SCALE ACROSS THE PLANE IT SWEEPS, for the reason the array records
-     in full: every ring is placed by rotating in LOCAL space, so its world
-     transform is M.R.M-inverse, which is a rotation only while M scales both
-     perpendicular axes alike. Under 2,1,1 the sweep comes out sheared, which
-     reads as a broken tool rather than as a consequence of the object's own
-     scale. */
-  const [ua, ub] = ARRAY_PERP[axis] || ARRAY_PERP.y;
-  const sa = Math.abs(mesh.scale[ua]), sb = Math.abs(mesh.scale[ub]);
-  if (Math.abs(sa - sb) > Math.max(sa, sb, 1e-6) * 1e-3) {
-    return { ok: false, why: 'a revolve needs even scale across the axis it turns about - this one is ' +
-      sa.toFixed(2) + ' by ' + sb.toFixed(2) + ', so the sweep would come out skewed' };
-  }
-
-  // The pivot when one has been placed, otherwise the world origin - the same
-  // answer the array's Ring gives, and for the same reason.
-  const w = (App.pivotMode === 'custom' && App.pivotPoint)
-    ? App.pivotPoint.clone() : new THREE.Vector3(0, 0, 0);
-  mesh.updateMatrixWorld();
-  const centre = mesh.worldToLocal(w);
-  const a = REVOLVE_AXES[axis] || REVOLVE_AXES.y;
-  _revAx.set(a[0], a[1], a[2]);
-
   const radiusOf = (ai) => {
     _revRel.copy(vecAt(ed, ai)).sub(centre);
-    _revPrj.copy(_revAx).multiplyScalar(_revRel.dot(_revAx));
+    _revPrj.copy(axisVec).multiplyScalar(_revRel.dot(axisVec));
     return _revRel.sub(_revPrj).length();
   };
   const radii = profile.map(radiusOf);
@@ -10783,7 +10759,7 @@ function revolveOp(obj, logicalPairs, steps, sweepDeg, axis, dir) {
   const rings = [profile];
   const nNew = full ? segs - 1 : segs;
   for (let sIdx = 1; sIdx <= nNew; sIdx++) {
-    _revQ.setFromAxisAngle(_revAx, stepAng * sIdx);
+    _revQ.setFromAxisAngle(axisVec, stepAng * sIdx);
     const row = profile.map((ai, i) => {
       /* A POINT ON THE AXIS DOES NOT MOVE, SO IT MUST NOT BE COPIED. N
          coincident vertices weld under computeLogicalOf's rounding and every
@@ -10810,13 +10786,6 @@ function revolveOp(obj, logicalPairs, steps, sweepDeg, axis, dir) {
      laid along the profile has to run against the face on the other side of
      it. With no face there - a free-floating run - nothing is taken and the
      choice is arbitrary but consistent, which is all it can be. */
-  const allLoops = ed.groups.map((g, gi) => getGroupBoundaryLoopAttr(ed, gi));
-  const dirTaken = new Set();
-  allLoops.forEach(lp => {
-    for (let i = 0; i < lp.length; i++) {
-      dirTaken.add(L.logicalOf[lp[i]] + '_' + L.logicalOf[lp[(i + 1) % lp.length]]);
-    }
-  });
   const runs = (u, v) => dirTaken.has(L.logicalOf[u] + '_' + L.logicalOf[v]);
 
   /* ONE knob here where bridge needs two - every band is parallel to the one
@@ -10874,7 +10843,7 @@ function revolveOp(obj, logicalPairs, steps, sweepDeg, axis, dir) {
       cen.add(a);
     }
     cen.multiplyScalar(1 / pts.length).sub(centre);
-    cen.sub(_revPrj.copy(_revAx).multiplyScalar(cen.dot(_revAx)));   // the radial part
+    cen.sub(_revPrj.copy(axisVec).multiplyScalar(cen.dot(axisVec)));   // the radial part
     if (cen.lengthSq() > 1e-12 && nrm.dot(cen) < 0) flip = !flip;
   }
 
@@ -10902,9 +10871,74 @@ function revolveOp(obj, logicalPairs, steps, sweepDeg, axis, dir) {
     }
   }
   if (!added.length) return { ok: false, why: 'nothing swept' };
+  return { ok: true, count: added.length, added: added };
+}
+
+function revolveOp(obj, logicalPairs, steps, sweepDeg, axis, dir) {
+  const mesh = obj.mesh;
+  const ed = toEditable(mesh);
+  const mats = Array.isArray(mesh.material) ? mesh.material : (mesh.material = [mesh.material]);
+  const L = edLogical(ed);
+  const attrFor = (l) => L.logicalGroups[l][0];
+
+  /* ONE run, not two. Bridge needs a pair because it joins them; a revolve has
+     only a profile, so a second run is a different sweep and not this one. */
+  const chains = edgeChains(ed, logicalPairs);
+  if (chains.length !== 1) {
+    return { ok: false, why: 'select ONE run of edges to revolve (found ' + chains.length + ')' };
+  }
+  const chain = chains[0];
+  const closed = !!chain.closed;
+  const profile = chain.map(attrFor);
+  if (profile.length < 2) return { ok: false, why: 'a profile needs at least one edge' };
+
+  const segs = Math.max(1, Math.round(steps || 1));
+  const full = sweepDeg >= 359.5;
+  /* A FULL TURN AT ONE OR TWO STEPS IS NOT A SHAPE. The first band would
+     come straight back onto the profile, or fold flat across it. Refused
+     rather than drawn, because the drawing is indistinguishable from a bug. */
+  if (full && segs < 3) return { ok: false, why: 'a full turn needs at least 3 steps' };
+
+  /* EVEN SCALE ACROSS THE PLANE IT SWEEPS, for the reason the array records
+     in full: every ring is placed by rotating in LOCAL space, so its world
+     transform is M.R.M-inverse, which is a rotation only while M scales both
+     perpendicular axes alike. Under 2,1,1 the sweep comes out sheared, which
+     reads as a broken tool rather than as a consequence of the object's own
+     scale. */
+  const [ua, ub] = ARRAY_PERP[axis] || ARRAY_PERP.y;
+  const sa = Math.abs(mesh.scale[ua]), sb = Math.abs(mesh.scale[ub]);
+  if (Math.abs(sa - sb) > Math.max(sa, sb, 1e-6) * 1e-3) {
+    return { ok: false, why: 'a revolve needs even scale across the axis it turns about - this one is ' +
+      sa.toFixed(2) + ' by ' + sb.toFixed(2) + ', so the sweep would come out skewed' };
+  }
+
+  // The pivot when one has been placed, otherwise the world origin - the same
+  // answer the array's Ring gives, and for the same reason.
+  const w = (App.pivotMode === 'custom' && App.pivotPoint)
+    ? App.pivotPoint.clone() : new THREE.Vector3(0, 0, 0);
+  mesh.updateMatrixWorld();
+  const centre = mesh.worldToLocal(w);
+  const a = REVOLVE_AXES[axis] || REVOLVE_AXES.y;
+  _revAx.set(a[0], a[1], a[2]);
+
+  /* The rim directions the sweep needs, read HERE because they are a property
+     of the mesh the profile came out of - a curve has no faces and passes an
+     empty set instead. */
+  const allLoops = ed.groups.map((g, gi) => getGroupBoundaryLoopAttr(ed, gi));
+  const dirTaken = new Set();
+  allLoops.forEach(lp => {
+    for (let i = 0; i < lp.length; i++) {
+      dirTaken.add(L.logicalOf[lp[i]] + '_' + L.logicalOf[lp[(i + 1) % lp.length]]);
+    }
+  });
+  const swept = revolveSweep(ed, mats, profile, {
+    L: L, centre: centre, axisVec: _revAx, sweepDeg: sweepDeg,
+    segs: segs, dir: dir, closed: closed, dirTaken: dirTaken
+  });
+  if (!swept.ok) return swept;
 
   rebuildFromEditable(obj, ed);
-  return { ok: true, count: added.length };
+  return { ok: true, count: swept.count };
 }
 
 /* ---------------- Creases ----------------
@@ -13378,6 +13412,7 @@ function showOpBar() {
   // Whatever this bar was showing before, it is an op now - see cancelPendingOp.
   mirrorChooser = null;
   booleanChooser = null;
+  latheChooser = null;
   const op = App.pendingOp;
   if (!op) return;
   const spec = OP_SPECS[op.kind];
@@ -13634,6 +13669,7 @@ function hideOpBar() {
   endAmountDrag();   // a2.102: never leave orbit off behind a finished op
   mirrorChooser = null;
   booleanChooser = null;
+  latheChooser = null;
   submergeOut(opBarEl);
   // The chooser bars (Mirror, Extrude grouping) drive this bar by hand and
   // know nothing about the toggle, so it goes away with the bar itself.
@@ -13932,7 +13968,7 @@ function cancelPendingOp() {
      it - and then ✕ hid the bar and returned, leaving the bevel preview baked
      into the mesh with no bar left to accept or reject it. A real op always
      wins this guard now, and showOpBar clears the flag as well. */
-  if ((mirrorChooser || booleanChooser) && !App.pendingOp) { hideOpBar(); return; }
+  if ((mirrorChooser || booleanChooser || latheChooser) && !App.pendingOp) { hideOpBar(); return; }
   const op = App.pendingOp;
   if (!op) return;
   const obj = findObject(op.objId);
@@ -19291,6 +19327,7 @@ gizmoStrokes.push(knifeLine);   // so a resize keeps the line's width honest
 function showKnifeBar() {
   mirrorChooser = null;   // same reasoning as showOpBar
   booleanChooser = null;
+  latheChooser = null;
   const el = document.getElementById('opGrouping');
   el.innerHTML = '';
   el.style.display = 'inline-flex';
@@ -27952,7 +27989,10 @@ const ICON = {
   curveadd:   '<path d="M3 16.5c3.5-9 10.5-1 12.5-4.5"/><circle cx="3" cy="16.5" r="1.6"/><path d="M18.5 14.5v6M15.5 17.5h6"/>',
   curveclose: '<path d="M12 4.5c5.6 0 8.2 3.6 8.2 7.5s-2.6 7.5-8.2 7.5-8.2-3.6-8.2-7.5S6.4 4.5 12 4.5Z"/><circle cx="12" cy="4.5" r="1.7"/>',
   curvetype:  '<path d="M4 18c4-10.5 12 3.5 16-8"/><circle cx="4" cy="18" r="1.6"/><circle cx="20" cy="10" r="1.6"/><path d="M4 18l4.5-3.4M20 10l-4.5 3.4"/>',
-  curveres:   '<path d="M3.5 18c4-10.5 13 3.5 17-7"/><path d="M7.6 12.6v3.4M11.4 11.6v3M15.2 12.6v3"/>'
+  curveres:   '<path d="M3.5 18c4-10.5 13 3.5 17-7"/><path d="M7.6 12.6v3.4M11.4 11.6v3M15.2 12.6v3"/>',
+  /* An axis with the SAME profile either side of it, which is what a surface
+     of revolution is and what no other glyph here shows. */
+  lathe:      '<path d="M12 2.4v19.2"/><path d="M7 6.6c5.5 1.6 5.5 9.2 0 10.8"/><path d="M17 6.6c-5.5 1.6-5.5 9.2 0 10.8"/>'
 };
 
 // Wraps a pictogram in an svg at the size the caller needs.
@@ -28166,6 +28206,163 @@ function groupingSeatApplies() {
    Each one changes the curve and shows the answer immediately, which is why
    Bezier/Poly and the resolution live here rather than on the drawing bar:
    you want to see the WHOLE shape change when you flip them. */
+/* ---------------- Lathe (v2.15) ----------------
+
+   Turn a curve about an axis. This is the op the whole metacomponent exists
+   for, and it has been three versions in the making: Revolve shipped working
+   at v2.11 and was taken off the ring at v2.12 because there was no way to
+   MAKE a profile - the app cannot hold an edge that no face uses, so a
+   profile had to be drawn inside a solid, and then the solid's own face was
+   left standing in the middle of the result. That was the "fin", and it is
+   not a bug a curve can have: a curve has no faces at all.
+
+   It runs the SAME sweep Revolve runs - see revolveSweep, which was lifted
+   out of revolveOp for exactly this - so the pole rule, the seam weld and the
+   quad emission are one piece of code with one set of measurements, not two
+   that drift.
+
+   THE CURVE'S OWN `res` IS THE STEP COUNT. A curve already carries the number
+   of segments it is worth, cycled from its own ring, and it is the same
+   quantity in both directions of a surface of revolution. One number, one
+   place to change it, and the ring already shows it. */
+function latheCurveOp(curveObj, axis, sweepDeg, steps, dir) {
+  const cv = curveObj.mesh.userData.kubikCurve;
+  curveObj.mesh.updateMatrixWorld();
+  let samples = curveSamplePoints(cv)
+    .map(p => p.clone().applyMatrix4(curveObj.mesh.matrixWorld));
+  /* A CLOSED CURVE'S LAST SAMPLE IS ITS FIRST - that is what draws the line
+     back onto itself. The sweep says the same thing with `closed`, and given
+     both it would lay a band across a leg of zero length. */
+  if (cv.closed && samples.length > 2) samples = samples.slice(0, -1);
+  if (samples.length < 2) return { ok: false, why: 'a profile needs at least two points' };
+
+  const segs = Math.max(1, Math.round(steps || 1));
+  if (sweepDeg >= 359.5 && segs < 3) {
+    return { ok: false, why: 'a full turn needs at least 3 segments - raise the curve\u2019s Segments' };
+  }
+
+  // The pivot when one is placed, otherwise the world origin - the answer
+  // Array and Revolve both give, in world space because a curve's samples are
+  // already there.
+  const centre = (App.pivotMode === 'custom' && App.pivotPoint)
+    ? App.pivotPoint.clone() : new THREE.Vector3(0, 0, 0);
+  const a = REVOLVE_AXES[axis] || REVOLVE_AXES.y;
+  const axisVec = new THREE.Vector3(a[0], a[1], a[2]);
+
+  const ed = { positions: [], groups: [] };
+  samples.forEach(p => ed.positions.push(p.x, p.y, p.z));
+  const profile = samples.map((p, i) => i);
+  const L = edLogical(ed);
+
+  /* ONE SEED MATERIAL, TAKEN BACK OUT AFTERWARDS. The sweep clones mats[0]
+     for every band it lays - it was written for a mesh whose groups and
+     materials already lined up one to one - and a curve arrives with neither.
+     So it is handed one to clone and the seed is dropped once the bands have
+     theirs, which leaves exactly one material per face. */
+  const mats = makeMaterialSet(1, DEFAULT_MATERIAL_COLOR);
+  const r = revolveSweep(ed, mats, profile, {
+    L: L, centre: centre, axisVec: axisVec, sweepDeg: sweepDeg,
+    segs: segs, dir: dir, closed: !!cv.closed, dirTaken: null
+  });
+  if (!r.ok) return r;
+  mats.shift();
+  return { ok: true, ed: ed, mats: mats, count: r.count };
+}
+
+let latheChooser = null;
+
+function latheSelection() {
+  if (App.mode !== 'object') { toast('Lathe works in Object mode'); return; }
+  const c = oneCurve('Lathe');
+  if (!c) return;
+  if (curveSamplePoints(c.mesh.userData.kubikCurve).length < 2) {
+    toast('That curve has nothing to turn'); return;
+  }
+  showLatheChooser(c);
+}
+
+/* Three chips and no OK, the way Mirror asks Joined / Apart / Flip: the axis
+   IS the whole question, and a bar that asks it and then asks again whether
+   you meant it is a bar with a step in it that nobody wanted.
+
+   A FULL TURN, and only a full turn, in this version. An arc wants a slider,
+   and a slider wants the pendingOp machinery so that dragging it re-runs the
+   sweep live - which is the right way to build it and is its own increment.
+   Said out loud here rather than left as a surprise. */
+function showLatheChooser(curveObj) {
+  mirrorChooser = null;
+  booleanChooser = null;
+  /* Captured NOW, the a2.109 rule: this bar has no exit, so it could sit
+     through any amount of later work and then turn whatever happened to be
+     selected by the time a chip was pressed. */
+  latheChooser = { id: curveObj.id };
+  const el = document.getElementById('opGrouping');
+  el.innerHTML = '';
+  el.style.display = 'inline-flex';
+  [['x', 'X'], ['y', 'Y'], ['z', 'Z']].forEach(pair => {
+    const key = pair[0];
+    const b = document.createElement('button');
+    b.textContent = pair[1];
+    b.title = 'Turn about the ' + pair[1] + ' axis';
+    b.addEventListener('click', () => {
+      const id = latheChooser && latheChooser.id;
+      hideOpBar();                                   // clears latheChooser
+      const c = id != null ? findObject(id) : null;
+      if (!c || !isCurve(c)) { toast('That curve is gone'); return; }
+      runLathe(c, key);
+    });
+    el.appendChild(b);
+  });
+  document.getElementById('opLabel').textContent = 'Lathe · turn about';
+  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opToggleWrap', 'opOk'].forEach(id => {
+    document.getElementById(id).style.display = 'none';
+  });
+  surfaceIn(opBarEl);
+}
+
+function runLathe(curveObj, axis) {
+  const cv = curveObj.mesh.userData.kubikCurve;
+  const r = latheCurveOp(curveObj, axis, 360, cv.res, 1);
+  if (!r.ok) { toast(r.why); return; }
+
+  /* The result's own bounding-box centre is its pivot - what exists now,
+     rather than where the curve that made it happened to sit. */
+  const box = new THREE.Box3(), v = new THREE.Vector3();
+  for (let i = 0; i < r.ed.positions.length; i += 3) {
+    box.expandByPoint(v.set(r.ed.positions[i], r.ed.positions[i + 1], r.ed.positions[i + 2]));
+  }
+  const c = box.getCenter(new THREE.Vector3());
+  for (let i = 0; i < r.ed.positions.length; i += 3) {
+    r.ed.positions[i] -= c.x;
+    r.ed.positions[i + 1] -= c.y;
+    r.ed.positions[i + 2] -= c.z;
+  }
+
+  const made = createObjectFromEditable(curveObj.name + ' lathe', c, r.ed, r.mats, {});
+  if (!made) { toast('Nothing swept'); return; }
+
+  /* THE CURVE SURVIVES. It is the thing you will adjust and turn again, and
+     a lathe that eats its own profile makes that a re-draw every time. It is
+     also why the result is SELECTED and the curve is not: what you want in
+     your hand afterwards is the shape. */
+  App.selectedObjectIds = new Set([made.id]);
+  App.activeObjectId = null;
+  detachAllGizmos();
+  hideRadialMenu();
+  refreshUI();
+  refreshGizmoAttachment();
+  pushHistory();
+
+  const w = auditWinding(made);
+  if (PICK_DEBUG) console.log('[winding]', JSON.stringify(w));
+  const trouble = [];
+  if (w.boundary) trouble.push(w.boundary + ' open edge' + (w.boundary === 1 ? '' : 's'));
+  if (w.conflictEdges) trouble.push(w.conflictEdges + ' reversed');
+  if (w.nonManifold) trouble.push(w.nonManifold + ' non-manifold');
+  toast('Lathe · ' + r.count + ' faces about ' + axis.toUpperCase() +
+        (trouble.length ? ' - ' + trouble.join(', ') : ''));
+}
+
 function selectedCurves() {
   return Array.from(App.selectedObjectIds).map(id => findObject(id)).filter(isCurve);
 }
@@ -28242,6 +28439,8 @@ const HUB_TOOLS_CURVE = [
     run: toggleCurveClosed },
   { key: 'curveres', icon: 'curveres', label: 'Segments', seat: 3, run: cycleCurveRes },
   { key: 'delete', icon: 'del', label: 'Delete', seat: 4, run: deleteSelection },
+  /* Seat 6, held for it since v2.14. Seat 7 is Tube's. */
+  { key: 'lathe', icon: 'lathe', label: 'Lathe', seat: 6, run: latheSelection },
   { key: 'duplicate', icon: 'dupe', label: 'Duplicate', seat: 7, run: duplicateSelection }
 ];
 
@@ -32590,6 +32789,9 @@ if (PICK_DEBUG) {
     curveWorkPlane, curvePlanePoint, toggleCurveType, toggleCurveClosed,
     cycleCurveRes, curveAddPoints, HUB_TOOLS_CURVE, CURVE_RES_STEPS,
     get curveDraw() { return App.curveDraw; },
+    // v2.15: the lathe, and the sweep it now shares with Revolve.
+    revolveSweep, latheCurveOp, latheSelection, runLathe, revolveOp,
+    get latheChooser() { return latheChooser; },
     get activePointers() { return activePointers; },
     get directDrag() { return directDrag; },
     finishGeoSetup,
