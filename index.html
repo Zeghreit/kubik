@@ -2362,7 +2362,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.17</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.18</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -9381,7 +9381,7 @@ function cloneObjectInto(obj, name) {
     const cv = obj.mesh.userData.kubikCurve;
     const dup = createCurveObject(name, obj.mesh.position.clone(),
       cv.pts.map(a => new THREE.Vector3(a[0], a[1], a[2])),
-      { closed: cv.closed, type: cv.type, res: cv.res });
+      { closed: cv.closed, type: cv.type, res: cv.res, radii: cv.radii });
     dup.mesh.quaternion.copy(obj.mesh.quaternion);
     dup.mesh.scale.copy(obj.mesh.scale);
     return dup;
@@ -19780,8 +19780,16 @@ function refreshCurvePreview() {
        like a line with no structure until you can see what is holding it,
        and this is also how you tell a curve from a wireframe at a glance. */
     const flat = [];
-    Array.from(App.selectedObjectIds).map(id => findObject(id)).filter(isCurve)
-      .forEach(o => {
+    const list = Array.from(App.selectedObjectIds).map(id => findObject(id)).filter(isCurve);
+    /* AND THE CURVE A SETUP IS HOLDING (v2.18). The setup selects its own
+       result, so the curve stops being selected at the exact moment its
+       control points become the handles you drag - and they vanished. */
+    const sp = App.opSetup && opSetupSpec();
+    if (sp && sp.perPoint) {
+      const c = findObject(App.opSetup.curveId);
+      if (c && isCurve(c) && list.indexOf(c) < 0) list.push(c);
+    }
+    list.forEach(o => {
         o.mesh.updateMatrixWorld();
         (o.mesh.userData.kubikCurve.pts || []).forEach(a => {
           const w = new THREE.Vector3(a[0], a[1], a[2]).applyMatrix4(o.mesh.matrixWorld);
@@ -22039,6 +22047,12 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     // A second finger is the camera, and it must not leave a pivot drag alive
     // underneath - the line below hands orbit back.
     cancelPivotDrag();
+    /* Nor a radius drag (v2.18, found in review). It leaves the point where
+       the finger had reached, which is what a lift would have done, and lets
+       the camera have the gesture. Left alive, the first finger's next move
+       went on setting that radius from anchors captured before the camera
+       turned - and orbit had already been handed back over the top of it. */
+    if (tubeRadiusDrag) endTubeRadiusDrag();
     // A second finger is the camera, not a taller extrusion. The section
     // keeps whatever height it had reached.
     extrudeDrag = null;
@@ -22083,6 +22097,14 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
      handle. Two fingers still reach the camera, from the bail-out above. */
   if (App.pivotPlacing) {
     if (beginPivotDrag(ev)) { pointerDown = null; directCandidate = null; return; }
+  }
+
+  /* A CONTROL POINT OWNS THE PRESS THAT LANDS ON IT (v2.18), and only while a
+     setup that uses them is open. Aimed, unlike the pivot's whole-viewport
+     claim, because the rest of the viewport still has to reach the camera and
+     the result: there are several points and they mean different things. */
+  if (App.opSetup && !App.pendingOp) {
+    if (beginTubeRadiusDrag(ev)) { pointerDown = null; directCandidate = null; return; }
   }
 
   pointerDown = { x: ev.clientX, y: ev.clientY, t: performance.now(), overGizmo: false };
@@ -22196,6 +22218,7 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
     return;
   }
   if (pivotDrag) { updatePivotDrag(ev); return; }
+  if (tubeRadiusDrag) { updateTubeRadiusDrag(ev); return; }
   if (App.curveDraw) { curvePointerMove(ev); return; }
   if (App.knife) { knifePointerMove(ev); return; }
   if (toolRingActive) { updateToolRingHover(ev); return; }
@@ -22312,6 +22335,16 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
   if (pivotDrag) {
     trackPointerUp(ev);
     endPivotDrag();
+    pointerDown = null;
+    directCandidate = null;
+    return;
+  }
+
+  if (tubeRadiusDrag) {
+    // trackPointerUp still has to run: it is what removes this pointer from
+    // the tracker, and leaking one corrupts every tap gesture after it.
+    trackPointerUp(ev);
+    endTubeRadiusDrag();
     pointerDown = null;
     directCandidate = null;
     return;
@@ -24471,10 +24504,51 @@ function cubicPointAt(p0, c1, c2, p1, t, out) {
    a real Bezier without touching a handle. The data model carries hIn/hOut
    from the start, unused, so dragging handles can be added later without
    changing a single saved file. */
-function curveSamplePoints(cv) {
+/* A RADIUS PER CONTROL POINT (v2.18), as a MULTIPLIER rather than a length.
+
+   Multipliers because the tube's own radius is still one number on one
+   slider: the curve says "fat here, thin there" and the bar says how fat
+   overall, so a taper you shaped by hand survives being re-tubed at a
+   different thickness. Absolute lengths would have made the slider a lie the
+   moment any point disagreed with it.
+
+   Clamped rather than free: a zero radius is a ring of N coincident vertices,
+   which is a fan of zero-area faces and a pinch that no winding audit can
+   read. CURVE_R_MIN is small enough to look like a point and big enough to
+   still be a ring. */
+const CURVE_R_MIN = 0.05, CURVE_R_MAX = 6;
+
+/* ONE PER POINT, ALWAYS. Every path that rewrites `pts` - the draw tool
+   appending, Back popping one off, an older file that has no radii at all, a
+   clone - ends in rebuildCurveGeometry, so that is where this is called and
+   none of them has to know the field exists. New points arrive at 1. */
+function normaliseCurveRadii(cv) {
+  const n = (cv.pts || []).length;
+  const src = Array.isArray(cv.radii) ? cv.radii : [];
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const v = Number(src[i]);
+    out.push(Number.isFinite(v) ? Math.max(CURVE_R_MIN, Math.min(CURVE_R_MAX, v)) : 1);
+  }
+  cv.radii = out;
+  return out;
+}
+
+/* `outW`, when given, is filled with one radius multiplier per sample -
+   by the SAME loop, deliberately. A second function that walked the spans
+   again would be two descriptions of one thing, and the interesting cases
+   here (a skipped degenerate span, the terminal sample, a closed curve's
+   wrap) are exactly the ones the two copies would drift on. */
+function curveSamplePoints(cv, outW) {
   const P = (cv.pts || []).map(a => new THREE.Vector3(a[0], a[1], a[2]));
   const n = P.length;
-  if (n < 2) return P.slice();
+  const W = normaliseCurveRadii(cv);
+  const wOut = Array.isArray(outW) ? outW : null;
+  if (wOut) wOut.length = 0;
+  if (n < 2) {
+    if (wOut) W.slice(0, n).forEach(w => wOut.push(w));
+    return P.slice();
+  }
   /* TWO POINTS CANNOT ENCLOSE ANYTHING, and this is the one place to say so
      (v2.16, found in review). Closing a two-point curve draws the same segment
      back over itself, and every consumer downstream then has to unpick it in
@@ -24484,13 +24558,38 @@ function curveSamplePoints(cv) {
   const closed = !!cv.closed && n > 2;
   if (cv.type !== 'bezier') {
     const out = P.slice();
-    if (closed) out.push(P[0].clone());
+    if (wOut) W.forEach(w => wOut.push(w));
+    if (closed) { out.push(P[0].clone()); if (wOut) wOut.push(W[0]); }
     return out;
   }
   const res = Math.max(1, Math.min(CURVE_RES_MAX, (cv.res | 0) || CURVE_RES_DEF));
   // An open curve's virtual neighbour is the endpoint itself, which makes the
   // first and last spans leave the end straight rather than overshoot it.
   const at = (i) => closed ? P[((i % n) + n) % n] : P[Math.max(0, Math.min(n - 1, i))];
+  /* A DOUBLED POINT IS ONE PLACE, SO IT IS ONE RADIUS (found in review).
+     Two control points on the same spot is how a Bezier is given a corner,
+     and the span between them is skipped below - so the ring AT the corner is
+     emitted by the NEXT span and carried the SECOND copy's radius, while
+     everything ramping into it aimed at the first copy's. The two never met,
+     and the handle you can see is the FIRST copy: they project to one dot and
+     the pick keeps the lower index. Dragging that dot therefore stepped the
+     tube at the very corner it was meant to shape, and on a doubled endpoint
+     it did nothing visible at all.
+
+     Every index in a group of coincident points resolves to the lowest of
+     them - which is exactly what the pick returns - so the ring, both ramps
+     and the handle all name the same number. Quadratic in the control count,
+     which is a handful of taps, and it catches a wrapped pair (a closed curve
+     whose last point sits on its first) that a walk backwards would miss. */
+  const wIdx = [];
+  for (let i = 0; i < n; i++) {
+    let j = i;
+    for (let k = 0; k < i; k++) {
+      if (P[k].distanceToSquared(P[i]) < 1e-12) { j = k; break; }
+    }
+    wIdx.push(j);
+  }
+  const wAt = (i) => W[wIdx[closed ? ((i % n) + n) % n : Math.max(0, Math.min(n - 1, i))]];
   const spans = closed ? n : n - 1;
   const out = [];
   for (let s = 0; s < spans; s++) {
@@ -24509,11 +24608,21 @@ function curveSamplePoints(cv) {
     if (p1.distanceToSquared(p2) < 1e-12) continue;
     const c1 = p1.clone().add(p2.clone().sub(p0).multiplyScalar(1 / 6));
     const c2 = p2.clone().sub(p3.clone().sub(p1).multiplyScalar(1 / 6));
+    /* LINEAR ALONG THE SPAN, not a spline like the shape itself. A
+       Catmull-Rom through the radii would pass through every one of them too,
+       but it can bulge BETWEEN them - set 1, 1, 0.2, 1, 1 and the two spans
+       either side of the pinch swell above 1 before they dive. A ramp does
+       exactly what the two ends say and nothing else, which is what a handle
+       you dragged has to mean. */
+    const w1 = wAt(s), w2 = wAt(s + 1);
     for (let k = 0; k < res; k++) {
-      out.push(cubicPointAt(p1, c1, c2, p2, k / res, new THREE.Vector3()).clone());
+      const t = k / res;
+      out.push(cubicPointAt(p1, c1, c2, p2, t, new THREE.Vector3()).clone());
+      if (wOut) wOut.push(w1 + (w2 - w1) * t);
     }
   }
   out.push(at(closed ? 0 : n - 1).clone());
+  if (wOut) wOut.push(wAt(closed ? 0 : n - 1));
   return out;
 }
 
@@ -24523,6 +24632,7 @@ function curveSamplePoints(cv) {
    changes whenever `res` or a point does. */
 function rebuildCurveGeometry(obj) {
   const cv = obj.mesh.userData.kubikCurve;
+  normaliseCurveRadii(cv);   // the one funnel every points change runs through
   const pts = curveSamplePoints(cv);
   const flat = [];
   pts.forEach(p => flat.push(p.x, p.y, p.z));
@@ -24564,7 +24674,10 @@ function createCurveObject(name, position, ptsLocal, opts) {
     pts: ptsLocal.map(p => [p.x, p.y, p.z]),
     closed: !!o.closed,
     type: o.type === 'poly' ? 'poly' : 'bezier',
-    res: Math.max(1, Math.min(CURVE_RES_MAX, (o.res | 0) || CURVE_RES_DEF))
+    res: Math.max(1, Math.min(CURVE_RES_MAX, (o.res | 0) || CURVE_RES_DEF)),
+    // Normalised by rebuildCurveGeometry below, so a short list, a long one
+    // and no list at all all arrive at one number per point.
+    radii: Array.isArray(o.radii) ? o.radii.slice() : []
   };
   /* Its material joins the resize list, and disposeObject SPLICES IT OUT
      again. Every LineMaterial in the viewport needs its `resolution` kept in
@@ -25527,7 +25640,8 @@ function serializeDoc() {
             pts: cv.pts.map(a => [a[0], a[1], a[2]]),   // copies, not the live rows
             closed: !!cv.closed,
             type: cv.type === 'poly' ? 'poly' : 'bezier',
-            res: cv.res
+            res: cv.res,
+            radii: normaliseCurveRadii(cv).slice()   // v2.18, copies again
           }
         };
       }
@@ -25812,7 +25926,8 @@ function restoreDoc(doc, opts = {}) {
       const cobj = createCurveObject(od.name,
         new THREE.Vector3().fromArray(od.position),
         od.curve.pts.map(a => new THREE.Vector3(a[0], a[1], a[2])),
-        { closed: od.curve.closed, type: od.curve.type, res: od.curve.res });
+        { closed: od.curve.closed, type: od.curve.type, res: od.curve.res,
+          radii: od.curve.radii });
       /* Its own id back, not the one createCurveObject minted. App.nextId is
          restored from the doc a few lines below, so the spent number costs
          nothing - and a curve keeping its id is what lets groups, the
@@ -28389,26 +28504,98 @@ function tubeFrames(pts, T, closed) {
   return R;
 }
 
-function tubeCurveOp(curveObj, radius, sides, caps) {
+/* THE CROSS-SECTION IS A LIST OF UNIT OFFSETS (v2.18), in the frame's own
+   (R, B) plane, scaled by the radius at each point. One list per profile, and
+   the sweep below does not know which one it was handed - which is the whole
+   reason the four of them cost almost nothing.
+
+   Every one is CONVEX and wound the same way round. Convex because the
+   outward vote measures a ring vertex against its own curve point, and on a
+   concave section that vector points inward for part of the loop; same
+   winding because the vote is taken once, on the first ring, and applied to
+   the whole wall.
+
+   `sides` means what it says only for the two round ones. A square has four
+   corners because it is a square, so its stepper goes away rather than
+   sitting there refusing to move - see the bar. */
+const TUBE_PROFILES = {
+  round: {
+    label: 'Round', sides: true,
+    pts: (N) => {
+      const out = [];
+      for (let j = 0; j < N; j++) {
+        const a = (j / N) * Math.PI * 2;
+        out.push([Math.cos(a), Math.sin(a)]);
+      }
+      return out;
+    }
+  },
+  /* HALF-WIDTH, not half-diagonal: a square tube and a round tube at the same
+     radius measure the same across, so switching between them changes the
+     shape and not the size. */
+  square: { label: 'Square', sides: false,
+            pts: () => [[1, 1], [-1, 1], [-1, -1], [1, -1]] },
+  // A strip with a thickness. A true ribbon has no volume, and a surface with
+  // no volume is not something the rest of this app can edit.
+  flat: { label: 'Flat', sides: false,
+          pts: () => [[1, 0.22], [-1, 0.22], [-1, -0.22], [1, -0.22]] },
+  /* THE FLAT RUNS THROUGH THE SPINE, so the curve you drew is the edge the
+     moulding sits on rather than its middle. Half the arc, so half the
+     stepper's sides, and never fewer than two - one segment is a triangle. */
+  half: {
+    label: 'Half', sides: true,
+    pts: (N) => {
+      const M = Math.max(2, N >> 1), out = [];
+      for (let j = 0; j <= M; j++) {
+        const a = (j / M) * Math.PI;
+        out.push([Math.cos(a), Math.sin(a)]);
+      }
+      return out;
+    }
+  }
+};
+
+function tubeProfilePoints(kind, N) {
+  return (TUBE_PROFILES[kind] || TUBE_PROFILES.round).pts(N);
+}
+
+function tubeCurveOp(curveObj, radius, sides, caps, profile) {
   const cv = curveObj.mesh.userData.kubikCurve;
   curveObj.mesh.updateMatrixWorld();
-  let raw = curveSamplePoints(cv).map(p => p.clone().applyMatrix4(curveObj.mesh.matrixWorld));
+  let rawW = [];
+  let raw = curveSamplePoints(cv, rawW).map(p => p.clone().applyMatrix4(curveObj.mesh.matrixWorld));
   // Two points cannot enclose anything - see latheCurveOp for what happens
   // when they are allowed to try.
-  const closed = !!cv.closed && (cv.pts || []).length > 2;
-  if (closed && raw.length > 2) raw = raw.slice(0, -1);
+  let closed = !!cv.closed && (cv.pts || []).length > 2;
+  if (closed && raw.length > 2) { raw = raw.slice(0, -1); rawW = rawW.slice(0, -1); }
 
   /* A REPEATED POINT HAS NO TANGENT, and a curve can carry one - two control
      points on the same spot is how a Bezier is given a corner. Dropped here
      rather than guarded everywhere below. */
-  const pts = [];
-  raw.forEach(p => { if (!pts.length || p.distanceTo(pts[pts.length - 1]) > 1e-6) pts.push(p); });
-  if (closed && pts.length > 2 && pts[0].distanceTo(pts[pts.length - 1]) < 1e-6) pts.pop();
+  const pts = [], wts = [];
+  raw.forEach((p, i) => {
+    if (pts.length && p.distanceTo(pts[pts.length - 1]) <= 1e-6) return;
+    pts.push(p);
+    wts.push(rawW[i] !== undefined ? rawW[i] : 1);
+  });
+  if (closed && pts.length > 2 && pts[0].distanceTo(pts[pts.length - 1]) < 1e-6) {
+    pts.pop(); wts.pop();
+  }
   const n = pts.length;
   if (n < 2) return { ok: false, why: 'a tube needs a curve with some length' };
+  /* AND THE LOOP IS RE-ASKED AFTER THE DROPS (found in review). `closed` was
+     decided on the control-point count, before the repeated points came out -
+     so a closed three-point curve whose last point sits on its first arrived
+     here with two distinct samples and a loop flag, and spans = n laid two
+     coincident, opposite-wound bands along one leg. That is the out-and-back
+     the sampler's own comment says is refused by construction; it was refused
+     on a count taken too early. */
+  if (n < 3) closed = false;
 
   const N = Math.max(3, Math.min(TUBE_SIDES_MAX, sides | 0));
   const rad = Math.max(1e-3, radius);
+  const prof = tubeProfilePoints(profile, N);
+  const M = prof.length;   // ring width - the profile's, which is not always N
 
   const T = pts.map((p, i) => {
     const a = closed ? pts[(i - 1 + n) % n] : pts[Math.max(0, i - 1)];
@@ -28427,12 +28614,26 @@ function tubeCurveOp(curveObj, radius, sides, caps) {
   const rings = [];
   for (let i = 0; i < n; i++) {
     const B = new THREE.Vector3().crossVectors(T[i], R[i]).normalize();
+    /* THE RADIUS IS PER RING (v2.18), and per ring is the most it can be.
+       The outward vote below reads a ring vertex minus its own curve point as
+       the radial, which holds exactly while every vertex of a ring shares one
+       radius - `r * (R u + B v)` - and stops holding the moment two vertices
+       of the same ring disagree. */
+    /* AND A FLOOR IN WORLD UNITS (found in review). CURVE_R_MIN keeps the
+       multiplier off zero, which is not the same as keeping the RING off the
+       topology grid: at the slider's own floor and 32 sides the chord between
+       two neighbouring ring vertices is 5e-5, well under the 1e-4 that
+       computeLogicalOf rounds to, so most of that ring welds into one logical
+       vertex and the quads around it become degenerate. Held at a chord the
+       grid can still tell apart; a tube that thin has stopped getting thinner
+       on screen long before this. */
+    const chord = 2 * Math.sin(Math.PI / Math.max(3, M));
+    const ri = Math.max(rad * Math.max(CURVE_R_MIN, wts[i] || 1), 4e-4 / chord);
     const row = [];
-    for (let j = 0; j < N; j++) {
-      const a = (j / N) * Math.PI * 2;
+    for (let j = 0; j < M; j++) {
       const p = pts[i].clone()
-        .addScaledVector(R[i], Math.cos(a) * rad)
-        .addScaledVector(B, Math.sin(a) * rad);
+        .addScaledVector(R[i], prof[j][0] * ri)
+        .addScaledVector(B, prof[j][1] * ri);
       row.push(ed.positions.length / 3);
       ed.positions.push(p.x, p.y, p.z);
     }
@@ -28443,8 +28644,8 @@ function tubeCurveOp(curveObj, radius, sides, caps) {
   const quads = [];
   for (let i = 0; i < spans; i++) {
     const r0 = rings[i], r1 = rings[(i + 1) % n];
-    for (let j = 0; j < N; j++) {
-      const k = (j + 1) % N;
+    for (let j = 0; j < M; j++) {
+      const k = (j + 1) % M;
       quads.push([r0[j], r0[k], r1[k], r1[j]]);
     }
   }
@@ -28456,43 +28657,34 @@ function tubeCurveOp(curveObj, radius, sides, caps) {
                             IMPORT_FACE_BUDGET + ')' };
   }
 
-  /* OUTWARD, MEASURED ONCE AND APPLIED TO ALL OF THEM. The lathe's lesson,
-     which v2.15 finally proved: a swept surface has an outward direction that
-     needs no neighbour to define it, and guessing it from the construction
-     order is how a shell comes out inside out while passing every check.
+  /* OUTWARD IS DECIDED BY THE CONSTRUCTION, NOT MEASURED (v2.18, forced by
+     review). Every version up to here summed a flux over the first ring and
+     flipped the whole wall if it came out negative. That measurement was
+     right for a circle and wrong for the profiles this version adds: it is a
+     sum of UNIT normals against radials, so it is not area-weighted, and on
+     Half - whose offsets all sit on one side of the spine - a bend tight
+     enough to tuck the inside of one band behind its own neighbour outvoted
+     every good band in the tube. The whole surface came back inside out, and
+     inside out is the one defect that passes every check this file has.
 
-     ONE decision for the whole wall, not one per quad. Every band is built
-     the same way, so one answer carries them all - and measuring each
-     separately would let a tight bend, where the radial is nearly along the
-     tangent, disagree with its own neighbours. */
-  /* MEASURED OFF THE RING, NOT OFF THE QUAD'S CENTROID (corrected in review).
+     It never needed measuring. B is T x R, so R x B = T for any R that is
+     perpendicular to T - which is what tubeFrames returns and what it
+     re-orthogonalises to keep. (R, B, T) is therefore right-handed by
+     construction, every profile below is wound counter-clockwise in (R, B),
+     and the rings advance along T. Take the quad [r0[j], r0[k], r1[k], r1[j]]
+     at R = +x, B = +y, T = +z: its two edges are +y and +z, so its normal is
+     +x, which is the radial. Outward, and the same answer for every quad of
+     every band of every profile, with nothing to get wrong at run time.
 
-     The centroid of a quad straddles two rings, so it carries half a step
-     ALONG the curve. On an open curve T[0] is exactly that direction and
-     projecting it out removed it; on a CLOSED curve T[0] is a central
-     difference across the seam corner, so a residual of |d|/2 * sin(theta/2)
-     survived, pointing into the corner. On a closed square of side 1 at the
-     default radius that residual is three times the true radial and points
-     the other way - so the whole wall flipped, and which way round you drew
-     the square decided it.
+     The caps below still measure, because a cap faces along the curve rather
+     than away from it and its own loop is the honest way to ask.
 
-     A ring vertex minus its own curve point IS the radial, exactly, by
-     construction: rad * (R cos a + B sin a). The pair either side of each quad
-     is averaged so the sample sits at the quad's own angle rather than half a
-     step off it, and the vote is summed over the whole first ring for the same
-     reason the lathe sums over its band. */
-  const radv = new THREE.Vector3();   // `rad` above is the radius, a number
-  let flux = 0;
-  for (let j = 0; j < N; j++) {
-    const k = (j + 1) % N;
-    radv.copy(vecAt(ed, rings[0][j])).add(vecAt(ed, rings[0][k]))
-        .multiplyScalar(0.5).sub(pts[0]);
-    flux += loopNormal(ed, quads[j]).dot(radv);
-  }
-  const flip = flux < 0;
+     What guards this is the probe rather than a run-time vote: sections 5, 10
+     and 12 check the SIGNED VOLUME of closed tubes - a straight one, a closed
+     square from every corner and both directions, and all four profiles -
+     and signed volume is exactly the question "is this solid or is it a hole". */
   quads.forEach(q => {
-    const loop = flip ? [q[0], q[3], q[2], q[1]] : q;
-    ed.groups.push({ triangles: polygonTriangles(ed, loop) });
+    ed.groups.push({ triangles: polygonTriangles(ed, q) });
   });
 
   /* The caps close an open tube, and each faces along the curve rather than
@@ -28560,23 +28752,48 @@ const OP_SETUP = {
   },
   tube: {
     label: 'Tube',
-    chips: null,
+    chips: [['round', 'Round'], ['square', 'Square'], ['flat', 'Flat'], ['half', 'Half']],
+    chipKey: 'profile',
+    chipTip: (k) => (TUBE_PROFILES[k] || {}).label + ' cross-section',
     slider: {
       key: 'radius', min: () => 0.005,
       max: (p, s) => Math.max(0.05, s.span * 0.5),
       step: (p, s) => Math.max(0.001, s.span * 0.002),
       decimals: 3, unit: ''
     },
-    stepper: { key: 'sides', max: () => TUBE_SIDES_MAX, min: () => 3 },
+    /* GONE, not disabled, on a square. A square has four corners because it
+       is a square; a stepper sitting there refusing to move is the silent
+       no-op this file keeps naming as its worst failure. */
+    stepper: { key: 'sides', max: () => TUBE_SIDES_MAX, min: () => 3,
+               hidden: (p) => !(TUBE_PROFILES[p.profile] || TUBE_PROFILES.round).sides },
     toggle: { key: 'caps', label: 'Caps', tip: 'Close the two ends' },
-    defaults: (s) => ({ radius: Math.max(0.01, s.span * 0.06), sides: 8, caps: true }),
+    defaults: (s) => ({
+      radius: Math.max(0.01, s.span * 0.06), sides: 8, caps: true,
+      profile: TUBE_PROFILES[App.tubeProfile] ? App.tubeProfile : 'round'
+    }),
     build: (s) => {
       const c = findObject(s.curveId);
-      return c ? tubeCurveOp(c, s.p.radius, s.p.sides, s.p.caps)
+      return c ? tubeCurveOp(c, s.p.radius, s.p.sides, s.p.caps, s.p.profile)
                : { ok: false, why: 'the curve is gone' };
     },
     name: (s) => (findObject(s.curveId) || { name: 'Curve' }).name + ' tube',
-    onChip: null
+    onChip: (k) => { App.tubeProfile = k; },
+    /* THE CONTROL POINTS ARE HANDLES while this bar is open: drag one out and
+       the tube gets fatter there. The radii live on the CURVE, so they are
+       saved with it and are still there the next time you tube it - which
+       means Cancel has to put them back, and that is what these two are for.
+       They are the same rule as the mesh itself: nothing survives a ✕. */
+    perPoint: true,
+    snapshot: (s) => {
+      const c = findObject(s.curveId);
+      return c ? normaliseCurveRadii(c.mesh.userData.kubikCurve).slice() : null;
+    },
+    restore: (s, snap) => {
+      const c = findObject(s.curveId);
+      if (!c || !snap) return;
+      c.mesh.userData.kubikCurve.radii = snap.slice();
+      rebuildCurveGeometry(c);
+    }
   },
   /* BOOLEAN IS THE SAME INTERACTION TOO (v2.17), and it needed it more than
      either curve op did: union, difference and intersect are three answers
@@ -28688,6 +28905,7 @@ function startOpSetup(kind, seed) {
     s.span = curveWorldBox(c).getSize(new THREE.Vector3()).length();
   }
   s.p = spec.defaults(s);
+  s.snap = spec.snapshot ? spec.snapshot(s) : null;
   const made = buildOpSetupObject(spec, s);
   if (!made) return;                                // refused, and it said why
   s.objId = made.obj.id;
@@ -28869,8 +29087,10 @@ function showOpSetupBar() {
     sl.style.display = 'none'; val.style.display = 'none';
   }
   document.getElementById('opHint').style.display = 'none';
-  document.getElementById('opSegments').style.display = spec.stepper ? '' : 'none';
-  if (spec.stepper) document.getElementById('opSegValue').textContent = s.p[spec.stepper.key];
+  const useStep = !!spec.stepper &&
+                  !(spec.stepper.hidden && spec.stepper.hidden(s.p, s));
+  document.getElementById('opSegments').style.display = useStep ? '' : 'none';
+  if (useStep) document.getElementById('opSegValue').textContent = s.p[spec.stepper.key];
 
   const wrap = document.getElementById('opToggleWrap');
   const btn = document.getElementById('opToggle');
@@ -28895,6 +29115,9 @@ function showOpSetupBar() {
    something else entirely in the loaded document. */
 function abandonOpSetup() {
   if (!App.opSetup) return;
+  /* No restore here, deliberately: restoreDoc is about to rebuild every
+     object in the scene from a document that carries its own radii. */
+  if (tubeRadiusDrag) endTubeRadiusDrag();
   unhideOpSetupInputs(App.opSetup);
   App.opSetup = null;
   hideOpBar();
@@ -28904,6 +29127,7 @@ function abandonOpSetup() {
 function finishOpSetup(keep) {
   const s = App.opSetup;
   if (!s) return;
+  if (tubeRadiusDrag) endTubeRadiusDrag();
   unhideOpSetupInputs(s);
   App.opSetup = null;
   hideOpBar();
@@ -28940,6 +29164,8 @@ function finishOpSetup(keep) {
     refreshGizmoAttachment();
     return;
   }
+  const undoSpec = OP_SETUP[s.kind];
+  if (undoSpec.restore) undoSpec.restore(s, s.snap);
   if (o) {
     removeObjects([o]);
     App.selectedObjectIds.delete(o.id);
@@ -28956,6 +29182,102 @@ function finishOpSetup(keep) {
   }
   refreshUI();
   refreshGizmoAttachment();
+}
+
+/* ---------------- Per-point radius (v2.18) ----------------
+
+   Drag a control point to make the tube fatter or thinner THERE. The handle
+   is the point's own dot: there is no gizmo in this app and there is not
+   going to be one, and the bar says what a drag on a dot is for.
+
+   It writes to the CURVE, not to the setup - the radii belong to the shape
+   the way its points do, so they save, load and undo with it, and the next
+   tube you pull off that curve starts where this one left off. What keeps
+   that honest is the snapshot in the spec above: ✕ puts them back exactly. */
+let tubeRadiusDrag = null;
+
+/* GENEROUS, like every other GRAB in this file. Choosing between candidates
+   wants precision; taking hold of something that is already yours wants a
+   target a thumb can hit. */
+function pickCurvePointPx(ev) {
+  const s = App.opSetup, spec = opSetupSpec();
+  if (!s || !spec || !spec.perPoint) return null;
+  const c = findObject(s.curveId);
+  if (!c || !isCurve(c)) return null;
+  c.mesh.updateMatrixWorld();
+  const pts = c.mesh.userData.kubikCurve.pts || [];
+  const p = pointerPx(ev);
+  let best = null;
+  for (let i = 0; i < pts.length; i++) {
+    const w = new THREE.Vector3(pts[i][0], pts[i][1], pts[i][2])
+      .applyMatrix4(c.mesh.matrixWorld);
+    const sp = worldToScreenPx(w);
+    if (!sp) continue;
+    const d = Math.hypot(sp.x - p.x, sp.y - p.y);
+    if (d <= GRAB_RADIUS_PX && (!best || d < best.d)) best = { i: i, d: d, world: w, sp: sp };
+  }
+  return best;
+}
+
+/* THE DIRECTION YOU GRABBED IS THE DIRECTION THAT GROWS, and the reason is
+   that the bare distance from the point cannot shrink: it is positive on both
+   sides, so pushing through the point would read as pulling away from it and
+   the ring would swell again. Take hold of one side and it is a handle with
+   two directions, whichever side you took and wherever the camera is.
+
+   Divided by the bar's radius, because what this drag sets is the MULTIPLIER:
+   a pixel is then worth the same fraction of the tube at any thickness, and
+   the surface keeps up with the finger.
+
+   WITH A FLOOR UNDER THE DIVISOR, though, because "the same fraction" stops
+   being a handle at the thin end. A tube a couple of per cent of the curve
+   across is a dozen pixels on screen, and dividing by that puts the whole
+   range - a twentieth to six times - inside one thumb-width of travel. Below
+   that width the drag gives up being 1:1 and stays usable instead; at any
+   normal thickness the floor is not reached and nothing changes. */
+function beginTubeRadiusDrag(ev) {
+  const s = App.opSetup;
+  const hit = pickCurvePointPx(ev);
+  if (!hit) return false;
+  const c = findObject(s.curveId);
+  const cv = c.mesh.userData.kubikCurve;
+  normaliseCurveRadii(cv);
+  const p = pointerPx(ev);
+  let dx = p.x - hit.sp.x, dy = p.y - hit.sp.y;
+  const len = Math.hypot(dx, dy);
+  // Dead centre has no direction to offer, so up the screen means fatter.
+  if (len < 1) { dx = 0; dy = -1; } else { dx /= len; dy /= len; }
+  tubeRadiusDrag = {
+    curveId: c.id, i: hit.i, sx: hit.sp.x, sy: hit.sp.y, dx: dx, dy: dy,
+    t0: (p.x - hit.sp.x) * dx + (p.y - hit.sp.y) * dy,
+    mult0: cv.radii[hit.i],
+    perPx: worldPerPixel(hit.world) / Math.max(1e-4, s.p.radius, s.span * 0.02)
+  };
+  orbit.enabled = false;
+  return true;
+}
+
+function updateTubeRadiusDrag(ev) {
+  const d = tubeRadiusDrag, s = App.opSetup;
+  if (!d || !s) return;
+  const c = findObject(d.curveId);
+  if (!c || !isCurve(c)) { endTubeRadiusDrag(); return; }
+  const cv = c.mesh.userData.kubikCurve;
+  normaliseCurveRadii(cv);
+  if (d.i >= cv.radii.length) { endTubeRadiusDrag(); return; }
+  const p = pointerPx(ev);
+  const t = (p.x - d.sx) * d.dx + (p.y - d.sy) * d.dy;
+  const m = d.mult0 + (t - d.t0) * d.perPx;
+  cv.radii[d.i] = Math.max(CURVE_R_MIN, Math.min(CURVE_R_MAX, m));
+  refreshOpSetupMesh();
+}
+
+function endTubeRadiusDrag() {
+  if (!tubeRadiusDrag) return;
+  tubeRadiusDrag = null;
+  /* Nothing is pushed here. The whole setup is one step and the tick is what
+     takes it - the same rule the slider and the stepper already follow. */
+  orbit.enabled = true;
 }
 
 function tubeSelection() {
@@ -32721,6 +33043,12 @@ if (typeof ResizeObserver === 'function') {
       endAmountDrag();   // a2.102: the amount stays where the drag reached; a mere leave is not an end
       if (directDrag) endDirectDrag();
       if (extrudeDrag) endExtrudeDrag();
+      /* v2.18, found in review: without this a cancelled radius drag stayed
+         live with orbit off, and the next unrelated pointermove went on
+         setting that point's radius - about 0.03 of a multiplier per pixel,
+         so one stray swipe pinned it to a clamp. Word for word the failure
+         the two comments above record for the pivot and the vertex drag. */
+      if (tubeRadiusDrag) endTubeRadiusDrag();
       if (boxDrag) {
         boxDrag = null;
         selectBoxEl.style.display = 'none';
@@ -33425,6 +33753,11 @@ if (PICK_DEBUG) {
     revolveSweep, latheCurveOp, latheSelection, revolveOp,
     // v2.16: the tube, its frames and its setup bar.
     tubeCurveOp, tubeFrames, tubeSelection, TUBE_SIDES_MAX,
+    // v2.18: the cross-sections, the per-point radii and the drag that sets them.
+    TUBE_PROFILES, tubeProfilePoints, normaliseCurveRadii,
+    CURVE_R_MIN, CURVE_R_MAX, pickCurvePointPx,
+    beginTubeRadiusDrag, updateTubeRadiusDrag, endTubeRadiusDrag,
+    get tubeRadiusDrag() { return tubeRadiusDrag; },
     // v2.17: one setup for both ops.
     OP_SETUP, startOpSetup, finishOpSetup, abandonOpSetup, refreshOpSetupMesh,
     setOpSetupAmount, stepOpSetup, toggleOpSetupSwitch, opSetupSpec,

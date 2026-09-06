@@ -16,7 +16,7 @@ work. What is gone is the implied ceiling.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.17**
+- Version at time of writing: **2.18**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -46,6 +46,121 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## The tube gets a section and a waist (v2.18)
+
+Two things the tube could not do: be anything but round, and be a different
+thickness in different places.
+
+- **Four cross-sections** on the bar's chips: Round, Square, Flat, Half.
+  `TUBE_PROFILES` holds each as a list of unit offsets in the frame's own
+  (R, B) plane, and the sweep does not know which one it was handed - which is
+  why four of them cost almost nothing. All four are convex and wound the same
+  way round. The sides stepper belongs to the two round ones and is **absent**,
+  not disabled, on the other two: a square has four corners because it is a
+  square.
+- **A radius per control point**, dragged on the point itself. Multipliers of
+  the bar's one radius, so a taper you shaped by hand survives being re-tubed
+  at a different thickness, and clamped to [0.05, 6].
+
+### The radii live on the CURVE
+
+`kubikCurve` gained `radii`, one per control point, and it saves, loads,
+clones and undoes with `pts` - so the shape you dialled is still there the
+next time you tube that curve. `normaliseCurveRadii` keeps the two lists the
+same length and is called from `rebuildCurveGeometry`, which every path that
+rewrites `pts` already ends in, so none of them has to know the field exists.
+A file from before v2.18 has no radii at all and reads as ones.
+
+The setup takes a **snapshot** of them when the bar opens and puts it back on
+✕, because a preview's rule has to cover everything it touched, not just the
+mesh it made. On ✓ they go into the same single history step as the tube.
+
+### One sampler, two outputs
+
+`curveSamplePoints(cv, outW)` fills an optional second array with one
+multiplier per sample, from the SAME loop that emits the points. A second
+function walking the spans again would be two descriptions of one thing, and
+the interesting cases - a skipped degenerate span, the terminal sample, a
+closed curve's wrap - are exactly the ones two copies drift on. Between the
+control points the radius is **linear**, not splined: a Catmull-Rom through
+the radii bulges between them, so 1, 1, 0.2, 1, 1 would swell either side of
+the pinch, which reads as a bug rather than a taper.
+
+### The handle is the control point
+
+No gizmo, and there is not going to be one. `pickCurvePointPx` finds the point
+under a press within the generous GRAB radius, and the drag records the
+DIRECTION it was grabbed from: pulling further that way is fatter, pushing
+back through the point is thinner. The bare distance cannot do that - it is
+positive on both sides. Sensitivity is one pixel per pixel of surface, with a
+floor under the divisor so a hair-thin tube does not put the whole range
+inside a thumb-width.
+
+### Outward stopped being a measurement
+
+Every version up to here summed a flux over the first ring and flipped the
+whole wall if it came out negative. That was right for a circle and wrong for
+these profiles: it sums UNIT normals, so it is not area-weighted, and on Half -
+whose offsets all sit on one side of the spine - a bend tight enough to tuck
+the inside of the first band behind its neighbour outvoted every good band in
+the tube. The surface came back inside out, which is the one defect that
+passes every check this file has.
+
+It never needed measuring. `B = T × R`, so `R × B = T` for any R perpendicular
+to T, which is what `tubeFrames` returns and re-orthogonalises to keep. So
+(R, B, T) is right-handed by construction, the profiles are counter-clockwise
+in (R, B), and the rings advance along T - the quad `[r0j, r0k, r1k, r1j]` is
+outward, always. What guards it now is the probe: sections 5, 10, 12 and 15
+take the SIGNED VOLUME of closed tubes - a straight one, a closed square from
+every corner both ways round, all four profiles, and a hairpin at three
+radii - and signed volume is exactly the question "solid, or a hole".
+
+### What the review found, and it was the first use of Fable here
+
+Five defects, three of them geometric and invisible to every check that
+existed. Recorded because the SHAPE of them is the lesson:
+
+1. **A doubled control point read two different radii.** Two points on one
+   spot is how a Bezier is given a corner; the span between them is skipped,
+   so the ring AT the corner is emitted by the next span and carried the
+   SECOND copy's radius, while everything ramping into it aimed at the first
+   copy's. The handle you can see is the first - they project to one dot and
+   the pick keeps the lower index - so dragging it stepped the tube at the
+   very corner it was meant to shape, and on a doubled endpoint did nothing
+   visible at all. Every index in a coincident group now resolves to the
+   lowest, which is what the pick returns.
+2. **The flux vote flipped the whole wall** on a tight bend - the section
+   above.
+3. **A cancelled drag stayed live with the camera dead.** `pointercancel` and
+   the two-finger bail-out both end it now; the file already recorded this
+   failure twice, for the pivot and for the vertex drag.
+4. **A ring at the minimum welded under the topology grid.** The multiplier
+   floor is not the same as a floor on the RING: at the slider's own floor and
+   32 sides the chord between neighbouring ring vertices is 5e-5, under the
+   1e-4 `computeLogicalOf` rounds to. Held at a chord the grid can tell apart.
+5. **`closed` was decided before the repeated points came out**, so a closed
+   curve whose last point sits on its first laid two coincident,
+   opposite-wound bands along one leg - the out-and-back the sampler's own
+   comment says is refused by construction, refused on a count taken too early.
+
+**On Fable itself**, since this was its first run on this codebase and the
+instructions ask for the comparison: five findings, all real, none a false
+alarm - and the three geometric ones are of a kind the opus reviews have not
+produced. Opus's five on Spin, four on v2.9 and six on the v2.17 boolean were
+lifecycle and state defects; these were index arithmetic and sign conventions,
+reached by tracing concrete inputs. Both kinds are worth having. The rule in
+the project instructions holds: opus for the shape of the code, Fable where a
+subtle numerical error is expensive to find later.
+
+### The probes
+
+`_tubechk` is 30 checks in 15 sections. `_mktube218broken.py` builds a copy
+with the v2.18 guards taken back out - 21 failures, and every new section
+fails on its own defect. It is SEPARATE from `_mktubebroken.py` on purpose:
+that file's reversed winding and kept repeated point together send the ear
+clipper round a degenerate loop forever, and a probe that reports nothing at
+all is not a failure anyone can read.
 
 ## Preview and confirm: Lathe, Tube and Boolean (v2.17)
 

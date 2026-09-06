@@ -31,28 +31,50 @@ sub('    for (let i = 0; i < n; i++) R[i].applyAxisAngle(T[i], defect * i / n).n
     '    for (let i = 0; i < n; i++) R[i].normalize();     // BROKEN: no correction',
     '2. the closed-curve twist correction')
 
-sub('  const flip = flux < 0;',
-    '  const flip = flux > 0;                              // BROKEN: sign inverted',
-    '3. the outward-facing measurement')
-
-# 6. The exact regression the v2.16 review found: measure the radial from the
-#    QUAD CENTROID again, which on a closed curve keeps half a step along the
-#    seam corner that T[0] - a central difference there - cannot project away.
-sub('''    radv.copy(vecAt(ed, rings[0][j])).add(vecAt(ed, rings[0][k]))
-        .multiplyScalar(0.5).sub(pts[0]);''',
-    '''    radv.set(0, 0, 0);                                  // BROKEN: centroid again
-    quads[j].forEach(a => radv.add(vecAt(ed, a)));
-    radv.multiplyScalar(0.25).sub(pts[0]);
-    radv.addScaledVector(T[0], -radv.dot(T[0]));''',
-    '6. the radial back to the quad centroid')
+sub('''  quads.forEach(q => {
+    ed.groups.push({ triangles: polygonTriangles(ed, q) });
+  });''',
+    '''  quads.forEach(q => {                                  // BROKEN: inside out
+    ed.groups.push({ triangles: polygonTriangles(ed, [q[0], q[3], q[2], q[1]]) });
+  });''',
+    '3. the outward direction the construction guarantees')
 
 sub('  if (!closed && caps) {\n    [[rings[0]',
     '  if (false && !closed && caps) {\n    [[rings[0]',
     '4. the caps')
 
-sub('  raw.forEach(p => { if (!pts.length || p.distanceTo(pts[pts.length - 1]) > 1e-6) pts.push(p); });',
-    '  raw.forEach(p => pts.push(p));                      // BROKEN: keeps repeats',
+sub('''    if (pts.length && p.distanceTo(pts[pts.length - 1]) <= 1e-6) return;''',
+    '''    if (false) return;                                // BROKEN: keeps repeats''',
     '5. the repeated-point drop')
+
+# --- v2.18 -----------------------------------------------------------------
+sub("""      const p = pts[i].clone()
+        .addScaledVector(R[i], prof[j][0] * ri)
+        .addScaledVector(B, prof[j][1] * ri);""",
+    """      const p = pts[i].clone()
+        .addScaledVector(R[i], prof[j][0] * rad)
+        .addScaledVector(B, prof[j][1] * rad);   // BROKEN: one radius again""",
+    '6. the per-point radius is ignored')
+
+sub("""  const prof = tubeProfilePoints(profile, N);""",
+    """  const prof = tubeProfilePoints('round', N);   // BROKEN: always round""",
+    '7. every profile sweeps a circle')
+
+sub("""    t0: (p.x - hit.sp.x) * dx + (p.y - hit.sp.y) * dy,""",
+    """    t0: 0,   // BROKEN: the grab jumps the radius before the finger moves""",
+    '8. taking hold of a point changes it')
+
+sub("""  if (undoSpec.restore) undoSpec.restore(s, s.snap);""",
+    """  /* BROKEN: Cancel keeps the radii */""",
+    '9. Cancel does not put the radii back')
+
+sub("""  const wAt = (i) => W[wIdx[closed ? ((i % n) + n) % n : Math.max(0, Math.min(n - 1, i))]];""",
+    """  const wAt = (i) => W[closed ? ((i % n) + n) % n : Math.max(0, Math.min(n - 1, i))];""",
+    '10. a doubled point reads two different radii again')
+
+sub("""  if (n < 3) closed = false;""",
+    """  /* BROKEN: the loop flag outlives the points that justified it */""",
+    '11. a closed curve is still a loop after its repeats come out')
 
 io.open(ROOT + r'\_bak_tubebroken.html', 'w', encoding='utf-8', newline='').write(src)
 print('WROTE _bak_tubebroken.html')
