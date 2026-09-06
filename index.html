@@ -2362,7 +2362,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.18</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.19</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -12891,6 +12891,7 @@ function beginPendingOp(kind, obj, payload, init) {
     toast('Finish the ' + OP_SETUP[App.opSetup.kind].label + ' first');
     return;
   }
+  if (App.curveEdit) { toast('Finish the points first'); return; }
   const spec = OP_SPECS[kind];
   App.pendingOp = {
     kind, objId: obj.id, payload,
@@ -13551,6 +13552,9 @@ document.getElementById('opToggle').addEventListener('click', () => {
      slot and Back is what a drawing hand reaches for most; Bezier/Poly and
      the resolution are properties of the finished curve and live on its ring. */
   if (App.opSetup && !App.pendingOp) { toggleOpSetupSwitch(); return; }
+  // The same slot, used as a plain button again: here it takes the selected
+  // point away rather than the last one placed.
+  if (App.curveEdit && !App.pendingOp) { curveEditDelete(); return; }
   if (App.curveDraw && !App.pendingOp) {
     if (App.curveDraw.pts.length) App.curveDraw.pts.pop();
     refreshCurvePreview();
@@ -13860,6 +13864,7 @@ function confirmPendingOp() {
   flushPendingApply();   // accept what the slider asked for, not the last frame
   flushMatBin();         // everything the re-runs abandoned, released in one go
   if (App.opSetup) { finishOpSetup(true); return; }
+  if (App.curveEdit) { finishCurveEdit(true); return; }
   if (App.curveDraw) { applyCurveDraw(); return; }
   if (App.knife) { applyKnife(); return; }
   const op = App.pendingOp;
@@ -14011,6 +14016,7 @@ function confirmPendingOp() {
 
 function cancelPendingOp() {
   if (App.opSetup) { finishOpSetup(false); return; }
+  if (App.curveEdit) { finishCurveEdit(false); return; }
   if (App.curveDraw) { cancelCurveDraw(); return; }
   if (App.knife) { cancelKnife(); return; }
   flushPendingApply();
@@ -17352,6 +17358,22 @@ function setMode(mode) {
   if (mode !== 'object') {
     const sel = Array.from(App.selectedObjectIds).map(id => findObject(id)).filter(Boolean);
     if (sel.length && sel.every(isCurve)) {
+      /* A CURVE HAS ONE KIND OF COMPONENT, AND IT IS ITS POINTS (v2.19). This
+         used to refuse outright, which was true - a curve has no vertices,
+         edges or faces - and unhelpful, because the thing you actually want
+         to edit was sitting right there. All three component buttons open the
+         point editor, so the mode cycle cannot get stuck on a curve looking
+         for an Edge mode that will never exist.
+
+         App.mode does NOT change. Every picker, overlay and op in this file
+         reads it, and none of them knows what a curve is; the editor owns the
+         pointer from its own branch instead, exactly as the draw tool and the
+         knife do. */
+      if (sel.length === 1) {
+        if (App.curveEdit && App.curveEdit.objId === sel[0].id) return;
+        startCurveEdit(sel[0]);
+        return;
+      }
       /* PUT THE OPEN TOOLS DOWN BEFORE REFUSING (found in review). Every
          other exit from this function resolves them first; this one returned
          over the top of them, so pressing the mode button with an op bar open
@@ -17362,12 +17384,16 @@ function setMode(mode) {
       else if (App.pendingOp) cancelPendingOp();
       if (App.geoSetup) finishGeoSetup(true);
       if (App.opSetup) finishOpSetup(true);
-      toast('A curve has no vertices, edges or faces - pick a mesh to edit');
+      toast('Editing points works on one curve at a time');
       return;
     }
     // A mixed selection is fine, but the ACTIVE object still has to be a mesh.
     if (isCurve(findObject(App.activeObjectId))) App.activeObjectId = null;
   }
+  /* Any OTHER mode is a mode this editor does not belong to. Object mode is
+     how you leave it, and Component mode on a mesh is how you walk from a
+     curve straight to a model - both keep the points, like every other bar. */
+  if (App.curveEdit) finishCurveEdit(true);
   // A cut is aimed at one mesh in one mode; changing either abandons it.
   if (App.knife) cancelKnife(true);
   /* Extrude mode is aimed at one selection in one mode for the same reason,
@@ -17690,6 +17716,12 @@ function groupIsHidden(g) {
 function clearObjectSelection() { App.selectedObjectIds.clear(); }
 
 function selectObjectClick(id, additive, alone) {
+  /* PICKING SOMETHING ELSE ENDS THE EDITING (v2.19, found in review). The
+     editor owns the viewport, but the outliner is DOM and reaches this from
+     over the top of it - which left the points of one curve being edited
+     while another was selected, the blue dots on one and the orange one on
+     the other, and the bar's Delete aimed at neither. */
+  if (App.curveEdit && App.curveEdit.objId !== id) finishCurveEdit(true);
   const was = App.selectedObjectIds.size;
   /* A TAP ON ONE MEMBER TAKES THE WHOLE GROUP (a2.93). That is what grouping
      is FOR - you group an assembly so you can move it as an assembly, and a
@@ -19642,15 +19674,27 @@ function curvePivotPoint() {
    the camera, through the same origin. Both pass through the pivot when one
    has been placed, which is the answer Array and Revolve already give. */
 function curveWorkPlane() {
-  const mode = (App.curveDraw && App.curveDraw.plane) || 'y';
+  // Both tools that place points in space read the same chips (v2.19).
+  const mode = (App.curveDraw && App.curveDraw.plane) ||
+               (App.curveEdit && App.curveEdit.plane) || 'y';
   const n = new THREE.Vector3();
   if (mode === 'free') camera.getWorldDirection(n).negate();
   else n[mode] = 1;
   return new THREE.Plane().setFromNormalAndCoplanarPoint(n.normalize(), curvePivotPoint());
 }
 
-function curvePlanePoint(ev) {
-  const pl = curveWorkPlane();
+/* `through`, when given, moves the plane onto that point and leaves its
+   NORMAL alone (v2.19, found in review). The work plane passes through the
+   pivot, which is the right answer for the first point of a new curve and the
+   wrong one for a point that already exists somewhere else: dragging one used
+   to drop it onto the world origin's plane on the first frame, before the
+   finger had said anything about where it should go. Move a curve up five
+   units and every point fell five units on the first grab. */
+function curvePlanePoint(ev, through) {
+  const base = curveWorkPlane();
+  const pl = through
+    ? new THREE.Plane().setFromNormalAndCoplanarPoint(base.normal.clone(), through)
+    : base;
   raycaster.setFromCamera(ndcFromEvent(ev), camera);
   // Edge on, the intersection is meaningless rather than merely far away.
   if (Math.abs(raycaster.ray.direction.dot(pl.normal)) < CURVE_PLANE_MIN_DOT) return null;
@@ -19658,7 +19702,7 @@ function curvePlanePoint(ev) {
   return raycaster.ray.intersectPlane(pl, hit) ? hit : null;
 }
 
-function curveResolve(ev) {
+function curveResolve(ev, through) {
   raycaster.setFromCamera(ndcFromEvent(ev), camera);
   // Curves are not surfaces to land on - including the one being drawn.
   const meshes = App.objects.filter(o => objectPickable(o) && !isCurve(o)).map(o => o.mesh);
@@ -19686,11 +19730,86 @@ function curveResolve(ev) {
     }
     return { p: h.point.clone(), snap: 'surface' };
   }
-  const pp = curvePlanePoint(ev);
+  const pp = curvePlanePoint(ev, through);
   if (pp) return { p: pp, snap: 'plane' };
   return null;
 }
 
+
+/* ---------------- Editing a curve's points (v2.19) ----------------
+
+   A curve has no vertices, edges or faces, and until now that meant Component
+   mode simply refused it. What a curve HAS is control points, so the mode
+   button now opens this instead: the points you drew, on screen, to drag,
+   to add to and to take away.
+
+   IT IS ITS OWN STATE, not a fourth value of App.mode. Every picker, overlay,
+   helper and op in this file reads App.mode and App.activeObjectId and would
+   have had to learn what a curve is; App.curveDraw and App.knife solved the
+   same problem years earlier by owning the pointer from one branch high in
+   the handler and leaving the mode alone. This is that shape, a third time.
+
+   Nothing reaches the history until OK, and ✕ puts the points back exactly -
+   the rule every other bar in this app follows. */
+App.curveEdit = null;   // { objId, plane, sel, pts0, radii0, pid, drag, x0, y0, moved }
+
+const CURVE_LINE_PX = 22;   // how near the line counts as "on it"
+
+function curveEditObj() {
+  return App.curveEdit ? findObject(App.curveEdit.objId) : null;
+}
+
+/* GENEROUS, like every other GRAB in this file, and shared with the tube's
+   radius handle so the two cannot disagree about which dot you meant. */
+function pickCurvePointOn(obj, ev, radPx) {
+  if (!obj || !isCurve(obj)) return null;
+  obj.mesh.updateMatrixWorld();
+  const pts = obj.mesh.userData.kubikCurve.pts || [];
+  const p = pointerPx(ev);
+  let best = null;
+  for (let i = 0; i < pts.length; i++) {
+    const w = new THREE.Vector3(pts[i][0], pts[i][1], pts[i][2])
+      .applyMatrix4(obj.mesh.matrixWorld);
+    const sp = worldToScreenPx(w);
+    if (!sp) continue;
+    const d = Math.hypot(sp.x - p.x, sp.y - p.y);
+    if (d <= radPx && (!best || d < best.d)) best = { i: i, d: d, world: w, sp: sp };
+  }
+  return best;
+}
+
+/* WHERE ON THE LINE, and which span that is. Against the SAMPLED polyline
+   rather than the control polygon, because on a Bezier those are different
+   lines and the one you can see is the one you tapped. The span comes back
+   from the sampler rather than from arithmetic on the sample number - spans
+   can be skipped, so the two do not agree. */
+function pickCurveSpanOn(obj, ev, radPx) {
+  if (!obj || !isCurve(obj)) return null;
+  const cv = obj.mesh.userData.kubikCurve;
+  const W = [], S = [];
+  const local = curveSamplePoints(cv, W, S);
+  if (local.length < 2) return null;
+  obj.mesh.updateMatrixWorld();
+  const px = pointerPx(ev);
+  const scr = local.map(q => worldToScreenPx(q.clone().applyMatrix4(obj.mesh.matrixWorld)));
+  let best = null;
+  for (let k = 0; k + 1 < local.length; k++) {
+    const a = scr[k], b = scr[k + 1];
+    if (!a || !b) continue;
+    const vx = b.x - a.x, vy = b.y - a.y;
+    const L2 = vx * vx + vy * vy;
+    let t = L2 > 1e-9 ? ((px.x - a.x) * vx + (px.y - a.y) * vy) / L2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    const d = Math.hypot(a.x + vx * t - px.x, a.y + vy * t - px.y);
+    if (d > radPx || (best && d >= best.d)) continue;
+    best = {
+      d: d, span: S[k],
+      local: local[k].clone().lerp(local[k + 1], t),
+      w: W[k] + (W[k + 1] - W[k]) * t
+    };
+  }
+  return best;
+}
 
 /* What you see while drawing: the points you have placed, the curve they
    already make, and - in Axis mode - the plane they are landing on. All three
@@ -19709,6 +19828,33 @@ curveDots.renderOrder = 999;
 curveDots.visible = false;
 curveDots.frustumCulled = false;
 scene.add(curveDots);
+
+/* THE ONE POINT THAT IS SELECTED (v2.19), in the accent, over the top of the
+   blue ones. A separate object because a Points material carries ONE size and
+   ONE colour for every vertex in it, and the alternative - a custom shader
+   with a per-vertex attribute - is a lot of machinery for one dot. Its
+   geometry is a single position, rewritten in place. */
+const curveSelMat = new THREE.PointsMaterial({
+  size: VERTEX_DOT_PX * 4.2 * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1),
+  color: 0xffb454, sizeAttenuation: false,
+  map: vertexDotTexture(), alphaTest: 0.4, transparent: true,
+  depthTest: false, depthWrite: false, fog: false
+});
+const curveSelDot = new THREE.Points(new THREE.BufferGeometry(), curveSelMat);
+curveSelDot.renderOrder = 1000;
+curveSelDot.visible = false;
+curveSelDot.frustumCulled = false;
+scene.add(curveSelDot);
+
+function setCurveSelDot(w) {
+  if (!w) { curveSelDot.visible = false; return; }
+  curveSelMat.size = VERTEX_DOT_PX * 4.2 * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1);
+  curveSelDot.geometry.dispose();
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute([w.x, w.y, w.z], 3));
+  curveSelDot.geometry = g;
+  curveSelDot.visible = true;
+}
 
 const curveDraftMat = new LineMaterial({
   color: 0x6fd3ff, linewidth: 2.5, worldUnits: false,
@@ -19797,10 +19943,23 @@ function refreshCurvePreview() {
         });
       });
     setCurveDots(flat);
+    /* The selected point rides on the same pass. Only while the editor is
+       open: outside it there is no selection to show and the accent would be
+       a dot nothing could explain. */
+    const ceo = curveEditObj();
+    if (ceo && App.curveEdit.sel >= 0) {
+      const a = (ceo.mesh.userData.kubikCurve.pts || [])[App.curveEdit.sel];
+      ceo.mesh.updateMatrixWorld();
+      setCurveSelDot(a ? new THREE.Vector3(a[0], a[1], a[2])
+        .applyMatrix4(ceo.mesh.matrixWorld) : null);
+    } else {
+      setCurveSelDot(null);
+    }
     curveDraft.visible = false;
     curvePlaneRect.visible = false;
     return;
   }
+  setCurveSelDot(null);
   const list = cd.pts.slice();
   if (cd.live) list.push(cd.live.p);
   const flat = [];
@@ -19888,6 +20047,7 @@ function startCurveDraw(editObj) {
   }
   if (App.knife) cancelKnife(true);
   if (App.geoSetup) finishGeoSetup(true);
+  if (App.curveEdit) finishCurveEdit(true);
   /* setMode, not an assignment - the same reason startGeoSetup gives. It is
      also what clears a component selection whose dots would otherwise hang
      over the model for the whole draw. Called BEFORE the state exists, so its
@@ -19914,6 +20074,276 @@ function startCurveDraw(editObj) {
   hideRadialMenu();
   toast(editObj ? 'Adding to ' + editObj.name + ' - tap to place, then OK'
                 : 'Tap to place points, then OK');
+}
+
+function startCurveEdit(obj) {
+  if (!obj || !isCurve(obj)) return;
+  /* Whatever was open, including another one of these (found in review):
+     re-entering used to overwrite the snapshot wholesale, so the first
+     curve's edits were live in the scene, outside the history and beyond
+     recovery - and the ✕ on the second curve restored the second curve. */
+  if (App.curveEdit) finishCurveEdit(true);
+  if (App.pivotPlacing) endPivotPlacing();   // the two bars share a slot
+  if (App.knife) cancelKnife(true);
+  if (App.curveDraw) applyCurveDraw();
+  if (App.geoSetup) finishGeoSetup(true);
+  if (App.opSetup) finishOpSetup(true);
+  if (App.pendingOp && App.pendingOp.live) confirmPendingOp();
+  else if (App.pendingOp) cancelPendingOp();
+  const cv = obj.mesh.userData.kubikCurve;
+  normaliseCurveRadii(cv);
+  App.curveEdit = {
+    objId: obj.id,
+    plane: App.curvePlane || 'y',
+    sel: -1, pid: null, drag: null, x0: 0, y0: 0, moved: false,
+    // Deep copies. The live rows are about to be spliced and dragged, and ✕
+    // has to be able to hand back what was there before any of it.
+    pts0: cv.pts.map(a => [a[0], a[1], a[2]]),
+    radii0: cv.radii.slice()
+  };
+  App.selectedObjectIds = new Set([obj.id]);
+  App.activeObjectId = null;
+  detachAllGizmos();
+  hideRadialMenu();
+  showCurveEditBar();
+  refreshCurvePreview();
+  refreshUI();
+  toast('Drag a point, tap the line to add one, tap away to extend');
+}
+
+/* Dropped without touching the curve, for restoreDoc: the document about to
+   be rebuilt carries its own points, and both branches below would be writing
+   into an object that is on its way out. */
+function abandonCurveEdit() {
+  if (!App.curveEdit) return;
+  App.curveEdit = null;
+  orbit.enabled = true;
+  hideCurveEditBar();
+}
+
+function finishCurveEdit(keep) {
+  const ce = App.curveEdit;
+  if (!ce) return;
+  const obj = findObject(ce.objId);
+  App.curveEdit = null;
+  orbit.enabled = true;
+  hideCurveEditBar();
+  if (!obj) { refreshCurvePreview(); refreshUI(); return; }
+  if (keep) {
+    /* One step for the whole session at the bar, however many points were
+       dragged, added and taken away inside it - the rule Lathe, Tube and the
+       primitive setup all follow. */
+    pushHistory();
+    toast(obj.mesh.userData.kubikCurve.pts.length + ' points');
+  } else {
+    const cv = obj.mesh.userData.kubikCurve;
+    cv.pts = ce.pts0.map(a => [a[0], a[1], a[2]]);
+    cv.radii = ce.radii0.slice();
+    rebuildCurveGeometry(obj);
+    /* The history is untouched by a discard - nothing was pushed - but the
+       AUTOSAVE is not the history, and every drag has been in the live curve
+       since the first one. The same line finishGeoSetup carries. */
+    scheduleAutosave();
+    toast('Cancelled');
+  }
+  refreshCurvePreview();
+  refreshUI();
+  refreshGizmoAttachment();
+}
+
+/* The three edits. Each writes pts and radii TOGETHER - they are one row per
+   point and every path that lets them drift is a tube that changes thickness
+   somewhere nobody asked it to. */
+
+function curveEditInsert(obj, span, local, w) {
+  const cv = obj.mesh.userData.kubikCurve;
+  normaliseCurveRadii(cv);            // so the two are the same length first
+  const at = Math.max(1, Math.min(cv.pts.length, span + 1));
+  cv.pts.splice(at, 0, [local.x, local.y, local.z]);
+  /* The new point takes the radius the tube ALREADY had at that spot, not 1.
+     Inserting a point to bend a taper should not put a bulge in it. */
+  cv.radii.splice(at, 0, Math.max(CURVE_R_MIN, Math.min(CURVE_R_MAX, w || 1)));
+  rebuildCurveGeometry(obj);
+  return at;
+}
+
+function curveEditAppend(obj, local) {
+  const cv = obj.mesh.userData.kubikCurve;
+  normaliseCurveRadii(cv);
+  cv.pts.push([local.x, local.y, local.z]);
+  // Carrying on from the end means carrying on at the thickness it ended at.
+  cv.radii.push(cv.radii.length ? cv.radii[cv.radii.length - 1] : 1);
+  rebuildCurveGeometry(obj);
+  return cv.pts.length - 1;
+}
+
+function curveEditDelete() {
+  const ce = App.curveEdit, obj = curveEditObj();
+  if (!ce || !obj || ce.sel < 0) { toast('Tap a point first'); return; }
+  const cv = obj.mesh.userData.kubikCurve;
+  /* TWO IS THE FLOOR, not one. One point is not a curve - it has no length to
+     sweep, no tangent to frame and nothing to draw - and the sampler's own
+     rule about two points is written for the pair, not for a single. */
+  if (cv.pts.length <= 2) { toast('A curve needs at least two points'); return; }
+  normaliseCurveRadii(cv);
+  cv.pts.splice(ce.sel, 1);
+  cv.radii.splice(ce.sel, 1);
+  /* A HELD DRAG IS AIMED AT A ROW NUMBER, and the rows have just moved
+     (found in review). The bar is DOM, so a second finger on Delete point is
+     never seen by the pointer tracker and the two-finger bail-out does not
+     fire - the first finger carried on dragging whatever had slid into that
+     index. Dropped, so the drag has to be taken again. */
+  ce.drag = null;
+  ce.sel = Math.min(ce.sel, cv.pts.length - 1);
+  rebuildCurveGeometry(obj);
+  refreshCurvePreview();
+  refreshCurveEditBar();
+  refreshUI();
+}
+
+/* The draw bar's shape, and for the same reason: the plane chips decide where
+   a tap in empty space lands, which is the one thing that changes what the
+   next tap MEANS. The independent button is Delete rather than Back, because
+   here there is a selected point to take away rather than a last one. */
+function showCurveEditBar() {
+  mirrorChooser = null;
+  const el = document.getElementById('opGrouping');
+  el.innerHTML = '';
+  el.style.display = 'inline-flex';
+  [['x', 'X'], ['y', 'Y'], ['z', 'Z'], ['free', 'Free']].forEach(pair => {
+    const key = pair[0];
+    const b = document.createElement('button');
+    b.textContent = pair[1];
+    b.title = key === 'free'
+      ? 'Points land on the plane facing the camera'
+      : 'Points land on the ' + pair[1] + ' plane, through the pivot';
+    if (App.curveEdit && App.curveEdit.plane === key) b.classList.add('active');
+    b.addEventListener('click', () => {
+      if (!App.curveEdit) return;
+      App.curveEdit.plane = key;
+      App.curvePlane = key;      // remembered, and shared with the draw tool
+      showCurveEditBar();
+    });
+    el.appendChild(b);
+  });
+  const wrap = document.getElementById('opToggleWrap');
+  const btn = document.getElementById('opToggle');
+  wrap.style.display = 'inline-flex';
+  btn.textContent = 'Delete point';
+  btn.title = 'Remove the point you have selected';
+  btn.classList.remove('active');
+  ['opSlider', 'opValue', 'opHint', 'opSegments'].forEach(id => {
+    document.getElementById(id).style.display = 'none';
+  });
+  document.getElementById('opOk').style.display = '';
+  document.getElementById('opCancel').style.display = '';
+  surfaceIn(opBarEl);
+  refreshCurveEditBar();
+}
+
+function refreshCurveEditBar() {
+  const obj = curveEditObj();
+  if (!obj) return;
+  const n = obj.mesh.userData.kubikCurve.pts.length;
+  document.getElementById('opLabel').textContent =
+    'Points · ' + n + (App.curveEdit.sel >= 0 ? ' · #' + (App.curveEdit.sel + 1) : '');
+}
+
+function hideCurveEditBar() {
+  hideOpBar();
+  document.getElementById('opGrouping').style.display = 'none';
+  document.getElementById('opToggleWrap').style.display = 'none';
+}
+
+/* ONE FINGER, THREE MEANINGS, decided by what is under it and whether it
+   moved. On a point: drag it, or tap it to select it. On the line: tap adds a
+   point there. Anywhere else: tap carries the curve on from its end.
+
+   Decided on RELEASE, not on the press, for the reason every other candidate
+   in this file is: a press that turns into a drag was never a tap, and a
+   press that never moves must not have committed anything on the way down. */
+function curveEditPointerDown(ev) {
+  const ce = App.curveEdit, obj = curveEditObj();
+  if (!ce || !obj) return;
+  ce.pid = ev.pointerId;
+  ce.x0 = ev.clientX; ce.y0 = ev.clientY; ce.moved = false;
+  const hit = pickCurvePointOn(obj, ev, GRAB_RADIUS_PX);
+  /* THE PLANE FOLLOWS THE POINT. Captured on the press, in world space, so
+     the drag happens in the plane the point is already in rather than in one
+     through the origin. */
+  ce.drag = hit ? { i: hit.i, from: hit.world.clone() } : null;
+  if (hit) {
+    ce.sel = hit.i;
+    refreshCurvePreview();
+    refreshCurveEditBar();
+  }
+}
+
+function curveEditPointerMove(ev) {
+  const ce = App.curveEdit, obj = curveEditObj();
+  if (!ce || !obj || ce.pid !== ev.pointerId) return;
+  if (!ce.moved &&
+      Math.hypot(ev.clientX - ce.x0, ev.clientY - ce.y0) > DIRECT_DECIDE_PX) {
+    ce.moved = true;
+  }
+  if (!ce.moved || !ce.drag) return;
+  const r = curveResolve(ev, ce.drag.from);
+  if (!r) return;
+  const cv = obj.mesh.userData.kubikCurve;
+  if (ce.drag.i >= cv.pts.length) { ce.drag = null; return; }
+  /* Written back in the curve's OWN space. The points are local to the mesh,
+     which has a position and can have a rotation and a scale of its own, and
+     dropping a world coordinate straight into that list is how a curve you
+     had moved once jumped somewhere else the first time you dragged a point. */
+  obj.mesh.updateMatrixWorld();
+  const loc = obj.mesh.worldToLocal(r.p.clone());
+  cv.pts[ce.drag.i] = [loc.x, loc.y, loc.z];
+  rebuildCurveGeometry(obj);
+  refreshCurvePreview();
+}
+
+function curveEditPointerUp(ev) {
+  const ce = App.curveEdit, obj = curveEditObj();
+  if (!ce || !obj) return;
+  const wasDrag = ce.moved && !!ce.drag;
+  /* WHAT THE PRESS LANDED ON DECIDES THIS, not what the release is over
+     (found in review). The press claims a point within the grab radius; a
+     release is allowed to drift up to the decide threshold and still count as
+     still - so a press 30px from a point, drifting 14px away from it, missed
+     the point on the way out and ADDED one. The press already knows. */
+  const hadPoint = !!ce.drag;
+  ce.pid = null;
+  ce.drag = null;
+  if (wasDrag || ce.moved) { ce.moved = false; refreshUI(); return; }
+  ce.moved = false;
+  // A tap ON a point has already selected it, in the press.
+  if (hadPoint || pickCurvePointOn(obj, ev, GRAB_RADIUS_PX)) { refreshUI(); return; }
+  /* ON THE LINE: put a point there. The position is the point on the curve
+     itself rather than where the finger landed, so adding one does not also
+     move the shape - and the span comes from the sampler, which is the only
+     thing that knows which two control points that piece of line ran between. */
+  const on = pickCurveSpanOn(obj, ev, CURVE_LINE_PX);
+  if (on) {
+    ce.sel = curveEditInsert(obj, on.span, on.local, on.w);
+    refreshCurvePreview();
+    refreshCurveEditBar();
+    refreshUI();
+    return;
+  }
+  // OFF THE LINE: carry on from the end, the way drawing does.
+  /* Through the END of the curve, for the same reason a drag is through the
+     point it holds: carrying a curve on should carry it on from where it
+     stopped, not from a plane through the world origin. */
+  obj.mesh.updateMatrixWorld();
+  const tail = (obj.mesh.userData.kubikCurve.pts || []).slice(-1)[0];
+  const r = curveResolve(ev, tail
+    ? new THREE.Vector3(tail[0], tail[1], tail[2]).applyMatrix4(obj.mesh.matrixWorld)
+    : null);
+  if (!r) { toast('That plane is edge on - turn the view, or pick another'); return; }
+  ce.sel = curveEditAppend(obj, obj.mesh.worldToLocal(r.p.clone()));
+  refreshCurvePreview();
+  refreshCurveEditBar();
+  refreshUI();
 }
 
 function cancelCurveDraw(quiet) {
@@ -21659,6 +22089,12 @@ function setSoft(on) {
 }
 
 function cycleEditMode() {
+  /* THE SAME BUTTON CLOSES IT (v2.19, found in review). The editor leaves
+     App.mode at 'object' on purpose, so this function's first branch ran every
+     time and setMode's own guard sent it straight back to the editor it was
+     already in - the button did nothing at all, ten presses running, and the
+     only ways out were the bar and the keyboard. */
+  if (App.curveEdit) { finishCurveEdit(true); return; }
   if (App.mode === 'object') { setSoft(false); setMode(App.lastComponentMode); }
   else if (!App.soft) { setSoft(true); toast('Soft \u00b7 three fingers slide to size it'); }
   else { setSoft(false); setMode('object'); }
@@ -22062,6 +22498,7 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     // The camera is taking over, so the half-placed point is not a point.
     if (App.knife) { App.knife.live = null; App.knife.pid = null; refreshKnifePreview(); }
     if (App.curveDraw) { App.curveDraw.live = null; App.curveDraw.pid = null; refreshCurvePreview(); }
+    if (App.curveEdit) { App.curveEdit.pid = null; App.curveEdit.drag = null; App.curveEdit.moved = false; }
     directCandidate = null;
     endAmountDrag();   // a2.102: a second finger is the camera, not the amount
     orbit.enabled = true;
@@ -22089,6 +22526,11 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   // exactly as long - the two-finger bail above still reaches the camera.
   if (App.curveDraw) { orbit.enabled = false; curvePointerDown(ev); return; }
   if (App.knife) { orbit.enabled = false; knifePointerDown(ev); return; }
+  /* Editing points owns the single finger the same way, and for the same
+     length. Two fingers still reach the camera from the bail-out above -
+     which matters more here than for a draw, because placing points on a
+     shape you cannot turn is placing them blind. */
+  if (App.curveEdit) { orbit.enabled = false; curveEditPointerDown(ev); return; }
 
   /* Placing the pivot owns every single-finger press while its bar is open -
      anywhere on screen, not only on the marker. Aiming at a 17px dot with a
@@ -22219,6 +22661,7 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
   }
   if (pivotDrag) { updatePivotDrag(ev); return; }
   if (tubeRadiusDrag) { updateTubeRadiusDrag(ev); return; }
+  if (App.curveEdit) { curveEditPointerMove(ev); return; }
   if (App.curveDraw) { curvePointerMove(ev); return; }
   if (App.knife) { knifePointerMove(ev); return; }
   if (toolRingActive) { updateToolRingHover(ev); return; }
@@ -22292,6 +22735,18 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
   // fires must cancel it outright, or a bloom would appear over a finger
   // that's already lifted.
   clearToolRingTimer();
+  if (App.curveEdit) {
+    // Only the finger that started it, and only if it is the last one down -
+    // the draw tool's rule below, for the reason recorded there.
+    const soloE = App.curveEdit.pid === ev.pointerId && activePointers.size === 1;
+    trackPointerUp(ev);
+    if (soloE) curveEditPointerUp(ev);
+    else { App.curveEdit.pid = null; App.curveEdit.drag = null; App.curveEdit.moved = false; }
+    orbit.enabled = true;
+    pointerDown = null;
+    directCandidate = null;
+    return;
+  }
   if (App.curveDraw) {
     // Same rule as the knife below: only the finger that started it commits,
     // and only if it is the last one down. Read BEFORE trackPointerUp, which
@@ -23545,6 +24000,14 @@ document.getElementById('inspClose').addEventListener('click', () => {
 });
 
 function removeObjects(objs) {
+  /* THE EDITOR CANNOT OUTLIVE WHAT IT EDITS (v2.19, found in review). Hooked
+     here rather than in the outliner's delete, because that is one of five
+     doors that reach this one - and with the editor holding every single
+     finger press, a stale one left the viewport completely dead: no orbit, no
+     selection, no ring, and a bar naming a curve that was gone. */
+  if (App.curveEdit && objs.some(o => o && o.id === App.curveEdit.objId)) {
+    abandonCurveEdit();
+  }
   objs.forEach(o => {
     disposeObject(o);
     App.objects = App.objects.filter(x => x.id !== o.id);
@@ -24538,15 +25001,23 @@ function normaliseCurveRadii(cv) {
    by the SAME loop, deliberately. A second function that walked the spans
    again would be two descriptions of one thing, and the interesting cases
    here (a skipped degenerate span, the terminal sample, a closed curve's
-   wrap) are exactly the ones the two copies would drift on. */
-function curveSamplePoints(cv, outW) {
+   wrap) are exactly the ones the two copies would drift on.
+
+   `outS` is the same bargain for the SPAN each sample came out of, which is
+   what "tap the line to put a point there" needs and what nothing else can
+   work out afterwards: spans are skipped, so the indices are not contiguous
+   and no arithmetic on the sample number recovers them. */
+function curveSamplePoints(cv, outW, outS) {
   const P = (cv.pts || []).map(a => new THREE.Vector3(a[0], a[1], a[2]));
   const n = P.length;
   const W = normaliseCurveRadii(cv);
   const wOut = Array.isArray(outW) ? outW : null;
+  const sOut = Array.isArray(outS) ? outS : null;
   if (wOut) wOut.length = 0;
+  if (sOut) sOut.length = 0;
   if (n < 2) {
     if (wOut) W.slice(0, n).forEach(w => wOut.push(w));
+    if (sOut) P.slice(0, n).forEach(() => sOut.push(0));
     return P.slice();
   }
   /* TWO POINTS CANNOT ENCLOSE ANYTHING, and this is the one place to say so
@@ -24559,7 +25030,12 @@ function curveSamplePoints(cv, outW) {
   if (cv.type !== 'bezier') {
     const out = P.slice();
     if (wOut) W.forEach(w => wOut.push(w));
-    if (closed) { out.push(P[0].clone()); if (wOut) wOut.push(W[0]); }
+    if (sOut) P.forEach((q, i) => sOut.push(Math.min(i, n - 1)));
+    if (closed) {
+      out.push(P[0].clone());
+      if (wOut) wOut.push(W[0]);
+      if (sOut) sOut.push(n - 1);
+    }
     return out;
   }
   const res = Math.max(1, Math.min(CURVE_RES_MAX, (cv.res | 0) || CURVE_RES_DEF));
@@ -24592,6 +25068,7 @@ function curveSamplePoints(cv, outW) {
   const wAt = (i) => W[wIdx[closed ? ((i % n) + n) % n : Math.max(0, Math.min(n - 1, i))]];
   const spans = closed ? n : n - 1;
   const out = [];
+  let lastSpan = 0;
   for (let s = 0; s < spans; s++) {
     const p0 = at(s - 1), p1 = at(s), p2 = at(s + 1), p3 = at(s + 2);
     /* A ZERO-LENGTH SPAN IS A CORNER, and sampling it draws a PETAL (found in
@@ -24615,14 +25092,17 @@ function curveSamplePoints(cv, outW) {
        exactly what the two ends say and nothing else, which is what a handle
        you dragged has to mean. */
     const w1 = wAt(s), w2 = wAt(s + 1);
+    lastSpan = s;
     for (let k = 0; k < res; k++) {
       const t = k / res;
       out.push(cubicPointAt(p1, c1, c2, p2, t, new THREE.Vector3()).clone());
       if (wOut) wOut.push(w1 + (w2 - w1) * t);
+      if (sOut) sOut.push(s);
     }
   }
   out.push(at(closed ? 0 : n - 1).clone());
   if (wOut) wOut.push(wAt(closed ? 0 : n - 1));
+  if (sOut) sOut.push(lastSpan);
   return out;
 }
 
@@ -25405,6 +25885,7 @@ function startGeoSetup(kind) {
      have applied the bevel to it. */
   if (App.knife) cancelKnife(true);
   if (App.opSetup) finishOpSetup(true);
+  if (App.curveEdit) finishCurveEdit(true);
   if (App.pendingOp && App.pendingOp.live) confirmPendingOp();
   else if (App.pendingOp) cancelPendingOp();
   /* setMode, not `App.mode = 'object'`. The assignment is what Add Cube has
@@ -25744,6 +26225,7 @@ function restoreDoc(doc, opts = {}) {
      damage to history. After a File open it is worse: the id resolves to a
      mesh and tubeCurveOp reads kubikCurve off it, undefined. */
   abandonOpSetup();
+  abandonCurveEdit();   // v2.19, and for the reason abandonOpSetup gives
   /* Every object is about to be disposed and rebuilt from the file, and ids
      come from the DOCUMENT - so a setup bar left open would go on pointing
      at "object 2" and quietly retarget whatever object in the LOADED model
@@ -26125,6 +26607,18 @@ function pushHistory() {
   // Same reason as restoreDoc: this is the funnel every committed edit goes
   // through, and any of them moves the ground the cut was aimed at.
   if (App.knife) cancelKnife(true);
+  /* AND THE POINT EDITOR CLOSES INTO THIS STEP (v2.19, found in review). The
+     outliner's swipes push history from over the top of the editor, and
+     serializeDoc writes the LIVE curve - so the step carried points nothing
+     had accepted, and a ✕ afterwards put the curve back while the history
+     kept the version it had thrown away. Closed here rather than committed,
+     because the push about to happen IS the commit: calling finishCurveEdit
+     would push a second time. */
+  if (App.curveEdit) {
+    App.curveEdit = null;
+    orbit.enabled = true;
+    hideCurveEditBar();
+  }
   scheduleAutosave();
   const doc = serializeDoc();
   /* A step identical to the one already at the cursor is not a step. Ops
@@ -26171,6 +26665,9 @@ function undo() {
      the committed step underneath it. That is the v2.3b bug described two
      comments down, in a state that did not exist when it was fixed. */
   if (App.opSetup) { finishOpSetup(false); return; }
+  // Same again: the points are not in the history until OK, so this press
+  // has nothing of theirs to step back to.
+  if (App.curveEdit) { finishCurveEdit(false); return; }
   /* A live op has pushed NOTHING onto the history yet - what is in front of
      you is a preview sitting on top of the last committed step. Stepping the
      index back here would take away that step as well as the preview, and
@@ -26213,6 +26710,7 @@ function redo() {
   if (App.opSetup) {
     toast('Finish the ' + OP_SETUP[App.opSetup.kind].label + ' first'); return;
   }
+  if (App.curveEdit) { toast('Finish the points first'); return; }
   // Same reasoning as undo: close the preview first, on its own terms.
   if (App.pendingOp && App.pendingOp.live) {
     const settled = App.pendingOp.settled;
@@ -28893,6 +29391,7 @@ function startOpSetup(kind, seed) {
      in the direction nothing had needed before. */
   if (App.geoSetup) { toast('Finish the shape first'); return; }
   if (App.curveDraw) { toast('Finish the curve first'); return; }
+  if (App.curveEdit) finishCurveEdit(true);
   const s = {
     kind: kind,
     curveId: seed.curveId != null ? seed.curveId : null,
@@ -32838,6 +33337,26 @@ window.addEventListener('keydown', (ev) => {
 
      Undo and Redo are exempt. They have their own meaning over an open setup
      - take back what is on screen - and they enforce it themselves. */
+  if (App.curveEdit) {
+    /* Delete takes the POINT, not the curve. Unguarded, the global Delete
+       below disposed the whole object the bar was editing - the same failure
+       the setups above record, one state along. */
+    if (ev.key === 'Delete' || ev.key === 'Backspace') {
+      ev.preventDefault(); curveEditDelete(); return;
+    }
+    if (ev.key === 'Enter') { ev.preventDefault(); finishCurveEdit(true); return; }
+    if (ev.key === 'Escape') { ev.preventDefault(); finishCurveEdit(false); return; }
+    /* AND NOTHING ELSE COMMITS IT (found in review). The blanket guard below
+       accepts a setup on any key that is not an undo - which includes a bare
+       Shift, an Alt, an arrow, and the Control of a Ctrl+Z on its way down.
+       For a shape you are placing that is merely brisk; for an editor you sit
+       in for a minute it threw the session into the history on the first
+       modifier you happened to lean on.
+
+       Ctrl+D is the one key that has to commit first, because it copies the
+       OBJECT and the copy must not carry points nothing has accepted. */
+    if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'd') finishCurveEdit(true);
+  }
   if (App.geoSetup || App.opSetup) {
     const undoish = (ev.ctrlKey || ev.metaKey) && 'zy'.includes(ev.key.toLowerCase());
     /* A TUBE SETUP IS THE SAME SHAPE, and was missed (found in review). Its
@@ -33746,6 +34265,11 @@ if (PICK_DEBUG) {
     isCurve, refuseCurves, curveSamplePoints, createCurveObject,
     rebuildCurveGeometry, curveWorldBox, selectedCurves,
     startCurveDraw, cancelCurveDraw, applyCurveDraw, curveResolve,
+    // v2.19: editing the points of a curve that already exists.
+    startCurveEdit, finishCurveEdit, abandonCurveEdit, curveEditDelete,
+    curveEditPointerDown, curveEditPointerMove, curveEditPointerUp,
+    pickCurvePointOn, pickCurveSpanOn, curveEditObj,
+    get curveEdit() { return App.curveEdit; },
     curveWorkPlane, curvePlanePoint, toggleCurveType, toggleCurveClosed,
     cycleCurveRes, curveAddPoints, HUB_TOOLS_CURVE, CURVE_RES_STEPS,
     get curveDraw() { return App.curveDraw; },

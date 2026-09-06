@@ -16,7 +16,7 @@ work. What is gone is the implied ceiling.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.18**
+- Version at time of writing: **2.19**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -46,6 +46,101 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## A curve's points can be edited (v2.19)
+
+Component mode on a curve used to refuse - "a curve has no vertices, edges or
+faces" - which was true and unhelpful, because the thing you actually wanted
+to edit was sitting right there. All three component buttons now open a point
+editor instead, and the same button closes it again.
+
+Three gestures, all one finger, decided on RELEASE by what is under it and
+whether it moved:
+
+- **on a point** - drag moves it, a still tap selects it
+- **on the drawn line** - a tap puts a new point into that span
+- **anywhere else** - a tap carries the curve on from its end
+
+The bar is the draw tool's: X / Y / Z / Free for the plane a tap lands on,
+**Delete point** in the independent slot, ✓ and ✕. Nothing reaches the history
+until ✓, and ✕ puts every point back exactly.
+
+### App.mode does NOT change
+
+`App.curveEdit` is its own state, like `App.curveDraw` and `App.knife`, and it
+owns the pointer from one branch high in the handler. Every picker, overlay,
+helper and op in this file reads `App.mode` and `App.activeObjectId`, and none
+of them knows what a curve is - making Component mode mean something new would
+have meant teaching all of them. The two states that came before solved this
+years earlier by leaving the mode alone; this is that shape a third time.
+
+### Where the new point lands, and what it weighs
+
+An insert takes the position from the point ON THE CURVE rather than from
+where the finger landed, so adding a point does not also move the shape. It
+takes the radius the tube already had at that spot rather than 1, so inserting
+a point to bend a taper does not put a bulge in it - which is what the
+sampler's `outW` and `outS` outputs are for. `outS` says which span each
+sample came from, and nothing else can work that out afterwards: spans are
+skipped at a doubled control point, so the indices are not contiguous and no
+arithmetic on the sample number recovers them.
+
+Every edit writes `pts` and `radii` together. They are one row per point, and
+any path that lets them drift is a tube that changes thickness somewhere
+nobody asked it to.
+
+### What the review found, and it was all lifecycle
+
+Nine defects, none in the arithmetic. The editor is a state you SIT IN for a
+minute rather than a bar you dismiss in three seconds, and most of these are
+that difference:
+
+1. **A drag teleported the point onto a plane through the world origin.** The
+   work plane passes through the pivot, which is right for the first point of
+   a new curve and wrong for a point that already exists somewhere else. Move
+   a curve up five units and every point fell five units on the first grab,
+   before the finger had said anything. `curveResolve` now takes an optional
+   `through`, and the drag passes the point it is holding; an append passes
+   the end of the curve, for the same reason.
+2. **The mode button was a dead end.** The editor leaves `App.mode` at
+   `object`, so the button's first branch ran every time and `setMode`'s own
+   guard sent it straight back in. Ten presses, nothing. It closes it now.
+3. **Deleting the curve from the outliner stranded the editor**, which was
+   still holding every single-finger press: no orbit, no selection, no ring,
+   and a bar naming a curve that was gone. Hooked in `removeObjects`, which is
+   the one door all five deletes go through.
+4. **Re-entering overwrote the snapshot**, so the first curve's edits went
+   live, outside the history and beyond recovery.
+5. **A push from anywhere else** - the outliner's swipes - serialised points
+   nothing had accepted, and a ✕ afterwards left the scene and the history
+   disagreeing. `pushHistory` closes the editor INTO its own step.
+6. **Deleting a held point re-aimed the drag** onto whatever slid into that
+   index. The bar is DOM, so a second finger on Delete point is never seen by
+   the pointer tracker and the two-finger bail-out does not fire.
+7. **A grab that drifted added a point.** The press claims a point within
+   34px; a release may drift 15px and still count as still, so a press 30px
+   from a point drifting away from it missed on the way out. What the press
+   landed on decides it now.
+8. **A bare Shift committed the session.** The blanket setup guard accepts on
+   any key that is not an undo - including the Control of a Ctrl+Z on its way
+   down. The editor is out of that guard; Ctrl+D still commits first, because
+   it copies the OBJECT.
+9. **The pivot bar and the op bar share a slot**, and the editor painted over
+   a pivot placement that then could not be finished - the trap the pivot code
+   already records having fixed for three other tools.
+
+### The probe
+
+`_ptedit` is 40 checks in 9 sections, all driving the real pointer path -
+a probe that called the edit underneath would pass while the gesture that
+reaches it was unreachable. `_mkpteditbroken.py` takes all nine guards back
+out plus seven more: 14 failures, every new section on its own defect.
+
+One lesson worth keeping: section 7's first draft aimed its tap at a sample
+that turned out to be INSIDE the grab radius of a control point, so the tap
+selected that point - correctly - and the section failed a working insert. A
+gesture test has to aim somewhere the other gestures cannot claim, and assert
+that distance rather than assume it.
 
 ## The tube gets a section and a waist (v2.18)
 

@@ -187,11 +187,18 @@
     catch (e) { named = /curve/.test(e.message); }
     ok('6.guard toEditable fails loudly on a curve, not quietly', named === true);
 
+    /* THE DOOR OPENED AT v2.19. Component mode on a curve used to refuse and
+       say why; it now opens the point editor instead. What has NOT changed,
+       and is the half of this check that always mattered, is that App.mode
+       stays 'object' - every picker, overlay and op in the app reads it and
+       none of them knows what a curve is. */
     K.App.selectedObjectIds = new Set([rc2.id]);
     K.setMode('vertex');
-    ok('6.guard component modes refuse a curve selection',
+    ok('6.guard component mode on a curve edits its POINTS',
+       !!K.curveEdit && K.curveEdit.objId === rc2.id, 'edit=' + !!K.curveEdit);
+    ok('6.guard and the app is still in Object mode underneath it',
        K.App.mode === 'object', 'mode=' + K.App.mode);
-    ok('6.guard and say why', lastToast().indexOf('curve') >= 0, lastToast());
+    K.finishCurveEdit(false);
     mark('6.guard');
 
     // 7 -- the ring switches on the selection's TYPE -----------------------
