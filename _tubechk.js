@@ -258,10 +258,15 @@
     K.setOpSetupAmount(0.3);
     K.finishOpSetup(true);
     const kept = K.App.objects.length;
+    const wasTube = K.isLiveTube(K.App.objects[K.App.objects.length - 1]);
     K.undo();
+    /* ONE object after OK, not two: a tube takes its curve inside it at
+       v2.20, so the curve you drew is not left standing beside it. One undo
+       gives the curve back and the tube with it. */
     ok('8.commit OK keeps it, and every radius tried on the way is ONE step',
-       kept === 2 && K.App.objects.length === 1 && K.isCurve(K.App.objects[0]),
-       kept + ' -> ' + K.App.objects.length);
+       kept === 1 && wasTube &&
+       K.App.objects.length === 1 && K.isCurve(K.App.objects[0]),
+       kept + ' -> ' + K.App.objects.length + ' tube=' + wasTube);
     mark('8.commit');
 
     // 9 -- the ring -----------------------------------------------------------
@@ -551,7 +556,7 @@
     const objs2 = K.App.objects.length;
     K.undo();
     ok('14.handle and ONE undo takes back the tube and the radii together',
-       objs2 === 2 && K.App.objects.length === 1 &&
+       objs2 === 1 && K.App.objects.length === 1 && K.isCurve(K.App.objects[0]) &&
        JSON.stringify(K.App.objects[0].mesh.userData.kubikCurve.radii) === '[1,1,1]',
        objs2 + ' -> ' + K.App.objects.length + ' ' +
        JSON.stringify(K.App.objects[0].mesh.userData.kubikCurve.radii));

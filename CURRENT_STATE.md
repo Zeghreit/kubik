@@ -16,7 +16,7 @@ work. What is gone is the implied ceiling.
 
 - Live: https://zeghreit.github.io/kubik/
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.19**
+- Version at time of writing: **2.20**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -46,6 +46,107 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## A tube stays a tube until you bake it (v2.20)
+
+A tube used to become a plain mesh the moment you accepted it, and the curve
+that made it went on standing in the scene beside it. Now the object
+REMEMBERS: Component mode on a tube opens the same bar again, on the same
+object, with the numbers you left it at. **Make geo** is the one door out.
+
+- The spine lives in `mesh.userData.kubikCurve`, the settings in
+  `mesh.userData.kubikTube.p` — `{radius, sides, caps, profile, res}`.
+- The bar gained a **second counter**: roundness AROUND it and divisions ALONG
+  it, which is the curve's own `res`. Two counts that mean different things
+  cannot share one stepper. (The two-finger gesture that was discussed for
+  these was dropped — counters instead.)
+- Every control point wears a **ring** at its own thickness. Drag the ring to
+  make the tube fatter there; drag the dot in the middle to move the point.
+  That is what frees the dot, which until v2.20 meant thickness and nothing
+  else — and the ring doubles as the only way to SEE the radii.
+- Adding, dragging and deleting points inside the tube's bar is the v2.19
+  point editor, opened as a **guest**: `startCurveEdit(obj, true)` draws no
+  bar, takes no snapshot and pushes no history of its own, because the host's
+  ✓ and ✕ already answer for the points.
+
+### The curve is data on the tube, not a second object
+
+The first draft kept it as a real curve object, hidden and marked as owned.
+It worked, and it leaked. An object in `App.objects` that cannot be seen,
+selected or reached is still walked by Grow, Select all, duplicate, the group
+rows, three separate delete doors, the exporters, the isolate reset, the
+picture and the object count — **eight of the review's twelve findings were
+that one idea**, each wanting a guard of its own, with a new one waiting for
+every future feature that loops over that array.
+
+As a field on the tube's own mesh there is nothing to guard: it moves with the
+tube because it IS the tube, it copies with it, it saves with it, and it is
+deleted with it. `isCurve` is what keeps the two apart —
+
+```js
+function hasCurveData(obj) { return !!(obj && obj.mesh && obj.mesh.userData.kubikCurve); }
+function isCurve(obj)      { return hasCurveData(obj) && !obj.mesh.userData.kubikTube; }
+```
+
+— so every reader of the field works on both, and every place that REFUSES a
+curve still refuses one. Which means ✓ **consumes** the curve you drew: it is
+not hidden, it is inside the tube.
+
+### Three orderings that are not free
+
+- **An adopted rebuild keeps the object's own transform.** The sweep works in
+  world space, and re-centring it on its bounding box and writing that centre
+  into `position` is right for an object being MADE and wrong for one that
+  exists: the position it was dragged to was overwritten, and a rotation was
+  applied a second time on top of geometry that already had it. Adopted, the
+  geometry goes into the object's own local space and the transform is not
+  touched at all.
+- **A discard puts the points back before it rebuilds the mesh**, or the tube
+  keeps a shape made by a drag that was just cancelled.
+- **The rings are cleared after that rebuild, not before it** — the rebuild
+  draws them again.
+
+### Anything else that rewrites the mesh has ended it
+
+`rebuildFromEditable` drops the link unless the tube's own setup is what
+called it. Solidify, Array, Subdivide, Clean up and Flip all write straight
+into the mesh and used to leave it standing, so the next Component-mode tap
+rebuilt from the curve and threw the work away without a word.
+
+### What the review found
+
+Twelve defects. Eight were the owned curve, and the fix above is that they
+stopped being possible rather than being guarded one at a time. The four that
+survived the redesign:
+
+1. The adopted transform, above — a tube you had moved and turned jumped
+   somewhere else at ninety degrees on the first Component-mode tap.
+2. The discard ordering, above.
+3. **A bare Shift committed the tube's bar.** The blanket "any key accepts an
+   open setup" guard was extended in v2.19 to skip a point editor — and a
+   HOSTED editor sits inside `App.opSetup`, so the guard applied again.
+4. **`beginTubeRadiusDragOn` dereferenced a projection that can be null** — a
+   control point can be behind the near plane while part of its ring is still
+   on screen, and the throw left the camera disabled.
+
+Also from that review, and worth keeping written down: the first draft's
+comment claimed the dot fell back to setting the radius when a ring was too
+small to aim at. It does not — it moves the point. The ring is now offered
+down to 22px with a 13px dead zone in the middle, so both handles have room;
+below that the slider is the answer and zooming in brings the ring back.
+
+### The probes
+
+`_livetube` is 31 checks in 8 sections, all driving the real doors. Two broken
+copies rather than one: `_mklivetubebroken.py` takes every guard out, and
+`late` leaves the first four in — because breaks that stop a tube from ever
+existing hide every section after the second, which is the same lesson the
+tube's own broken copy taught at v2.18. Six failures on the first, four on
+the second, each on its own defect.
+
+One probe lesson: a probe that THROWS reports one failure and hides the thirty
+behind it — exactly the run a broken copy exists to produce. Every dereference
+of something a broken build can leave null now goes through a helper.
 
 ## A curve's points can be edited (v2.19)
 

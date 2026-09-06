@@ -2205,6 +2205,19 @@
         <span id="opSegValue">1</span>
         <button id="opSegPlus" title="More loops">+</button>
       </div>
+      <!-- A SECOND COUNTER (v2.20). A tube has two division counts that mean
+           different things - around it and along it - and one stepper cannot
+           carry both. Hidden unless the op asks for it, like everything else
+           in this row. -->
+      <div class="stepper" id="opSegments2" style="display:none">
+        <button id="opSeg2Minus" title="Fewer">−</button>
+        <span id="opSeg2Value">1</span>
+        <button id="opSeg2Plus" title="More">+</button>
+      </div>
+      <!-- One more independent button, beside the toggle. The toggle answers
+           yes or no; this one DOES something, and the only thing on the bar
+           that does something other than ✓ has to look different from it. -->
+      <div class="group" id="opExtraWrap" style="display:none"><button id="opExtra"></button></div>
       <!-- TEXT, not number (a2.63). A number input renders its value with
            the BROWSER's decimal separator, so this field read 0,25 while
            every other readout in the app - all of them spans formatted with
@@ -2362,7 +2375,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.19</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.20</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -7902,7 +7915,12 @@ function toEditable(mesh) {
      below would not fail, they would hand back plausible nonsense and the op
      would carry on and produce a broken mesh. A silent wrong answer is the
      failure mode this file fears most; a named error is the cheap opposite. */
-  if (mesh && mesh.userData && mesh.userData.kubikCurve) {
+  /* THE QUESTION, NOT THE FIELD (v2.20a). A live tube keeps its spine in the
+     same field a curve keeps its own in, and it IS a mesh - it has geometry,
+     it takes materials, and Make geo turns it into an ordinary one. Asking
+     for the field refused every op on every tube. */
+  if (mesh && mesh.userData && mesh.userData.kubikCurve &&
+      !mesh.userData.kubikTube) {
     throw new Error('toEditable: that object is a curve, not a mesh');
   }
   const geo = mesh.geometry;
@@ -8023,7 +8041,20 @@ function reconcileFinishes(obj) {
   if (typeof ensureMaskPatches === 'function') ensureMaskPatches();
 }
 
+/* Set only around the tube setup's own rebuild, so the one below can tell
+   "the tube redrawing itself" from "something else rewrote this mesh". */
+let tubeRebuilding = false;
+
 function rebuildFromEditable(obj, edIn) {
+  /* A LIVE TUBE THAT SOMETHING ELSE REBUILT IS NOT A TUBE (v2.20a, found in
+     review). Solidify, Array, Subdivide, Clean up and Flip all write straight
+     into the mesh and left the link standing - so the next Component-mode tap
+     rebuilt from the curve and threw the work away without a word. Every one
+     of them ends here, so this is the one place that has to know. */
+  if (obj.mesh.userData.kubikTube && !tubeRebuilding) {
+    delete obj.mesh.userData.kubikTube;
+    delete obj.mesh.userData.kubikCurve;
+  }
   const ed = separateGroupVertices(edIn);
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(ed.positions, 3));
@@ -9410,6 +9441,20 @@ function cloneObjectInto(obj, name) {
   newMesh.userData.objId = newObj.id;
   newMesh.userData.smoothGroups = { ...(obj.mesh.userData.smoothGroups || {}) };
   newMesh.userData.finishes = { ...(obj.mesh.userData.finishes || {}) };
+  /* A COPY OF A TUBE IS A TUBE (v2.20a). Deep, so the two do not share one
+     spine - dragging a point on the copy would otherwise have moved the
+     original with it. This is also the whole of what a duplicate needed:
+     while the curve was a second object, a copy either dropped the link or
+     had two tubes pointing at one curve, and there was no third answer. */
+  const srcT = obj.mesh.userData.kubikTube, srcC = obj.mesh.userData.kubikCurve;
+  if (srcT && srcC) {
+    newMesh.userData.kubikTube = { p: Object.assign({}, srcT.p) };
+    newMesh.userData.kubikCurve = {
+      pts: srcC.pts.map(a => [a[0], a[1], a[2]]),
+      closed: !!srcC.closed, type: srcC.type, res: srcC.res,
+      radii: (srcC.radii || []).slice()
+    };
+  }
   scene.add(newMesh);
   App.objects.push(newObj);
   return newObj;
@@ -13490,7 +13535,7 @@ function showOpBar() {
      drag on the model is the control), no Cancel (tap away, or Undo), and
      the label counts the sections stacked so far. */
   if (op.live) {
-    ['opSlider', 'opValue', 'opSegments', 'opToggleWrap', 'opCancel'].forEach(id => {
+    ['opSlider', 'opValue', 'opSegments', 'opSegments2', 'opExtraWrap', 'opToggleWrap', 'opCancel'].forEach(id => {
       document.getElementById(id).style.display = 'none';
     });
     document.getElementById('opOk').textContent = 'Done';
@@ -13716,6 +13761,8 @@ function hideOpBar() {
   endAmountDrag();   // a2.102: never leave orbit off behind a finished op
   mirrorChooser = null;
   submergeOut(opBarEl);
+  document.getElementById('opSegments2').style.display = 'none';
+  document.getElementById('opExtraWrap').style.display = 'none';
   // The chooser bars (Mirror, Extrude grouping) drive this bar by hand and
   // know nothing about the toggle, so it goes away with the bar itself.
   document.getElementById('opToggleWrap').style.display = 'none';
@@ -13821,6 +13868,12 @@ function stepSegments(delta) {
 }
 document.getElementById('opSegMinus').addEventListener('click', () => stepSegments(-1));
 document.getElementById('opSegPlus').addEventListener('click', () => stepSegments(1));
+document.getElementById('opSeg2Minus').addEventListener('click', () => stepOpSetup2(-1));
+document.getElementById('opSeg2Plus').addEventListener('click', () => stepOpSetup2(1));
+document.getElementById('opExtra').addEventListener('click', () => {
+  const spec = opSetupSpec();
+  if (spec && spec.extra && App.opSetup) spec.extra.run(App.opSetup);
+});
 // A comma is what half the world's keyboards put there, so take it.
 function parseAmount(v) { return parseFloat(String(v).replace(',', '.')); }
 opValueEl.addEventListener('input', () => setPendingAmount(parseAmount(opValueEl.value)));
@@ -17357,6 +17410,21 @@ function setMode(mode) {
      set from the selection - so one guard at the door covers all of them. */
   if (mode !== 'object') {
     const sel = Array.from(App.selectedObjectIds).map(id => findObject(id)).filter(Boolean);
+    /* A LIVE TUBE OPENS ITS OWN BAR (v2.20). Component mode means "edit the
+       inside of this thing", and the inside of a tube is the curve and the
+       four numbers that swept it - not a mesh whose every vertex is derived
+       and would be overwritten by the next rebuild. */
+    if (sel.length === 1 && isLiveTube(sel[0])) {
+      const t = tubeDataOf(sel[0]);
+      if (App.opSetup && App.opSetup.objId === sel[0].id) return;
+      if (!hasCurveData(sel[0])) {
+        toast('This tube has lost its curve - Make geo is all that is left');
+        return;
+      }
+      // Its own id for both: the tube IS the curve it is made of now.
+      startOpSetup('tube', { curveId: sel[0].id, objId: sel[0].id, p: t.p });
+      return;
+    }
     if (sel.length && sel.every(isCurve)) {
       /* A CURVE HAS ONE KIND OF COMPONENT, AND IT IS ITS POINTS (v2.19). This
          used to refuse outright, which was true - a curve has no vertices,
@@ -17721,7 +17789,11 @@ function selectObjectClick(id, additive, alone) {
      over the top of it - which left the points of one curve being edited
      while another was selected, the blue dots on one and the orange one on
      the other, and the bar's Delete aimed at neither. */
-  if (App.curveEdit && App.curveEdit.objId !== id) finishCurveEdit(true);
+  // Not a hosted one: its object is the curve inside a tube, and everything
+  // you can click - the tube included - has a different id.
+  if (App.curveEdit && !App.curveEdit.hosted && App.curveEdit.objId !== id) {
+    finishCurveEdit(true);
+  }
   const was = App.selectedObjectIds.size;
   /* A TAP ON ONE MEMBER TAKES THE WHOLE GROUP (a2.93). That is what grouping
      is FOR - you group an assembly so you can move it as an assembly, and a
@@ -19439,7 +19511,7 @@ function showKnifeBar() {
     refreshKnifeBar();
   });
   el.appendChild(back);
-  ['opSlider', 'opValue', 'opHint', 'opSegments'].forEach(id => { document.getElementById(id).style.display = 'none'; });
+  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opSegments2', 'opExtraWrap'].forEach(id => { document.getElementById(id).style.display = 'none'; });
   document.getElementById('opOk').style.display = '';
   surfaceIn(opBarEl);
   refreshKnifeBar();
@@ -19759,10 +19831,24 @@ function curveEditObj() {
   return App.curveEdit ? findObject(App.curveEdit.objId) : null;
 }
 
+/* What a point edit has to refresh, in one place, because there are two
+   things it can be inside: its own bar, where the curve is the whole answer,
+   and a tube's bar, where the curve is the input to a mesh that has to be
+   rebuilt with it. */
+function curveEditChanged() {
+  refreshCurvePreview();
+  if (App.curveEdit && App.curveEdit.hosted && App.opSetup) {
+    refreshOpSetupMesh();
+    refreshTubeRings();
+  } else {
+    refreshCurveEditBar();
+  }
+}
+
 /* GENEROUS, like every other GRAB in this file, and shared with the tube's
    radius handle so the two cannot disagree about which dot you meant. */
 function pickCurvePointOn(obj, ev, radPx) {
-  if (!obj || !isCurve(obj)) return null;
+  if (!hasCurveData(obj)) return null;
   obj.mesh.updateMatrixWorld();
   const pts = obj.mesh.userData.kubikCurve.pts || [];
   const p = pointerPx(ev);
@@ -19784,7 +19870,7 @@ function pickCurvePointOn(obj, ev, radPx) {
    from the sampler rather than from arithmetic on the sample number - spans
    can be skipped, so the two do not agree. */
 function pickCurveSpanOn(obj, ev, radPx) {
-  if (!obj || !isCurve(obj)) return null;
+  if (!hasCurveData(obj)) return null;
   const cv = obj.mesh.userData.kubikCurve;
   const W = [], S = [];
   const local = curveSamplePoints(cv, W, S);
@@ -19933,7 +20019,7 @@ function refreshCurvePreview() {
     const sp = App.opSetup && opSetupSpec();
     if (sp && sp.perPoint) {
       const c = findObject(App.opSetup.curveId);
-      if (c && isCurve(c) && list.indexOf(c) < 0) list.push(c);
+      if (c && hasCurveData(c) && list.indexOf(c) < 0) list.push(c);
     }
     list.forEach(o => {
         o.mesh.updateMatrixWorld();
@@ -19946,16 +20032,46 @@ function refreshCurvePreview() {
     /* The selected point rides on the same pass. Only while the editor is
        open: outside it there is no selection to show and the accent would be
        a dot nothing could explain. */
+    /* The curve data can go out from under the editor - Make geo takes it
+       away while the bar is still on screen - so this asks whether there is
+       any rather than assuming the editor's object still has some. */
     const ceo = curveEditObj();
-    if (ceo && App.curveEdit.sel >= 0) {
-      const a = (ceo.mesh.userData.kubikCurve.pts || [])[App.curveEdit.sel];
+    if (ceo && hasCurveData(ceo) && App.curveEdit.sel >= 0) {
+      const a = (curveDataOf(ceo).pts || [])[App.curveEdit.sel];
       ceo.mesh.updateMatrixWorld();
       setCurveSelDot(a ? new THREE.Vector3(a[0], a[1], a[2])
         .applyMatrix4(ceo.mesh.matrixWorld) : null);
     } else {
       setCurveSelDot(null);
     }
-    curveDraft.visible = false;
+    /* THE SPINE OF A TUBE BEING EDITED (v2.20a). A curve object draws its own
+       line; a tube's curve is data on the tube and has none - so the points
+       hung in the air with the mesh around them and nothing joining them up.
+       Borrowed from the draft line the drawing tool uses, which is idle
+       whenever this branch runs. */
+    const sp2 = App.opSetup && opSetupSpec();
+    const spineObj = (sp2 && sp2.perPoint) ? findObject(App.opSetup.curveId) : null;
+    if (spineObj && !isCurve(spineObj) && hasCurveData(spineObj)) {
+      spineObj.mesh.updateMatrixWorld();
+      const line = [];
+      curveSamplePoints(spineObj.mesh.userData.kubikCurve).forEach(q => {
+        const w = q.clone().applyMatrix4(spineObj.mesh.matrixWorld);
+        line.push(w.x, w.y, w.z);
+      });
+      if (line.length >= 6) {
+        // LineGeometry is a bare import in this file, not a THREE member.
+        const g = new LineGeometry();
+        g.setPositions(line);
+        curveDraft.geometry.dispose();
+        curveDraft.geometry = g;
+        curveDraft.computeLineDistances();
+        curveDraft.visible = true;
+      } else {
+        curveDraft.visible = false;
+      }
+    } else {
+      curveDraft.visible = false;
+    }
     curvePlaneRect.visible = false;
     return;
   }
@@ -20019,7 +20135,7 @@ function showCurveBar() {
   btn.textContent = 'Back';
   btn.title = 'Remove the last point';
   btn.classList.remove('active');
-  ['opSlider', 'opValue', 'opHint', 'opSegments'].forEach(id => {
+  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opSegments2', 'opExtraWrap'].forEach(id => {
     document.getElementById(id).style.display = 'none';
   });
   document.getElementById('opOk').style.display = '';
@@ -20076,8 +20192,25 @@ function startCurveDraw(editObj) {
                 : 'Tap to place points, then OK');
 }
 
-function startCurveEdit(obj) {
-  if (!obj || !isCurve(obj)) return;
+/* `host` (v2.20): the same editor, opened INSIDE another bar rather than
+   owning one. The tube's setup is the only host there is. Hosted, it draws
+   no bar of its own, takes no snapshot of its own and pushes no history of
+   its own - the host's ✓ and ✕ already answer for the points, because the
+   host's snapshot carries them. What it still owns is the gestures, and
+   those are the whole reason not to write them a second time. */
+function startCurveEdit(obj, host) {
+  if (!hasCurveData(obj)) return;
+  if (host) {
+    normaliseCurveRadii(obj.mesh.userData.kubikCurve);
+    App.curveEdit = {
+      objId: obj.id, hosted: true,
+      plane: App.curvePlane || 'y',
+      sel: -1, pid: null, drag: null, x0: 0, y0: 0, moved: false,
+      pts0: null, radii0: null
+    };
+    refreshCurvePreview();
+    return;
+  }
   /* Whatever was open, including another one of these (found in review):
      re-entering used to overwrite the snapshot wholesale, so the first
      curve's edits were live in the scene, outside the history and beyond
@@ -20099,7 +20232,8 @@ function startCurveEdit(obj) {
     // Deep copies. The live rows are about to be spliced and dragged, and ✕
     // has to be able to hand back what was there before any of it.
     pts0: cv.pts.map(a => [a[0], a[1], a[2]]),
-    radii0: cv.radii.slice()
+    radii0: cv.radii.slice(),
+    hosted: false
   };
   App.selectedObjectIds = new Set([obj.id]);
   App.activeObjectId = null;
@@ -20124,6 +20258,12 @@ function abandonCurveEdit() {
 function finishCurveEdit(keep) {
   const ce = App.curveEdit;
   if (!ce) return;
+  /* A GUEST DOES NOT DECIDE (v2.20). Hosted, it has no snapshot of its own to
+     restore and no step of its own to push - both belong to the bar that
+     opened it, and doing either here would push a second step or put the
+     points back while the tube around them kept the new ones. Everything that
+     closes an editor reaches this, so it is the one place to say so. */
+  if (ce.hosted) { abandonCurveEdit(); return; }
   const obj = findObject(ce.objId);
   App.curveEdit = null;
   orbit.enabled = true;
@@ -20196,8 +20336,7 @@ function curveEditDelete() {
   ce.drag = null;
   ce.sel = Math.min(ce.sel, cv.pts.length - 1);
   rebuildCurveGeometry(obj);
-  refreshCurvePreview();
-  refreshCurveEditBar();
+  curveEditChanged();
   refreshUI();
 }
 
@@ -20232,7 +20371,7 @@ function showCurveEditBar() {
   btn.textContent = 'Delete point';
   btn.title = 'Remove the point you have selected';
   btn.classList.remove('active');
-  ['opSlider', 'opValue', 'opHint', 'opSegments'].forEach(id => {
+  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opSegments2', 'opExtraWrap'].forEach(id => {
     document.getElementById(id).style.display = 'none';
   });
   document.getElementById('opOk').style.display = '';
@@ -20267,6 +20406,22 @@ function curveEditPointerDown(ev) {
   if (!ce || !obj) return;
   ce.pid = ev.pointerId;
   ce.x0 = ev.clientX; ce.y0 = ev.clientY; ce.moved = false;
+  /* THE RING FIRST, when there is one (v2.20). Inside a tube's bar every
+     point wears a circle at its own thickness, and that circle is the radius
+     handle - which is what frees the dot in the middle to mean "move this
+     point" rather than "make it fatter here". The ring offers itself only
+     when it is big enough on screen to aim at separately from the dot. */
+  if (ce.hosted && App.opSetup) {
+    const ring = pickTubeRingPx(ev);
+    if (ring && beginTubeRadiusDragOn(ev, ring.i,
+          worldToScreenPx(pointWorldOnCurve(obj, ring.i)),
+          pointWorldOnCurve(obj, ring.i))) {
+      ce.sel = ring.i;
+      ce.drag = null;
+      refreshCurvePreview();
+      return;
+    }
+  }
   const hit = pickCurvePointOn(obj, ev, GRAB_RADIUS_PX);
   /* THE PLANE FOLLOWS THE POINT. Captured on the press, in world space, so
      the drag happens in the plane the point is already in rather than in one
@@ -20275,13 +20430,22 @@ function curveEditPointerDown(ev) {
   if (hit) {
     ce.sel = hit.i;
     refreshCurvePreview();
-    refreshCurveEditBar();
+    if (!ce.hosted) refreshCurveEditBar();
   }
+}
+
+// One control point, in world space. Both the ring pick and the drag want it.
+function pointWorldOnCurve(obj, i) {
+  obj.mesh.updateMatrixWorld();
+  const a = (obj.mesh.userData.kubikCurve.pts || [])[i];
+  return a ? new THREE.Vector3(a[0], a[1], a[2]).applyMatrix4(obj.mesh.matrixWorld)
+           : new THREE.Vector3();
 }
 
 function curveEditPointerMove(ev) {
   const ce = App.curveEdit, obj = curveEditObj();
   if (!ce || !obj || ce.pid !== ev.pointerId) return;
+  if (tubeRadiusDrag) return;   // the ring has it; its own handler is upstream
   if (!ce.moved &&
       Math.hypot(ev.clientX - ce.x0, ev.clientY - ce.y0) > DIRECT_DECIDE_PX) {
     ce.moved = true;
@@ -20299,12 +20463,20 @@ function curveEditPointerMove(ev) {
   const loc = obj.mesh.worldToLocal(r.p.clone());
   cv.pts[ce.drag.i] = [loc.x, loc.y, loc.z];
   rebuildCurveGeometry(obj);
-  refreshCurvePreview();
+  curveEditChanged();
 }
 
 function curveEditPointerUp(ev) {
   const ce = App.curveEdit, obj = curveEditObj();
   if (!ce || !obj) return;
+  /* A RING DRAG ENDS HERE TOO. This branch runs before the radius drag's own
+     one in the release handler, so without this the ring would be left held
+     with the camera off - the failure two other drags in this file record. */
+  if (tubeRadiusDrag) {
+    endTubeRadiusDrag();
+    ce.pid = null; ce.drag = null; ce.moved = false;
+    return;
+  }
   const wasDrag = ce.moved && !!ce.drag;
   /* WHAT THE PRESS LANDED ON DECIDES THIS, not what the release is over
      (found in review). The press claims a point within the grab radius; a
@@ -20325,8 +20497,7 @@ function curveEditPointerUp(ev) {
   const on = pickCurveSpanOn(obj, ev, CURVE_LINE_PX);
   if (on) {
     ce.sel = curveEditInsert(obj, on.span, on.local, on.w);
-    refreshCurvePreview();
-    refreshCurveEditBar();
+    curveEditChanged();
     refreshUI();
     return;
   }
@@ -20341,8 +20512,7 @@ function curveEditPointerUp(ev) {
     : null);
   if (!r) { toast('That plane is edge on - turn the view, or pick another'); return; }
   ce.sel = curveEditAppend(obj, obj.mesh.worldToLocal(r.p.clone()));
-  refreshCurvePreview();
-  refreshCurveEditBar();
+  curveEditChanged();
   refreshUI();
 }
 
@@ -22541,13 +22711,6 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     if (beginPivotDrag(ev)) { pointerDown = null; directCandidate = null; return; }
   }
 
-  /* A CONTROL POINT OWNS THE PRESS THAT LANDS ON IT (v2.18), and only while a
-     setup that uses them is open. Aimed, unlike the pivot's whole-viewport
-     claim, because the rest of the viewport still has to reach the camera and
-     the result: there are several points and they mean different things. */
-  if (App.opSetup && !App.pendingOp) {
-    if (beginTubeRadiusDrag(ev)) { pointerDown = null; directCandidate = null; return; }
-  }
 
   pointerDown = { x: ev.clientX, y: ev.clientY, t: performance.now(), overGizmo: false };
 
@@ -24269,7 +24432,7 @@ function showMirrorChooser(axis) {
     el.appendChild(b);
   });
   document.getElementById('opLabel').textContent = 'Mirror';
-  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opToggleWrap', 'opOk'].forEach(id => {
+  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opSegments2', 'opExtraWrap', 'opToggleWrap', 'opOk'].forEach(id => {
     document.getElementById(id).style.display = 'none';
   });
   surfaceIn(opBarEl);
@@ -24928,8 +25091,24 @@ const CURVE_COLOR = 0x6fd3ff;
 const CURVE_RES_DEF = 8;
 const CURVE_RES_MAX = 32;
 
-function isCurve(obj) {
+/* CURVE DATA, wherever it lives (v2.20a). A live tube keeps its spine in the
+   very same field a curve object keeps its own in - so curveSamplePoints, the
+   pickers, the point editor and the sweep all read it without knowing which
+   kind of object they were handed. */
+function hasCurveData(obj) {
   return !!(obj && obj.mesh && obj.mesh.userData && obj.mesh.userData.kubikCurve);
+}
+
+function curveDataOf(obj) {
+  return hasCurveData(obj) ? obj.mesh.userData.kubikCurve : null;
+}
+
+/* ...and IS A CURVE is the narrower question: a drawable line, an object in
+   its own right. A tube is not one, and this is the guard that keeps it out
+   of the places curves are refused - booleans, exports, toEditable, the
+   component-mode door - without any of them learning a second field. */
+function isCurve(obj) {
+  return hasCurveData(obj) && !obj.mesh.userData.kubikTube;
 }
 
 /* Every op that edits a mesh asks this first. The ring already hides the mesh
@@ -25111,6 +25290,10 @@ function curveSamplePoints(cv, outW, outS) {
    setPositions is the only honest way to move them, and the sample count
    changes whenever `res` or a point does. */
 function rebuildCurveGeometry(obj) {
+  /* Only a real curve has a line to rebuild (v2.20a). A live tube carries the
+     same data and is redrawn by its own setup, so this is a no-op for one
+     rather than a branch at all nine call sites. */
+  if (!isCurve(obj)) return;
   const cv = obj.mesh.userData.kubikCurve;
   normaliseCurveRadii(cv);   // the one funnel every points change runs through
   const pts = curveSamplePoints(cv);
@@ -26127,8 +26310,27 @@ function serializeDoc() {
         };
       }
       const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
+      /* v2.20: what makes it a tube rather than the mesh it looks like. The
+         GEOMETRY is still written out in full beside it - a document has to
+         open in a version that never heard of this, and as a plain mesh it
+         does. */
+      /* The spine travels WITH the tube (v2.20a), in the same record - it is
+         a field on this mesh, not an object of its own, so there is nothing
+         to cross-reference and nothing to go missing on the way in. */
+      const tcv = o.mesh.userData.kubikTube && o.mesh.userData.kubikCurve;
+      const tube = o.mesh.userData.kubikTube
+        ? { p: Object.assign({}, o.mesh.userData.kubikTube.p),
+            cv: tcv ? {
+              pts: tcv.pts.map(a => [a[0], a[1], a[2]]),
+              closed: !!tcv.closed,
+              type: tcv.type === 'poly' ? 'poly' : 'bezier',
+              res: tcv.res,
+              radii: normaliseCurveRadii(tcv).slice()
+            } : null }
+        : null;
       return {
         id: o.id,
+        tube: tube,
         name: o.name,
         position: o.mesh.position.toArray(),
         quaternion: o.mesh.quaternion.toArray(),
@@ -26473,6 +26675,20 @@ function restoreDoc(doc, opts = {}) {
     mesh.scale.fromArray(od.scale);
     const obj = { id: od.id, name: od.name, mesh };
     mesh.userData.objId = obj.id;
+    /* v2.20. Ids survive a restore by design - the curve branch above says
+       why - so the link needs nothing more than copying. A file from before
+       this version has no `tube` key and opens as the mesh it always was. */
+    if (od.tube && od.tube.cv && Array.isArray(od.tube.cv.pts)) {
+      mesh.userData.kubikTube = { p: Object.assign({}, od.tube.p) };
+      mesh.userData.kubikCurve = {
+        pts: od.tube.cv.pts.map(a => [a[0], a[1], a[2]]),
+        closed: !!od.tube.cv.closed,
+        type: od.tube.cv.type === 'poly' ? 'poly' : 'bezier',
+        res: od.tube.cv.res,
+        radii: Array.isArray(od.tube.cv.radii) ? od.tube.cv.radii.slice() : []
+      };
+      normaliseCurveRadii(mesh.userData.kubikCurve);
+    }
     mesh.userData.smoothGroups = od.smoothGroups ? { ...od.smoothGroups } : {};
     mesh.userData.finishes = { ...finishes };
     mesh.userData.creases = od.creases ? { ...od.creases } : {};
@@ -26614,7 +26830,7 @@ function pushHistory() {
      kept the version it had thrown away. Closed here rather than committed,
      because the push about to happen IS the commit: calling finishCurveEdit
      would push a second time. */
-  if (App.curveEdit) {
+  if (App.curveEdit && !App.curveEdit.hosted) {
     App.curveEdit = null;
     orbit.enabled = true;
     hideCurveEditBar();
@@ -29264,15 +29480,40 @@ const OP_SETUP = {
        no-op this file keeps naming as its worst failure. */
     stepper: { key: 'sides', max: () => TUBE_SIDES_MAX, min: () => 3,
                hidden: (p) => !(TUBE_PROFILES[p.profile] || TUBE_PROFILES.round).sides },
+    /* ALONG it, where the other counter is AROUND it (v2.20). This is the
+       curve's own `res`, which is the segment count of every surface built
+       from that curve - so it is not a second copy of the number, it is the
+       number, reached from the bar of the thing you are looking at.
+
+       A POLY curve has no steps between its points, by definition, so the
+       counter goes away rather than sitting there refusing to move. */
+    stepper2: { key: 'res', max: () => CURVE_RES_MAX, min: () => 1,
+                hidden: (p, s) => {
+                  const c = findObject(s.curveId);
+                  return !c || c.mesh.userData.kubikCurve.type !== 'bezier';
+                } },
     toggle: { key: 'caps', label: 'Caps', tip: 'Close the two ends' },
-    defaults: (s) => ({
-      radius: Math.max(0.01, s.span * 0.06), sides: 8, caps: true,
-      profile: TUBE_PROFILES[App.tubeProfile] ? App.tubeProfile : 'round'
-    }),
+    defaults: (s) => {
+      const c = findObject(s.curveId);
+      return {
+        radius: Math.max(0.01, s.span * 0.06), sides: 8, caps: true,
+        profile: TUBE_PROFILES[App.tubeProfile] ? App.tubeProfile : 'round',
+        res: c ? (c.mesh.userData.kubikCurve.res | 0) || CURVE_RES_DEF : CURVE_RES_DEF
+      };
+    },
     build: (s) => {
       const c = findObject(s.curveId);
-      return c ? tubeCurveOp(c, s.p.radius, s.p.sides, s.p.caps, s.p.profile)
-               : { ok: false, why: 'the curve is gone' };
+      if (!c) return { ok: false, why: 'the curve is gone' };
+      /* The length counter is written THROUGH to the curve, because that is
+         where it lives and where every other consumer of this curve reads it
+         from. The curve belongs to the tube once the tube is live, so this is
+         the tube editing its own data. */
+      const want = Math.max(1, Math.min(CURVE_RES_MAX, s.p.res | 0));
+      if (c.mesh.userData.kubikCurve.res !== want) {
+        c.mesh.userData.kubikCurve.res = want;
+        rebuildCurveGeometry(c);
+      }
+      return tubeCurveOp(c, s.p.radius, s.p.sides, s.p.caps, s.p.profile);
     },
     name: (s) => (findObject(s.curveId) || { name: 'Curve' }).name + ' tube',
     onChip: (k) => { App.tubeProfile = k; },
@@ -29282,14 +29523,36 @@ const OP_SETUP = {
        means Cancel has to put them back, and that is what these two are for.
        They are the same rule as the mesh itself: nothing survives a ✕. */
     perPoint: true,
+    /* MAKE GEO IS THE ONE DOOR OUT of being a tube, so it sits on the tube's
+       own bar rather than on a ring three taps away. Only offered while there
+       is something to bake: on the first tube off a curve, ✓ is what makes it
+       live and this button appears the next time you open it. */
+    extra: { label: 'Make geo', tip: 'Freeze this tube as ordinary geometry',
+             when: (s) => isLiveTube(findObject(s.objId)),
+             run: (s) => {
+               const o = findObject(s.objId);
+               finishOpSetup(true);          // whatever is on screen is kept
+               makeTubeGeo(o);
+             } },
     snapshot: (s) => {
       const c = findObject(s.curveId);
-      return c ? normaliseCurveRadii(c.mesh.userData.kubikCurve).slice() : null;
+      if (!c) return null;
+      const cv = c.mesh.userData.kubikCurve;
+      // The points as well as the radii (v2.20): they can be dragged, added
+      // to and taken away from this bar now, and ✕ answers for all of it.
+      return {
+        radii: normaliseCurveRadii(cv).slice(),
+        pts: cv.pts.map(a => [a[0], a[1], a[2]]),
+        res: cv.res
+      };
     },
     restore: (s, snap) => {
       const c = findObject(s.curveId);
       if (!c || !snap) return;
-      c.mesh.userData.kubikCurve.radii = snap.slice();
+      const cv = c.mesh.userData.kubikCurve;
+      cv.radii = snap.radii.slice();
+      cv.pts = snap.pts.map(a => [a[0], a[1], a[2]]);
+      cv.res = snap.res;
       rebuildCurveGeometry(c);
     }
   },
@@ -29396,7 +29659,10 @@ function startOpSetup(kind, seed) {
     kind: kind,
     curveId: seed.curveId != null ? seed.curveId : null,
     inputIds: seed.inputIds ? seed.inputIds.slice() : null,
-    objId: null, p: null, span: 0, hidHere: []
+    objId: null, p: null, span: 0, hidHere: [],
+    // v2.20: re-opened on an object that already exists, rather than making
+    // one. Everything else about the bar is the same.
+    adopted: false, p0: null
   };
   if (s.curveId != null) {
     const c = findObject(s.curveId);
@@ -29404,10 +29670,26 @@ function startOpSetup(kind, seed) {
     s.span = curveWorldBox(c).getSize(new THREE.Vector3()).length();
   }
   s.p = spec.defaults(s);
+  if (seed.p) Object.assign(s.p, seed.p);           // v2.20: the numbers it kept
   s.snap = spec.snapshot ? spec.snapshot(s) : null;
-  const made = buildOpSetupObject(spec, s);
-  if (!made) return;                                // refused, and it said why
-  s.objId = made.obj.id;
+  /* RE-OPENED ON THE OBJECT ITSELF (v2.20). Making a second one and deleting
+     the first would work and would be wrong in two ways that show: the object
+     would take a new id, so groups, isolation and anything holding onto it
+     would lose it, and ✕ would have to put the old one back rather than
+     simply leaving it alone. The bar edits what is already there. */
+  if (seed.objId != null && findObject(seed.objId)) {
+    s.objId = seed.objId;
+    s.adopted = true;
+    s.p0 = Object.assign({}, s.p);
+    s.built = Object.assign({}, s.p);
+    App.opSetup = s;
+    refreshOpSetupMesh();
+  } else {
+    const made = buildOpSetupObject(spec, s);
+    if (!made) return;                              // refused, and it said why
+    s.objId = made.obj.id;
+    App.opSetup = s;
+  }
   /* HIDDEN ONLY ONCE THE RESULT EXISTS (v2.17a, found by the probe). The
      first draft hid them first, which reads better and is wrong: isolation's
      last rule is that hiding everything is never allowed, so with the two
@@ -29426,8 +29708,24 @@ function startOpSetup(kind, seed) {
     });
     reconcileIsolation();
   }
-  App.opSetup = s;
-  App.selectedObjectIds = new Set([made.obj.id]);
+  /* The curve comes back out while its tube is being edited (v2.20). Its
+     points are the handles, and a line you cannot see is a set of handles
+     with nothing to hang them on. Put back on every exit. */
+  if (spec.perPoint && s.curveId != null && App.hidden.has(s.curveId)) {
+    App.hidden.delete(s.curveId);
+    s.showedCurve = true;
+    reconcileIsolation();
+  }
+  /* AND THE POINT EDITOR COMES WITH IT (v2.20). Adding a point, dragging one
+     and taking one away are the same three gestures whether you are shaping a
+     curve or shaping the tube around it, so they are the same code - opened
+     here as a guest that draws no bar and pushes no history of its own. */
+  if (spec.perPoint && s.curveId != null) {
+    const cobj = findObject(s.curveId);
+    if (cobj) startCurveEdit(cobj, true);
+  }
+  refreshTubeRings();
+  App.selectedObjectIds = new Set([s.objId]);
   App.activeObjectId = null;
   detachAllGizmos();
   hideRadialMenu();
@@ -29440,9 +29738,19 @@ function startOpSetup(kind, seed) {
    restoreDoc takes - which runs BEFORE the scene is rebuilt, so the ids still
    mean what they meant when they were hidden. */
 function unhideOpSetupInputs(s) {
-  if (!s || !s.hidHere || !s.hidHere.length) return;
-  s.hidHere.forEach(id => App.hidden.delete(id));
-  s.hidHere = [];
+  if (!s) return;
+  /* The curve goes back inside its tube, if this bar is what brought it out
+     and its tube still owns it. A curve that was NEVER owned - the first tube
+     off a curve you drew, cancelled - stays where it was. */
+  if (s.showedCurve) {
+    const c = findObject(s.curveId);
+    if (c && isOwnedCurve(c)) App.hidden.add(c.id);
+    s.showedCurve = false;
+  }
+  if (s.hidHere && s.hidHere.length) {
+    s.hidHere.forEach(id => App.hidden.delete(id));
+    s.hidHere = [];
+  }
   reconcileIsolation();
 }
 
@@ -29468,10 +29776,43 @@ function refreshOpSetupMesh() {
     toast(r.why);
     s.p = Object.assign({}, s.built);
     showOpSetupBar();
+    // The rings are drawn at a radius; a refused one must not leave them
+    // standing at a thickness the mesh underneath does not have (review).
+    refreshTubeRings();
     return;
   }
   s.note = r.note || '';
   s.built = Object.assign({}, s.p);
+  /* AN ADOPTED OBJECT KEEPS ITS OWN TRANSFORM (v2.20a, found in review). The
+     sweep works in world space, and re-centring it on its bounding box and
+     writing that centre into `position` is right for an object being made -
+     it has no transform yet. For one that already exists it was wrong twice
+     over: the position it was dragged to was overwritten, and a rotation or a
+     scale it was given got applied a SECOND time on top of geometry that
+     already had it baked in. Move a tube and turn it, tap Vertex, and it
+     jumped somewhere else at ninety degrees.
+
+     So: into the object's own local space, and its transform is not touched
+     at all. The curve rides inside it, so the two cannot drift. */
+  if (s.adopted) {
+    o.mesh.updateMatrixWorld();
+    const inv = new THREE.Matrix4().copy(o.mesh.matrixWorld).invert();
+    const q = new THREE.Vector3();
+    for (let i = 0; i < r.ed.positions.length; i += 3) {
+      q.set(r.ed.positions[i], r.ed.positions[i + 1], r.ed.positions[i + 2])
+        .applyMatrix4(inv);
+      r.ed.positions[i] = q.x;
+      r.ed.positions[i + 1] = q.y;
+      r.ed.positions[i + 2] = q.z;
+    }
+    o.mesh.material = r.mats.length > 1 ? r.mats : r.mats[0];
+    tubeRebuilding = true;
+    try { rebuildFromEditable(o, r.ed); } finally { tubeRebuilding = false; }
+    refreshTubeRings();
+    refreshUI();
+    refreshGizmoAttachment();
+    return;
+  }
   const box = new THREE.Box3(), v = new THREE.Vector3();
   for (let i = 0; i < r.ed.positions.length; i += 3) {
     box.expandByPoint(v.set(r.ed.positions[i], r.ed.positions[i + 1], r.ed.positions[i + 2]));
@@ -29488,6 +29829,7 @@ function refreshOpSetupMesh() {
      the old one would leave the new faces unstamped. */
   o.mesh.material = r.mats.length > 1 ? r.mats : r.mats[0];
   rebuildFromEditable(o, r.ed);
+  refreshTubeRings();
   /* THE NAME FOLLOWS THE CHIPS (v2.17). A boolean opened on Union and
      finished on Difference kept "A union" in the outliner - the one part of
      the preview that did not move with the chip. Only an op whose name
@@ -29521,6 +29863,20 @@ function stepOpSetup(delta) {
   if (n === s.p[st.key]) return;
   s.p[st.key] = n;
   document.getElementById('opSegValue').textContent = n;
+  refreshOpSetupMesh();
+}
+
+/* The second counter, and it is deliberately its own function rather than a
+   parameter on the first: the two mean different things, they clamp against
+   different floors, and a shared one would have to be told which every time. */
+function stepOpSetup2(delta) {
+  const s = App.opSetup, spec = opSetupSpec();
+  if (!s || !spec || !spec.stepper2) return;
+  const st = spec.stepper2;
+  const n = Math.max(st.min(s.p, s), Math.min(st.max(s.p, s), (s.p[st.key] | 0) + delta));
+  if (n === s.p[st.key]) return;
+  s.p[st.key] = n;
+  document.getElementById('opSeg2Value').textContent = n;
   refreshOpSetupMesh();
 }
 
@@ -29590,6 +29946,19 @@ function showOpSetupBar() {
                   !(spec.stepper.hidden && spec.stepper.hidden(s.p, s));
   document.getElementById('opSegments').style.display = useStep ? '' : 'none';
   if (useStep) document.getElementById('opSegValue').textContent = s.p[spec.stepper.key];
+  const useStep2 = !!spec.stepper2 &&
+                   !(spec.stepper2.hidden && spec.stepper2.hidden(s.p, s));
+  document.getElementById('opSegments2').style.display = useStep2 ? '' : 'none';
+  if (useStep2) document.getElementById('opSeg2Value').textContent = s.p[spec.stepper2.key];
+  const xWrap = document.getElementById('opExtraWrap');
+  if (spec.extra && (!spec.extra.when || spec.extra.when(s))) {
+    xWrap.style.display = 'inline-flex';
+    const xb = document.getElementById('opExtra');
+    xb.textContent = spec.extra.label;
+    xb.title = spec.extra.tip || '';
+  } else {
+    xWrap.style.display = 'none';
+  }
 
   const wrap = document.getElementById('opToggleWrap');
   const btn = document.getElementById('opToggle');
@@ -29614,6 +29983,8 @@ function showOpSetupBar() {
    something else entirely in the loaded document. */
 function abandonOpSetup() {
   if (!App.opSetup) return;
+  if (App.curveEdit && App.curveEdit.hosted) abandonCurveEdit();
+  clearTubeRings();
   /* No restore here, deliberately: restoreDoc is about to rebuild every
      object in the scene from a document that carries its own radii. */
   if (tubeRadiusDrag) endTubeRadiusDrag();
@@ -29627,6 +29998,28 @@ function finishOpSetup(keep) {
   const s = App.opSetup;
   if (!s) return;
   if (tubeRadiusDrag) endTubeRadiusDrag();
+  /* The hosted point editor goes with the bar that opened it. Abandoned
+     rather than finished: it pushes nothing and restores nothing of its own -
+     this bar's own snapshot already answers for the points. */
+  if (App.curveEdit && App.curveEdit.hosted) abandonCurveEdit();
+  /* PUT BACK BEFORE THE STATE GOES. An adopted object is not removed by a ✕ -
+     there was nothing to remove, it was here first - so the discard is a
+     rebuild at the settings it opened with, and that has to happen while the
+     bar's state is still the live one refreshOpSetupMesh reads. */
+  if (!keep && s.adopted && s.p0 && findObject(s.objId)) {
+    /* THE CURVE FIRST, THEN THE MESH (v2.20a, found in review). The rebuild
+       reads the points, so restoring them afterwards left a tube shaped by a
+       drag that had just been cancelled - and nothing in the history to take
+       it back. `restore` is idempotent and runs again below on the shared
+       path; doing it here as well is what makes the order right. */
+    const rspec = OP_SETUP[s.kind];
+    if (rspec.restore) rspec.restore(s, s.snap);
+    s.p = Object.assign({}, s.p0);
+    s.built = Object.assign({}, s.p0);
+    refreshOpSetupMesh();
+  }
+  // After the rebuild above, not before it: that rebuild draws them again.
+  clearTubeRings();
   unhideOpSetupInputs(s);
   App.opSetup = null;
   hideOpBar();
@@ -29636,6 +30029,22 @@ function finishOpSetup(keep) {
     if (o) {
       /* The inputs go now, not before - so Cancel had something to give back
          and OK is the first moment anything is destroyed. */
+      /* A TUBE STAYS A TUBE (v2.20). Stamped here, on the way out, because
+         this is the one place that knows both what was dialled in and that it
+         was accepted - and because the curve must not be swallowed by a
+         preview that gets cancelled. */
+      /* A TUBE STAYS A TUBE (v2.20), and takes its curve inside it. Done
+         here, on the way out, because this is the one place that knows both
+         what was dialled in and that it was accepted - a preview that gets
+         cancelled must not swallow the curve you drew. */
+      if (s.kind === 'tube') {
+        const src = findObject(s.curveId);
+        o.mesh.userData.kubikTube = { p: Object.assign({}, s.p) };
+        if (src && src.id !== o.id) {
+          absorbCurveInto(o, src);
+          removeObjects([src]);
+        }
+      }
       if (s.inputIds && !s.p.keep) {
         const gone = s.inputIds.map(id => findObject(id)).filter(Boolean);
         if (gone.length) removeObjects(gone);
@@ -29665,6 +30074,16 @@ function finishOpSetup(keep) {
   }
   const undoSpec = OP_SETUP[s.kind];
   if (undoSpec.restore) undoSpec.restore(s, s.snap);
+  /* An adopted object outlives its own bar: the ✕ has already put its
+     settings back, and taking the object away would delete something the user
+     made three versions ago because they looked at it and changed their mind. */
+  if (s.adopted) {
+    if (o) App.selectedObjectIds = new Set([o.id]);
+    toast('Unchanged');
+    refreshUI();
+    refreshGizmoAttachment();
+    return;
+  }
   if (o) {
     removeObjects([o]);
     App.selectedObjectIds.delete(o.id);
@@ -29681,6 +30100,132 @@ function finishOpSetup(keep) {
   }
   refreshUI();
   refreshGizmoAttachment();
+}
+
+/* ---------------- The thickness rings (v2.20) ----------------
+
+   A circle at every control point, at that point's own radius, across the
+   curve. It does two jobs at once and that is why it is worth its geometry:
+   it SHOWS the radii - which until now you could only read off the tube
+   itself - and it gives the radius its own handle, so the dot in the middle
+   is free to mean "move this point".
+
+   Perpendicular to the curve, with any roll: for a round tube the ring IS the
+   surface, and for the other three profiles it is the circle that contains
+   them. It is a handle, not a wall, so the circumscribing circle is the
+   honest shape - it says how thick, not what shape.
+
+   Plain LineBasicMaterial rather than the fat lines the curve uses. A Line2
+   has to be told the viewport size on every resize (see gizmoStrokes), and a
+   handle that is one pixel wide on a phone is fine - it is aimed at with a
+   34px radius, not with the eye. */
+const RING_SEGS = 24;
+const RING_GRAB_PX = 26;    // how near the ring counts as taking hold of it
+/* THE RING NEEDS ROOM INSIDE IT for the dot's own job (v2.20a). The two
+   handles sit at the same place - one at the middle, one at the edge - so
+   below this the edge is not offered at all and the whole point moves; the
+   slider still sets the thickness, and zooming in brings the ring back. The
+   first draft put this at 30 and claimed in a comment that the dot fell back
+   to the radius, which it does not: it moves the point. */
+const RING_MIN_PX = 22;
+const RING_INNER_PX = 13;   // ...and this much of the middle is always the dot
+
+const tubeRingMat = new THREE.LineBasicMaterial({
+  color: 0xffb454, transparent: true, opacity: 0.75,
+  depthTest: false, depthWrite: false, fog: false
+});
+const tubeRings = new THREE.LineSegments(new THREE.BufferGeometry(), tubeRingMat);
+tubeRings.renderOrder = 998;
+tubeRings.visible = false;
+tubeRings.frustumCulled = false;
+scene.add(tubeRings);
+
+// The ring vertices in world space, one array per control point. The hit test
+// below reads these rather than re-deriving them.
+let tubeRingPts = [];
+
+function clearTubeRings() {
+  tubeRings.visible = false;
+  tubeRingPts = [];
+}
+
+function refreshTubeRings() {
+  const s = App.opSetup, spec = opSetupSpec();
+  const c = (s && spec && spec.perPoint) ? findObject(s.curveId) : null;
+  if (!c || !hasCurveData(c) || !s.p || !(s.p.radius > 0)) { clearTubeRings(); return; }
+  c.mesh.updateMatrixWorld();
+  const cv = c.mesh.userData.kubikCurve;
+  const W = normaliseCurveRadii(cv);
+  const P = (cv.pts || []).map(a =>
+    new THREE.Vector3(a[0], a[1], a[2]).applyMatrix4(c.mesh.matrixWorld));
+  const n = P.length;
+  if (n < 2) { clearTubeRings(); return; }
+  const closed = !!cv.closed && n > 2;
+  const verts = [], all = [];
+  const T = new THREE.Vector3(), U = new THREE.Vector3(), B = new THREE.Vector3();
+  for (let i = 0; i < n; i++) {
+    const a = closed ? P[(i - 1 + n) % n] : P[Math.max(0, i - 1)];
+    const b = closed ? P[(i + 1) % n] : P[Math.min(n - 1, i + 1)];
+    T.copy(b).sub(a);
+    if (T.lengthSq() < 1e-12) T.set(0, 1, 0);
+    T.normalize();
+    // Any perpendicular will do - the ring is a circle, so its roll cannot be
+    // seen. The far-from-parallel pick is what keeps the cross from vanishing.
+    U.set(0, 1, 0);
+    if (Math.abs(U.dot(T)) > 0.9) U.set(1, 0, 0);
+    U.crossVectors(T, U).normalize();
+    B.crossVectors(T, U).normalize();
+    const r = Math.max(1e-4, s.p.radius * W[i]);
+    const ring = [];
+    for (let k = 0; k < RING_SEGS; k++) {
+      const t = (k / RING_SEGS) * Math.PI * 2;
+      ring.push(P[i].clone()
+        .addScaledVector(U, Math.cos(t) * r)
+        .addScaledVector(B, Math.sin(t) * r));
+    }
+    for (let k = 0; k < RING_SEGS; k++) {
+      const q0 = ring[k], q1 = ring[(k + 1) % RING_SEGS];
+      verts.push(q0.x, q0.y, q0.z, q1.x, q1.y, q1.z);
+    }
+    all.push(ring);
+  }
+  tubeRings.geometry.dispose();
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  tubeRings.geometry = g;
+  tubeRings.visible = true;
+  tubeRingPts = all;
+  invalidate();
+}
+
+/* WHICH RING, if any, this press took hold of. Read off the ring's own
+   vertices rather than from an ellipse fitted to it: a circle in 3D projects
+   to an ellipse, and the vertices are already there and already right.
+
+   A ring smaller than RING_MIN_PX on screen is not offered at all - it sits
+   under the dot, and a handle you cannot separate from another handle is
+   worse than one that is not there. The slider still sets the radius. */
+function pickTubeRingPx(ev) {
+  if (!tubeRingPts.length) return null;
+  const px = pointerPx(ev);
+  let best = null;
+  for (let i = 0; i < tubeRingPts.length; i++) {
+    const ring = tubeRingPts[i];
+    let near = Infinity, far = 0;
+    const c0 = worldToScreenPx(ring[0].clone().lerp(ring[RING_SEGS >> 1], 0.5));
+    for (let k = 0; k < ring.length; k++) {
+      const sp = worldToScreenPx(ring[k]);
+      if (!sp) continue;
+      const d = Math.hypot(sp.x - px.x, sp.y - px.y);
+      if (d < near) near = d;
+      if (c0) far = Math.max(far, Math.hypot(sp.x - c0.x, sp.y - c0.y));
+    }
+    if (far < RING_MIN_PX) continue;
+    // Inside this, the press is on the dot and means "move this point".
+    if (c0 && Math.hypot(c0.x - px.x, c0.y - px.y) < RING_INNER_PX) continue;
+    if (near <= RING_GRAB_PX && (!best || near < best.d)) best = { i: i, d: near };
+  }
+  return best;
 }
 
 /* ---------------- Per-point radius (v2.18) ----------------
@@ -29735,10 +30280,22 @@ function pickCurvePointPx(ev) {
    that width the drag gives up being 1:1 and stays usable instead; at any
    normal thickness the floor is not reached and nothing changes. */
 function beginTubeRadiusDrag(ev) {
-  const s = App.opSetup;
   const hit = pickCurvePointPx(ev);
-  if (!hit) return false;
+  return hit ? beginTubeRadiusDragOn(ev, hit.i, hit.sp, hit.world) : false;
+}
+
+/* Split from the pick (v2.20), because there are two ways to take hold of a
+   radius now: the ring, which is what you aim at when the tube is thick
+   enough to have one, and the point itself, which is what the probe drives
+   and what remains when the ring is too small to separate from the dot. */
+function beginTubeRadiusDragOn(ev, i, sp, world) {
+  const s = App.opSetup;
+  // `sp` is a projection, and a projection can be null: the point can be
+  // behind the near plane while part of its ring is still on screen (review).
+  if (!s || !sp || !world) return false;
+  const hit = { i: i, sp: sp, world: world };
   const c = findObject(s.curveId);
+  if (!c || !hasCurveData(c)) return false;
   const cv = c.mesh.userData.kubikCurve;
   normaliseCurveRadii(cv);
   const p = pointerPx(ev);
@@ -29760,7 +30317,7 @@ function updateTubeRadiusDrag(ev) {
   const d = tubeRadiusDrag, s = App.opSetup;
   if (!d || !s) return;
   const c = findObject(d.curveId);
-  if (!c || !isCurve(c)) { endTubeRadiusDrag(); return; }
+  if (!c || !hasCurveData(c)) { endTubeRadiusDrag(); return; }
   const cv = c.mesh.userData.kubikCurve;
   normaliseCurveRadii(cv);
   if (d.i >= cv.radii.length) { endTubeRadiusDrag(); return; }
@@ -29769,6 +30326,7 @@ function updateTubeRadiusDrag(ev) {
   const m = d.mult0 + (t - d.t0) * d.perPx;
   cv.radii[d.i] = Math.max(CURVE_R_MIN, Math.min(CURVE_R_MAX, m));
   refreshOpSetupMesh();
+  refreshTubeRings();
 }
 
 function endTubeRadiusDrag() {
@@ -29777,6 +30335,80 @@ function endTubeRadiusDrag() {
   /* Nothing is pushed here. The whole setup is one step and the tick is what
      takes it - the same rule the slider and the stepper already follow. */
   orbit.enabled = true;
+}
+
+/* ---------------- A tube that is still a tube (v2.20) ----------------
+
+   A tube used to be a mesh the moment you accepted it: the curve that made it
+   went on standing in the scene beside it, and the settings were gone. Now the
+   object REMEMBERS - the spine in `userData.kubikCurve`, the four numbers in
+   `userData.kubikTube.p` - and Component mode on it opens the same bar again,
+   on the same object, with the numbers you left. Make geo ends that: it drops
+   the link and leaves an ordinary mesh.
+
+   THE CURVE IS DATA ON THE TUBE, not a second object (v2.20a, forced by
+   review). The first draft kept it as a real curve, hidden and marked as
+   owned. It worked, and it leaked: an object in App.objects that cannot be
+   seen, selected or reached is still walked by Grow, Select all, duplicate,
+   the group rows, the exporters, the isolate reset, the picture, the object
+   count and every one of the three delete doors - eight defects in one review,
+   each wanting its own guard, and a new one waiting for every feature that
+   ever loops over that array again. As a field on the tube's own mesh there
+   is nothing to guard: it moves with the tube because it IS the tube, it
+   copies with it, it saves with it, and it is deleted with it.
+
+   Which is why ✓ CONSUMES the curve you drew. It is not hidden; it is inside
+   the tube, and Make geo is the one door out. */
+
+function tubeDataOf(obj) {
+  return (obj && obj.mesh && obj.mesh.userData.kubikTube) || null;
+}
+
+function isLiveTube(obj) { return !!tubeDataOf(obj); }
+
+/* THE CURVE'S POINTS, IN THE TUBE'S OWN SPACE. Both objects have a transform
+   of their own at this moment - the curve was drawn wherever it was drawn, and
+   the tube has just been re-centred on its own bounding box - so the points
+   have to come across through both. Get this wrong and the tube's first
+   rebuild puts it somewhere else. */
+function absorbCurveInto(tubeObj, curveObj) {
+  if (!tubeObj || !curveObj) return;
+  tubeObj.mesh.updateMatrixWorld();
+  curveObj.mesh.updateMatrixWorld();
+  const toLocal = new THREE.Matrix4().copy(tubeObj.mesh.matrixWorld).invert()
+    .multiply(curveObj.mesh.matrixWorld);
+  const src = curveObj.mesh.userData.kubikCurve;
+  const v = new THREE.Vector3();
+  tubeObj.mesh.userData.kubikCurve = {
+    pts: (src.pts || []).map(a => {
+      v.set(a[0], a[1], a[2]).applyMatrix4(toLocal);
+      return [v.x, v.y, v.z];
+    }),
+    closed: !!src.closed,
+    type: src.type === 'poly' ? 'poly' : 'bezier',
+    res: src.res,
+    radii: normaliseCurveRadii(src).slice()
+  };
+}
+
+/* THE ONE DOOR OUT. The link and the spine both go; what is left is a mesh
+   like any other - which is the point, because every op in this app works on
+   those and none of them works on a shape that rebuilds itself underneath. */
+function makeTubeGeo(obj) {
+  if (!obj || !isLiveTube(obj)) { toast('That is already geometry'); return false; }
+  /* THE BAR GOES FIRST. Its ✓ is one route here and closes it on the way, but
+     this is also reachable with the bar still open - and a setup left pointing
+     at an object that has stopped being a tube rebuilds from a curve that is
+     no longer there. Whatever is on screen is what gets baked. */
+  if (App.opSetup && App.opSetup.objId === obj.id) finishOpSetup(true);
+  delete obj.mesh.userData.kubikTube;
+  delete obj.mesh.userData.kubikCurve;
+  App.selectedObjectIds = new Set([obj.id]);
+  refreshUI();
+  refreshGizmoAttachment();
+  pushHistory();
+  toast(obj.name + ' is geometry now');
+  return true;
 }
 
 function tubeSelection() {
@@ -33344,6 +33976,13 @@ window.addEventListener('keydown', (ev) => {
     if (ev.key === 'Delete' || ev.key === 'Backspace') {
       ev.preventDefault(); curveEditDelete(); return;
     }
+    /* Hosted, the two answers belong to the bar you can see (v2.20). Enter on
+       a guest that closed only itself would have left the tube's bar standing
+       with its gestures gone. */
+    if (App.curveEdit.hosted) {
+      if (ev.key === 'Enter') { ev.preventDefault(); finishOpSetup(true); return; }
+      if (ev.key === 'Escape') { ev.preventDefault(); finishOpSetup(false); return; }
+    }
     if (ev.key === 'Enter') { ev.preventDefault(); finishCurveEdit(true); return; }
     if (ev.key === 'Escape') { ev.preventDefault(); finishCurveEdit(false); return; }
     /* AND NOTHING ELSE COMMITS IT (found in review). The blanket guard below
@@ -33357,7 +33996,12 @@ window.addEventListener('keydown', (ev) => {
        OBJECT and the copy must not carry points nothing has accepted. */
     if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'd') finishCurveEdit(true);
   }
-  if (App.geoSetup || App.opSetup) {
+  /* NOT WHILE A POINT EDITOR IS OPEN (v2.20a, found in review). Hosted, the
+     guest sits inside App.opSetup - so the blanket "any key accepts it" below
+     applied to the tube's bar as well, and a bare Shift committed a session
+     you were still in. The guest's own block above answers the keys that mean
+     something here; everything else means nothing. */
+  if ((App.geoSetup || App.opSetup) && !App.curveEdit) {
     const undoish = (ev.ctrlKey || ev.metaKey) && 'zy'.includes(ev.key.toLowerCase());
     /* A TUBE SETUP IS THE SAME SHAPE, and was missed (found in review). Its
        object exists from the first tap and is selected, so Ctrl+D copied an
@@ -34281,6 +34925,11 @@ if (PICK_DEBUG) {
     TUBE_PROFILES, tubeProfilePoints, normaliseCurveRadii,
     CURVE_R_MIN, CURVE_R_MAX, pickCurvePointPx,
     beginTubeRadiusDrag, updateTubeRadiusDrag, endTubeRadiusDrag,
+    // v2.20: a tube that is still a tube, and the rings that shape it.
+    tubeDataOf, isLiveTube, makeTubeGeo, absorbCurveInto, cloneObjectInto,
+    hasCurveData, curveDataOf,
+    refreshTubeRings, pickTubeRingPx, stepOpSetup2,
+    get tubeRingPts() { return tubeRingPts; },
     get tubeRadiusDrag() { return tubeRadiusDrag; },
     // v2.17: one setup for both ops.
     OP_SETUP, startOpSetup, finishOpSetup, abandonOpSetup, refreshOpSetupMesh,
