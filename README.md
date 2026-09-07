@@ -1,13 +1,14 @@
 # Kubik
 
-A fidget for 3D artists.
+A 3D modeller that runs in your phone's browser. No install, no account —
+tap the link and start modelling.
 
-Kubik is a low-poly mesh editor that runs in a browser tab. It's built for a
-phone and meant to be used one-handed — you drag with a thumb, and tools
-bloom wherever it's touching. The point isn't to finish a model. It's to
-have something pleasant to turn over while you think.
+Kubik is a low-poly mesh editor that runs in a browser tab, on a phone or on
+a desktop. It's built to be used one-handed — you drag with a thumb, and the
+tools bloom wherever it's touching. It's a general-purpose modeller: nothing
+in it assumes what you're making.
 
-No install, no account, no sign-up. Open it and push a cube around.
+Nothing to install, no account, no sign-up. Open it and push a cube around.
 
 **[Try it →](https://zeghreit.github.io/kubik/)**
 

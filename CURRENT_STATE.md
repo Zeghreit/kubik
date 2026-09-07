@@ -15,6 +15,11 @@ modes to remember, the viewport as the hero, nothing that breaks the run of
 work. What is gone is the implied ceiling.
 
 - Live: https://zeghreit.github.io/kubik/
+- Analytics since 2.28a: a GoatCounter beacon sits in the head
+  (`https://zeghreit.goatcounter.com`). No cookies, no personal data, and
+  count.js skips localhost and file:// itself. It is DELIBERATE - do not
+  remove it as a stray network call. Weekly unique opens is the metric the
+  promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
 - Version at time of writing: **2.22**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
