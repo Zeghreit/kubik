@@ -2380,7 +2380,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.28</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.29</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -4668,6 +4668,52 @@ function getMaterialDef(id) {
   return normaliseDefMasks(MATERIALS.get(id) || MATERIALS.get('standard'));
 }
 
+/* THE FALLBACK ABOVE IS RIGHT EVERYWHERE EXCEPT THE EDITOR (v2.29).
+
+   Every DRAWING path wants it: a face still wearing a finish that has been
+   deleted has to be painted with something, and Solid is the right something.
+
+   The material editor is the one caller for which it is a lie. A tray card
+   captures its id in a closure when the tray is built, and an import or an
+   undo can REMAP or drop ids underneath an open tray. Opening such a card
+   then handed back the Solid PRESET under the dead card's name: the header
+   read "Solid (preset)", the Delete button hid itself because presets cannot
+   be deleted, Reset restored Solid, and all eleven controls edited Solid.
+
+   From the outside that is a material that has moved into the tray and can be
+   neither deleted nor edited - which is exactly what it looked like. */
+function liveMaterialDef(id) {
+  return MATERIALS.has(id) ? normaliseDefMasks(MATERIALS.get(id)) : null;
+}
+
+/* hasOwnProperty, not a bare index (v2.29, found in review). MATERIAL_DEFAULTS
+   is a plain object literal, so MATERIAL_DEFAULTS['constructor'] and
+   ['toString'] and ['valueOf'] are all truthy. A materialLib entry with
+   `"id": "constructor"` - hand-edited, or written by anything else - was
+   adopted with preset:true and became precisely the material described below:
+   Delete hidden, Reset restoring nothing, and persistence writing it to
+   presetOverrides where the next load drops it while faces still wear it. */
+function presetDefaults(id) {
+  return Object.prototype.hasOwnProperty.call(MATERIAL_DEFAULTS, id)
+    ? MATERIAL_DEFAULTS[id] : undefined;
+}
+
+/* A PRESET IS ONE OF THE THREE IN MATERIAL_DEFAULTS, AND NOTHING ELSE (v2.29).
+
+   `preset` is a stored boolean on an entry that outlives the release which
+   wrote it, and three places asked it a question only MATERIAL_DEFAULTS can
+   answer: the editor (is there a Reset button), Delete (refuse it) and Reset
+   (what do I restore). An entry flagged preset with no default there satisfied
+   all three and could be neither deleted nor reset - a material that has moved
+   into the tray for good.
+
+   Derived rather than healed on load. A heal only covers the entries that
+   happen to pass through the loader; asking the defaults covers the question
+   wherever it is asked, and cannot go stale. */
+function isPresetDef(d) {
+  return !!(d && d.preset && presetDefaults(d.id));
+}
+
 // Numeric hex for three.js; null follows the theme.
 function materialColorHex(def) {
   return def.color ? parseInt(def.color.slice(1), 16) : DEFAULT_MATERIAL_COLOR;
@@ -4706,7 +4752,8 @@ function saveMaterialLibrary() {
   MATERIALS.forEach(_d => {
     const d = normaliseDefMasks(_d);   // legacy shape, read before it is judged
     if (!d.preset) { customs.push(d); return; }
-    const base = MATERIAL_DEFAULTS[d.id];
+    const base = presetDefaults(d.id);
+    if (!base) { customs.push(d); return; }   // flagged preset, no default (v2.29)
     if (d.color !== base.color || d.roughness !== base.roughness ||
         d.metalness !== base.metalness ||
         d.name !== base.name || (d.masks && d.masks.length) || d.bevel) {
@@ -27870,18 +27917,34 @@ function restoreDoc(doc, opts = {}) {
          anything by it (a2.65a). */
       if (d.envMapIntensity !== undefined) delete d.envMapIntensity;
       if (d.srcSig) d.srcSig = migrateSig(d.srcSig);
-      if (!MATERIALS.has(d.id)) {
-        MATERIALS.set(d.id, Object.assign({}, d, { preset: !!MATERIAL_DEFAULTS[d.id] }));
-        bySig.set(materialDefSig(d), d.id);
-        return;
-      }
-      /* We already hold this id. Is this look anywhere in the library - under
-         that id or another? Then point at it and mint nothing. That covers
-         "identical, keep ours" and "we imported this last time" in one test. */
+      /* IS THIS LOOK - OR THIS NAME - ALREADY IN THE LIBRARY, under any id?
+         Then point at it and add nothing.
+
+         ASKED BEFORE THE ID IS LOOKED AT (v2.29, found by the probe). This
+         test used to sit BELOW "we have never seen this id", so a file
+         carrying its own id for a material the library already held was
+         adopted as a second entry beside it and the test never ran. Two
+         "Skin" cards in the tray, one more on the next open - which is the
+         stack growing per open that this version exists to stop.
+
+         BY SIGNATURE ONLY, and the NAME is deliberately not a key on this path
+         (v2.29, found in review). serializeDoc writes every library entry into
+         materialLib, presets included, under their fixed names - so a name key
+         made a file's modified Metal always find the local Metal and throw the
+         file's definition away, which is the bug the note above describes.
+         Merging by name belongs to IMPORT, where the incoming material has no
+         history here; a project file's own definitions are the document. An
+         identical SIGNATURE is different in kind: the looks are the same, so
+         pointing at ours loses nothing at all. */
       const sig = materialDefSig(d);
       const known = bySig.get(sig);
       if (known) {
         if (known !== d.id) matIdRemap.set(d.id, known);
+        return;
+      }
+      if (!MATERIALS.has(d.id)) {
+        MATERIALS.set(d.id, Object.assign({}, d, { preset: !!presetDefaults(d.id) }));
+        bySig.set(sig, d.id);
         return;
       }
       const nid = freshMaterialId(d.id);
@@ -29335,7 +29398,32 @@ function importMaterialContext() {
      already minted. Same shape as restoreDoc's index, migrateSig included,
      healed in place so old strings stop being written back out. */
   const bySig = new Map();
-  const byName = new Set();
+  /* TWO INDEXES ON THE NAME, ASKING DIFFERENT QUESTIONS (v2.29).
+
+     `byName` answers "is this material already in the library". THE NAME IS
+     THE IDENTITY: a file that calls its material "Skin" means the Skin already
+     in the tray, even when it exports 0.52 roughness against the 0.5 that was
+     typed, and even when its colour lands one 8-bit step out on the sRGB round
+     trip. Any such difference missed the signature index, and the only branch
+     left was to MINT - "Skin (imported)", then "Skin (imported 2)" on the next
+     file. The stack grew by one entry per open and nothing merged back.
+
+     PRESETS ARE LEFT OUT OF IT (found in review). Solid, Plastic and Metal
+     carry `color: null`, which means "whatever the theme's grey is now" - so
+     merging a GOLD material named "Metal" onto the Metal preset would repaint
+     it grey and make it follow the theme for ever, and "Metal" is one of the
+     commonest names in a downloaded asset. An incoming colour that really is
+     our grey is caught by the themed-preset shortcut further down, which is
+     bounded by nearHex and a roughness tolerance. That is the only road onto a
+     preset, and it stays the only one.
+
+     `taken` answers "is this name spoken for", for the rename loop at the
+     bottom. It grows as we mint; byName does NOT. So two materials inside ONE
+     file that happen to share a name stay two materials with their two
+     colours, while the same name arriving from a LATER file merges onto what
+     this one left behind. */
+  const byName = new Map();
+  const taken = new Set();
   MATERIALS.forEach((v, id) => {
     if (v.srcSig) { v.srcSig = migrateSig(v.srcSig); healed = true; }
     // Both keys - see the note on the same index in restoreDoc. Reached
@@ -29344,7 +29432,22 @@ function importMaterialContext() {
     const own = materialDefSig(v);
     if (!bySig.has(own)) bySig.set(own, id);
     if (v.srcSig && !bySig.has(v.srcSig)) bySig.set(v.srcSig, id);
-    byName.add((v.name || '').toLowerCase());
+    const ln = (v.name || '').toLowerCase();
+    if (ln) taken.add(ln);                       // display names, for the rename loop
+    /* BOTH KEYS, and srcName is why (found by the probe). A stored name is
+       sliced to 32 characters, so an entry minted from
+       "Metal_Rough_Scratched_Variant_01_Red" is called
+       "Metal_Rough_Scratched_Variant_01" - and the file that created it could
+       never find it again by the name it actually carries. Keying on the slice
+       instead would merge that entry with ..._Blue and kill one of the two
+       colours. So the full source name is remembered on the entry, exactly as
+       srcSig remembers the look, and both are keys. First writer wins. */
+    if (!isPresetDef(v)) {
+      [v.srcName, v.name].forEach(x => {
+        const k = String(x == null ? '' : x).toLowerCase();
+        if (k && !byName.has(k)) byName.set(k, id);
+      });
+    }
   });
   /* Per source material, not per face: a 400-face model painted with three
      glTF materials must ask three times, not four hundred. */
@@ -29377,7 +29480,9 @@ function importMaterialContext() {
          could give it a matching geometry. The catch upstairs then toasted
          "Could not read that file" over a broken scene with no history
          entry, which the autosave then wrote out. */
-      const raw = String(src.name == null ? '' : src.name).trim().slice(0, 32) || 'Imported';
+      const full = String(src.name == null ? '' : src.name).trim();
+      const stated = full.slice(0, 32);
+      const raw = stated || 'Imported';
       const hex = '#' + src.color.getHexString();
       /* `kubikThemed` is set only by parseMtl, for an .mtl material that
          never stated a Kd. Everything arriving from a glTF has a
@@ -29418,7 +29523,7 @@ function importMaterialContext() {
       if (!themedSrc && nearHex(hex, themed)) {
         let hit = null;
         MATERIALS.forEach((v, id) => {
-          if (hit || !v.preset) return;
+          if (hit || !isPresetDef(v)) return;
           if (v.color !== null && v.color !== undefined) return;
           if (Math.abs((+v.roughness || 0) - rough) > 2e-3) return;
           if (Math.abs((+v.metalness || 0) - metal) > 2e-3) return;
@@ -29427,17 +29532,44 @@ function importMaterialContext() {
         });
         if (hit) { cache.set(src, hit); return hit; }
       }
+      /* SAME NAME IS THE SAME MATERIAL (v2.29). Reached only once the exact
+         signature has missed - which IS the case this fixes: a name the
+         library already holds, carrying a look that differs by a rounding
+         step, by a colour that survived a round trip imperfectly, or by a
+         tweak the person made after importing it the first time.
+
+         THE LOCAL DEFINITION WINS. A material someone has tuned must not be
+         repainted by whatever a file happens to carry; merging onto what is
+         already there is the whole point of merging.
+
+         Only for a source that actually stated a name. `raw` falls back to
+         "Imported" for one that did not, and collapsing every unnamed
+         material in a file onto a single entry would throw their colours
+         away - which is the opposite of a merge. */
+      /* Keyed on the FULL name, not the 32-character slice that becomes the
+         stored one (found in review): two names that differ only after
+         character 32 are two names, and a library entry whose own name is
+         longer than that has to be findable by it. */
+      if (full) {
+        const byn = byName.get(full.toLowerCase());
+        if (byn) { cache.set(src, byn); return byn; }
+      }
       if (minted >= IMPORT_MATERIAL_BUDGET) { cache.set(src, 'standard'); return 'standard'; }
       /* A file's "Metal" that is not OUR Metal gets a name that says so,
          rather than two entries called Metal in the tray. */
       let name = raw, k = 1;
-      while (byName.has(name.toLowerCase())) {
+      while (taken.has(name.toLowerCase())) {
         name = raw + ' (imported' + (k > 1 ? ' ' + k : '') + ')'; k++;
       }
       const nid = freshMaterialId(raw.replace(/[^a-z0-9]/gi, '').toLowerCase() || 'imp');
-      MATERIALS.set(nid, { id: nid, preset: false, name: name, color: defColor,
-        roughness: rough, metalness: metal, srcSig: sig });
-      byName.add(name.toLowerCase());
+      MATERIALS.set(nid, Object.assign({ id: nid, preset: false, name: name,
+        color: defColor, roughness: rough, metalness: metal, srcSig: sig },
+        // Only when it is not already the name - no reason to carry a copy.
+        full && full !== name ? { srcName: full } : null));
+      /* `taken`, NOT byName - see the note on the two indexes. A material
+         minted from this file must not become the merge target for the next
+         material in the SAME file. */
+      taken.add(name.toLowerCase());
       bySig.set(sig, nid);
       minted++;
       cache.set(src, nid);
@@ -33624,7 +33756,30 @@ function currentSelectionFinish() {
   return f[0] || 'standard';
 }
 
+/* A STALE CARD IS A MATERIAL NOBODY CAN EDIT (v2.29). Cards capture their id
+   when the tray is built, and an import or an undo remaps and drops ids under
+   an open tray - restoreDoc only nulls the preview cache, it does not rebuild.
+   So before repainting the highlight, check that the cards still ARE the
+   library and rebuild if they are not.
+
+   O(cards) on a panel holding a few dozen, against the alternative of having
+   to remember to rebuild at every site that touches MATERIALS - which is the
+   thing that was forgotten. Only while the shelf is actually open and has
+   been built once: buildMatTray costs one GPU render and one toDataURL per
+   material, and refreshMatTray is called on every selection change. */
+function matTrayStale() {
+  if (!matTrayInnerEl || !matFlyEl || !matTrayIsOpen()) return false;
+  const cards = matTrayInnerEl.querySelectorAll('.mat-card:not(.add)');
+  if (!cards.length) return false;                       // never built
+  if (cards.length !== MATERIALS.size) return true;
+  for (let i = 0; i < cards.length; i++) {
+    if (!MATERIALS.has(cards[i].dataset.finish)) return true;
+  }
+  return false;
+}
+
 function refreshMatTray() {
+  if (matTrayStale()) { _matPreviews = null; buildMatTray(); }
   const cur = currentSelectionFinish();
   matTrayInnerEl.querySelectorAll('.mat-card').forEach(el =>
     el.classList.toggle('active', el.dataset.finish === cur));
@@ -34688,9 +34843,19 @@ const meBevel = document.getElementById('meBevel');
 const meBevelV = document.getElementById('meBevelV');
 
 function openMatEditor(id) {
+  const d = liveMaterialDef(id);
+  /* Gone from the library - a stale card. Rebuild and say so, rather than
+     opening the Solid preset wearing this card's name (v2.29). */
+  if (!d) {
+    matEditingId = null;
+    _matPreviews = null;
+    buildMatTray();
+    refreshMatTray();
+    toast('That material is no longer in the library');
+    return;
+  }
   matEditingId = id;
-  const d = getMaterialDef(id);
-  meName.textContent = d.name + (d.preset ? ' (preset)' : '');
+  meName.textContent = d.name + (isPresetDef(d) ? ' (preset)' : '');
   meColor.value = d.color || '#' + DEFAULT_MATERIAL_COLOR.toString(16).padStart(6, '0');
   meMetal.value = d.metalness;
   meRough.value = d.roughness;
@@ -34699,8 +34864,8 @@ function openMatEditor(id) {
   meRoughV.textContent = d.roughness.toFixed(2);
   meBevelV.textContent = (d.bevel || 0).toFixed(2);
   meImg.src = (_matPreviews && _matPreviews[id]) || '';
-  document.getElementById('meReset').style.display = d.preset ? '' : 'none';
-  document.getElementById('meDelete').style.display = d.preset ? 'none' : '';
+  document.getElementById('meReset').style.display = isPresetDef(d) ? '' : 'none';
+  document.getElementById('meDelete').style.display = isPresetDef(d) ? 'none' : '';
   mkEditing = 0;   // a freshly opened editor starts on the first mask
   refreshMaskControls(d);
   matFlyEl.classList.add('editing');
@@ -34715,7 +34880,9 @@ function closeMatEditor(rebuild) {
 
 function meApplyLive() {
   if (!matEditingId) return;
-  const d = getMaterialDef(matEditingId);
+  // Strict: the fallback would write all eleven controls into Solid (v2.29).
+  const d = liveMaterialDef(matEditingId);
+  if (!d) return;
   d.color = meColor.value;
   d.metalness = parseFloat(meMetal.value);
   d.roughness = parseFloat(meRough.value);
@@ -34782,9 +34949,14 @@ function meCommit() {
 });
 
 document.getElementById('meReset').addEventListener('click', () => {
-  const d = getMaterialDef(matEditingId);
-  if (!d || !d.preset) return;
-  Object.assign(d, MATERIAL_DEFAULTS[d.id]);
+  const d = liveMaterialDef(matEditingId);
+  if (!d) return;
+  /* Only a real preset has somewhere to go back to, and the refusal is said
+     out loud: a button that silently does nothing reads as a broken app, and
+     Object.assign(d, undefined) did nothing while still toasting "Reset to
+     default" (v2.29). */
+  if (!isPresetDef(d)) { toast('Only Solid, Plastic and Metal have a default'); return; }
+  Object.assign(d, presetDefaults(d.id));
   // Object.assign cannot clear a key the defaults do not have - the same
   // reason d.masks is emptied by hand a line or two below.
   d.bevel = 0;
@@ -34798,8 +34970,10 @@ document.getElementById('meReset').addEventListener('click', () => {
 });
 
 document.getElementById('meDelete').addEventListener('click', () => {
-  const d = getMaterialDef(matEditingId);
-  if (!d || d.preset) return;
+  const d = liveMaterialDef(matEditingId);
+  if (!d) { closeMatEditor(true); return; }
+  // Said out loud, for the same reason as Reset above (v2.29).
+  if (isPresetDef(d)) { toast('Solid, Plastic and Metal cannot be deleted \u2014 use Reset'); return; }
   App.objects.forEach(o => {
     const fin = o.mesh.userData.finishes || {};
     const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
@@ -36984,6 +37158,15 @@ if (PICK_DEBUG) {
     dropMaskTexture,
     MATERIALS, getMaterialDef, updateMaterialEverywhere, saveMaterialLibrary,
     harvestLegacyMaterials, applyFinishToSelection,
+    /* v2.29: the material LIBRARY's own invariants, which a probe could only
+       infer from thumbnails before - and the two questions this version turns
+       on: is this id actually in the library (liveMaterialDef) and do the tray
+       cards still ARE it (matTrayStale). */
+    MATERIAL_DEFAULTS, liveMaterialDef, isPresetDef, themedGreyHex, matTrayStale, buildMatTray,
+    refreshMatTray, loadMaterialLibrary, MATLIB_KEY,
+    get matEditingId() { return matEditingId; },
+    get matFlyEl() { return matFlyEl; },
+    get matTrayInnerEl() { return matTrayInnerEl; },
     applyMaskPatch, ensureMaskPatches, rebakeMaskTexture,
     isMaskPatched: (m) => _maskedMats.has(m),
     /* a2.24. The renderer, the shading pass and the editable round-trip.
