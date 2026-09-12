@@ -2380,7 +2380,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.25</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.26</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -7395,6 +7395,14 @@ function settleShadingAfterDrag(ctx) {
   if (!obj || !obj.mesh || !obj.mesh.geometry) return;
   obj.mesh.geometry.userData.shadeTopo = null;
   applyShading(obj);
+  /* AND THE BOUNDS, EXACTLY, for the first time since the drag began (v2.26).
+     The frame loop only ever GREW them, so a drag that pulled a vertex out
+     and back left a radius too large - harmless for culling, wasteful for
+     every frustum test after it, and wrong for anything that reads the box as
+     a measurement. */
+  obj.mesh.geometry.computeBoundingSphere();
+  obj.mesh.geometry.computeBoundingBox();
+  obj.mesh.geometry.userData.kubikBoundsGrown = false;
   /* AND THE RAYCAST TREE, for the same reason and at the same moment (v2.25).
      The drag left it describing where the vertices used to be, so every ray
      since the first frame has been going to the stock raycast. One refit here
@@ -7615,18 +7623,31 @@ function applyShading(obj) {
        to put the face count first, because a rim edge has nothing to blend
        into whatever is written about it; wear has no such constraint, so
        "I marked this smooth" is allowed to mean no wear. */
+    /* GATED HERE, NOT 250 LINES DOWN (v2.26). The list built from this Map is
+       skipped for an object that wears no shape mask - that is the a2.75 gate
+       further below - but the MAP was built anyway: one insertion per edge,
+       26574 of them on a character, on every frame of a drag, thrown away
+       whole a moment later. Most objects never use it.
+
+       `undefined` still means yes, for the same reason the gate below gives:
+       nobody has asked yet, so a first shade before any UI pass must not
+       regress. The two tests have to agree or the list is built from an empty
+       Map, which is why this reads the same flag and not a paraphrase of it. */
+    const needWear = obj.mesh.userData.wantsWear !== false;
     const wear = new Map();
     edges.forEach((rec, k) => {
       const fs = rec.faces;
       let mark = null, creased = false;
-      if (hasMarks || hasCreases) {
+      // A crease has had no say in SHADING since a2.18 - it means only "hold
+      // this edge through Subdivide" - so the crease lookup is wear's alone.
+      if (hasMarks || (hasCreases && needWear)) {
         const ends = rec.ends;
         if (ends) {
           pA.fromBufferAttribute(posAttr, logicalGroups[ends[0]][0]);
           pB.fromBufferAttribute(posAttr, logicalGroups[ends[1]][0]);
           const ck = creaseKeyFor(pA, pB);
           if (hasMarks) mark = marks[ck] || null;
-          if (hasCreases) creased = !!creaseMap[ck];
+          if (hasCreases && needWear) creased = !!creaseMap[ck];
         }
       }
       /* The face count is checked FIRST, above the marks. An edge with one
@@ -7668,11 +7689,13 @@ function applyShading(obj) {
          Without this, one tap of Shade Smooth on an open plane silently
          deletes its entire outline and the mask paints nothing, with the
          shading looking identical either way. */
-      wear.set(k, creased ? true
-                : mark === 'sharp' ? true
-                : fs.length !== 2 ? true
-                : mark === 'smooth' ? false
-                : sh);
+      if (needWear) {
+        wear.set(k, creased ? true
+                  : mark === 'sharp' ? true
+                  : fs.length !== 2 ? true
+                  : mark === 'smooth' ? false
+                  : sh);
+      }
     });
 
     /* One vertex at a time: split the fan of faces around it into islands
@@ -19138,6 +19161,48 @@ function captureDragContext(pivot) {
    be a FUNCTION of the entry, which is how a2.55's axis scale gives each
    object a delta built from its OWN axis; there is no single world matrix
    that scales two differently-rotated objects along their own lengths. */
+/* Grow a geometry's bounds, rather than walking every vertex to find out
+   where they already are. Absent bounds are computed the honest way once;
+   after that this is O(1).
+
+   `lo`/`hi` are the axis-aligned extremes of the points that moved, which is
+   all a BOX needs - expanding to contain those two corners contains the whole
+   box between them. The SPHERE takes `rNeed` instead, the largest distance
+   from its own centre to any moved point, because the farthest corner of that
+   box is not generally `lo` or `hi`. See the note in applyDeltaToSelection.
+
+   Growing only: a sphere or box larger than the mesh makes culling
+   conservative, never wrong, and settleShadingAfterDrag recomputes both
+   exactly when the gesture ends. */
+function growBounds(geo, lo, hi, rNeed) {
+  if (!lo || !hi) return;
+  if (!geo.boundingBox) geo.computeBoundingBox();
+  else { geo.boundingBox.expandByPoint(lo); geo.boundingBox.expandByPoint(hi); }
+  /* MARKED WHILE THEY ARE ONLY A BOUND AND NOT A MEASUREMENT, because review
+     found the safety here holds by an accident of timing rather than by
+     design. Eight places in the app read these as a measurement of the shape -
+     box and lasso select, focusOnObject, Join, Duplicate, contentScale, the
+     soft-selection radius, the edge-field bake, and the occlusion tolerance -
+     and not one of them can currently run between the first grown frame and
+     the settle, every one needing a pointer sequence or a confirm that ends
+     the drag first. That is true and it is luck. So the state is named, and
+     `exactBounds` is the one way to ask for the real thing. */
+  geo.userData.kubikBoundsGrown = true;
+  if (!geo.boundingSphere) { geo.computeBoundingSphere(); return; }
+  if (rNeed > geo.boundingSphere.radius) geo.boundingSphere.radius = rNeed;
+}
+
+/* WHAT TO CALL BEFORE READING THE BOUNDS AS A MEASUREMENT. Free whenever the
+   bounds are already exact, which is every moment except the middle of an
+   element drag - so a reader that is not sure should simply call it. */
+function exactBounds(geo) {
+  if (!geo || !geo.userData.kubikBoundsGrown) return geo;
+  geo.computeBoundingSphere();
+  geo.computeBoundingBox();
+  geo.userData.kubikBoundsGrown = false;
+  return geo;
+}
+
 function applyDeltaToSelection(deltaMatrix) {
   if (!dragCtx) return;
   if (dragCtx.type === 'objects') {
@@ -19166,8 +19231,50 @@ function applyDeltaToSelection(deltaMatrix) {
     const pa = obj.mesh.geometry.attributes.position;
     const symOffs = dragCtx.mirrorOffsets || {};
     const symGroups = dragCtx.mirrorGroups || [];
+    /* AND THE BOUNDS GROW FROM WHAT MOVED (v2.26).
+
+       Both of these used to be recomputed from scratch at the end of every
+       frame - computeBoundingSphere and computeBoundingBox each walk EVERY
+       vertex, 53148 of them on a character, to account for the twelve that
+       moved.
+
+       Not simply deferred to the settle, which is what the plan said: the
+       renderer culls against boundingSphere, so a sphere that no longer
+       contains the mesh makes the object VANISH mid-drag when its stale,
+       smaller sphere leaves the frustum. Grown instead, which is O(moved) and
+       cannot be wrong in the direction that matters: a sphere or box larger
+       than the mesh only makes culling conservative, never incorrect. It can
+       end the drag too large - drag a vertex out and back and the radius
+       stays - and settleShadingAfterDrag recomputes both exactly. */
+    /* TWO THINGS THE PROBE CAUGHT ABOUT THIS, both of which let a vertex end
+       up OUTSIDE the bounds - which is the one failure mode that matters,
+       because the renderer culls against the sphere and a mesh outside its own
+       sphere VANISHES.
+
+       READ THE VALUE BACK rather than trusting the one being stored. The
+       attribute is Float32 and the vector is a double, so the stored
+       coordinate can land a hair outside a bound computed from what we
+       intended to store: a vertex came back as 9.220000267 against a box max
+       of 9.22, and `containsPoint` said no.
+
+       AND MEASURE THE SPHERE PER POINT, not from the corners of the box. The
+       farthest point of a box from a given centre is one of its EIGHT corners,
+       and growing the radius to reach only `min` and `max` reaches two of
+       them - the probe found a vertex 0.02 outside the radius. Per point is
+       exact, and cheaper than testing eight corners. */
+    const _sphC = obj.mesh.geometry.boundingSphere
+      ? obj.mesh.geometry.boundingSphere.center : null;
+    const _sv = new THREE.Vector3();
+    let _bmin = null, _bmax = null, _rNeed = 0;
     const setLocal = (logical, v) => {
-      topo.logicalGroups[logical].forEach(ai => pa.setXYZ(ai, v.x, v.y, v.z));
+      const ais = topo.logicalGroups[logical];
+      ais.forEach(ai => pa.setXYZ(ai, v.x, v.y, v.z));
+      const a0 = ais[0];
+      if (a0 === undefined) return;
+      _sv.set(pa.getX(a0), pa.getY(a0), pa.getZ(a0));
+      if (!_bmin) { _bmin = _sv.clone(); _bmax = _sv.clone(); }
+      else { _bmin.min(_sv); _bmax.max(_sv); }
+      if (_sphC) { const d = _sphC.distanceTo(_sv); if (d > _rNeed) _rNeed = d; }
     };
     /* ONE inversion, not one per vertex. Object3D.worldToLocal copies the
        world matrix and INVERTS it on every call, and with soft selection on, a
@@ -19215,8 +19322,7 @@ function applyDeltaToSelection(deltaMatrix) {
     pa.needsUpdate = true;
     rewriteEdgeMarks(obj, dragCtx.marks);
     applyShading(obj);
-    obj.mesh.geometry.computeBoundingSphere();
-    obj.mesh.geometry.computeBoundingBox();
+    growBounds(obj.mesh.geometry, _bmin, _bmax, _rNeed);
     syncHelperGeometry(obj);
   }
   refreshInspector();
@@ -21884,10 +21990,12 @@ function snapTargetAt(ev, skip) {
 
   const loop = groupLogicalLoop(obj, gi);
   const moving = (l) => skipVerts && obj.id === App.activeObjectId && skipVerts.has(l);
-  const rect = viewportEl.getBoundingClientRect();
+  const rect = viewportRect();
   const tap = pointerPx(ev);
-  // The rect hoisted out: worldToScreenPx reads it per call, and this loop
-  // calls it once per corner twice over - a dozen layout reads a frame.
+  // Hoisted by hand before v2.26 - worldToScreenPx read the rect per call and
+  // this loop calls it once per corner twice over, a dozen layout reads a
+  // frame. viewportRect now does that for every caller; the local is kept
+  // because the closure below uses it per corner.
   const screen = (w) => {
     const p = w.clone().project(camera);
     return p.z > 1 ? null : new THREE.Vector2((p.x * 0.5 + 0.5) * rect.width, (-p.y * 0.5 + 0.5) * rect.height);
@@ -22483,16 +22591,46 @@ const OFF_MODE_PICK_BIAS = 0.7;
    the "sometimes it won't translate" bug. */
 const GRAB_RADIUS_PX = 34;
 
+/* ---------------- ONE LAYOUT READ A FRAME (v2.26) -------------------------
+
+   `getBoundingClientRect` is a SYNCHRONOUS LAYOUT READ: the browser has to
+   settle pending style and layout work before it can answer. One is nothing.
+   A free tap is tens of thousands of them, because worldToScreenPx reads the
+   rect on every call and the vertex and edge sweeps call it once per vertex
+   and twice per edge - snapTargetAt already had this hoisted by hand, with
+   the note "a dozen layout reads a frame", and that was the small case.
+
+   Cached, and CLEARED EVERY FRAME rather than invalidated cleverly. A stale
+   rect is not slow, it is an offset pick - every tap landing a few pixels
+   from where the finger was - so the cache is allowed to live exactly as long
+   as it cannot be wrong about anything that has been drawn. Cleared in
+   `animate`, and also on the events that can move the element while the loop
+   is asleep: resize, scroll and orientationchange.
+
+   The one window left is a layout change with no event and no repaint between
+   it and a pointer event in the same task. Every such change in this app -
+   the drawer, a bar opening, the tray - is caused by a tap and repaints, so
+   the frame after it clears this; and nothing picks in between. */
+let _vpRect = null;
+function viewportRect() {
+  if (!_vpRect) _vpRect = viewportEl.getBoundingClientRect();
+  return _vpRect;
+}
+function invalidateViewportRect() { _vpRect = null; }
+window.addEventListener('resize', invalidateViewportRect, { passive: true });
+window.addEventListener('orientationchange', invalidateViewportRect, { passive: true });
+window.addEventListener('scroll', invalidateViewportRect, { passive: true, capture: true });
+
 // Projects a world point to viewport pixels, or null if it's behind the camera.
 function worldToScreenPx(p) {
   const v = p.clone().project(camera);
   if (v.z > 1) return null;
-  const r = viewportEl.getBoundingClientRect();
+  const r = viewportRect();
   return new THREE.Vector2((v.x * 0.5 + 0.5) * r.width, (-v.y * 0.5 + 0.5) * r.height);
 }
 
 function pointerPx(ev) {
-  const r = viewportEl.getBoundingClientRect();
+  const r = viewportRect();
   return new THREE.Vector2(ev.clientX - r.left, ev.clientY - r.top);
 }
 
@@ -23196,7 +23334,9 @@ function worldToScreen(worldPos) {
   camera.getWorldDirection(_camDir);
   if (new THREE.Vector3().subVectors(worldPos, camera.position).dot(_camDir) <= 0) return null;
   const p = worldPos.clone().project(camera);
-  const rect = viewportEl.getBoundingClientRect();
+  // Cached rect (v2.26): box and lasso select call this once per vertex, so
+  // this was a second sweep's worth of layout reads.
+  const rect = viewportRect();
   return { x: (p.x * 0.5 + 0.5) * rect.width, y: (1 - (p.y * 0.5 + 0.5)) * rect.height };
 }
 
@@ -23241,7 +23381,9 @@ function performRegionSelect(region) {
     // Same reasoning as pickObjectAt: a box or lasso must not sweep up
     // something that is not on screen.
     App.objects.filter(objectPickable).forEach(o => {
-      const box = new THREE.Box3().setFromObject(o.mesh);
+      // Box3.setFromObject reads geometry.boundingBox, which is a conservative
+    // OVER-estimate during an element drag - see growBounds (v2.26).
+    const box = new THREE.Box3().setFromObject(exactBounds(o.mesh.geometry) && o.mesh);
       const pts = [box.getCenter(new THREE.Vector3())];
       // Corners too, so a large object still registers when only part of it
       // falls inside the region.
@@ -35279,6 +35421,8 @@ function frameBox(box) {
 }
 
 function focusOnObject(obj) {
+  // Measured, not bounded: see growBounds (v2.26). Free unless a drag is live.
+  if (obj && obj.mesh && obj.mesh.geometry) exactBounds(obj.mesh.geometry);
   // Flying the camera to something invisible leaves you looking at nothing.
   if (!objectPickable(obj)) return;
   const box = new THREE.Box3().setFromObject(obj.mesh);
@@ -35727,6 +35871,10 @@ const camQuatSeen = new THREE.Quaternion(0, 0, 0, 0);
 function animate() {
   rafPending = 0;
   PERF.tick++;
+  /* The viewport rect cache lives one frame (v2.26). See viewportRect: a
+     stale rect is an offset pick, so it is dropped here rather than trusted
+     across anything that could have moved the element. */
+  _vpRect = null;
   /* THE RE-ARM IS IN A `finally`, and that is not defensive dressing. Until
      v2.1 the next frame was requested by the FIRST statement of this
      function, so a throw anywhere below still left a running loop and the
@@ -36122,6 +36270,13 @@ if (PICK_DEBUG) {
     loadBVH, setBVHEnabled, freshenBoundsTree, bvhWorthIt, maybeLoadBVH,
     refreshUI,
     bvhUsable, bvhDragging, bvhDraggingMesh, bvhBuildWhenIdle, settleShadingAfterDrag,
+    /* v2.26: the frame-cost three. `viewportRect` is here because a stale
+       rect is an offset pick, not a slow one, and a probe has to be able to
+       compare a cached pick against a freshly-measured one. */
+    viewportRect, invalidateViewportRect, growBounds, get viewportEl() { return viewportEl; },
+    exactBounds,
+    dragCtxPeek: () => dragCtx,
+    applyDeltaToSelection, pickVertexOnActive, applyShading, creaseSet, creaseKeyFor,
     BVH_MIN_TRIS, get bvhReady() { return !!_bvhAccel; },
     /* The app's OWN raycaster, not a fresh one: a fresh Raycaster would not
        carry params.Line2.threshold, so a probe using one would be firing a ray

@@ -109,7 +109,12 @@ if txt is None:
 # PASS into a FAIL, so a run with failures on both sides reported the browser's
 # count and quietly dropped the source checks from the total.
 sfails = len([x for x in STATIC if x.startswith('FAIL')])
-rfails = len([x for x in txt.split('\n') if x.startswith('FAIL')])
+# A THROW IS A FAILURE. Counting only lines that start with 'FAIL'
+# reported VERDICT=PASS for a run that threw in the middle - and a throw
+# is exactly the case where the remaining checks never ran.
+rfails = len([x for x in txt.split('\n')
+              if x.startswith('FAIL') or x.startswith('THREW')
+              or x.startswith('NO REPORT')])
 head = '\n'.join(STATIC) + '\n'
 txt = '\n'.join([x for x in txt.split('\n') if not x.startswith('VERDICT=')])
 total = sfails + rfails

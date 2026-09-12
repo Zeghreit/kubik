@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.25**
+- Version at time of writing: **2.26**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -51,6 +51,108 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Three things that cost a frame and did not have to (v2.26)
+
+None of these changes what the app does. All three are places where the work
+was proportional to the whole model and needed to be proportional to what
+changed - and each one had a way to be WRONG rather than merely slow, which is
+what the probe is mostly about.
+
+### 1. One layout read a frame instead of 24025
+
+`getBoundingClientRect` is a SYNCHRONOUS LAYOUT READ - the browser settles
+pending style and layout before answering. `worldToScreenPx` read it on every
+call, and the vertex and edge pick sweeps call that once per vertex. Measured:
+**25 vertex sweeps over 961 logical vertices came to 24025 layout reads; now the
+whole thing is 1.** `snapTargetAt` had already hoisted it by hand with the note
+"a dozen layout reads a frame" - that was the small case.
+
+`viewportRect()` caches it and **the cache is cleared every frame** in `animate`,
+plus on `resize`, `orientationchange` and `scroll`. Cleared rather than
+invalidated cleverly because a stale rect is not slow, it is an OFFSET PICK -
+every tap landing a few pixels from the finger. Review traced why it cannot go
+stale even so: `#viewport` is the only in-flow child of a fixed-position column,
+`#hdr` / `#inspector` / `#opBar` / `#matFly` are absolute INSIDE it, the drawer
+and scrim are fixed, and the drawer's transition is `transform` - so nothing the
+app itself does can move that box, and every window-level change that can fires
+one of the three events.
+
+### 2. The `wear` Map, built and thrown away
+
+`applyShading` built a Map of one entry per edge - 26574 of them on a character,
+on every frame of a drag - and the a2.75 gate 250 lines below then discarded the
+whole thing for any object wearing no shape mask, which is most of them. The gate
+moved up to where the Map is built (`needWear`), and took the crease lookup with
+it, since a crease has had no say in SHADING since a2.18 and is wear's alone.
+
+The two tests must agree or the list is built from an empty Map and the Edges
+mask silently paints nothing - so both read `wantsWear !== false`, the same
+expression, and `undefined` still means yes because nobody has asked yet.
+
+### 3. Bounds grown from what moved, not recomputed from everything
+
+`computeBoundingSphere` and `computeBoundingBox` ran on every drag frame, each
+walking EVERY vertex - 53148 on a character - to account for the twelve that
+moved. Measured on a 6400-vertex attribute: **0.280 ms for the pair, against
+0.0000 ms to grow.**
+
+**Not deferred to the settle, which is what the plan said to do.** The renderer
+culls against `boundingSphere`, so a sphere that no longer contains the mesh
+makes the object VANISH mid-drag when its stale, smaller sphere leaves the
+frustum. Grown instead, which is O(moved) and cannot be wrong in the direction
+that matters: bounds larger than the mesh make culling conservative, never
+incorrect. `settleShadingAfterDrag` recomputes both exactly when the gesture
+ends.
+
+**THE PROBE CAUGHT TWO REAL BUGS IN MY OWN FIRST CUT OF THIS, and both put a
+vertex outside the bounds:**
+
+- The bounds were built from the DOUBLE vector being stored, while the attribute
+  is Float32 and rounds - a vertex came back as 9.220000267 against a box max of
+  9.22, and `containsPoint` said no. `setLocal` now reads the value back out of
+  the attribute and accumulates that.
+- The radius was grown to reach `lo` and `hi`, the box's min and max. The
+  farthest point of a box from a given centre is one of its EIGHT corners, and
+  those are two of them: a vertex sat 0.02 outside the radius. The sphere is now
+  measured per point against its own centre, which is exact and cheaper than
+  testing eight corners.
+
+`py _mk226broken.py subtle` puts both back, and they are the reason that file
+exists.
+
+**And the bounds now say when they are only a bound.** Review found the safety
+here holds by an accident of timing rather than by design: eight places read
+these as a MEASUREMENT of the shape - box and lasso select, `focusOnObject`,
+Join, Duplicate, `contentScale`, the soft-selection radius, the edge-field bake,
+the occlusion tolerance - and not one of them can currently run between the first
+grown frame and the settle, each needing a pointer sequence or a confirm that
+ends the drag first. True, and luck. So `growBounds` sets
+`geo.userData.kubikBoundsGrown`, and **`exactBounds(geo)` is the one way to ask
+for the real thing** - free whenever they are already exact, which is every
+moment except the middle of an element drag. The two readers a pointer sequence
+can reach call it.
+
+### The probe
+
+`py _p226chk.py` - 22 checks in two halves. The running half counts real
+`getBoundingClientRect` calls by swapping in a counter (a direct measurement of
+the claim, not a proxy), asserts the cached rect equals a freshly measured one
+and that the same taps pick the same vertices either way, shades a cube with the
+wear flag on, off and back and compares NORMALS byte for byte, and drives a real
+drag through `beginDirectDrag` asserting after EVERY frame that the sphere and
+box contain every vertex. The source half checks the one claim a running probe
+cannot see: that the frame itself drops the cache.
+
+Two broken builds earn it: `py _mk226broken.py` (frame keeps a stale rect, the
+projector reads per call again, the two wear tests disagree, the settle stops
+recomputing - 8 failures, including the layout count coming back as 24026) and
+`subtle` (the two bounds bugs above - 2 failures). Suite: 35 of 35 outputs
+byte-identical.
+
+Reviewed by `fable` again, since this is numerical code with tolerances in it.
+No defects - and the observation above about the eight measurement readers came
+out of that pass.
 
 ## Raycasting goes through a BVH (v2.25)
 
