@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.27**
+- Version at time of writing: **2.28**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -51,6 +51,140 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## UV exists, as an optional channel (v2.28)
+
+This app had **no UV attribute anywhere, deliberately**, and said so in three
+places: the masks are triplanar in OBJECT space, the boolean narrows
+three-bvh-csg's attribute list to position and normal, and the importer dropped
+every texture because there was nothing to map one onto. That was right while
+there were no textures. It is what stopped a model from anyone else's tool
+looking like itself.
+
+`ed.uvs` is two numbers per ATTRIBUTE VERTEX, parallel to `ed.positions` and
+indexed the same way. Absent means no UV, which is every primitive.
+
+### NONE OF THE 52 OPERATIONS WAS MODIFIED, AND THAT IS THE WHOLE DESIGN
+
+There is one gate, in `rebuildFromEditable`, the function every op funnels
+through. UV survives every op that preserves the vertex set - transform, smooth,
+shade, symmetry, Clean up, Merge by distance - for free and correctly, and is
+dropped by every op that does not, out loud.
+
+**The first version of that gate was a length check, and review falsified it
+with a named case.** Dissolve edge, Dissolve vertex and Spin edge never touch
+`ed.positions` - they RE-FAN a face's outline from `L.logicalGroups[l][0]`, the
+lowest attribute index at each position, which after `separateGroupVertices`
+belongs to the lowest-numbered face touching that corner and so is usually a
+NEIGHBOUR's. The vertex count is unchanged, so a length check says "carry", and
+the merged face then samples the neighbour's texture island. Import a textured
+cube, dissolve the edge between the top and the front, and the merged face wears
+the side faces' texture, silently. **That is the exact failure this design calls
+worse than losing UV: the model keeps a texture and the texture is wrong.**
+
+So the gate is two questions, both exact:
+
+1. is the vertex count the same, and
+2. does every triangle still point at the **same attribute vertices**.
+
+UV is attached to attribute vertices, so (2) is the real question and (1) is its
+cheap prefix. `toEditable` stamps the index layout (`ed.uvIndexSig`) whenever it
+reads UV; `uvsStillValid` compares, exits on the first difference, and the
+reindexing ops hit it immediately. Exact rather than hashed, deliberately: a
+collision would say "the same" about two different index sets, which is the
+wrong direction to be wrong in.
+
+**An absent stamp means FRESHLY AUTHORED, not unknown.** The first cut read it
+as "cannot tell, refuse" - which dropped UV on import and took the whole version
+with it; the probe said so on the next run. Every editable that came out of a
+mesh carries the stamp, so the case the gate is for always has one.
+
+**`ed.uvsSafe` is an op saying "I reindexed and I checked".** Today that is Tris
+to quads alone, earned through `weldsAcrossSeam`. **That flag is the seed of
+stage 4** - the long job is teaching the other reindexing ops to set it honestly,
+one at a time.
+
+### What carries it
+
+`toEditable` → `separateGroupVertices` → `rebuildFromEditable`; the op snapshot
+(`captureObjectState`/`restoreObjectState` - forgetting it there would strip a
+texture on the first nudge of any slider, and on Cancel); the document
+(`serializeDoc`/`restoreDoc`, key absent when there is no UV so old files are
+byte-identical); the glTF reader (all-or-nothing across the primitives of one
+object, because padding a primitive with (0,0) maps it onto one texel and looks
+deliberate); `Separate` and `Split` (pure subsets with an explicit per-vertex
+remap, so two lines each); and the exporters, through `buildExportGroup`'s clone.
+
+A seam costs nothing here, and that is a decision taken for shading paying off:
+`separateGroupVertices` already gives every face private corners, so two faces
+meeting at a point can hold different UVs without anything being torn. That was
+listed as an open question for stage 4 and is already answered.
+
+### Not yet, and said out loud
+
+Join, Mirror-with-weld and Bisect build a brand-new object, so
+`rebuildFromEditable` has no UV to notice going - they lost a texture in
+**complete silence** until review found it. `noteUVLostFromSources` now says so.
+Bisect in particular lerps its new plane vertices and could lerp their UV by the
+same `t`; that is stage 4.
+
+The OBJ reader still does not parse `vt`. It dedupes each face's ring by WELDED
+POSITION, and UV is indexed separately in .obj, so doing it properly means
+keying the ring on (v, vt) - which the existing comment says Inset and Extrude
+depend on. Its own version.
+
+### Four more findings from review, all real
+
+- **Every primitive carried `BoxGeometry`'s UV.** Every object in the app starts
+  as `new THREE.BoxGeometry`, which ships a 24-entry `uv` - so "no primitive has
+  UV" was simply false. Consequences, all live: tapping Add Sphere toasted "lost
+  its UV map"; the first Bevel on the default cube did the same; and the default
+  scene's document grew a `uv` key, breaking the byte-identical promise above.
+  One line: `geo.deleteAttribute('uv')` in `createCubeObject`.
+- **The once-per-object toast was pinned for a whole slider drag.**
+  `restoreObjectState` rebuilds WITH the snapshot's UV, clearing the mark; the op
+  then rebuilds without it, setting it and toasting again. `toast` restarts its
+  own timer, so the message sat on screen for the entire drag - and was shown
+  even when the user pressed Cancel. The notice now waits for the commit
+  (`!App.pendingOp`).
+- **OBJ export wrote glTF-convention V.** glTF puts the texture origin at the
+  top-left and compensates with `flipY = false`; .obj puts it at the bottom-left,
+  and three's OBJExporter writes `vt u v` as it finds them. Import a textured
+  .glb, export .obj, open it in Blender with the same texture, and the texture is
+  vertically mirrored. `1 - v` is written on the export clone, for .obj only -
+  Blender's own glTF exporter does the same.
+- **`estimateDocBytes` did not count `uv`**, so a textured step was
+  under-counted by about a quarter against the 48 MB history cap.
+
+### Clean, with the evidence
+
+A plain `uv` attribute enters **no** shader program parameter for a Mesh in three
+0.184 (only `pointsUvs` and `uv1/2/3` via map channels), the mask patch never
+references `uv` or `vUv`, and the pool key is geometry-independent - so no model
+changes appearance by gaining UV. The BVH, the face map, `mergeDrawGroups` and
+`growBounds` are position-and-index only. `sameDocModel` handles the
+absent-vs-undefined `uv` key correctly, so no spurious undo step.
+
+### The probe
+
+`py _uvchk.py` - 47 checks. It does not ask "is there a uv attribute"; it asks
+whether the UV still describes the vertices, by construction (`u = x + 0.5`,
+asserted per vertex after every round trip). It drives the real import, a real
+vertex drag, a real subdivide, the real document round trip, the real op
+snapshot, the real export group, and **builds the reindex case by hand** - same
+vertex count, one triangle pointed at a neighbour's attribute vertex - to assert
+the old gate would have said "carry" and the new one says "drop".
+
+Two of my own checks were vacuous and the broken build said so: one translated
+in Z while the rule is on X, and one expected a positional rule to hold across
+two offset shells. Both now test what they claim. A third threw on the broken
+build and hid ten failures behind it, which is the hazard this file already had
+on record.
+
+`py _mkuvbroken.py` (the channel leaks in six places) and `wrong` (the gate
+opens the wrong way - the index comparison skipped, the length check skipped,
+primitives carrying box UV again) - 8 failures each. Suite: 35 of 35
+byte-identical.
 
 ## What a history step costs (v2.27)
 

@@ -2380,7 +2380,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.27</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.28</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -6517,6 +6517,17 @@ function dressFromPool(obj) {
 
 function createCubeObject(name, position) {
   const geo = new THREE.BoxGeometry(1, 1, 1);
+  /* AND ITS UV GOES (v2.28a, found in review). BoxGeometry ships a 24-entry uv
+     attribute, and every object in the app starts life as one of these - so the
+     claim that no primitive has UV was simply false. Three consequences, all
+     live: tapping Add Sphere built a box, replaced it with a UV-less primitive
+     and toasted "lost its UV map"; the first Bevel on the default cube did the
+     same; and the default scene's document grew a `uv` key, which is exactly
+     the byte-identical-document promise this version made.
+
+     Kubik's own primitives are textured triplanarly and have no use for a box
+     projection, so this is not a loss of anything. */
+  geo.deleteAttribute('uv');
   // A box arrives with its six faces already as six groups, in order.
   publishFacesFromGroups(geo);
   const mats = makeMaterialSet(faceCount(geo), DEFAULT_MATERIAL_COLOR);
@@ -8344,6 +8355,112 @@ function vecAt(ed, ai) {
   return new THREE.Vector3(ed.positions[ai * 3], ed.positions[ai * 3 + 1], ed.positions[ai * 3 + 2]);
 }
 
+/* ---------------- UV AS AN OPTIONAL CHANNEL (v2.28) -----------------------
+
+   Kubik had no UV attribute anywhere, on purpose, and said so in three places:
+   the mask system is triplanar in OBJECT space, the boolean narrows
+   three-bvh-csg's attribute list to position and normal, and the importer
+   dropped every texture because there was nothing to map them onto. That was
+   the right call while there were no textures. It is now what stops a model
+   that came out of anyone else's tool from looking like itself.
+
+   `ed.uvs` is a flat array of two numbers per ATTRIBUTE VERTEX, parallel to
+   `ed.positions` and indexed the same way: vertex `ai` is at `uvs[ai*2]`,
+   `uvs[ai*2+1]`. Absent means this mesh has no UV, which is most meshes and
+   every primitive.
+
+   NO OPERATION KNOWS ABOUT THIS, AND THAT IS THE WHOLE DESIGN.
+
+   There are 52 operations. Teaching each of them to carry UV is a long job
+   (it is stage 4 of the plan, and it has open questions in it - what a weld
+   does to a seam, what UV new extrude geometry should get). Stage 0 does not
+   need any of that, because the editable form already tells us what we need
+   to know: an operation that only MOVES vertices leaves `positions.length`
+   alone, and an operation that adds or removes geometry changes it.
+
+   A LENGTH CHECK ALONE WAS THE FIRST ANSWER AND IT WAS WRONG. Review named
+   the case: Dissolve edge, Dissolve vertex and Spin edge never touch
+   `ed.positions` at all - they RE-FAN a face's outline from
+   `L.logicalGroups[l][0]`, the lowest attribute index at each position, which
+   after separateGroupVertices belongs to the lowest-numbered face touching that
+   corner and so is usually a NEIGHBOUR's. The vertex count is unchanged, so a
+   length check says "carry", and the merged face then samples the neighbouring
+   face's texture island. Import a textured cube, dissolve the edge between the
+   top and the front, and the merged face wears the side faces' texture, with no
+   toast. That is the exact failure this whole design says is worse than losing
+   UV: the model keeps a texture and the texture is wrong.
+
+   So the gate is TWO questions, both exact:
+
+     1. is the vertex count the same, and
+     2. does every triangle still point at the SAME attribute vertices.
+
+   UV is attached to attribute vertices, so (2) is the real question and (1) is
+   just its cheap prefix. An op that moves vertices changes neither and keeps
+   its UV for free. An op that reindexes - dissolve, spin, bridge, revolve, fill
+   - changes (2) on its first triangle and loses UV out loud, which is the right
+   answer until it learns to carry one.
+
+   Exact rather than hashed, and deliberately: a hash collision would say "the
+   same" about two different index sets, which is the wrong direction to be
+   wrong in. The comparison exits on the first difference, and the ops that hit
+   it hit it immediately.
+
+   AND AN OP THAT KNOWS BETTER CAN SAY SO. `ed.uvsSafe` means "I reindexed, and
+   I checked that the UVs agreed wherever I did" - which today is Tris to quads
+   alone, through weldsAcrossSeam. That flag is the seed of stage 4: the long
+   job is teaching the other ops to set it honestly, one at a time. */
+
+function uvCountOf(ed) {
+  return (ed && ed.uvs) ? ed.uvs.length / 2 : 0;
+}
+
+/* Does this editable's UV still describe its vertices BY LENGTH. The cheap
+   prefix of the real question; see uvsStillValid. */
+function uvsMatch(ed) {
+  return !!(ed && ed.uvs && ed.uvs.length * 3 === ed.positions.length * 2);
+}
+
+/* Every triangle's attribute indices, in face order, as one flat array. Taken
+   by toEditable when there is UV to protect and compared on the way back. */
+function uvIndexSigOf(ed) {
+  let n = 0;
+  for (let i = 0; i < ed.groups.length; i++) n += ed.groups[i].triangles.length * 3;
+  const out = new Int32Array(n);
+  let at = 0;
+  for (let i = 0; i < ed.groups.length; i++) {
+    const ts = ed.groups[i].triangles;
+    for (let j = 0; j < ts.length; j++) {
+      const t = ts[j];
+      out[at++] = t[0]; out[at++] = t[1]; out[at++] = t[2];
+    }
+  }
+  return out;
+}
+
+/* THE REAL QUESTION. Same vertex count, and every triangle still pointing at
+   the same attribute vertices - or the op saying it reindexed safely. */
+function uvsStillValid(ed) {
+  if (!uvsMatch(ed)) return false;
+  if (ed.uvsSafe) return true;
+  /* NO STAMP MEANS FRESHLY AUTHORED, NOT UNKNOWN. The stamp is taken by
+     toEditable, so its absence says this editable was built from nothing -
+     an import, a Separate, a Split - and its UV was written FOR these exact
+     vertices a moment ago. There is nothing that could have reindexed since.
+
+     The first cut read the absence as "cannot tell, refuse", which dropped UV
+     on import and took the whole version with it. Every editable that came out
+     of a mesh carries the stamp, so the case this gate is for always has one. */
+  const sig = ed.uvIndexSig;
+  if (!sig) return true;
+  const now = uvIndexSigOf(ed);
+  if (now.length !== sig.length) return false;
+  for (let i = 0; i < now.length; i++) if (now[i] !== sig[i]) return false;
+  return true;
+}
+
+const UV_EPS = 1e-6;
+
 function toEditable(mesh) {
   /* THE BACKSTOP, AND IT THROWS ON PURPOSE (v2.14). Nothing should reach here
      with a curve: the ring hides the mesh tools when the selection is all
@@ -8370,7 +8487,21 @@ function toEditable(mesh) {
     for (let i = g.start; i < g.start + g.count; i += 3) triangles.push([index[i], index[i + 1], index[i + 2]]);
     return { triangles };
   });
-  return { positions, groups };
+  const ed = { positions, groups };
+  /* AND THE UV IF THERE IS ONE (v2.28). Read unconditionally and carried
+     unconditionally: an op that does not change the vertex set hands this
+     straight back and rebuildFromEditable puts it on the new geometry, which
+     is how transform, smooth and symmetry keep a texture without one line of
+     UV code in any of them. */
+  const uvAttr = geo.attributes.uv;
+  if (uvAttr && uvAttr.count === geo.attributes.position.count) {
+    ed.uvs = Array.from(uvAttr.array);
+    /* The index layout as it stands, so the rebuild can tell a MOVE from a
+       REINDEX. Only taken when there is UV to protect - an object without one
+       pays nothing for this. */
+    ed.uvIndexSig = uvIndexSigOf(ed);
+  }
+  return ed;
 }
 
 // Gives every face group its own private copy of the vertices it uses, so no
@@ -8380,7 +8511,17 @@ function toEditable(mesh) {
 // the same position are still welded logically (see computeLogicalOf), so
 // editing and the Shade Smooth overlay continue to treat them as one point.
 function separateGroupVertices(ed) {
+  /* AND THE UV COMES WITH EACH COPY (v2.28). This function is why a seam costs
+     nothing here: every face already gets private vertices, so two faces that
+     meet can hold different UVs at the same position without anything being
+     torn - which is the question the plan flagged as open for welding, already
+     answered by a decision taken for shading.
+
+     Carried only when the incoming UV actually describes the incoming
+     vertices. The check is in one place because every op ends up here. */
+  const withUV = uvsMatch(ed);          // length only; the caller decided
   const positions = [];
+  const uvs = withUV ? [] : null;
   const groups = ed.groups.map(g => {
     const remap = new Map();
     const triangles = g.triangles.map(tri => tri.map(vi => {
@@ -8388,13 +8529,16 @@ function separateGroupVertices(ed) {
       if (ni === undefined) {
         ni = positions.length / 3;
         positions.push(ed.positions[vi * 3], ed.positions[vi * 3 + 1], ed.positions[vi * 3 + 2]);
+        if (uvs) uvs.push(ed.uvs[vi * 2], ed.uvs[vi * 2 + 1]);
         remap.set(vi, ni);
       }
       return ni;
     }));
     return { triangles };
   });
-  return { positions, groups };
+  const out = { positions, groups };
+  if (uvs) out.uvs = uvs;
+  return out;
 }
 
 /* WHY THIS EXISTS. userData.finishes maps face-group index -> material-def
@@ -8485,7 +8629,8 @@ function reconcileFinishes(obj) {
    "the tube redrawing itself" from "something else rewrote this mesh". */
 let tubeRebuilding = false;
 
-function rebuildFromEditable(obj, edIn) {
+function rebuildFromEditable(obj, edInArg) {
+  let edIn = edInArg;
   /* A LIVE TUBE THAT SOMETHING ELSE REBUILT IS NOT A TUBE (v2.20a, found in
      review). Solidify, Array, Subdivide, Clean up and Flip all write straight
      into the mesh and left the link standing - so the next Component-mode tap
@@ -8495,9 +8640,25 @@ function rebuildFromEditable(obj, edIn) {
     delete obj.mesh.userData.kubikTube;
     delete obj.mesh.userData.kubikCurve;
   }
+  /* THE ONE PLACE THAT NOTICES UV COMING AND GOING (v2.28). Asked BEFORE the
+     separate, because after it the lengths always agree with each other and
+     the question is about what the OP handed back. */
+  const hadUV = !!(obj.mesh.geometry.attributes && obj.mesh.geometry.attributes.uv);
+  const keepUV = uvsStillValid(edIn);
+  /* Dropped HERE rather than inside the copy, so separateGroupVertices stays a
+     function about vertices and this stays the one place that decides. */
+  if (!keepUV && edIn.uvs) edIn = { positions: edIn.positions, groups: edIn.groups };
   const ed = separateGroupVertices(edIn);
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(ed.positions, 3));
+  /* Length-checked again on the way out, and not because separateGroupVertices
+     is untrusted: an editable with no groups copies no vertices, so `uvs` comes
+     back as an empty ARRAY rather than absent, and that set a uv attribute of
+     count zero - an attribute that exists and describes nothing, which is the
+     one state this whole gate exists to prevent. The broken build found it. */
+  if (ed.uvs && ed.uvs.length && ed.uvs.length * 3 === ed.positions.length * 2) {
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(ed.uvs, 2));
+  }
   const flatIndex = [];
   /* THE FACE MAP IS BUILT HERE, and this is the only place in the app where
      the face layout is born (v2.23). Everything downstream asks the map how
@@ -8554,6 +8715,31 @@ function rebuildFromEditable(obj, edIn) {
   // sees the finished group list and the finished material array together.
   reconcileFinishes(obj);
   applyShading(obj);
+  /* SAID OUT LOUD, ONCE PER OBJECT (v2.28). An op that changes the vertex set
+     cannot carry UV yet, and a texture that silently stops lining up is the
+     kind of thing you notice three edits later and cannot attribute to
+     anything. Once per object rather than once per op, because an op-slider
+     drag runs this function sixty times a second and a toast a frame is worse
+     than no toast at all. */
+  /* NOT WHILE A PREVIEW IS RUNNING (v2.28a, found in review). The once-per-
+     object guard was defeated every frame: restoreObjectState rebuilds WITH the
+     snapshot's UV, which cleared the mark, and then the op rebuilt without it,
+     which set it and toasted again. `toast` replaces its text and restarts its
+     timer, so the message was pinned on screen for the whole of a slider drag -
+     and shown even when the user then pressed Cancel, the one gesture that is
+     meant to change nothing at all.
+
+     An op-slider preview is not a loss until it is committed. pushHistory is
+     what commits, and rebuildFromEditable runs once more on the way there with
+     no pendingOp standing, so the notice still arrives - once. */
+  if (hadUV && !keepUV && !App.pendingOp && !obj.mesh.userData.kubikUVLost) {
+    obj.mesh.userData.kubikUVLost = true;
+    toast('"' + (obj.name || 'That object') + '" lost its UV map - that tool cannot carry one yet');
+  }
+  /* A rebuild that brought UV back (an undo, a reload, a cancel) clears the
+     mark so the next real loss is reported again - but NOT mid-preview, where
+     the snapshot restore would clear it sixty times a second. */
+  if (ed.uvs && !App.pendingOp) delete obj.mesh.userData.kubikUVLost;
 }
 
 // Finds the logical-vertex id sitting at a given local position, using the same
@@ -9535,6 +9721,22 @@ function buildSymmetryMap(obj, axis) {
 }
 
 // Builds a brand new object from a plain editable representation.
+/* SAID OUT LOUD FOR THE PATHS THAT BUILD A NEW OBJECT (v2.28a, found in
+   review). rebuildFromEditable can only notice a loss on an object that HAD
+   UV, and Join, Mirror-with-weld and Bisect hand it a mesh that was born a
+   moment ago - so a textured model went through them and came out untextured
+   without a word. Called by those ops with the sources they consumed. */
+function noteUVLostFromSources(srcObjs, madeObjs, what) {
+  const srcHad = (srcObjs || []).some(o => o && o.mesh && o.mesh.geometry &&
+                                           o.mesh.geometry.attributes.uv);
+  if (!srcHad) return;
+  const made = (madeObjs || []).filter(Boolean);
+  if (!made.length) return;
+  if (made.every(o => o.mesh.geometry.attributes.uv)) return;
+  made.forEach(o => { o.mesh.userData.kubikUVLost = true; });
+  toast((what || 'That tool') + ' cannot carry a UV map yet, so the result has none');
+}
+
 function createObjectFromEditable(name, position, ed, mats, smoothGroups) {
   const mesh = new THREE.Mesh(new THREE.BufferGeometry(), mats.length > 1 ? mats : mats[0]);
   mesh.position.copy(position);
@@ -9688,10 +9890,15 @@ function separateObject(obj) {
     // Each piece keeps only the vertices it actually uses, or the discarded
     // ones linger as orphan dots in Vertex mode.
     const seen = new Map(), compact = [];
+    /* AND THE UV WITH IT (v2.28a, found in review). This is a pure subset with
+       an explicit remap, so the UV moves by the same index and the result is
+       exact - which is what earns `uvsSafe` below. */
+    const compactUV = ed.uvs ? [] : null;
     const remap = v => {
       if (!seen.has(v)) {
         seen.set(v, compact.length / 3);
         compact.push(ed.positions[v * 3], ed.positions[v * 3 + 1], ed.positions[v * 3 + 2]);
+        if (compactUV) compactUV.push(ed.uvs[v * 2], ed.uvs[v * 2 + 1]);
       }
       return seen.get(v);
     };
@@ -9706,7 +9913,9 @@ function separateObject(obj) {
     if (!groups.length) continue;
 
     const part = createObjectFromEditable(obj.name + ' ' + (c + 1),
-      obj.mesh.position.clone(), { positions: compact, groups: groups }, mats, smooth);
+      obj.mesh.position.clone(),
+      { positions: compact, uvs: compactUV || undefined, uvsSafe: true, groups: groups },
+      mats, smooth);
     if (!part) continue;
     part.mesh.quaternion.copy(obj.mesh.quaternion);
     part.mesh.scale.copy(obj.mesh.scale);
@@ -9732,10 +9941,13 @@ function detachFacesOp(obj, groupIndices) {
 
   const groups = [], mats = [], smooth = {}, finishes = {};
   const seen = new Map(), compact = [];
+  // Same pure subset, same two lines - see separateObject (v2.28a).
+  const compactUV = ed.uvs ? [] : null;
   const remap = v => {
     if (!seen.has(v)) {
       seen.set(v, compact.length / 3);
       compact.push(ed.positions[v * 3], ed.positions[v * 3 + 1], ed.positions[v * 3 + 2]);
+      if (compactUV) compactUV.push(ed.uvs[v * 2], ed.uvs[v * 2 + 1]);
     }
     return seen.get(v);
   };
@@ -9750,7 +9962,9 @@ function detachFacesOp(obj, groupIndices) {
   if (!groups.length) return null;
 
   const part = createObjectFromEditable(obj.name + ' detached',
-    obj.mesh.position.clone(), { positions: compact, groups: groups }, mats, smooth);
+    obj.mesh.position.clone(),
+    { positions: compact, uvs: compactUV || undefined, uvsSafe: true, groups: groups },
+    mats, smooth);
   if (!part) return null;
   part.mesh.quaternion.copy(obj.mesh.quaternion);
   part.mesh.scale.copy(obj.mesh.scale);
@@ -12972,6 +13186,11 @@ function captureObjectState(obj) {  const ed = toEditable(obj.mesh);
   const mats = (Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material]).slice();
   return {
     positions: ed.positions.slice(),
+    /* AND THE UV (v2.28). This snapshot is what an op-slider drag restores from
+       on every frame and what Cancel restores from at the end, so forgetting it
+       here would strip a texture on the first nudge of a bar - and Cancel is
+       the one gesture that is meant to change nothing at all. */
+    uvs: ed.uvs ? ed.uvs.slice() : undefined,
     groups: ed.groups.map(g => ({ triangles: g.triangles.map(t => t.slice()) })),
     mats,
     smooth: { ...(obj.mesh.userData.smoothGroups || {}) },
@@ -13093,6 +13312,7 @@ function restoreObjectState(obj, st) {
   obj.mesh.userData.autoSmoothAngle = st.autoSmoothAngle;
   rebuildFromEditable(obj, {
     positions: st.positions.slice(),
+    uvs: st.uvs ? st.uvs.slice() : undefined,
     groups: st.groups.map(g => ({ triangles: g.triangles.map(t => t.slice()) }))
   });
 }
@@ -15348,7 +15568,21 @@ function pairTrisInEditable(ed, maxAngleDeg, matKeyOf, smoothOf) {
   });
 
   /* The mate's corners on this triangle's, wherever they weld - see the note
-     at the merge below for why that is what makes a quad a quad. */
+     at the merge below for why that is what makes a quad a quad.
+
+     AND NOT ACROSS A UV SEAM (v2.28). The remap makes the mate's corner BE the
+     partner's attribute vertex, which means it takes the partner's UV with it.
+     Two corners at the same position with different UVs are a seam - the file
+     saying "the texture restarts here" - and welding them smears one island's
+     mapping onto the other's corner. A seam runs along the EDGES of a quad
+     mesh rather than through a quad, so a real triangulated quad's own
+     diagonal never hits this; what it stops is a pairing that reaches across
+     one. Only asked when the mesh has UV at all. */
+  const uvSame = (a, b) => {
+    if (!ed.uvs) return true;
+    return Math.abs(ed.uvs[a * 2] - ed.uvs[b * 2]) <= UV_EPS &&
+           Math.abs(ed.uvs[a * 2 + 1] - ed.uvs[b * 2 + 1]) <= UV_EPS;
+  };
   const pairTriangles = (giA, giB) => {
     const tA = ed.groups[giA].triangles[0];
     const byLog = new Map();
@@ -15358,6 +15592,21 @@ function pairTrisInEditable(ed, maxAngleDeg, matKeyOf, smoothOf) {
       return byLog.has(l) ? byLog.get(l) : v;
     });
     return [tA.slice(), tB];
+  };
+  /* Would this pairing weld two corners whose UVs disagree? Asked before the
+     pair is scored, so a seam pairing never enters the running. */
+  const weldsAcrossSeam = (giA, giB) => {
+    if (!ed.uvs) return false;
+    const tA = ed.groups[giA].triangles[0];
+    const byLog = new Map();
+    tA.forEach(v => byLog.set(L.logicalOf[v], v));
+    const tB = ed.groups[giB].triangles[0];
+    for (let i = 0; i < tB.length; i++) {
+      const l = L.logicalOf[tB[i]];
+      const onto = byLog.get(l);
+      if (onto !== undefined && !uvSame(onto, tB[i])) return true;
+    }
+    return false;
   };
 
   /* HOW FAR THIS QUAD IS FROM A RECTANGLE, in degrees at its worst corner
@@ -15450,6 +15699,7 @@ function pairTrisInEditable(ed, maxAngleDeg, matKeyOf, smoothOf) {
     if (outlineUse.get(k) !== 2) return;
     const d = nrmOf.get(ga).dot(nrmOf.get(gb));
     if (d < cosLimit) return;
+    if (weldsAcrossSeam(ga, gb)) return;
     const shape = quadShape(ga, gb);
     if (shape === null) return;
     /* A HARD SHAPE LIMIT AS WELL AS A SOFT ONE. Scoring alone would still
@@ -15538,7 +15788,16 @@ function trisToQuadsOp(obj, maxAngleDeg) {
   else outgoing.forEach(mm => mm && mm.dispose());
   mesh.userData.smoothGroups = smoothGroups;
   mesh.userData.finishes = finishes;
-  rebuildFromEditable(obj, { positions: ed.positions, groups });
+  /* A REGROUPING KEEPS ITS UV (v2.28). Not one vertex moves here and not one
+     is added, so the UV still describes the positions exactly - and
+     pairTrisInEditable already refuses to weld two corners whose UVs disagree,
+     which is what keeps a pairing from reaching across a seam. */
+  /* `uvsSafe` IS THE OP SAYING SO, and it has earned it: pairTrisInEditable
+     refuses any pairing whose weld would join two corners with different UVs,
+     so every remap it did leave behind is between corners that agree. This
+     flag is the seed of stage 4 - the other reindexing ops get one when they
+     can defend it the same way. */
+  rebuildFromEditable(obj, { positions: ed.positions, uvs: ed.uvs, uvsSafe: true, groups });
   return pairs;
 }
 
@@ -15685,7 +15944,11 @@ function mergeByDistanceOp(obj, fraction) {
   mesh.userData.finishes = finishes;
   mesh.userData.creases = creases;
   mesh.userData.edgeShade = edgeShade;
-  rebuildFromEditable(obj, { positions: ed.positions, groups });
+  /* Merging by distance MOVES vertices onto their centroids and drops faces
+     that collapse; it adds none, so the UV still lines up (v2.28). Each face
+     keeps its own UV because separateGroupVertices gives it private corners -
+     which is why a weld here does not have to answer the seam question. */
+  rebuildFromEditable(obj, { positions: ed.positions, uvs: ed.uvs, groups });
   // What it threw away travels with what it did, so the toast can say so.
   mergeByDistanceOp.lastDropped = { tris: droppedTris, faces: droppedFaces };
   return merged;
@@ -25354,7 +25617,16 @@ function mirrorSelectedObjects(axis, apart) {
     const cuts = sp.lo < -sp.eps && sp.hi > sp.eps;
     let keep = src, cut = null;
     if (cuts) {
+      const bisectSrcUV = !!(src.mesh.geometry.attributes.uv);
       cut = bisectObject(src, plane, plane.distanceToPoint(camera.position) >= 0);
+      /* Bisect REBUILDS the cut object in place, and the new vertices it makes
+         on the plane are lerped - their UV could be lerped by the same t, which
+         is stage 4 work. Until then the loss is at least said (v2.28a). */
+      if (bisectSrcUV && cut && !src.mesh.geometry.attributes.uv &&
+          !src.mesh.userData.kubikUVLost) {
+        src.mesh.userData.kubikUVLost = true;
+        toast('Bisect cannot carry a UV map yet, so the result has none');
+      }
       if (cut) { keep = cut; cutCount++; }
     }
 
@@ -25384,7 +25656,9 @@ function mirrorSelectedObjects(axis, apart) {
     }
 
     const half = mirrorObject(keep, plane);
+    const mirrorSrc = [keep, half];
     const merged = combineObjectsInto([keep, half], src.name + ' sym', plane);
+    noteUVLostFromSources(mirrorSrc, [merged], 'Mirror');
     if (merged) {
       removeObjects(cut ? [src, cut, half] : [src, half]);
       created.push(merged.id);
@@ -26106,7 +26380,9 @@ function joinSelection() {
   const ids = Array.from(App.selectedObjectIds);
   if (ids.length < 2) { toast('Select 2+ objects to join'); return; }
   const objs = ids.map(id => findObject(id));
+  const joinSrc = objs.slice();
   const merged = combineObjectsInto(objs, objs[0].name + ' joined');
+  noteUVLostFromSources(joinSrc, [merged], 'Join');
   if (!merged) { toast('Nothing to join'); return; }
   removeObjects(objs);
   App.selectedObjectIds = new Set([merged.id]);
@@ -27402,6 +27678,11 @@ function serializeDoc() {
         scale: o.mesh.scale.toArray(),
         geometry: {
           position: Array.from(g.attributes.position.array),
+          /* UV ONLY WHEN THERE IS ONE (v2.28), so a document written by a
+             version that has never seen a UV is byte-identical to what it
+             wrote before - and a reader that does not know the key ignores it,
+             which is the migration convention this whole file uses. */
+          uv: g.attributes.uv ? Array.from(g.attributes.uv.array) : undefined,
           index: Array.from(g.index.array),
           /* ONE GROUP PER FACE ON DISK (v2.23), whatever the live geometry
              has merged them into. The file is the face list; merging is a
@@ -27693,6 +27974,11 @@ function restoreDoc(doc, opts = {}) {
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(od.geometry.position, 3));
+    /* Length-checked rather than trusted: a document can be hand-edited, and a
+       UV array that does not describe the positions is worse than none (v2.28). */
+    if (od.geometry.uv && od.geometry.uv.length * 3 === od.geometry.position.length * 2) {
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute(od.geometry.uv, 2));
+    }
     geo.setIndex(od.geometry.index);
     od.geometry.groups.forEach(gr => geo.addGroup(gr.start, gr.count, gr.materialIndex));
     /* A FILE STORES ONE GROUP PER FACE and always will - that is what makes a
@@ -28060,6 +28346,9 @@ function estimateDocBytes(d) {
     const g = o.geometry;
     if (g) {
       n += (g.position ? g.position.length * 8 : 0);
+      // UV is two thirds of the position array when there is one, and a step
+      // that carries it costs that (v2.28a, found in review).
+      n += (g.uv ? g.uv.length * 8 : 0);
       n += (g.index ? g.index.length * 8 : 0);
       n += (g.groups ? g.groups.length * 72 : 0);
     }
@@ -28857,6 +29146,13 @@ const IMPORT_PAIR_ANGLE = 30;
    snap to the wrong grid. */
 function editableFromImportedMeshes(meshes) {
   const positions = [];
+  /* UV, AND ALL-OR-NOTHING ACROSS THE MESHES THAT MAKE ONE OBJECT (v2.28).
+     A glTF object can be several primitives and they need not agree about
+     whether they have texture coordinates. Padding the ones that do not with
+     (0,0) would map a whole primitive onto one texel and look deliberate, so
+     an object where any part is missing UV gets none, and says so. */
+  const uvs = [];
+  let uvMissing = false;
   const tris = [];
   const matOfTri = [];
   /* material key -> the THREE material it came from (a2.69). The key is the
@@ -28879,6 +29175,16 @@ function editableFromImportedMeshes(meshes) {
        round-trip probe could not catch it. */
     for (let i = 0; i < pos.count; i++) {
       positions.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+    }
+    /* getX/getY over count for the same reason the comment above gives, and it
+       is the UV that made that reason concrete: an interleaved bufferView is
+       exactly where `array` stops meaning what it looks like. */
+    const uvAttr = geo.attributes.uv;
+    if (uvAttr && uvAttr.count === pos.count) {
+      for (let i = 0; i < uvAttr.count; i++) uvs.push(uvAttr.getX(i), uvAttr.getY(i));
+    } else {
+      uvMissing = true;
+      for (let i = 0; i < pos.count; i++) uvs.push(0, 0);
     }
     const n = (geo.index ? geo.index.count : pos.count) / 3;
     /* A NEGATIVE DETERMINANT INVERTS THE MODEL. applyMatrix4 transforms
@@ -28929,7 +29235,17 @@ function editableFromImportedMeshes(meshes) {
     if (!Number.isFinite(positions[i])) return null;
   }
   const groups = mergeCoplanarTriangles(positions, tris, ti => matOfTri[ti]);
-  return { positions, groups, triCount, matSrc };
+  const out = { positions, groups, triCount, matSrc };
+  /* A non-finite UV is a file saying nothing useful, and it would reach the
+     shader as a sampler read at an undefined texel. Dropped whole rather than
+     clamped: a clamp invents a mapping the file does not contain. */
+  if (!uvMissing && uvs.length * 3 === positions.length * 2) {
+    let ok = true;
+    for (let i = 0; i < uvs.length; i++) if (!Number.isFinite(uvs[i])) { ok = false; break; }
+    if (ok) out.uvs = uvs;
+  }
+  if (!out.uvs) out.uvPartial = uvMissing;
+  return out;
 }
 
 /* Meshes, gathered into the OBJECTS they belong to.
@@ -29851,7 +30167,7 @@ function landImport(built, label, skipped, rewound) {
       const id = matCtx.idFor(ed.matSrc && ed.matSrc.get(g.mat));
       if (id !== 'standard') applyFinish(obj.mesh.material[gi], id);
     });
-    rebuildFromEditable(obj, { positions: ed.positions, groups: ed.groups });
+    rebuildFromEditable(obj, { positions: ed.positions, uvs: ed.uvs, groups: ed.groups });
     made.push({ obj: obj, tris: ed.triCount, faces: ed.groups.length });
   });
 
@@ -29880,6 +30196,8 @@ function landImport(built, label, skipped, rewound) {
   focusOnAll();
   const tris = made.reduce((a, x) => a + x.tris, 0);
   const faces = made.reduce((a, x) => a + x.faces, 0);
+  const uvLanded = made.some(x => x.obj.mesh.geometry.attributes.uv);
+  const uvPartial = built.some(b => b.ed && b.ed.uvPartial);
   toast('Imported ' + made.length + (made.length === 1 ? ' object' : ' objects') +
     ' - ' + faces + ' faces from ' + tris + ' triangles' +
     /* Said out loud, because it changes what the model IS: a paired import
@@ -29896,7 +30214,12 @@ function landImport(built, label, skipped, rewound) {
     /* Turning a model inside out is the largest thing this importer does to
        a file, and doing it in silence is how "it looks wrong and I cannot
        say why" happens. */
-    (rewound ? '. Its normals said it was inside out, so it was re-wound' : ''));
+    (rewound ? '. Its normals said it was inside out, so it was re-wound' : '') +
+    /* SAID OUT LOUD, because it is the difference between a model that looks
+       like itself and one that does not, and because until v2.28 the answer was
+       always "no" and nobody could tell. */
+    (uvLanded ? '. UV came with it' : '') +
+    (uvPartial ? '. One part of it had no UV, so none of it kept any' : ''));
 }
 
 function wireImport() {
@@ -30006,9 +30329,34 @@ document.getElementById('btnExportGlb').addEventListener('click', exportGlbActio
 document.getElementById('btnExportObj').addEventListener('click', () => {
   if (!App.objects.length) { toast('Nothing to export'); return; }
   const group = buildExportGroup();
+  /* V IS FLIPPED FOR .obj AND ONLY FOR .obj (v2.28a, found in review).
+
+     glTF puts the texture origin at the TOP-left and compensates with
+     `flipY = false` on the texture; .obj puts it at the BOTTOM-left. three's
+     OBJExporter writes `vt u v` exactly as it finds them, so a UV that came in
+     through GLTFLoader went out upside down - import a textured .glb, export
+     .obj, open it in Blender with the same texture, and the texture is
+     vertically mirrored. Blender's own glTF exporter writes `1 - v` for this
+     same reason.
+
+     Done on the export CLONE and nowhere else: the glTF and STL paths build
+     their own group from buildExportGroup, so neither sees this. */
+  group.traverse(n => {
+    if (!n.isMesh) return;
+    const uv = n.geometry.attributes.uv;
+    if (!uv) return;
+    for (let i = 0; i < uv.count; i++) uv.setY(i, 1 - uv.getY(i));
+    uv.needsUpdate = true;
+  });
   const exporter = new OBJExporter();
   const data = exporter.parse(group);
-  downloadBlob([data], 'kubik-export.obj', 'text/plain', 'Exported .obj (geometry only)');
+  const anyUV = (function () {
+    let f = false;
+    group.traverse(n => { if (n.isMesh && n.geometry.attributes.uv) f = true; });
+    return f;
+  })();
+  downloadBlob([data], 'kubik-export.obj', 'text/plain',
+    anyUV ? 'Exported .obj with UV' : 'Exported .obj (geometry only)');
 });
 
 document.getElementById('btnExportStl').addEventListener('click', () => {
@@ -36502,6 +36850,11 @@ if (PICK_DEBUG) {
        replaced two stringifies, so a probe can prove it agrees with the string
        it used to build - on every kind of edit that was ever lost. */
     sameDocModel, deepSame, estimateDocBytes, trimHistory, serializeDoc, pushHistory,
+    /* v2.28: UV as a channel. uvsMatch is the gate the whole design rests on,
+       so a probe has to be able to ask it directly as well as drive it. */
+    uvsMatch, uvCountOf, toEditable, rebuildFromEditable, restoreDoc,
+    uvsStillValid, uvIndexSigOf, createCubeObject, separateObject, detachFacesOp,
+    captureObjectState, restoreObjectState, createObjectFromEditable,
     HISTORY_HARD_BYTES,
     undo, redo, findObject,
     HISTORY_MAX_STEPS, HISTORY_MAX_BYTES, HISTORY_MIN_STEPS,
