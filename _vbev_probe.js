@@ -40,7 +40,7 @@
       }
       return best;
     }
-    function faceCount(o) { return K.faceCount(o.mesh.geometry); }
+    function faceCount(o) { return k.faceCount(o.mesh.geometry); }
     function verts(o) {
       var topo = o.mesh.userData.topo, a = [];
       for (var l = 0; l < topo.logicalCount; l++) a.push(k.logicalPos(o, l));

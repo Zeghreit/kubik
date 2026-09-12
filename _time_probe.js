@@ -40,7 +40,7 @@
   }
   function selectAllFaces(o) {
     k.setMode('face');
-    var n = K.faceCount(o.mesh.geometry);
+    var n = k.faceCount(o.mesh.geometry);
     A.selectedElements = new Set();
     for (var i = 0; i < n; i++) A.selectedElements.add(i);
   }
@@ -116,7 +116,7 @@
        Rebuilt at a size big enough to matter but small enough to repeat. */
     var o2 = freshCube();
     subdivideOnce(o2); subdivideOnce(o2); subdivideOnce(o2);
-    log('2.mesh', tris(o2) + ' triangles, ' + K.faceCount(o2.mesh.geometry) + ' faces, ' +
+    log('2.mesh', tris(o2) + ' triangles, ' + k.faceCount(o2.mesh.geometry) + ' faces, ' +
       o2.mesh.userData.topo.logicalCount + ' vertices');
 
     var ed = null;
@@ -170,7 +170,7 @@
        It runs after every committed op and walks every material. */
     var tUI = timeIt(8, function () { k.refreshUI(); });
     log('4.refreshUI', ms(tUI) + ' on ' + tris(o3) + ' triangles / ' +
-      K.faceCount(o3.mesh.geometry) + ' faces');
+      k.faceCount(o3.mesh.geometry) + ' faces');
 
     /* ---- 5. And the picker, now that it raycasts ---- */
     k.setMode('vertex');

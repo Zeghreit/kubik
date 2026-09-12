@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.23**
+- Version at time of writing: **2.24**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -51,6 +51,126 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## A character from the pipeline opens (v2.24)
+
+`MESH_FACE_BUDGET` is **12000**, up from 4000, and the two things that earned
+that are both below the number rather than in it.
+
+- v2.23 decoupled a face from a draw group, so 12000 faces of one material
+  cost a handful of draw calls instead of 12000.
+- `landImport` now PAIRS before it counts. Everything out of a real pipeline is
+  quads and every exporter triangulates them, so a 5148-quad character used to
+  arrive as 10296 single-triangle faces and the budget was being asked about a
+  number the file never had.
+
+Measured, on a 95x95 triangulated dome (18050 loose triangles, the shape of the
+8858-quad worst real case with room over): **9025 faces, 9025 of 9025 possible
+pairs, 188 ms for the pairing, 445 ms for the whole `landImport`, 1 draw run, 3
+draw calls a frame.** It refuses at 16900 with the number and the limit, and it
+says "(9025 quads recovered)" in the toast, because a paired import can be loop
+cut and a triangle soup cannot.
+
+### Two budgets, and which is which
+
+- `OP_FACE_BUDGET` = **4000** — what an op may BUILD, because it is rebuilt on
+  every frame of a slider drag. Read by `booleanBuild` and by `revolveSweep`
+  (so Lathe, Revolve) and `tubeCurveOp`.
+- `MESH_FACE_BUDGET` = **12000** — what the app may HOLD. Read by `landImport`
+  and by `subdivideOp`, which is the one op that multiplies an existing face
+  count. 4000 there would refuse a cube taken to level five (6144 faces), which
+  has always worked.
+
+The name used to be `IMPORT_FACE_BUDGET`. It was renamed when Subdivide started
+reading it: it is a ceiling on the mesh, not a fact about importing.
+
+### PAIRING IS SCORED ON TWO ANGLES, AND THAT IS THE WHOLE CORRECTNESS STORY
+
+`pairTrisInEditable(ed, maxAngleDeg, matKeyOf, smoothOf)` takes candidates
+**best-first**, and "best" is `faceAngle + shapeError`, both in degrees:
+
+- **face angle** — how far out of plane the two triangles are. Limit
+  `IMPORT_PAIR_ANGLE` on import, the bar's own slider in Tris to quads.
+- **shape error** — how far the merged quad's WORST corner is from 90 degrees.
+  Hard limit `MAX_QUAD_SHAPE_DEG` = 40.
+
+v2.24 shipped nothing; the version that existed for about an hour scored on
+flatness ALONE, and review killed it. **Flatness does not identify the quad an
+exporter split.** On any surface that bends along a strip more than it bends
+inside one quad — a cylinder, an arm, a leg, so nearly all of a character — the
+pairing ACROSS the boundary between two quads is flatter than either quad's own
+diagonal, and flattest-first takes it. Two quads come back as three faces: one
+straddling both, two loose triangles, one real edge gone from the topology and
+a triangulation diagonal standing permanently in its place. The review's
+counterexample is check `4d.strip` in the probe, and the v2.24-as-found build
+(`py _mkv224broken.py v224`) fails it.
+
+Blender has had both angles since forever (Max Face Angle, Max Shape Angle) and
+scores on the pair. The shape term is what tells them apart: the quad the
+exporter split has corners near 90, the pairing across its boundary is a skewed
+kite with a corner nearer 45.
+
+### AND `IMPORT_PAIR_ANGLE` MUST STAY BELOW `SHARP_ANGLE`
+
+`IMPORT_PAIR_ANGLE` is **30**. `SHARP_ANGLE` is **33**, and it is the same
+quantity measured the same way — `applyShading` draws an edge as a hard crease
+when the faces either side of it turn by more than that. Any fold between the
+two numbers is simultaneously a pairing candidate and an edge the app itself
+would have drawn sharp, and **pairing dissolves it for good**: an edge exists in
+this topology only while its triangles are in different groups, so a merged
+crease is not merely unshaded, it is gone from `topo.edges` and cannot be
+selected, creased, bevelled or split. It was 40 for one version; that was the
+defect. The probe asserts the relation (`1.boot`), not the number.
+
+### The rest of the pass
+
+- Runs between the non-finite-coordinate guard and the face check, and
+  `faceTotal` is recounted after it.
+- Short-circuits above `MESH_FACE_BUDGET * 2`: a perfect matching is the best
+  the pass can do and it halves the count, so a file past twice the ceiling is
+  refused whichever way the pairing goes. A 39000-facet scanned .stl is inside
+  the triangle budget and is exactly this case — without this it froze for
+  seconds and then said no.
+- Carries materials across by `srcOf`, asking the FILE's material key
+  (`ed.groups[gi].mat`). Losing that carry-over is the cheapest mistake here:
+  the model still lands, right shape, uniformly one colour, and no face count
+  notices. Probe check `4c.carry`.
+- A `{ why }` back is not a refusal on import — it means nothing paired, and the
+  mesh lands exactly as it did before v2.24.
+- Orphaned vertices are fine. `pairTriangles` remaps the mate's corners onto
+  its partner's where they weld, stranding duplicates — and `rebuildFromEditable`
+  → `separateGroupVertices` rebuilds `positions` from the groups, so no orphan
+  ever reaches the geometry. The recentring min/max sweep sees them and they are
+  coincident duplicates, so the bounding box is unchanged.
+
+### Known and deliberately not fixed here
+
+- **History at 12000 faces is heavy.** 60 full `serializeDoc` snapshots, and
+  `modelSig` does two full `JSON.stringify` per commit — roughly 9 MB of
+  transient string and 100-200 ms per operation at this size, with ~270 MB
+  retained. Autosave already degrades honestly (a once-per-session toast,
+  "Too big to keep in the browser - use Download .json"). The history cost is
+  the next thing to cut, and it is its own version.
+- **A triangle-native mesh gets regrouped.** .stl is always triangle soup, and
+  so is a collapse-style decimator's output. Pairing turns it into quads that
+  nobody authored. With the shape term it picks sensible ones, but it is still
+  a change the file did not ask for. Opting out per-format is a decision, not
+  a fix — raise it before building one.
+
+### The probe
+
+`py _v224chk.py` — 59 checks in 12 sections, two halves. The running half
+drives the real `landImport`, `pairTrisInEditable`, `latheCurveOp`,
+`subdivideOp` and `tubeCurveOp`; the source half checks which constant each
+site reads and that pairing happens before the count, because a running probe
+sees one site at a time. Three broken builds earn it:
+`py _mkv224broken.py` (9 breaks -> 16 failures),
+`late` (5 -> 6) and `v224` (5 -> 9, the version review found).
+
+Two of the source checks give a FALSE GREEN on their own — breaking
+`if (bands > OP_FACE_BUDGET)` into `if (false)` leaves the constant's name in
+the dead block's refusal string, so the text search still finds it. That is why
+section 11 drives both of those refusals for real.
 
 ## A face and a draw group are two different things (v2.23)
 

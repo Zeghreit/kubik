@@ -16,7 +16,7 @@
     return o;
   }
   function tris(o) { return o.mesh.geometry.index.count / 3; }
-  function faces(o) { return K.faceCount(o.mesh.geometry); }
+  function faces(o) { return k.faceCount(o.mesh.geometry); }
   function mats(o) { return Array.isArray(o.mesh.material) ? o.mesh.material.length : 1; }
   function bbox(o) {
     var b = new THREE.Box3().setFromBufferAttribute(o.mesh.geometry.attributes.position);

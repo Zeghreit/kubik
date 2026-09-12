@@ -2380,7 +2380,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.23</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.24</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -6065,8 +6065,10 @@ function objectSide(mesh) {
 
    "One face, one geometry.group" held from the first day, and it cost one
    draw call per face: a character at 8858 faces is 8858 draw calls a frame,
-   which is the whole reason IMPORT_FACE_BUDGET sits at 4000 and refuses every
-   model that comes out of a real pipeline.
+   which is the whole reason MESH_FACE_BUDGET sat at 4000 and refused every
+   model that comes out of a real pipeline. (v2.24 is what raised it, once
+   this was in place and the importer had stopped counting every triangle as
+   a face.)
 
    The fix is NOT to merge faces. An edge exists in this app's topology only
    because its two triangles belong to DIFFERENT groups - computeTopology
@@ -10958,6 +10960,23 @@ function revolveSweep(ed, mats, profile, o) {
     return { ok: false, why: 'the whole profile lies on the axis - there is nothing to sweep' };
   }
 
+  /* THE BUDGET BELONGS HERE, not in one of the two callers (v2.24a, found in
+     review). v2.24 switched tubeCurveOp to OP_FACE_BUDGET and left
+     latheCurveOp with no face budget at all - it never had one - so a 40-point
+     profile at 32 segments laid about 41000 faces from one op, rebuilt in full
+     on every frame of the sweep-angle drag. Revolve on a mesh profile reaches
+     the same loop and had the same hole.
+
+     Counted before the loop rather than after it, because the whole point is
+     not to build it: this is the exact number of bands the loop below lays,
+     and a pole only turns a quad into a triangle rather than removing a
+     face. */
+  const bands = segs * (closed ? profile.length : Math.max(0, profile.length - 1));
+  if (bands > OP_FACE_BUDGET) {
+    return { ok: false, why: bands + ' faces - too many to edit (limit ' +
+      OP_FACE_BUDGET + '). Fewer segments, or a simpler profile.' };
+  }
+
   const stepAng = (sweepDeg * Math.PI / 180) / segs * (dir < 0 ? -1 : 1);
 
   /* WHICH POINTS ARE POLES, and the second term is the one that matters.
@@ -11239,6 +11258,29 @@ function subdivideOp(obj, mode) {
   const logLoops = loops.map(lp => lp.map(a => L.logicalOf[a]));
   const posOf = l => vecAt(ed, L.logicalGroups[l][0]);
   if (!loops.some(lp => lp.length >= 3)) return false;
+
+  /* AND A BUDGET, because this is the op that MULTIPLIES (v2.24a, found in
+     review). Raising the import ceiling to 12000 without one left the
+     asymmetry backwards: Boolean was refused at 4000 on an object that
+     Subdivide would happily take from 11000 faces to 44000 - with a 44000
+     entry material array, a history snapshot to match, and a stepper whose
+     next press recomputes from the snapshot at that size.
+
+     One quad per corner is exactly what this op lays, so the result is known
+     before any of it is built. Counted per level, so a stepper that crosses
+     the line on its third press is refused on the third press and keeps the
+     two that fit.
+
+     THE HOLD CEILING, not the per-frame one. A sweep is rebuilt on every
+     frame of a slider drag and is held to 4000; a subdivision happens once
+     per press of the stepper, which is a commit-shaped cost, and 4000 would
+     refuse a cube taken to level five - 6144 faces - which has always
+     worked. */
+  const willBe = loops.reduce((a, lp) => a + (lp.length >= 3 ? lp.length : 1), 0);
+  if (willBe > MESH_FACE_BUDGET) {
+    return refuseOp(willBe + ' faces after this level - too many to edit (limit ' +
+      MESH_FACE_BUDGET + ')', false);
+  }
 
   const creases = creaseSet(obj);
   const edgeIsCreased = (a, b) => !!creases[creaseKeyFor(posOf(a), posOf(b))];
@@ -14922,6 +14964,14 @@ function circularizeSelection() {
 
    What IS missing is the other direction. */
 
+/* HOW FAR OUT OF SQUARE A PAIR MAY BE AND STILL BE CALLED A QUAD (v2.24a).
+   Blender's own Max Shape Angle defaults to 40 and this is the same quantity,
+   measured at the worst corner. Wider than that and the pair is a sliver or a
+   dart, which is worse for the ops that consume a quad - the ring walk, inset
+   and bevel all step along its sides - than the two honest triangles it came
+   from. */
+const MAX_QUAD_SHAPE_DEG = 40;
+
 /* TRIS TO QUADS, and the whole of it is a REGROUPING - not one vertex moves,
    not one triangle is made or destroyed. Two single-triangle faces that share
    an edge become one two-triangle face, and the shared edge stops being an
@@ -14933,13 +14983,21 @@ function circularizeSelection() {
    four-sided faces"), so an imported mesh of single triangles cannot be loop
    cut at all. Pairing them is what turns an import from something you can
    look at into something you can edit. */
-function trisToQuadsOp(obj, maxAngleDeg) {
-  const mesh = obj.mesh;
-  const ed = toEditable(mesh);
-  const srcMats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-  const srcSmooth = mesh.userData.smoothGroups || {};
-  const srcFinish = mesh.userData.finishes || {};
-  if (ed.groups.length < 2) return refuseOp('there is nothing here to pair up', 0);
+/* ЯДРО ПАРЫ, на одной editable-форме и ничего больше (v2.24). Выделено из
+   trisToQuadsOp, потому что импортёру оно нужно ДО того, как меш существует:
+   бюджет граней проверяется на том, что приземляется, а приземляться должны
+   квады, а не по грани на треугольник.
+
+   `matKeyOf(gi)` и `smoothOf(gi)` - то, чем вызывающий отвечает на «это одна
+   и та же поверхность?». У меша это finishes и smoothGroups; у импорта -
+   ключ материала из файла, и затенения там ещё нет вовсе.
+
+   Возвращает новый список групп и, для каждой новой группы, номер СТАРОЙ, из
+   которой она пришла - чтобы материалы переносил вызывающий, тем способом,
+   которым он их и носит. Отказ приходит значением `{ why }`, а не через
+   глобальную opRefusal: у импорта нет бара, которому её показывать. */
+function pairTrisInEditable(ed, maxAngleDeg, matKeyOf, smoothOf) {
+  if (ed.groups.length < 2) return { why: 'there is nothing here to pair up' };
   const L = edLogical(ed);
   const cosLimit = Math.cos(THREE.MathUtils.clamp(maxAngleDeg, 0, 89) * Math.PI / 180);
 
@@ -14947,7 +15005,7 @@ function trisToQuadsOp(obj, maxAngleDeg) {
   // an n-gon is a statement somebody made, and pairing it would undo that.
   const single = [];
   ed.groups.forEach((g, gi) => { if (g.triangles.length === 1) single.push(gi); });
-  if (single.length < 2) return refuseOp('every face here is already more than one triangle', 0);
+  if (single.length < 2) return { why: 'every face here is already more than one triangle' };
 
   const nrmOf = new Map();
   single.forEach(gi => {
@@ -15004,6 +15062,44 @@ function trisToQuadsOp(obj, maxAngleDeg) {
     return [tA.slice(), tB];
   };
 
+  /* HOW FAR THIS QUAD IS FROM A RECTANGLE, in degrees at its worst corner
+     (v2.24a, forced by review).
+
+     Flatness alone does NOT identify the quad an exporter triangulated, and
+     the comment that said it did was wrong. On any surface that bends along a
+     strip more than it bends inside one quad - a cylinder, an arm, a leg, so
+     nearly all of a character - the pairing ACROSS the boundary between two
+     quads is flatter than either quad's own diagonal, and flattest-first
+     takes it. The result is still a clean quad, so nothing downstream
+     complains: one real edge is gone from the topology and a triangulation
+     diagonal is now a permanent edge in its place, and the loop the ring walk
+     then finds runs through a tiling nobody asked for.
+
+     The missing half is the shape. Blender's own Tris to Quads has had both
+     angles since forever - Max Face Angle for how flat the pair is and Max
+     Shape Angle for how square the result is - and scores on the pair of
+     them. It is the shape term that tells the two apart: the quad the
+     exporter split has corners near 90 degrees, while the pairing across its
+     boundary is a skewed kite with a corner nearer 45.
+
+     Measured at the WORST corner rather than the average, because one bad
+     corner is what makes a quad unusable for the ops that consume it - the
+     ring walk, inset and bevel all step along its sides. */
+  const shapeErrDeg = (lp) => {
+    let worst = 0;
+    for (let i = 0; i < lp.length; i++) {
+      const a = vecAt(ed, lp[(i + lp.length - 1) % lp.length]);
+      const b = vecAt(ed, lp[i]);
+      const c = vecAt(ed, lp[(i + 1) % lp.length]);
+      const u = a.clone().sub(b), v = c.clone().sub(b);
+      if (u.lengthSq() < 1e-18 || v.lengthSq() < 1e-18) return 180;
+      const ang = u.angleTo(v) * 180 / Math.PI;
+      const off = Math.abs(ang - 90);
+      if (off > worst) worst = off;
+    }
+    return worst;
+  };
+
   /* AND THEN PROVE IT, with the very function that will later consume it.
      The op's whole purpose is to produce faces whose outline has four sides,
      because that is what edgeLoopOp's ring walk steps through - so asserting
@@ -15012,20 +15108,30 @@ function trisToQuadsOp(obj, maxAngleDeg) {
      out as a face with NO outline at all; a folded pair wound inconsistently
      comes out with a three-entry loop over four corners, which is not
      loop-cuttable and tears the next time anything builds a rim from it. */
-  const isCleanQuad = (giA, giB) => {
+  /* Returns the shape error in degrees, or null when the pair is not a clean
+     quad at all - one call instead of two, because building the trial group
+     is the expensive part and both answers come off the same outline. */
+  const quadShape = (giA, giB) => {
     ed.groups.push({ triangles: pairTriangles(giA, giB) });
     let lp = null;
     try { lp = getGroupBoundaryLoopAttr(ed, ed.groups.length - 1); }
     catch (e) { lp = null; }
     ed.groups.pop();
-    return !!lp && lp.length === 4 && new Set(lp).size === 4;
+    if (!lp || lp.length !== 4 || new Set(lp).size !== 4) return null;
+    return shapeErrDeg(lp);
   };
 
-  /* Every pairing worth considering, scored by how flat it is. Greedy on the
-     flattest first rather than first-come: a triangle usually has two or
-     three willing partners and taking whichever came up first leaves the
-     better pairing with nobody, which is how a curved surface ends up half
-     quads and half stripes. */
+  /* Every pairing worth considering, scored on BOTH angles and taken best
+     first. Greedy rather than first-come for the reason it always was - a
+     triangle usually has two or three willing partners, and taking whichever
+     came up first leaves the better pairing with nobody - and on both terms
+     rather than flatness alone for the reason in the note above: flatness on
+     its own picks the wrong partner on every curved strip.
+
+     The two are summed in degrees, which is crude and is the point: they are
+     the same unit and neither is allowed to dominate. A pair that is 5
+     degrees out of plane and 40 out of square loses to one that is 20 and 5,
+     which is the judgement a person makes looking at it. */
   const cands = [];
   atEdge.forEach((gs, k) => {
     if (gs.length !== 2) return;          // a clean manifold pair, or nothing
@@ -15035,25 +15141,33 @@ function trisToQuadsOp(obj, maxAngleDeg) {
        is the app's own answer to "are these the same material" - it is the
        library id reconcileFinishes derives from the stamp - and two faces
        with no entry are equally the same. */
-    if (srcFinish[ga] !== srcFinish[gb]) return;
+    if (matKeyOf(ga) !== matKeyOf(gb)) return;
     /* AND THE SAME SHADING. smoothGroups is a separate per-group map that
        the finishes guard says nothing about, and `add` keeps only the lower
        group's flag - so pairing a smooth face with a flat one let group
        ORDER decide which shading survived. */
-    if (!!srcSmooth[ga] !== !!srcSmooth[gb]) return;
+    if (smoothOf(ga) !== smoothOf(gb)) return;
     // Exactly two faces on this edge over the WHOLE mesh, not just two
     // triangles: a triangle meeting a quad is not a pair to merge.
     if (outlineUse.get(k) !== 2) return;
     const d = nrmOf.get(ga).dot(nrmOf.get(gb));
     if (d < cosLimit) return;
-    if (!isCleanQuad(ga, gb)) return;
-    cands.push({ ga, gb, k, d });
+    const shape = quadShape(ga, gb);
+    if (shape === null) return;
+    /* A HARD SHAPE LIMIT AS WELL AS A SOFT ONE. Scoring alone would still
+       take a 70-degree sliver when it is the only candidate left, and a
+       sliver quad is worse than the two honest triangles it came from:
+       inset and bevel both build their rim from the outline. */
+    if (shape > MAX_QUAD_SHAPE_DEG) return;
+    const faceDeg = Math.acos(Math.min(1, Math.max(-1, d))) * 180 / Math.PI;
+    cands.push({ ga, gb, k, d, shape, err: faceDeg + shape });
   });
   if (!cands.length) {
-    return refuseOp('nothing here is flat enough to pair at ' + Math.round(maxAngleDeg) +
-      '° - widen it, or the faces already are quads', 0);
+    return { why: 'nothing here pairs into a clean quad at ' + Math.round(maxAngleDeg) +
+      '° - widen it, or the faces already are quads' };
   }
-  cands.sort((x, y) => y.d - x.d);
+  // Stable on a tie, so a regular tessellation does not depend on Map order.
+  cands.sort((x, y) => (x.err - y.err) || (x.ga - y.ga) || (x.gb - y.gb));
 
   const takenBy = new Map();     // group -> its partner
   cands.forEach(c => {
@@ -15061,15 +15175,13 @@ function trisToQuadsOp(obj, maxAngleDeg) {
     takenBy.set(c.ga, c.gb);
     takenBy.set(c.gb, c.ga);
   });
-  if (!takenBy.size) return refuseOp('nothing could be paired', 0);
+  if (!takenBy.size) return { why: 'nothing could be paired' };
 
-  const groups = [], mats = [], smoothGroups = {}, finishes = {};
+  const groups = [], srcOf = [];
   const add = (triangles, srcGi) => {
     const gi = groups.length;
     groups.push({ triangles });
-    mats.push(cloneMat(srcMats[srcGi] || srcMats[0]));
-    if (srcSmooth[srcGi]) smoothGroups[gi] = true;
-    if (srcFinish[srcGi] !== undefined) finishes[gi] = srcFinish[srcGi];
+    srcOf.push(srcGi);
     return gi;
   };
   const done = new Set();
@@ -15101,6 +15213,25 @@ function trisToQuadsOp(obj, maxAngleDeg) {
       done.add(gi);
       add(g.triangles.map(t => t.slice()), gi);
     }
+  });
+  return { groups: groups, srcOf: srcOf, pairs: pairs };
+}
+
+function trisToQuadsOp(obj, maxAngleDeg) {
+  const mesh = obj.mesh;
+  const ed = toEditable(mesh);
+  const srcMats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  const srcSmooth = mesh.userData.smoothGroups || {};
+  const srcFinish = mesh.userData.finishes || {};
+  const core = pairTrisInEditable(ed, maxAngleDeg,
+    (gi) => srcFinish[gi], (gi) => !!srcSmooth[gi]);
+  if (core.why) return refuseOp(core.why, 0);
+  const groups = core.groups, pairs = core.pairs;
+  const mats = [], smoothGroups = {}, finishes = {};
+  core.srcOf.forEach((srcGi, gi) => {
+    mats.push(cloneMat(srcMats[srcGi] || srcMats[0]));
+    if (srcSmooth[srcGi]) smoothGroups[gi] = true;
+    if (srcFinish[srcGi] !== undefined) finishes[gi] = srcFinish[srcGi];
   });
 
   const outgoing = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
@@ -26384,13 +26515,15 @@ function booleanBuild(objs, kind) {
   const ed = editableFromCSGResult(res);
   if (ed && ed.why) return { ok: false, why: ed.why };
   if (!ed || !ed.groups.length) return { ok: false, why: 'That boolean leaves nothing behind' };
-  /* THE SAME BUDGET THE IMPORTER HAS, for the same reason: every face is a
-     geometry group, a material and a draw call, and a boolean can multiply
-     them the way a scanned mesh does. Counted after the merge, because
-     before it there is nothing to count. */
-  if (ed.groups.length > IMPORT_FACE_BUDGET) {
+  /* THE OP BUDGET, not the importer's (v2.24). It used to be one number for
+     one reason - every face a draw call - and a boolean can multiply faces
+     the way a scanned mesh does. The draw-call part is gone since v2.23, but
+     a boolean result arrives as loose triangles with no pairing pass behind
+     it, so the face count it lands is the face count it keeps. Counted after
+     the merge, because before it there is nothing to count. */
+  if (ed.groups.length > OP_FACE_BUDGET) {
     return { ok: false, why: ed.groups.length + ' faces - too many to edit (limit ' +
-                            IMPORT_FACE_BUDGET + ')' };
+                            OP_FACE_BUDGET + ')' };
   }
 
   const outMats = ed.groups.map(g => {
@@ -28012,15 +28145,56 @@ function mergeCoplanarTriangles(positions, tris, matOf) {
    kinder answer, and it says the number so you know what to decimate to. */
 const IMPORT_TRI_BUDGET = 40000;
 
-/* AND A FACE BUDGET, because triangles are not what costs. On any smooth or
-   scanned mesh neighbouring triangles differ by well over a degree, so the
-   merge yields close to one face per triangle - and every face is a geometry
-   group, a MeshStandardMaterial and a draw call. A 12k-triangle bust sits
-   comfortably inside the triangle budget and lands 12k materials that
-   ensureMaskPatches then walks on every refreshUI for the rest of the
-   session. Checked AFTER the merge, because before it there is nothing to
-   count. */
-const IMPORT_FACE_BUDGET = 4000;
+/* AND A FACE BUDGET - THE NUMBER OF FACES THIS APP CAN HOLD AND STILL BE AN
+   EDITOR. Triangles are not what costs. On any smooth or scanned mesh
+   neighbouring triangles differ by well over a degree, so the coplanar merge
+   yields close to one face per triangle.
+
+   Named for the mesh rather than for the importer since v2.24a: it is the
+   ceiling on what the app carries, so the importer checks it and so does
+   Subdivide, which is the one op that multiplies an existing face count.
+
+   12000 SINCE v2.24, up from 4000, and the two changes that earned it are
+   both below the number rather than in it. v2.23 decoupled a face from a
+   draw group, so 12000 faces of one material are a handful of draw calls
+   instead of 12000. And the pairing pass in landImport restores the quads
+   the exporter triangulated, so the budget is asked about the face count the
+   FILE had - 8858 for the heaviest character in the pipeline - and not about
+   twice that. 12000 is that worst real case plus a third.
+
+   What is left at this number is honest and measured: a 12000-entry material
+   array that ensureMaskPatches walks on every refreshUI, and history
+   snapshots that carry all of it. Both are per-commit, not per-frame. */
+const MESH_FACE_BUDGET = 12000;
+
+/* AND A SEPARATE, SMALLER ONE FOR THE OPS THAT GENERATE FACES (v2.24).
+   Boolean and the curve sweeps borrowed the importer's budget because the
+   reason was the same one. It is not the same reason any more: an import
+   happens once and is then edited, while a sweep re-runs rebuildFromEditable
+   on every frame of a slider drag, and a boolean's result arrives with no
+   pairing pass to halve it. Raising the importer's ceiling is not a reason to
+   let a slider build 12000 faces a frame, so the two numbers part ways here
+   and this one stays where it was proven. */
+const OP_FACE_BUDGET = 4000;
+
+/* HOW FLAT TWO TRIANGLES HAVE TO BE TO BE READ AS ONE QUAD ON IMPORT, AND
+   WHY THE CEILING ON THIS NUMBER IS 33 (v2.24a, forced by review).
+
+   SHARP_ANGLE is 33 degrees, and it is the same quantity measured the same
+   way: applyShading draws an edge as a hard crease when the two faces either
+   side of it turn by more than that. So every fold between this number and 33
+   would be simultaneously a pairing candidate and an edge the app itself
+   would have drawn sharp - and pairing dissolves it, because an edge exists
+   in this topology only while its triangles are in different groups. A 35
+   degree crease on a jaw or a knuckle arrived visibly softened, with no way
+   back: the edge was not merely unshaded, it was no longer in topo.edges at
+   all, so it could not be selected, creased, bevelled or split.
+
+   It was 40 for one version and that was the defect. 30 leaves three degrees
+   of margin and costs nothing now that the shape term does the real work of
+   telling a triangulated quad from its neighbour - before that, the tolerance
+   was carrying a judgement it cannot make. */
+const IMPORT_PAIR_ANGLE = 30;
 
 /* One object's worth of meshes -> the app's editable form.
 
@@ -28690,7 +28864,7 @@ function editableFromStl(buf) {
      two things worse. A file with correct winding and randomly garbage
      normals came out with MIXED winding, which breaks the coplanar merge (a
      flipped triangle reads as -1 against its seed), inflates the face count,
-     and can trip IMPORT_FACE_BUDGET on a file that would otherwise have
+     and can trip MESH_FACE_BUDGET on a file that would otherwise have
      imported fine. And nothing said it had happened.
 
      So the disagreement is counted, and the file is re-wound only when the
@@ -28925,8 +29099,67 @@ function landImport(built, label, skipped, rewound) {
       }
     }
   }
-  if (faceTotal > IMPORT_FACE_BUDGET) {
-    toast(faceTotal + ' faces - too many to edit (limit ' + IMPORT_FACE_BUDGET +
+  /* QUADS BEFORE THE BUDGET IS COUNTED (v2.24), and this is where the
+     importer stopped lying about how big a file is. Everything that comes
+     out of a real pipeline is quads and every exporter triangulates them, so
+     a 5148-quad character arrived as 10296 single-triangle faces and the
+     budget was being asked about a number the file never had.
+
+     The pass is the same regrouping Tris to quads does by hand - not one
+     vertex moves, not one triangle is made or destroyed - and it restores
+     the original quads rather than inventing new ones because a quad's own
+     diagonal is, by construction, the flattest pairing either of its
+     triangles has, and the candidates are taken flattest-first.
+
+     BEFORE the check, not after, because the check is the whole point:
+     pairing is what makes 12000 the right ceiling instead of 24000.
+
+     No shading exists yet at this point - the importers set it after this
+     function builds the objects - so `smoothOf` is constant and the only
+     question that can separate two faces is the material key the FILE gave
+     them, which is what keeps two materials out of one face.
+
+     A `{ why }` back is not a refusal here. It means nothing was flat enough
+     or nothing was a single triangle, and the mesh lands exactly as it did
+     before v2.24. */
+  /* NOT EVEN ATTEMPTED WHEN THE ANSWER IS ALREADY KNOWN (v2.24a, found in
+     review). A perfect matching is the best the pass can possibly do, and a
+     perfect matching halves the count - so a file at more than twice the
+     budget is refused whichever way the pairing goes, and running it first
+     buys a multi-second freeze and then says no anyway. A 39000-facet scanned
+     .stl is inside the triangle budget and is exactly this case. */
+  if (faceTotal > MESH_FACE_BUDGET * 2) {
+    toast(faceTotal + ' faces - too many to edit (limit ' + MESH_FACE_BUDGET +
+      '). It is probably a scan or a smooth-shaded model.');
+    return;
+  }
+  let pairedTotal = 0;
+  built.forEach(b => {
+    const old = b.ed.groups;
+    const r = pairTrisInEditable(b.ed, IMPORT_PAIR_ANGLE,
+      (gi) => (old[gi] ? old[gi].mat : undefined), () => false);
+    if (!r.groups) return;
+    /* `old` is named once and used twice on purpose. srcOf indexes the list
+       as it was BEFORE pairing, and both the material question the core is
+       given and the carry-over below have to be asking about the same list -
+       which is not obvious when one of them is spelled `b.ed.groups` on the
+       left of an assignment to `b.ed.groups`.
+
+       Losing this carry-over is the cheapest mistake available here: the
+       model still lands, still has the right shape, and is uniformly one
+       colour, and not one face count notices. */
+    b.ed.groups = r.groups.map((g, gi) => {
+      const src = old[r.srcOf[gi]];
+      return (src && src.mat !== undefined) ? { triangles: g.triangles, mat: src.mat } : g;
+    });
+    pairedTotal += r.pairs;
+  });
+  if (pairedTotal) {
+    faceTotal = 0;
+    built.forEach(b => { faceTotal += b.ed.groups.length; });
+  }
+  if (faceTotal > MESH_FACE_BUDGET) {
+    toast(faceTotal + ' faces - too many to edit (limit ' + MESH_FACE_BUDGET +
       '). It is probably a scan or a smooth-shaded model.');
     return;
   }
@@ -29004,6 +29237,10 @@ function landImport(built, label, skipped, rewound) {
   const faces = made.reduce((a, x) => a + x.faces, 0);
   toast('Imported ' + made.length + (made.length === 1 ? ' object' : ' objects') +
     ' - ' + faces + ' faces from ' + tris + ' triangles' +
+    /* Said out loud, because it changes what the model IS: a paired import
+       can be loop cut and a triangle soup cannot. */
+    (pairedTotal ? ' (' + pairedTotal + ' quad' + (pairedTotal === 1 ? '' : 's') +
+      ' recovered)' : '') +
     (matCtx.minted ? ', ' + matCtx.minted + ' new material' +
       (matCtx.minted === 1 ? '' : 's') : '') +
     /* Said out loud. A face whose indices did not resolve is dropped whole
@@ -29907,10 +30144,13 @@ function tubeCurveOp(curveObj, radius, sides, caps, profile) {
   }
   if (!quads.length) return { ok: false, why: 'nothing to sweep' };
 
+  /* THE OP BUDGET (v2.24), and this is the path that most needs it to stay
+     small: the whole sweep is re-run through rebuildFromEditable on every
+     frame of a rings-or-segments drag. */
   const faceTotal = quads.length + ((!closed && caps) ? 2 : 0);
-  if (faceTotal > IMPORT_FACE_BUDGET) {
+  if (faceTotal > OP_FACE_BUDGET) {
     return { ok: false, why: faceTotal + ' faces - too many to edit (limit ' +
-                            IMPORT_FACE_BUDGET + ')' };
+                            OP_FACE_BUDGET + ')' };
   }
 
   /* OUTWARD IS DECIDED BY THE CONSTRUCTION, NOT MEASURED (v2.18, forced by
@@ -34156,10 +34396,11 @@ HELP_SECTIONS.push(
       ['subdiv', 'Subdivide', 'Divides every face. Smooth rounds, Keep shape holds the silhouette. Creases stay sharp.'],
       ['del', 'Delete', 'Removes the selected objects.'],
       ['group', 'Group / Ungroup', 'One seat, and which of the two it offers depends on what you have. Hatched when neither would do anything.'],
-      [null, 'MESH — a door', 'Solidify, Cap holes, Join, Separate.'],
+      [null, 'MESH — a door', 'Solidify, Cap holes, Join, Separate, Boolean.'],
       ['solidify', 'Solidify', 'Gives a surface thickness. Behind leaves the face you can see exactly where it is; Centred and In front move it.'],
       ['join', 'Join', 'Merges the selected objects into one.'],
       ['separate', 'Separate', 'One object per loose piece.'],
+      ['boolop', 'Boolean', 'The other answer to “these become one mesh”: Union keeps both, Difference cuts the second out of the first, Intersect keeps only the overlap. Needs two objects selected, and sits one seat in from Join.'],
       [null, 'FINISH — a door', 'Shade, Smooth by angle, Flip normals, Clean up, Centre.'],
       ['smoothangle', 'Smooth by angle', 'One threshold for the whole object: edges sharper than it stay hard, the rest blend. It keeps deciding for geometry you have not made yet.'],
       ['cleanup', 'Clean up', 'Tris to quads pairs triangles back into faces — the fix for an imported model that will not loop cut. Merge by distance welds points that are almost touching.'],
@@ -35521,6 +35762,12 @@ if (PICK_DEBUG) {
     importMaterialContext,
     // a2.70: OBJ, and the shared landing every reader ends at.
     editableFromObjText, importObjText, triangulatePolygon, parseMtl, landImport,
+    // v2.24: the pairing core, and the two budgets that parted ways.
+    pairTrisInEditable, MESH_FACE_BUDGET, OP_FACE_BUDGET, IMPORT_TRI_BUDGET,
+    // v2.24a: SHARP_ANGLE is here so a probe can assert the one relation that
+    // matters - the pairing tolerance has to sit below the app's own threshold
+    // for drawing an edge as a crease, or import softens creases for good.
+    IMPORT_PAIR_ANGLE, MAX_QUAD_SHAPE_DEG, SHARP_ANGLE, subdivideOp,
     // a2.71: STL, and the refusals that name what a file needs.
     editableFromStl, importStlBuffer, stlIsBinary, stlBinaryCount,
     stlLooksTruncated, gltfRefusal, refreshDepthRange, contentScale,

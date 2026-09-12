@@ -81,7 +81,7 @@
        the case a2.74 section 6 measured. ---- */
     var o1 = freshCube();
     for (var d = 0; d < 4; d++) subdivideOnce(o1);
-    log('1.mesh', tris(o1) + ' triangles, ' + K.faceCount(o1.mesh.geometry) +
+    log('1.mesh', tris(o1) + ' triangles, ' + k.faceCount(o1.mesh.geometry) +
       ' faces, wantsWear=' + o1.mesh.userData.wantsWear);
 
     k.applyShading(o1);   // warm the topology cache and the JIT

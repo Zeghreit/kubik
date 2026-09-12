@@ -7,7 +7,7 @@
   function log(k, v) { out.push(k + '=' + v); }
   var k, A, THREE;
 
-  function faces(o) { return K.faceCount(o.mesh.geometry); }
+  function faces(o) { return k.faceCount(o.mesh.geometry); }
   function tris(o) { return o.mesh.geometry.index.count / 3; }
   function mats(o) { return Array.isArray(o.mesh.material) ? o.mesh.material.length : 1; }
   function verts(o) { return o.mesh.userData.topo.logicalCount; }

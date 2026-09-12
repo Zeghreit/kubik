@@ -29,7 +29,7 @@
     return once;
   }
 
-  function faces(o) { return K.faceCount(o.mesh.geometry); }
+  function faces(o) { return k.faceCount(o.mesh.geometry); }
   /* Signed volume of a closed mesh: positive when the faces point OUT.
      `auditWinding.ok` only says the shell agrees with itself - an entirely
      inside-out box passes it. This is the question that one cannot answer. */
