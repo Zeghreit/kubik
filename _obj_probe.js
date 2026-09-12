@@ -151,7 +151,7 @@
     k.importObjText(painted, mtl, 'Painted');
     var made = A.objects[A.objects.length - 1];
     log('7.imported', (A.objects.length - objsBefore) + ' object added, ' +
-      made.mesh.geometry.groups.length + ' faces');
+      K.faceCount(made.mesh.geometry) + ' faces');
     k.ensureHelpers(made);
     var topo = made.mesh.userData.topo;
     log('7.topology', topo.faceGroups.length + ' faces · ' + topo.edges.length +

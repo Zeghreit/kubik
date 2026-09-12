@@ -36,8 +36,7 @@
     const geo = mesh.geometry;
     const positions = Array.from(geo.attributes.position.array);
     const index = geo.index.array;
-    const gs = geo.groups.length ? geo.groups
-      : [{ start: 0, count: index.length, materialIndex: 0 }];
+    const gs = K.faceRanges(geo);
     const groups = gs.map(g => {
       const triangles = [];
       for (let i = g.start; i < g.start + g.count; i += 3) {
@@ -105,7 +104,7 @@
   }
 
   function w(obj) { return K.auditWinding(obj); }
-  function groupCount(obj) { return obj.mesh.geometry.groups.length; }
+  function groupCount(obj) { return K.faceCount(obj.mesh.geometry); }
 
   async function run() {
     K = window.__kubik;
@@ -474,13 +473,13 @@
     select([a, b]);
     K.booleanSelection();
     let pw = K.findObject(K.opSetup.objId);
-    const g0 = pw.mesh.geometry.groups.length;
+    const g0 = K.faceCount(pw.mesh.geometry);
     K.opSetup.p.kind = 'intersect';      // two solids that miss share nothing
     K.refreshOpSetupMesh();
     pw = K.findObject(K.opSetup.objId);
     ok('18.guard a refused chip leaves BOTH the shape and the chip on Union',
-       K.opSetup.p.kind === 'union' && pw.mesh.geometry.groups.length === g0,
-       K.opSetup.p.kind + ' ' + pw.mesh.geometry.groups.length + '/' + g0);
+       K.opSetup.p.kind === 'union' && K.faceCount(pw.mesh.geometry) === g0,
+       K.opSetup.p.kind + ' ' + K.faceCount(pw.mesh.geometry) + '/' + g0);
     K.finishOpSetup(false);
     mark('18.guard.chip');
 
@@ -502,11 +501,11 @@
     b.mesh.position.set(0.5, 0.5, 0.5); b.mesh.updateMatrixWorld(true);
     select([a, b]);
     K.booleanSelection();
-    const faces0 = K.findObject(K.opSetup.objId).mesh.geometry.groups.length;
+    const faces0 = K.faceCount(K.findObject(K.opSetup.objId).mesh.geometry);
     K.subdivideSelection();
     ok('18.guard Subdivide will not open over a preview',
        !K.App.pendingOp && !!K.opSetup &&
-       K.findObject(K.opSetup.objId).mesh.geometry.groups.length === faces0,
+       K.faceCount(K.findObject(K.opSetup.objId).mesh.geometry) === faces0,
        'pendingOp=' + !!K.App.pendingOp);
     K.finishOpSetup(false);
 

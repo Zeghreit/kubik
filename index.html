@@ -2380,7 +2380,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.22</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.23</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -6061,6 +6061,141 @@ function objectSide(mesh) {
   return (App.xraySelection || mirrored) ? THREE.DoubleSide : THREE.FrontSide;
 }
 
+/* ---------------- A FACE AND A DRAW GROUP ARE TWO DIFFERENT THINGS (v2.23) --
+
+   "One face, one geometry.group" held from the first day, and it cost one
+   draw call per face: a character at 8858 faces is 8858 draw calls a frame,
+   which is the whole reason IMPORT_FACE_BUDGET sits at 4000 and refuses every
+   model that comes out of a real pipeline.
+
+   The fix is NOT to merge faces. An edge exists in this app's topology only
+   because its two triangles belong to DIFFERENT groups - computeTopology
+   exposes an edge when some group uses it exactly once - so concatenating two
+   groups IS the Dissolve Edge operation, written down as such further below.
+   applyShading reads the same thing: it averages a normal per GROUP and
+   decides sharp-or-smooth from the list of groups either side of an edge.
+   Merge groups naively and every model loses its edges and its hard corners
+   in the same stroke.
+
+   So the two ideas get separated instead. A FACE stays what it always was -
+   a topological unit, addressed by its index, the thing selection and every
+   op talk about. A DRAW GROUP becomes a run of consecutive faces that happen
+   to wear the same material, decided at the last moment, on the way into the
+   BufferGeometry. The index buffer does not move a single byte: faces stay
+   contiguous, in the same order, so triStart and triCount keep meaning what
+   they mean and the face overlay, the picker and the facing test never learn
+   that anything changed.
+
+   WHAT CARRIES THE FACES is a plain offsets array on the geometry: F+1 values
+   into the INDEX buffer, so face i owns [starts[i], starts[i+1]). Same shape
+   `geo.groups` had, one allocation instead of F objects, and it is the one
+   source of truth for "how many faces does this mesh have" from here on.
+
+   No per-face attribute and no faceId are needed, and that is worth saying
+   because it looks like they would be: what distinguishes two faces is not a
+   number but a whole material definition - colour, roughness, metalness, the
+   mask stack, bevel, a per-object distance field. Only faces wearing the SAME
+   definition are ever merged, so the shader needs to know nothing per face. */
+let _faceGen = 1;
+
+function publishFaces(geo, starts) {
+  geo.userData.kubikFaces = starts;
+  // Monotonic, so a cache keyed on it can never see two different face
+  // layouts as the same one. Same trick kubikEdges.gen plays for the field.
+  geo.userData.kubikFaceGen = _faceGen++;
+}
+
+/* For geometry built somewhere other than rebuildFromEditable - a fresh
+   BoxGeometry, a document coming back from a file - where the groups ARE the
+   faces, in order and without gaps. */
+function publishFacesFromGroups(geo) {
+  const gs = geo.groups || [];
+  if (!gs.length) {
+    const n = geo.index ? geo.index.count : 0;
+    publishFaces(geo, Int32Array.from([0, n]));
+    return;
+  }
+  /* READ THE COUNT, not where the next group happens to begin (v2.23a,
+     found in review). Taking the end of face i from the start of face i+1 is
+     silently wrong for groups that are out of order or have a gap between
+     them - negative counts, and a map that lies about a document rather than
+     about internal state. Groups that do not tile the index buffer in order
+     are not a face list at all, so say so by falling back to one face. */
+  const starts = new Int32Array(gs.length + 1);
+  let at = gs[0].start;
+  for (let i = 0; i < gs.length; i++) {
+    if (gs[i].start !== at || gs[i].count <= 0) {
+      const n = geo.index ? geo.index.count : 0;
+      publishFaces(geo, Int32Array.from([0, n]));
+      return;
+    }
+    starts[i] = at;
+    at += gs[i].count;
+  }
+  starts[gs.length] = at;
+  publishFaces(geo, starts);
+}
+
+/* HOW MANY FACES. The map when there is one; the draw groups when there is
+   not, which is foreign geometry that has not been through a rebuild yet -
+   a CSG result, an imported mesh mid-conversion, a Line2. */
+function faceCount(geo) {
+  const f = geo && geo.userData && geo.userData.kubikFaces;
+  if (f) return f.length - 1;
+  return (geo && geo.groups && geo.groups.length) || 1;
+}
+
+/* THE FACES AS RANGES, in the {start, count, materialIndex} shape that
+   computeTopology and buildShadingTopo used to read straight off geo.groups.
+   Those two are O(triangles) anyway, so building the list costs them nothing
+   they were not already paying. */
+function faceRanges(geo) {
+  const f = geo && geo.userData && geo.userData.kubikFaces;
+  if (f) {
+    const out = [];
+    for (let i = 0; i + 1 < f.length; i++) {
+      out.push({ start: f[i], count: f[i + 1] - f[i], materialIndex: i });
+    }
+    return out;
+  }
+  if (geo.groups && geo.groups.length) return geo.groups;
+  const n = geo.index ? geo.index.count : 0;
+  return [{ start: 0, count: n, materialIndex: 0 }];
+}
+
+/* THE DRAW GROUPS, REWRITTEN FROM THE FINISHED MATERIAL ARRAY (v2.23).
+
+   Consecutive faces wearing the SAME pooled instance become one group. By
+   INSTANCE and not by definition id, because the instance already folds in
+   the two other things that decide how a face draws - the side (mirrored
+   objects cull the other way) and whether the definition needs a per-object
+   copy for its own uniforms. Two faces that resolve to the same instance are
+   by construction indistinguishable to the renderer.
+
+   The index buffer is not touched and the faces are not reordered, so every
+   triStart and triCount still points where it did, and the face overlay, the
+   picker and the facing test go on reading topo.faceGroups none the wiser.
+   A mesh in one material: one group instead of 8858. A mesh with k painted
+   patches: at most 2k+1, and usually k.
+
+   Called from dressFromPool because that is the one place that sees the
+   finished per-face material array - which also means a repaint rebuilds the
+   runs for free, without going near the geometry. */
+function mergeDrawGroups(geo, mats) {
+  const f = geo.userData && geo.userData.kubikFaces;
+  if (!f || f.length < 2) return;
+  const n = f.length - 1;
+  geo.clearGroups();
+  let runStart = 0;
+  for (let i = 1; i <= n; i++) {
+    if (i < n && mats[i] === mats[runStart]) continue;
+    // materialIndex is the run's FIRST face, so mesh.material[materialIndex]
+    // keeps resolving without the material array changing shape at all.
+    geo.addGroup(f[runStart], f[i] - f[runStart], runStart);
+    runStart = i;
+  }
+}
+
 /* Re-dress a mesh from the pool. Pointer writes into an array the mesh
    already has, so it is cheap enough to run on every rebuild - which is
    exactly where it does run. */
@@ -6074,7 +6209,7 @@ function dressFromPool(obj) {
     if (!ownOf.has(id)) ownOf.set(id, defNeedsOwn(getMaterialDef(id)) ? String(obj.id) : '');
     return ownOf.get(id);
   };
-  const n = mesh.geometry.groups.length || 1;
+  const n = faceCount(mesh.geometry);      // faces, not draw groups (v2.23)
   const side = objectSide(mesh);
   const old = Array.isArray(mesh.material) ? mesh.material
             : (mesh.material ? [mesh.material] : []);
@@ -6103,6 +6238,8 @@ function dressFromPool(obj) {
   // Single material for a single group, array otherwise - the shape the rest
   // of the file has always tested for.
   mesh.material = out.length > 1 ? out : out[0];
+  // One renderItem per RUN of faces, not per face (v2.23).
+  mergeDrawGroups(mesh.geometry, out);
   mesh.userData.matSide = side;
   /* The ops' clones are rubbish the moment their definition has been read off
      them. Binned while an op is live for binMaterials' own reason - a dispose
@@ -6118,7 +6255,9 @@ function dressFromPool(obj) {
 
 function createCubeObject(name, position) {
   const geo = new THREE.BoxGeometry(1, 1, 1);
-  const mats = makeMaterialSet(geo.groups.length || 1, DEFAULT_MATERIAL_COLOR);
+  // A box arrives with its six faces already as six groups, in order.
+  publishFacesFromGroups(geo);
+  const mats = makeMaterialSet(faceCount(geo), DEFAULT_MATERIAL_COLOR);
   const mesh = new THREE.Mesh(geo, mats);
   mesh.position.copy(position);
   const obj = { id: App.nextId++, name, mesh };
@@ -6426,7 +6565,7 @@ function computeTopology(geometry) {
   const pos = geometry.attributes.position;
   const index = geometry.index;
   const { logicalOf, logicalGroups } = computeLogicalOf(pos);
-  const groupsSrc = geometry.groups.length ? geometry.groups : [{ start: 0, count: index.count, materialIndex: 0 }];
+  const groupsSrc = faceRanges(geometry);
   const faceGroups = [];
   const edgeOcc = new Map(); // undirected key -> [{a,b,groupIndex}, ...]
 
@@ -6792,7 +6931,7 @@ function buildShadingTopo(geo) {
   const index = geo.index;
   const posAttr = geo.attributes.position;
   const { logicalOf, logicalGroups } = computeLogicalOf(posAttr);
-  const groupsSrc = geo.groups.length ? geo.groups : [{ start: 0, count: index.count, materialIndex: 0 }];
+  const groupsSrc = faceRanges(geo);
   const triCount = index.count / 3;
   const nLog = logicalGroups.length;
 
@@ -7006,17 +7145,20 @@ function shadingTopoFor(geo) {
   const c = geo.userData.shadeTopo;
   /* The group list is cached BY REFERENCE and the face-group numbering is
      derived from it, so its length is part of what makes the cache true.
-     Nothing in the app rewrites geo.groups in place today - every op builds a
-     new geometry - but that is an invariant living somewhere else, and this
-     costs one comparison. */
+     mergeDrawGroups DOES rewrite geo.groups in place now, on every repaint
+     and without a new geometry (v2.23) - which is exactly why the key below
+     counts FACES and carries the face generation, neither of which a repaint
+     changes. Merged runs are invisible to this cache by construction. */
   if (c && live && c.drag === live && c.index === geo.index &&
-      c.icount === geo.index.count && c.gcount === geo.groups.length &&
+      c.icount === geo.index.count && c.gcount === faceCount(geo) &&
+      c.fgen === (geo.userData.kubikFaceGen || 0) &&
       c.pcount === geo.attributes.position.count) return c;
   const topo = buildShadingTopo(geo);
   topo.drag = live;
   topo.index = geo.index;
   topo.icount = geo.index.count;
-  topo.gcount = geo.groups.length;
+  topo.gcount = faceCount(geo);       // faces, not draw groups (v2.23)
+  topo.fgen = geo.userData.kubikFaceGen || 0;
   topo.pcount = geo.attributes.position.count;
   // Nothing to keep between gestures: outside a drag the next call must
   // rebuild, or a vertex welded by an edit would keep the old grouping.
@@ -7559,7 +7701,7 @@ function migrateEdgeShade(obj) {
   Object.keys(ud.creases || {}).forEach(k => { marks[k] = 'sharp'; });
   const smooth = ud.smoothGroups || {};
   const geo = obj.mesh.geometry;
-  const groupCount = geo.groups.length || 1;
+  const groupCount = faceCount(geo);       // faces, not draw groups (v2.23)
   let flatFaces = 0;
   for (let gi = 0; gi < groupCount; gi++) if (!smooth[gi]) flatFaces++;
   if (flatFaces) {
@@ -7931,7 +8073,7 @@ function toEditable(mesh) {
   const geo = mesh.geometry;
   const positions = Array.from(geo.attributes.position.array);
   const index = geo.index.array;
-  const groupsSrc = geo.groups.length ? geo.groups : [{ start: 0, count: index.length, materialIndex: 0 }];
+  const groupsSrc = faceRanges(geo);
   const groups = groupsSrc.map(g => {
     const triangles = [];
     for (let i = g.start; i < g.start + g.count; i += 3) triangles.push([index[i], index[i + 1], index[i + 2]]);
@@ -7991,7 +8133,9 @@ function separateGroupVertices(ed) {
 function reconcileFinishes(obj) {
   const mesh = obj.mesh;
   const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-  const groupCount = mesh.geometry.groups.length || 1;
+  // Faces, not draw groups (v2.23) - the material array is one entry per
+  // face and always was, because that is what every op pushes a clone into.
+  const groupCount = faceCount(mesh.geometry);
   const fin = mesh.userData.finishes || {};
   const out = {};
   for (let gi = 0; gi < groupCount; gi++) {
@@ -8064,12 +8208,19 @@ function rebuildFromEditable(obj, edIn) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(ed.positions, 3));
   const flatIndex = [];
+  /* THE FACE MAP IS BUILT HERE, and this is the only place in the app where
+     the face layout is born (v2.23). Everything downstream asks the map how
+     many faces there are rather than counting draw groups. */
+  const faceStarts = new Int32Array(ed.groups.length + 1);
   ed.groups.forEach((g, gi) => {
     const start = flatIndex.length;
+    faceStarts[gi] = start;
     g.triangles.forEach(tri => flatIndex.push(tri[0], tri[1], tri[2]));
     geo.addGroup(start, g.triangles.length * 3, gi);
   });
+  faceStarts[ed.groups.length] = flatIndex.length;
   geo.setIndex(flatIndex);
+  publishFaces(geo, faceStarts);
   geo.computeBoundingSphere();
   geo.computeBoundingBox();
 
@@ -9436,9 +9587,27 @@ function cloneObjectInto(obj, name) {
      mask came out fully worn until the next real edit re-shaded it.
 
      So: carry the edge list, share nothing else. Re-shading assigns a fresh
-     object rather than mutating this one, so the reference is safe. */
+     object rather than mutating this one, so the reference is safe.
+
+     AND THE FACE MAP RIDES ACROSS TOO (v2.23a, found in review). The clone
+     carries geo.groups as the RENDERER left them - merged runs - and nothing
+     on this path calls rebuildFromEditable to republish the map. Without the
+     map faceCount fell through to geo.groups.length, so a duplicated cube
+     had ONE face: computeTopology saw every edge used twice by that one face
+     and exposed none of them, applyShading averaged one normal over the lot,
+     and Edge mode on the copy was empty. Worse, a cube with its LAST face
+     painted gave runs with materialIndex 5 against a two-entry material
+     array, so that face vanished from the screen and the next tap threw
+     inside raycaster.intersectObjects on an undefined material.
+
+     Shared by reference, like the edge list and for the same reason:
+     publishFaces always assigns a fresh array and never mutates one. */
   const srcUD = obj.mesh.geometry.userData || {};
   newGeo.userData = srcUD.kubikEdges ? { kubikEdges: srcUD.kubikEdges } : {};
+  if (srcUD.kubikFaces) {
+    newGeo.userData.kubikFaces = srcUD.kubikFaces;
+    newGeo.userData.kubikFaceGen = srcUD.kubikFaceGen;
+  }
   const srcMats = Array.isArray(obj.mesh.material) ? obj.mesh.material : [obj.mesh.material];
   const newMats = srcMats.map(m => m.clone());
   const newMesh = new THREE.Mesh(newGeo, newMats.length > 1 ? newMats : newMats[0]);
@@ -26684,7 +26853,11 @@ function serializeDoc() {
         geometry: {
           position: Array.from(g.attributes.position.array),
           index: Array.from(g.index.array),
-          groups: g.groups.map(gr => ({ start: gr.start, count: gr.count, materialIndex: gr.materialIndex }))
+          /* ONE GROUP PER FACE ON DISK (v2.23), whatever the live geometry
+             has merged them into. The file is the face list; merging is a
+             rendering decision taken on the way to the GPU and belongs
+             nowhere near a document that another version has to read. */
+          groups: faceRanges(g).map(gr => ({ start: gr.start, count: gr.count, materialIndex: gr.materialIndex }))
         },
         // Record the real surface values, not just which preset was picked.
         // A preset name can go missing when meshes are merged or rebuilt; the
@@ -26972,6 +27145,11 @@ function restoreDoc(doc, opts = {}) {
     geo.setAttribute('position', new THREE.Float32BufferAttribute(od.geometry.position, 3));
     geo.setIndex(od.geometry.index);
     od.geometry.groups.forEach(gr => geo.addGroup(gr.start, gr.count, gr.materialIndex));
+    /* A FILE STORES ONE GROUP PER FACE and always will - that is what makes a
+       document written by any version readable by any other. The face map is
+       published from those groups here; merging into draw runs happens later,
+       on the way to the GPU, and never touches what is on disk (v2.23). */
+    publishFacesFromGroups(geo);
     geo.computeBoundingSphere();
     geo.computeBoundingBox();
     /* Keeping the LIVE look across an undo only works while the two agree
@@ -28897,6 +29075,13 @@ function buildExportGroup() {
     const source = o.mesh;
     const mats = Array.isArray(source.material) ? source.material : [source.material];
     const eg = source.geometry.clone();
+    /* AND THE FACES GO OUT AS FACES (v2.23). The clone carries whatever the
+       renderer was using - merged runs - and GLTFExporter makes one primitive
+       per group, so exporting runs would fuse faces a modeller had kept
+       apart and break the round-trip guarantee the importer relies on: a
+       Kubik file comes back with exactly the faces it left with. */
+    eg.clearGroups();
+    faceRanges(source.geometry).forEach(gr => eg.addGroup(gr.start, gr.count, gr.materialIndex));
     /* BufferGeometry.copy assigns userData by REFERENCE, and GLTFExporter
        serialises it into `extras`. Without this every .glb carried the edge
        list as a 12000-key object plus the whole distance atlas as an array
@@ -30508,7 +30693,7 @@ function finishOpSetup(keep) {
       if (s.note) trouble.push(s.note);
       const done = OP_SETUP[s.kind];
       toast((done.doneLabel ? done.doneLabel(s) : done.label) +
-            ' · ' + o.mesh.geometry.groups.length + ' faces' +
+            ' · ' + faceCount(o.mesh.geometry) + ' faces' +
             (trouble.length ? ' - ' + trouble.join(', ') : ''));
       return;
     }
@@ -35401,6 +35586,9 @@ if (PICK_DEBUG) {
     curveEditPointerDown, curveEditPointerMove, curveEditPointerUp,
     pickCurvePointOn, pickCurveSpanOn, curveEditObj,
     curveEditInsert, curveEditAppend, curveEditSelChanged,
+    /* v2.23: a face and a draw group are two different things. The map is
+       the one source of truth for how many faces a mesh has. */
+    publishFaces, publishFacesFromGroups, faceCount, faceRanges, mergeDrawGroups,
     // v2.22: the camera keeps its gestures, and the slider follows the
     // selected point.
     cameraButton, cameraPlanePoint,
@@ -35414,6 +35602,10 @@ if (PICK_DEBUG) {
        whole of v2.22 is about which branch of that listener runs, and a probe
        calling the handlers underneath it would prove nothing about that. */
     get canvasEl() { return renderer.domElement; },
+    /* three's own counter, reset every render: the honest measure of what
+       v2.23 bought, in the units the GPU is actually charged in. */
+    get renderInfo() { return renderer.info.render; },
+    renderNow() { renderer.render(scene, camera); return renderer.info.render.calls; },
     get camera() { return camera; },
     get curveEdit() { return App.curveEdit; },
     curveWorkPlane, curvePlanePoint, toggleCurveType, toggleCurveClosed,

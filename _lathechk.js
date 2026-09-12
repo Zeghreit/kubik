@@ -160,8 +160,8 @@
     ok('2.turn   it made a mesh', !!made && made.name.indexOf('lathe') >= 0,
        made && made.name);
     ok('2.turn   8 faces, one per segment',
-       !!made && made.mesh.geometry.groups.length === 8,
-       made && ('groups=' + made.mesh.geometry.groups.length));
+       !!made && K.faceCount(made.mesh.geometry) === 8,
+       made && ('groups=' + K.faceCount(made.mesh.geometry)));
     ok('2.turn   wound consistently, nothing non-manifold',
        !!w && w.conflictEdges === 0 && w.nonManifold === 0 && w.reversed === 0,
        w && JSON.stringify(w));
@@ -216,8 +216,8 @@
        !!tw && tw.conflictEdges === 0 && tw.nonManifold === 0 && tw.reversed === 0,
        tw && JSON.stringify(tw));
     ok('4.closed 4 sides x 8 segments',
-       !!torus && torus.mesh.geometry.groups.length === 32,
-       torus && ('groups=' + torus.mesh.geometry.groups.length));
+       !!torus && K.faceCount(torus.mesh.geometry) === 32,
+       torus && ('groups=' + K.faceCount(torus.mesh.geometry)));
     mark('4.closed');
 
     // 5 -- the pole ---------------------------------------------------------
@@ -229,8 +229,8 @@
     const cm = K.App.objects.filter(o => !K.isCurve(o))[0];
     const cw = cm ? K.auditWinding(cm) : null;
     ok('5.pole   a point on the axis makes a cone, not a collapse',
-       !!cm && cm.mesh.geometry.groups.length === 8 && !!cw && cw.conflictEdges === 0,
-       cm && ('groups=' + cm.mesh.geometry.groups.length + ' ' + JSON.stringify(cw)));
+       !!cm && K.faceCount(cm.mesh.geometry) === 8 && !!cw && cw.conflictEdges === 0,
+       cm && ('groups=' + K.faceCount(cm.mesh.geometry) + ' ' + JSON.stringify(cw)));
     if (cm) {
       const ced = K.toEditable(cm.mesh);
       const triCounts = ced.groups.map(g => g.triangles.length);
@@ -404,16 +404,16 @@
     const twoM = K.App.objects.filter(o => !K.isCurve(o))[0];
     const twoW = twoM ? K.auditWinding(twoM) : null;
     ok('10.degen a CLOSED two-point curve is swept as the open profile it is',
-       !!twoW && twoW.conflictEdges === 0 && twoM.mesh.geometry.groups.length === 8,
-       twoW && (JSON.stringify(twoW) + ' groups=' + twoM.mesh.geometry.groups.length));
+       !!twoW && twoW.conflictEdges === 0 && K.faceCount(twoM.mesh.geometry) === 8,
+       twoW && (JSON.stringify(twoW) + ' groups=' + K.faceCount(twoM.mesh.geometry)));
 
     clearScene();
     const rep = mkCurve('Rep', [[0.6, 0, 0], [0.6, 0, 0], [0.6, 1, 0]], { type: 'poly', res: 8 });
     lathe(rep, 'y');
     const repM = K.App.objects.filter(o => !K.isCurve(o))[0];
     ok('10.degen a repeated point is dropped, not swept into zero-area faces',
-       !!repM && repM.mesh.geometry.groups.length === 8,
-       repM && ('groups=' + repM.mesh.geometry.groups.length));
+       !!repM && K.faceCount(repM.mesh.geometry) === 8,
+       repM && ('groups=' + K.faceCount(repM.mesh.geometry)));
     mark('10.degen');
 
     /* 11 -- THE PREVIEW, THE DEGREES AND THE STEPPER (v2.17) ---------------
@@ -460,8 +460,8 @@
     K.stepOpSetup(4);
     pm = K.findObject(K.opSetup.objId);
     ok('11.preview the stepper makes it rounder',
-       K.opSetup.p.segs === 12 && pm.mesh.geometry.groups.length === 12,
-       K.opSetup.p.segs + ' segments, ' + pm.mesh.geometry.groups.length + ' faces');
+       K.opSetup.p.segs === 12 && K.faceCount(pm.mesh.geometry) === 12,
+       K.opSetup.p.segs + ' segments, ' + K.faceCount(pm.mesh.geometry) + ' faces');
 
     // The axis chips still work, and are remembered for the next one.
     K.opSetup.p.axis = 'x';

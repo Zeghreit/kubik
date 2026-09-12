@@ -213,16 +213,16 @@
     ok('7.setup  a tube appears the moment you tap it',
        !!K.opSetup && K.App.objects.length === 2, 'objects=' + K.App.objects.length);
     let tobj = K.opSetup ? K.findObject(K.opSetup.objId) : null;
-    const faces0 = tobj ? tobj.mesh.geometry.groups.length : -1;
+    const faces0 = tobj ? K.faceCount(tobj.mesh.geometry) : -1;
     const r0 = K.opSetup ? K.opSetup.p.radius : -1;
 
     K.stepOpSetup(4);
     tobj = K.opSetup ? K.findObject(K.opSetup.objId) : null;
     ok('7.setup  the stepper changes how many sides it has',
        !!K.opSetup && K.opSetup.p.sides === 12 &&
-       tobj && tobj.mesh.geometry.groups.length > faces0,
+       tobj && K.faceCount(tobj.mesh.geometry) > faces0,
        (K.opSetup && K.opSetup.p.sides) + ' sides, ' +
-       faces0 + ' -> ' + (tobj && tobj.mesh.geometry.groups.length));
+       faces0 + ' -> ' + (tobj && K.faceCount(tobj.mesh.geometry)));
 
     const box0 = tobj ? new K.THREE.Box3().setFromObject(tobj.mesh) : null;
     K.setOpSetupAmount(r0 * 3);

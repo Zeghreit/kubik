@@ -60,7 +60,7 @@
     // ---- 1. the fixture ----
     var o1 = cyl('L1', 12, 4);
     var m1 = middleRing(o1);
-    log('1.cylinder', o1.mesh.geometry.groups.length + ' faces, ' +
+    log('1.cylinder', K.faceCount(o1.mesh.geometry) + ' faces, ' +
       o1.mesh.userData.topo.logicalCount + ' vertices, ring levels y=' +
       m1.levels.map(function (y) { return y.toFixed(2); }).join('/'));
     log('1.ring', m1.ring.length + ' vertices on the middle ring at y=' + m1.y.toFixed(3));

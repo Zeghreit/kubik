@@ -83,7 +83,7 @@
       }
       return -1;
     };
-    const faces = (o) => o.mesh.geometry.groups.length;
+    const faces = (o) => K.faceCount(o.mesh.geometry);
     const verts = (o) => {
       // LOGICAL vertices - the mesh separates every face's copies, so the
       // attribute count answers a different question than this one.

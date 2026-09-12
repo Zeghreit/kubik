@@ -61,7 +61,7 @@
       return -1;
     };
     const hasEdge = (o, a, b) => edgeAt(o, a, b) >= 0;
-    const faces = (o) => o.mesh.geometry.groups.length;
+    const faces = (o) => K.faceCount(o.mesh.geometry);
     const verts = (o) => {
       const seen = new Set(), p = o.mesh.geometry.attributes.position;
       for (let i = 0; i < p.count; i++) {

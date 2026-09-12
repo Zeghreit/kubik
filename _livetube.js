@@ -45,7 +45,7 @@
     K.curveEditPointerUp(ev(pt.x, pt.y));
   };
   const pts = (o) => cvOf(o).pts;
-  const faces = (o) => o.mesh.geometry.groups.length;
+  const faces = (o) => K.faceCount(o.mesh.geometry);
 
   /* A SECTION THAT THROWS IS A SECTION THAT FAILED, not a run that stopped.
      The broken copy takes the guards out, so the very first dereference after

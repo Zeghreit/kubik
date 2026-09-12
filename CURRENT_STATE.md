@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.22**
+- Version at time of writing: **2.23**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -51,6 +51,81 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## A face and a draw group are two different things (v2.23)
+
+"One face, one `geometry.group`" held from the first day and cost one draw call
+per face. A character out of a real pipeline is 5148 faces (barbarian) or 8858
+(warrior) — so 8858 draw calls a frame, which is the whole reason
+`IMPORT_FACE_BUDGET` sat at 4000 and refused every such model.
+
+**The fix is NOT to merge faces.** An edge exists in this app's topology only
+because its two triangles belong to DIFFERENT groups — `computeTopology`
+exposes an edge when some group uses it exactly once. So concatenating two
+groups IS the Dissolve Edge operation, written down as such elsewhere in the
+file. `applyShading` reads the same thing: it averages a normal per GROUP and
+decides sharp-or-smooth from the groups either side of an edge. Merge groups
+naively and every model loses its edges and its hard corners in one stroke —
+measured on the broken copy: a cube came back with **0 edges and 0 of 24
+normals still axial**.
+
+So the two ideas are separated instead.
+
+- A **face** stays a topological unit, addressed by index — what selection and
+  every op talk about. Carried by `geo.userData.kubikFaces`: an `Int32Array` of
+  F+1 offsets into the INDEX buffer, so face `i` owns `[starts[i], starts[i+1])`.
+  One allocation instead of F objects, and the single source of truth for how
+  many faces a mesh has. `faceCount(geo)` and `faceRanges(geo)` ask it;
+  `publishFaces` / `publishFacesFromGroups` write it.
+- A **draw group** becomes a run of consecutive faces wearing the same pooled
+  material INSTANCE, decided at the last moment in `mergeDrawGroups`, called
+  from `dressFromPool` — the one place that sees the finished per-face material
+  array. By instance and not by definition id, because the instance already
+  folds in side (mirrored objects cull the other way) and whether the
+  definition needs a per-object copy for its own uniforms.
+
+**The index buffer does not move a byte and faces are not reordered**, so every
+`triStart`/`triCount` still points where it did, and the face overlay, the
+picker, the facing test and `topo.faceGroups` never learn anything changed.
+No per-face attribute and no faceId are needed: what distinguishes two faces is
+a whole material definition, not a number, and only faces wearing the same one
+are ever merged — so the shader needs to know nothing per face.
+
+Measured: a cube subdivided three times is **384 faces and 3 draw calls** by
+`renderer.info.render.calls`, where it used to be 384. A mesh with k painted
+patches costs at most 2k+1 runs. The material array stays one entry per face,
+so nothing downstream of it changed shape.
+
+**The file and the export still speak faces.** `serializeDoc` writes one group
+per face from the map, never the live runs, so a document written by this
+version reads the same in any other. `buildExportGroup` unrolls the runs before
+handing geometry to GLTFExporter — otherwise two coplanar faces a modeller kept
+apart would fuse, breaking the round-trip guarantee the importer relies on
+(`_imp_probe` checks exactly that: same face count, same edge count, no
+phantom diagonals).
+
+Found in review and fixed: `cloneObjectInto` blanks the geometry's `userData`
+on purpose (to avoid sharing the distance-field texture) and took the face map
+with it — so a duplicated cube had ONE face, no edges, smooth shading, and with
+its last face painted a `materialIndex` past the end of a shortened material
+array, which made that face vanish and threw inside
+`raycaster.intersectObjects` on the next tap. The map now rides across, shared
+by reference like the edge list: `publishFaces` always assigns a fresh array
+and never mutates one.
+
+### Probe
+
+`_facemap.js` / `.py` — 34 checks in 10 sections. Half of them are not about
+the win but about the trap: 12 edges on a cube, every normal axial, the same
+after a repaint, an op, a save-load round trip and a duplicate.
+`_mkfacemapbroken.py` builds a copy where merging never happens (9 failures);
+`_mkfacemapbroken.py late` builds one where topology and shading read the draw
+runs again, which is what the trap looks like (12 failures).
+
+Still to do for the heavy-mesh goal, in order: Tris to quads on import and the
+budget to 12000, then `three-mesh-bvh` (already in the importmap, four lines),
+then the per-frame `applyShading`, then a screen-space grid for the picker.
+See `claude/heavy-mesh-plan.md` in the project.
 
 ## The camera keeps its gestures (v2.22)
 
