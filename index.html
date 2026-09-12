@@ -2380,7 +2380,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.26</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.27</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -26133,7 +26133,7 @@ function joinSelection() {
    isolation counts, the outliner swatch - and flattenEntries, which REBUILDS
    App.objects from the outliner's drag order, so a parallel array would be
    either invisible to reordering or silently reordered out of existence.
-   Worse, pushHistory's modelSig hashes { objects, groups, environment,
+   Worse, pushHistory's sameDocModel compares { objects, groups, environment,
    materialLib }: a curve outside `objects` would record no undo step at all,
    which is verbatim the a2.93 groups bug.
 
@@ -27893,6 +27893,244 @@ function restoreDoc(doc, opts = {}) {
   refreshGizmoAttachment();
 }
 
+/* ---------------- WHAT A HISTORY STEP COSTS (v2.27) -----------------------
+
+   Every committed edit ran TWO full JSON.stringify of the whole model - one of
+   the step at the cursor and one of the new doc - to answer a yes/no question:
+   is this step the same as the last one. At 3600 faces that pair is 23.5ms of
+   text built and thrown away, on every tap of every tool; at 12000 it is about
+   4.5 MB each.
+
+   JSON.stringify is the wrong tool for "are these identical", and so is a hash.
+   The first cut of this version hashed the model numerically and used the hash
+   as a negative test, falling back to the string compare when hashes matched.
+   It worked, and measurement killed it: 9.5ms against the 11.75ms that simply
+   REMEMBERING one of the two signatures would have cost. A 19% gain is not
+   worth a hundred lines of generic walk whose failure mode is a lost Undo step.
+
+   What the question actually wants is STRUCTURAL EQUALITY WITH EARLY EXIT.
+   Comparing the two documents element by element returns false at the FIRST
+   difference - and a commit almost always differs, usually in the first object
+   it looks at - so the common case costs microseconds and allocates nothing.
+   The identical case, which is the one the dedup exists for, walks everything
+   once: one pass, no strings, no garbage.
+
+   Exact rather than probabilistic, so there is no "only allowed to say
+   different" subtlety to get wrong. Recording nothing when something changed is
+   the bug this guard exists to avoid - "Undo is the one thing that has to be
+   trustworthy" - and an exact comparison cannot make that mistake.
+
+   THE WALK IS GENERIC on purpose. A hand-written comparison over the known
+   fields would go stale the moment the document gains one - UV coordinates are
+   next - and a field the comparison cannot see is an edit Undo cannot take
+   back. Walking whatever is there can miss nothing. */
+
+function modelPartOf(d) {
+  /* Compared on the MODEL only. `nextId` counts objects that have ever
+     existed, so an op that builds a temporary and throws it away bumps it, and
+     `selection` moves on its own - neither is something an Undo press should
+     have anything to take back.
+
+     `groups` IS PART OF THE MODEL (a2.93). Left out, this called a document
+     that had just gained or lost a group identical to the one before it and
+     recorded no step - so Group could not be undone, Ungroup could be undone
+     into existence again by a Redo carrying the old grouping, and a renamed
+     group lost its name to the next undo. */
+  return { objects: d.objects, groups: d.groups,
+           environment: d.environment, materialLib: d.materialLib };
+}
+
+/* Two serialised documents, compared the way JSON.stringify would have - same
+   key order by construction, since both come out of serializeDoc - but without
+   building either string.
+
+   The two places it deliberately agrees with stringify rather than with `===`:
+   `undefined` is skipped, because stringify omits those keys; and two NaNs are
+   equal, because stringify writes `null` for both. Without the second, a NaN
+   coordinate would make every commit look like a change. */
+function sameDocModel(a, b) {
+  return deepSame(modelPartOf(a), modelPartOf(b));
+}
+
+function deepSame(a, b) {
+  if (a === b) return true;
+  const ta = typeof a;
+  if (ta !== typeof b) return false;
+  if (ta === 'number') return a !== a && b !== b;     // NaN == NaN, as JSON sees it
+  if (a === null || b === null) return false;
+  if (ta !== 'object') return false;                  // string, boolean: === settled it
+  const aArr = Array.isArray(a);
+  if (aArr !== Array.isArray(b)) return false;
+  if (aArr) {
+    const n = a.length;
+    if (n !== b.length) return false;
+    for (let i = 0; i < n; i++) {
+      const x = a[i], y = b[i];
+      // The hot case first: ninety thousand position numbers, compared without
+      // a recursive call each.
+      if (x === y) continue;
+      if (typeof x === 'number' && typeof y === 'number') {
+        if (x !== x && y !== y) continue;
+        return false;
+      }
+      if (!deepSame(x, y)) return false;
+    }
+    return true;
+  }
+  /* Keys by COUNT and then by name, which is what catches a key present in one
+     document and absent in the other. `undefined` is skipped on both sides,
+     exactly as stringify omits it.
+
+     `Object.keys` rather than `for...in`, and that is a measured difference and
+     not a preference. The first cut counted with two `for...in` passes and
+     walked with a third, which is three enumerations per object - and a 3600
+     face model carries 7200 of these little records (one group and one material
+     per face). That came to 23ms on the equal case. One `Object.keys` each,
+     compared by index, is two small short-lived arrays per object and roughly
+     four times faster. */
+  const ka = Object.keys(a), kb = Object.keys(b);
+  let na = 0;
+  for (let i = 0; i < ka.length; i++) if (a[ka[i]] !== undefined) na++;
+  let nb = 0;
+  for (let i = 0; i < kb.length; i++) if (b[kb[i]] !== undefined) nb++;
+  if (na !== nb) return false;
+  for (let i = 0; i < ka.length; i++) {
+    const k = ka[i];
+    const x = a[k];
+    if (x === undefined) continue;
+    const y = b[k];
+    if (y === undefined && !(k in b)) return false;
+    if (x === y) continue;
+    if (typeof x === 'number' && typeof y === 'number') {
+      if (x !== x && y !== y) continue;
+      return false;
+    }
+    if (!deepSame(x, y)) return false;
+  }
+  return true;
+}
+
+/* HOW MUCH OF IT THE APP IS ALLOWED TO HOLD.
+
+   60 steps was the only limit, and it was written when a model was a cube. A
+   12000-face character serialises to roughly 4 MB of retained objects per
+   step, so sixty of them is a quarter of a gigabyte - tab-reload territory on
+   a phone, for an Undo stack nobody was going to walk to the end of.
+
+   Two limits, and the floor outranks both: eight steps are kept whatever they
+   cost, because an Undo stack that a single heavy edit can empty is worse than
+   one that uses memory.
+
+   48 MB AND NOT 96, WHICH THE BROKEN BUILD IS WHAT FOUND. At 96 MB the floor
+   was arithmetically unreachable on one mesh - it would take a step heavier
+   than 12 MB, and MESH_FACE_BUDGET caps one MESH at about 3.3 MB - so one of
+   the two limits was decoration.
+
+   AND THEN A STEP HOLDS A SCENE, NOT A MESH, which is what the arithmetic above
+   got wrong (found in review). MESH_FACE_BUDGET is checked per mesh, by the
+   importer and by Subdivide; nothing caps a SCENE. Import the 8858-face
+   character and duplicate it three times - duplicate consults no budget - and
+   a step is 13 MB. A plain step floor then makes the byte cap inert: the loop
+   stops at eight steps holding 104 MB, and the number that was supposed to
+   bound things bounds nothing.
+
+   So the floor is TWO-TIER. Below HISTORY_MAX_BYTES the stack is trimmed to fit
+   but never below HISTORY_MIN_STEPS, which is the ordinary case and the reason
+   the floor exists - an Undo stack a single heavy edit can empty is worse than
+   one that uses memory. Past HISTORY_HARD_BYTES the floor gives way and trimming
+   continues to a single step, because at that point holding the stack is a
+   bigger problem than losing it. */
+const HISTORY_MAX_STEPS = 60;
+const HISTORY_MAX_BYTES = 48 * 1024 * 1024;
+const HISTORY_HARD_BYTES = 128 * 1024 * 1024;
+const HISTORY_MIN_STEPS = 8;
+
+/* Remembered WITH the step rather than on it: a doc written to the autosave or
+   to a .json must carry nothing this app invented. */
+const _stepCost = new WeakMap();
+
+/* O(objects), not O(vertices) - it reads the lengths of the big arrays instead
+   of walking them, because this number only has to RANK steps against a
+   ceiling. A number in a plain JS array is a double plus slot overhead; the
+   per-face group and material records carry an object header each. */
+function estimateDocBytes(d) {
+  let n = 2048;
+  (d.objects || []).forEach(o => {
+    n += 512 + (o.name ? o.name.length * 2 : 0);
+    const g = o.geometry;
+    if (g) {
+      n += (g.position ? g.position.length * 8 : 0);
+      n += (g.index ? g.index.length * 8 : 0);
+      n += (g.groups ? g.groups.length * 72 : 0);
+    }
+    n += (o.materials ? o.materials.length * 96 : 0);
+    ['smoothGroups', 'finishes', 'creases', 'edgeShade'].forEach(k => {
+      if (o[k]) n += Object.keys(o[k]).length * 72;
+    });
+    if (o.curve && o.curve.pts) n += o.curve.pts.length * 40;
+    if (o.tube && o.tube.cv && o.tube.cv.pts) n += o.tube.cv.pts.length * 40;
+  });
+  /* THE LIBRARY, COUNTED CHEAPLY AND AT ITS REAL SIZE (found in review).
+
+     This line used to read `JSON.stringify(d.materialLib).length * 2`, called
+     "small, and exact", and it was neither.
+
+     serializeDoc writes the WHOLE library - every definition, not the ones the
+     scene references - and a picture mask stores a 128x128 PNG as a data URL on
+     its definition. Four slots per material, no cap on the library, and it
+     persists in localStorage across sessions. Forty pictures is around 2 MB of
+     base64 per step, which the `* 2` then doubled: base64 is ASCII, which V8
+     holds one byte per character, so the doubling landed on exactly the term
+     that dominates. A user with photo masks on ten materials saw Undo stop
+     after twelve presses on a CUBE, with nothing to explain why.
+
+     The memory is real - serializeDoc deep-copies the library into every step,
+     so those bytes genuinely exist once per step - so it is counted, not
+     dropped. What changes is that it is counted by walking the strings for
+     their length instead of building one, which also takes the last
+     JSON.stringify out of this path. */
+  (d.materialLib || []).forEach(def => {
+    n += 256;
+    if (def && def.name) n += def.name.length * 2;
+    const ms = def && def.masks;
+    if (Array.isArray(ms)) ms.forEach(mk => {
+      n += 192;
+      // A data URL is ASCII, so one byte per character and not two.
+      if (mk && typeof mk.img === 'string') n += mk.img.length;
+    });
+  });
+  /* A DOCUMENT CAN BE HAND-EDITED, and one non-numeric field makes this NaN -
+     `"name": 1` survives restoreDoc, which copies od.name with no coercion.
+     A NaN is then cached in _stepCost, every `total > HISTORY_MAX_BYTES` is
+     false, and the byte cap is silently dead for the rest of the session, for
+     healthy steps too (found in review). */
+  return Number.isFinite(n) ? n : 2048;
+}
+
+function trimHistory() {
+  let total = 0;
+  for (let i = 0; i < App.history.length; i++) {
+    let c = _stepCost.get(App.history[i]);
+    if (c === undefined) { c = estimateDocBytes(App.history[i]); _stepCost.set(App.history[i], c); }
+    total += c;
+  }
+  while (App.history.length > 1 &&
+         (App.history.length > HISTORY_MAX_STEPS || total > HISTORY_MAX_BYTES)) {
+    // The floor, and the one thing that overrules it.
+    if (App.history.length <= HISTORY_MIN_STEPS && total <= HISTORY_HARD_BYTES) break;
+    total -= _stepCost.get(App.history[0]) || 0;
+    App.history.shift();
+    /* THE UNCONDITIONAL DECREMENT IS SAFE BECAUSE OF WHERE THIS IS CALLED FROM,
+       and that invariant is load-bearing (noted in review). The only call site
+       is at the end of pushHistory, after slice + push + index++, so
+       historyIndex === history.length - 1 whenever this runs and the step being
+       dropped is never the one being pointed at. A second caller at any other
+       index would make this wrong. */
+    if (App.historyIndex > 0) App.historyIndex--;
+  }
+  return total;
+}
+
 function pushHistory() {
   /* The mirrored second pass of a relational op has to land in the SAME undo
      step as the first - otherwise one Undo leaves the model lopsided, which
@@ -27915,36 +28153,22 @@ function pushHistory() {
   }
   scheduleAutosave();
   const doc = serializeDoc();
-  /* A step identical to the one already at the cursor is not a step. Ops
-     reach this honestly - mirroring an already-symmetric object reproduces
-     it exactly, and several tools report a count of things they touched
-     without changing any of them - and each one left an Undo press that
-     appeared broken. Undo is the one thing that has to be trustworthy, so
-     the cheapest way to keep it so is to not record nothing.
+  /* A step identical to the one already at the cursor is not a step. Ops reach
+     this honestly - mirroring an already-symmetric object reproduces it
+     exactly, and several tools report a count of things they touched without
+     changing any of them - and each one left an Undo press that appeared
+     broken. Undo is the one thing that has to be trustworthy, so the cheapest
+     way to keep it so is to not record nothing.
 
-     Two stringifies per committed edit. Autosave already serializes on the
-     same path, so this is not a new order of cost. */
+     Answered by a structural comparison that stops at the first difference;
+     see the note above for why that beats both a string and a hash. */
   const cur = App.history[App.historyIndex];
-  /* Compared on the MODEL only. `nextId` counts objects that have ever
-     existed, so an op that builds a temporary and throws it away bumps it,
-     and `selection` moves on its own - neither is something an Undo press
-     should have anything to take back. */
-  /* `groups` IS PART OF THE MODEL (a2.93). Left out, this signature called a
-     document that had just gained or lost a group identical to the one before
-     it, took the early return, and recorded no step at all - so Group could
-     not be undone, Ungroup could be undone into existence again by a Redo
-     that carried the old grouping, and a renamed group lost its name to the
-     next undo. Everything else about the round trip was already right; this
-     one gate threw the step away. */
-  const modelSig = d => JSON.stringify({
-    objects: d.objects, groups: d.groups,
-    environment: d.environment, materialLib: d.materialLib
-  });
-  if (cur && modelSig(cur) === modelSig(doc)) { refreshUI(); return; }
+  if (cur && sameDocModel(cur, doc)) { refreshUI(); return; }
+  _stepCost.set(doc, estimateDocBytes(doc));
   App.history = App.history.slice(0, App.historyIndex + 1);
   App.history.push(doc);
   App.historyIndex++;
-  if (App.history.length > 60) { App.history.shift(); App.historyIndex--; }
+  trimHistory();
   refreshUI();
 }
 
@@ -36274,6 +36498,13 @@ if (PICK_DEBUG) {
        rect is an offset pick, not a slow one, and a probe has to be able to
        compare a cached pick against a freshly-measured one. */
     viewportRect, invalidateViewportRect, growBounds, get viewportEl() { return viewportEl; },
+    /* v2.27: the history cost. sameDocModel is the exact comparison that
+       replaced two stringifies, so a probe can prove it agrees with the string
+       it used to build - on every kind of edit that was ever lost. */
+    sameDocModel, deepSame, estimateDocBytes, trimHistory, serializeDoc, pushHistory,
+    HISTORY_HARD_BYTES,
+    undo, redo, findObject,
+    HISTORY_MAX_STEPS, HISTORY_MAX_BYTES, HISTORY_MIN_STEPS,
     exactBounds,
     dragCtxPeek: () => dragCtx,
     applyDeltaToSelection, pickVertexOnActive, applyShading, creaseSet, creaseKeyFor,

@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.26**
+- Version at time of writing: **2.27**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -51,6 +51,130 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## What a history step costs (v2.27)
+
+`pushHistory` answered "is this step identical to the one at the cursor?" with
+TWO full `JSON.stringify` of the model, on every committed edit of every tool.
+Measured at 3600 faces:
+
+| | |
+|---|---|
+| two stringifies (before) | **23.5 ms** |
+| comparison, documents differ | **0.001 ms** ← the common case |
+| comparison, documents identical | **2.9 ms** ← the rare dedup hit |
+| `serializeDoc` itself | 2.4 ms ← now the dominant cost of a step |
+
+### The design that did NOT survive measurement
+
+The first cut hashed the model numerically and used the hash as a NEGATIVE test
+- hashes differ means push, hashes match falls back to the string compare. It
+worked. It was killed by its own measurement: **9.5 ms against the 11.75 ms
+that simply REMEMBERING one of the two signatures would have cost.** A 19% gain
+is not worth a hundred lines of generic walk whose failure mode is a lost Undo
+step. Worth remembering as a shape: a clever fast path that is only 20% better
+than the obvious cheap fix is not a fast path.
+
+### What the question actually wanted
+
+**Structural equality with early exit.** A commit almost always differs, usually
+in the first object the comparison looks at, so the common case allocates
+nothing and costs a microsecond; the identical case walks once. Exact rather
+than probabilistic, so there is no "only allowed to say different" subtlety to
+get wrong.
+
+`deepSame` deliberately agrees with `JSON.stringify` rather than with `===` in
+exactly two places, and both matter:
+
+- `undefined`-valued keys are skipped, because stringify omits them.
+- **Two NaNs compare EQUAL**, because stringify writes `null` for both. Without
+  this, one NaN coordinate would make every commit look like a change, for ever.
+
+The walk is generic on purpose. A hand-written comparison over the known fields
+would go stale the moment the document gains one - UV is next - and a field the
+comparison cannot see is an edit Undo cannot take back.
+
+**Review fuzzed it against `JSON.stringify` over 700k generated pairs** -
+`undefined`, `null`, `NaN`, `±Infinity`, `-0`, `1e21`, array holes, integer-like
+keys - and found zero cases where it says "identical" for documents that
+stringify differently. That is the property the whole change rests on, and it is
+now verified rather than argued. (Integer-like keys were the trap worth checking:
+`finishes`/`smoothGroups`/`creases` are keyed by group index as a string, and
+`Object.keys` and `JSON.stringify` emit those in the same canonical ascending
+order.)
+
+### And a size cap, with a two-tier floor
+
+60 steps was the only limit and it was written when a model was a cube. A
+12000-face character is ~3.3 MB of retained objects per step.
+
+- `HISTORY_MAX_STEPS` = 60, `HISTORY_MAX_BYTES` = **48 MB**,
+  `HISTORY_MIN_STEPS` = 8, `HISTORY_HARD_BYTES` = **128 MB**.
+- Trim to fit the soft budget, but never below 8 steps - an Undo stack a single
+  heavy edit can empty is worse than one that uses memory.
+- **Unless** holding 8 would pass the hard ceiling, at which point the floor
+  gives way down to one step.
+
+`trimHistory`'s unconditional `historyIndex--` is safe only because its one call
+site is the end of `pushHistory`, after slice + push + index++, so the index is
+always the last element and the step being dropped is never the one being
+pointed at. **A second caller at any other index would make it wrong.**
+
+### Two findings from review, both real, both about that number
+
+**The estimate charged the whole material library, at twice its size.** The line
+was `JSON.stringify(d.materialLib).length * 2`, commented "small, and exact",
+and it was neither: `serializeDoc` writes the WHOLE library (not the definitions
+the scene references), a picture mask stores a 128×128 PNG as a **data URL**,
+four slots per material, no cap on the library, persisted in localStorage across
+sessions. Forty pictures is ~2 MB of base64 per step - and base64 is ASCII,
+which V8 holds at one byte per character, so the `* 2` doubled exactly the term
+that dominates. **A user with photo masks on ten materials saw Undo stop after
+twelve presses on a cube**, with nothing to explain why. Now counted by walking
+the strings for their length at one byte per character, which also takes the
+last `JSON.stringify` out of this path. The memory is real - the library is
+deep-copied into every step - so it is counted, not dropped.
+
+**The floor was a STEP count, and a step holds a SCENE, not a mesh.**
+`MESH_FACE_BUDGET` is checked per mesh, by the importer and by Subdivide;
+nothing caps a scene, and Duplicate consults no budget. Four copies of the
+8858-face character make a 13 MB step, the trim loop stops at eight of them
+holding 104 MB, and the byte limit bounds nothing. Hence the second tier.
+
+Plus a `Number.isFinite` clamp on the estimate: one hand-edited non-numeric
+field (`"name": 1` survives `restoreDoc`) made it `NaN`, which cached in the
+WeakMap and silently killed the byte cap for the rest of the session, for
+healthy steps too.
+
+### Still on the table
+
+`serializeDoc` deep-copies the entire material library into every history step
+(`JSON.parse(JSON.stringify(...))`, v2.8b, so a step is never aliased to live
+definitions). With picture masks that is megabytes of byte-identical base64
+duplicated per step. Sharing one copy across steps while the library is
+unchanged is the obvious fix and it is a real aliasing question, so it is
+written down rather than guessed at.
+
+### The probe
+
+`py _histchk.py` - 41 checks. Eleven kinds of edit that were each once lost,
+each asserted visible BOTH to the comparison and to `stringify` - and
+deliberately placed in the LAST vertex of the first object, a vertex of the
+SECOND object, and a field that appears in one snapshot and not the other. The
+first cut of that section only ever edited `objects[0]` and element zero, and a
+broken build that **compared arrays by their first element** passed it whole;
+that is what the broken builds are for.
+
+`py _mkhistbroken.py` (arrays by first element, key counts ignored, NaN no
+longer equal) and `cap` (the cursor not carried with the shift, the estimate
+blind to positions) - 2 failures each.
+
+One break was REMOVED from that builder rather than left looking covered:
+deleting the step floor broke nothing any check could see, because at the
+96 MB this version first carried the floor was unreachable on any mesh the app
+will hold. That is what sent the budget to 48 MB and the floor to two tiers,
+and the probe now tests that **arithmetic** - that neither limit is decoration -
+instead of pretending to cover a branch it cannot reach.
 
 ## Three things that cost a frame and did not have to (v2.26)
 
