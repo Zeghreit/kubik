@@ -2380,7 +2380,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.24</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.25</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -3733,6 +3733,266 @@ const raycaster = new THREE.Raycaster();
    App.objects, so none of them is ever raycast. */
 raycaster.params.Line2 = raycaster.params.Line2 || {};
 raycaster.params.Line2.threshold = 14;
+
+
+/* ---------------- ACCELERATED RAYCASTING (v2.25) -------------------------
+
+   Every raycast in this app walked every triangle. three's own Mesh.raycast
+   is a loop over the index buffer, so a tap that tests a 17716-triangle
+   import against 25-37 rays - which is what pickObjectAt plus pointOccluded's
+   occlusion budget comes to - is up to 655 thousand ray-triangle tests before
+   anything is drawn. The knife, snapTargetAt and the curve picker all pay the
+   same bill on the same meshes.
+
+   `three-mesh-bvh@0.9.7` has been in the importmap since the boolean landed -
+   three-bvh-csg depends on it - so this costs no new dependency, and the
+   entry is direct, so `import('three-mesh-bvh')` resolves.
+
+   WHY v2.23 IS STILL A PREREQUISITE, corrected after review read the
+   library rather than its README.
+
+   The README says "A separate bounds tree root is generated for each geometry
+   group", which would have meant 9025 roots for a 9025-face character and a
+   loop over them - the brute force this replaces, with a tree on top. That is
+   NOT true in indirect mode in 0.9.7: `getRootRanges` returns a single range
+   covering the whole indirect buffer whatever the group count. So per-face
+   groups would not have cost roots, and that is not the reason.
+
+   The real dependency is the next sentence: "Triangles excluded from these
+   groups are not included in the BVH". In indirect mode the indirect buffer
+   is built ONLY from triangles that fall inside some group - and that holds
+   even for a single-material mesh, where stock three would still test every
+   triangle. So a triangle outside every group is invisible to the tree and
+   visible to the stock raycast: the two paths disagree, which is the one thing
+   this must never do. `runsCoverIndex` in _facemap - the check that the draw
+   runs tile the index buffer exactly once - is what guarantees they cannot,
+   and it is now load-bearing for picking and not only for drawing.
+
+   THREE THINGS HERE ARE EASY TO GET WRONG AND EXPENSIVE TO FIND LATER.
+
+   1. `indirect: true` IS NOT OPTIONAL. From the README: "an index will be
+      produced and retained as a side effect of the construction unless the
+      'indirect' option is used" - the default REORDERS the index buffer for
+      cache locality. This app's whole face map is offsets into that buffer
+      (`geo.userData.kubikFaces`), and `geometry.groups` are runs of it, so a
+      reorder would silently scramble which triangles belong to which face:
+      every face pick, every op, every export. Indirect mode keeps the buffer
+      untouched and holds its own indirection table.
+
+   2. THE TREE GOES STALE AND A STALE TREE LIES. applyDeltaToSelection writes
+      into the position attribute in place on every frame of a drag, and
+      snapTargetAt raycasts DURING that drag - so a tree built before the
+      first frame would be answering about where the vertices used to be. The
+      freshness check therefore lives INSIDE the patched raycast rather than
+      at the call sites: there are eight places that raycast an App mesh and a
+      check at seven of them is a wrong answer at the eighth. `refit()` is the
+      cheap repair - it recomputes node bounds bottom-up and is valid exactly
+      when the topology has not changed, which is this case - and the stamp
+      lives on the TREE, not in `userData`, so it cannot travel to a geometry
+      that has no tree.
+
+   3. THE PATCH GOES ON AFTER THE LIBRARY LOADS, NEVER BEFORE. three-mesh-bvh
+      captures `Mesh.prototype.raycast` into a table at ITS module load and
+      calls it as the fallback when a geometry has no tree. Patch first and
+      that captured fallback is this wrapper, so every unaccelerated mesh
+      recurses until the stack goes. So: stock until the module lands, then
+      wrap.
+
+   Correctness never depends on the load arriving. A phone in a tunnel keeps
+   the stock raycast and the app behaves exactly as it did in v2.24. */
+
+/* MEASURED, not guessed (_bvhchk section 10, 144 rays a set):
+
+     triangles   stock     BVH    build
+       128       0.88ms   0.40ms   0.00ms
+       512       2.09ms   0.13ms   0.20ms
+      1152       3.76ms   0.14ms   0.60ms
+      3200       9.20ms   0.15ms   0.90ms
+     18050      46.8ms    0.10ms   4.80ms
+
+   The tree wins at every size measured and the build pays for itself inside
+   the first set of rays, so this number is not really a crossover - it is a
+   floor to stop a scene of fifty cubes carrying fifty trees for gains nobody
+   can perceive. A cube is 12 triangles; subdivided twice it is 192. */
+const BVH_MIN_TRIS = 256;
+
+let bvhMod = null, bvhLoading = null, _bvhAccel = null;
+/* Whether acceleration is ON RIGHT NOW, as against ever having been installed.
+   `_bvhAccel` is never cleared, so every site that asked it kept paying for
+   trees nothing would read once a probe switched the path off (found in
+   review). */
+let _bvhOn = false;
+const _bvhStockRaycast = THREE.Mesh.prototype.raycast;
+
+function loadBVH() {
+  if (bvhMod) return Promise.resolve(bvhMod);
+  // Retryable on failure, for the same reason loadCSG is: the usual cause is
+  // a phone that was in a tunnel, and the second attempt is the one that works.
+  if (!bvhLoading) {
+    bvhLoading = import('three-mesh-bvh')
+      .then(m => { bvhMod = m; installBVH(m); return m; })
+      .catch(e => { bvhLoading = null; throw e; });
+  }
+  return bvhLoading;
+}
+
+function installBVH(m) {
+  if (_bvhAccel) return;
+  THREE.BufferGeometry.prototype.computeBoundsTree = m.computeBoundsTree;
+  THREE.BufferGeometry.prototype.disposeBoundsTree = m.disposeBoundsTree;
+  _bvhAccel = m.acceleratedRaycast;
+  setBVHEnabled(true);
+}
+
+/* One switch, so a probe can raycast the same ray both ways and compare -
+   which is the only way to know the accelerated answer is the SAME answer,
+   rather than merely a faster one. */
+function setBVHEnabled(on) {
+  if (on && !_bvhAccel) return false;
+  _bvhOn = on;
+  THREE.Mesh.prototype.raycast = on
+    ? function (rc, ints) {
+        return bvhUsable(this.geometry, this)
+          ? _bvhAccel.call(this, rc, ints)
+          : _bvhStockRaycast.call(this, rc, ints);
+      }
+    : _bvhStockRaycast;
+  return on;
+}
+
+/* IS A DRAG RUNNING. try/catch for the same reason shadingTopoFor uses one:
+   both names are `let`s declared some 11,000 lines further down, and a
+   primitive built during startup can raycast while they are still in their
+   temporal dead zone. No drag is running then, which is what the catch
+   answers. */
+function bvhDragging() {
+  try { return !!(directDrag && dragCtx); } catch (e) { return false; }
+}
+
+/* IS THIS MESH THE ONE THAT IS MOVING - which is not the same question as "is
+   a drag running", and asking the wrong one cost the gesture the whole point
+   of this change (found in review).
+
+   `bvhDragging()` answers for the app. Gating on it refused to build a tree
+   for EVERY mesh while any drag was running - and the ray that runs per frame
+   during a drag is snapTargetAt's, which raycasts every OTHER object to find
+   something to snap to. Those are static for the whole gesture and a tree
+   serves them correctly. Two 18k imports, snapping on, drag a vertex of A:
+   the ray against A is brute-force by design, and B was brute-force too, for
+   the entire drag, on the one frame loop this was built to speed up.
+
+   `dragCtx.objId` is set only by an ELEMENT drag (captureDragContext sets it
+   in that branch alone). An object drag moves the matrix and not one position,
+   so no tree it touches can go stale and there is nothing to gate. */
+function bvhDraggingMesh(mesh) {
+  try {
+    if (!directDrag || !dragCtx || dragCtx.objId === undefined) return false;
+    return !!mesh && mesh.userData && mesh.userData.objId === dragCtx.objId;
+  } catch (e) { return false; }
+}
+
+function bvhBuild(geo) {
+  const t = geo.computeBoundsTree({ indirect: true });
+  t._kubikIndexCount = geo.index.count;
+  t._kubikPosVer = geo.attributes.position.version;
+  return true;
+}
+
+/* MAY THIS RAY USE THE TREE - asked on every raycast, and the answer is no
+   while the mesh is moving.
+
+   This is where the first version of v2.25 was wrong, and the measurement is
+   what said so. It refitted the tree whenever the positions had moved, which
+   is correct but backwards economics: a refit on an 18050-triangle mesh is
+   4.1ms, while ONE brute-force ray against the same mesh is 0.33ms. A drag
+   fires a single snapTargetAt ray per frame, so refitting to serve it cost
+   twelve times what it saved, every frame, on exactly the gesture that is
+   already the heaviest thing the app does.
+
+   So a stale tree is not repaired here and not used here - the ray goes to
+   the stock raycast, which is the right tool for one ray - and it is not
+   BUILT here either while a drag is running, because it would be stale before
+   the next frame. The repair happens once, in settleShadingAfterDrag, where
+   4.1ms buys a 400x speedup on every tap after it.
+
+   The tree is never consulted while it disagrees with the positions, which is
+   the only invariant that matters: a stale tree does not answer slowly, it
+   answers wrongly. */
+function bvhUsable(geo, mesh) {
+  if (!bvhWorthIt(geo)) {
+    if (geo && geo.boundsTree) geo.disposeBoundsTree();
+    return false;
+  }
+  const t = geo.boundsTree;
+  if (t && t._kubikIndexCount !== geo.index.count) {
+    // Topology moved. Every op replaces the geometry outright, so this is a
+    // belt on top of the braces rather than a live case.
+    geo.disposeBoundsTree();
+    return bvhDraggingMesh(mesh) ? false : bvhBuild(geo);
+  }
+  if (!t) return bvhDraggingMesh(mesh) ? false : bvhBuild(geo);
+  return t._kubikPosVer === geo.attributes.position.version;
+}
+
+/* AND IT IS BUILT BEFORE THE TAP, NOT DURING IT (found in review). Every op
+   replaces the geometry, which drops the tree, so the first raycast after a
+   confirm used to rebuild it from inside `pointerdown` - 4.8ms for one 18k
+   import, and the sum of them when a tap raycasts a scene of several. The
+   hitch landed on the tap after every single op.
+
+   Idle rather than immediate, because the frame a confirm lands on is already
+   the busiest one there is. Re-checked on arrival: the geometry may have been
+   replaced again by then, and a drag may have started. */
+let _bvhIdleHandle = null;
+function bvhBuildWhenIdle(geo) {
+  if (!_bvhAccel || !bvhWorthIt(geo) || geo.boundsTree) return;
+  const run = () => {
+    _bvhIdleHandle = null;
+    // Still the live geometry of some object, still wanted, still no tree,
+    // and nothing moving.
+    if (!_bvhOn || geo.boundsTree || !bvhWorthIt(geo) || bvhDragging()) return;
+    if (!App.objects.some(o => o.mesh && o.mesh.geometry === geo)) return;
+    bvhBuild(geo);
+  };
+  if (_bvhIdleHandle) return;      // one in flight is enough; the rest follow
+  _bvhIdleHandle = (typeof requestIdleCallback === 'function')
+    ? requestIdleCallback(run, { timeout: 1200 })
+    : setTimeout(run, 250);
+}
+
+function bvhWorthIt(geo) {
+  return !!(geo && geo.index && geo.attributes && geo.attributes.position &&
+            geo.index.count >= BVH_MIN_TRIS * 3);
+}
+
+/* Fired where heavy meshes are born rather than at the raycast, so the first
+   tap on an imported character is already accelerated instead of paying the
+   brute force once and the load after it. Forgetting a site costs speed and
+   never correctness - the stock raycast is the fallback. */
+function maybeLoadBVH(geo) {
+  if (bvhMod || bvhLoading || !bvhWorthIt(geo)) return;
+  loadBVH().catch(() => { /* stays on the stock raycast */ });
+}
+
+/* MAKE IT FRESH NOW - called once when a drag settles, never per ray.
+   `refit()` recomputes node bounds bottom-up and is valid exactly when the
+   topology has not changed, which is what a vertex drag is. Cheaper than a
+   rebuild and, more to the point, it is the only moment at which paying for
+   either makes sense. */
+function freshenBoundsTree(geo) {
+  if (!geo || !bvhWorthIt(geo)) {
+    if (geo && geo.boundsTree) geo.disposeBoundsTree();
+    return;
+  }
+  const t = geo.boundsTree;
+  if (!t || t._kubikIndexCount !== geo.index.count) {
+    if (t) geo.disposeBoundsTree();
+    bvhBuild(geo);
+    return;
+  }
+  const pv = geo.attributes.position.version;
+  if (t._kubikPosVer !== pv) { t.refit(); t._kubikPosVer = pv; }
+}
 
 const App = {
   objects: [],          // {id, name, mesh}
@@ -7135,6 +7395,12 @@ function settleShadingAfterDrag(ctx) {
   if (!obj || !obj.mesh || !obj.mesh.geometry) return;
   obj.mesh.geometry.userData.shadeTopo = null;
   applyShading(obj);
+  /* AND THE RAYCAST TREE, for the same reason and at the same moment (v2.25).
+     The drag left it describing where the vertices used to be, so every ray
+     since the first frame has been going to the stock raycast. One refit here
+     - 4.1ms on an 18050-triangle mesh - puts every tap after this back on the
+     400x path. Deliberately not in the frame loop; see bvhUsable. */
+  if (_bvhOn) freshenBoundsTree(obj.mesh.geometry);
 }
 
 function shadingTopoFor(geo) {
@@ -8249,9 +8515,18 @@ function rebuildFromEditable(obj, edIn) {
   const carriedField = obj.mesh.geometry.userData && obj.mesh.geometry.userData.kubikField;
   if (carriedField) obj.mesh.geometry.userData.kubikField = null;   // so the dispose below leaves it alone
   disposeEdgeField(obj.mesh.geometry);
+  /* The tree goes with the geometry it described (v2.25). Explicit rather
+     than left to the collector, because in indirect mode it holds its own
+     buffers and this is the one line that runs on every op in the app. */
+  if (obj.mesh.geometry.boundsTree) obj.mesh.geometry.disposeBoundsTree();
   obj.mesh.geometry.dispose();
   obj.mesh.geometry = geo;
   if (carriedField) geo.userData.kubikField = carriedField;
+  // Heavy enough to be worth a tree? Then start fetching the library now, so
+  // the first tap after an import or a subdivide is already accelerated - and
+  // build the tree on an idle frame rather than inside that tap.
+  maybeLoadBVH(geo);
+  bvhBuildWhenIdle(geo);
   // Every op in the app funnels through here, which is the only place that
   // sees the finished group list and the finished material array together.
   reconcileFinishes(obj);
@@ -27285,6 +27560,10 @@ function restoreDoc(doc, opts = {}) {
     publishFacesFromGroups(geo);
     geo.computeBoundingSphere();
     geo.computeBoundingBox();
+    // This path builds its geometry itself rather than through
+    // rebuildFromEditable, so it asks for the tree itself too (v2.25).
+    maybeLoadBVH(geo);
+    bvhBuildWhenIdle(geo);
     /* Keeping the LIVE look across an undo only works while the two agree
        about what the face groups ARE. `liveLook` is indexed by the object's
        CURRENT numbering; the geometry being restored can have one group more
@@ -35836,6 +36115,18 @@ if (PICK_DEBUG) {
     /* v2.23: a face and a draw group are two different things. The map is
        the one source of truth for how many faces a mesh has. */
     publishFaces, publishFacesFromGroups, faceCount, faceRanges, mergeDrawGroups,
+    /* v2.25: the BVH switch, so a probe can fire the same ray both ways. A
+       faster answer is worth nothing until it is proven to be the SAME
+       answer, and nothing about index order, groups or faceIndex is obvious
+       enough to take on trust. */
+    loadBVH, setBVHEnabled, freshenBoundsTree, bvhWorthIt, maybeLoadBVH,
+    refreshUI,
+    bvhUsable, bvhDragging, bvhDraggingMesh, bvhBuildWhenIdle, settleShadingAfterDrag,
+    BVH_MIN_TRIS, get bvhReady() { return !!_bvhAccel; },
+    /* The app's OWN raycaster, not a fresh one: a fresh Raycaster would not
+       carry params.Line2.threshold, so a probe using one would be firing a ray
+       this app never fires. */
+    raycaster,
     // v2.22: the camera keeps its gestures, and the slider follows the
     // selected point.
     cameraButton, cameraPlanePoint,

@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.24**
+- Version at time of writing: **2.25**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -51,6 +51,128 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Raycasting goes through a BVH (v2.25)
+
+`three-mesh-bvh@0.9.7` was already in the importmap - `three-bvh-csg` pulls it
+for the boolean - so this costs no new dependency. Measured, 144 rays against an
+18050-triangle import: **171.6 ms brute force, 0.2 ms through the tree.** The
+tree costs 4.8 ms to build, once per object, on an idle frame.
+
+Every raycast in the app used to walk every triangle. A tap is 25-37 rays
+(`pickObjectAt` plus `pointOccluded`'s occlusion budget), so a character was up
+to 655 thousand ray-triangle tests before anything was drawn; the knife,
+`snapTargetAt` and the curve picker paid the same bill.
+
+### THE THREE THINGS THAT WILL BITE ANYONE WHO TOUCHES THIS
+
+**1. `indirect: true` is not optional.** Without it `MeshBVH` REORDERS the
+geometry's index buffer for cache locality. The whole v2.23 face map
+(`geo.userData.kubikFaces`) is offsets into that buffer and `geometry.groups`
+are runs of it, so a reorder silently repoints every face. The broken build
+proves it: the same tap returns face 683 on the stock path and face 139 through
+the tree. Nothing throws, nothing looks wrong, and every face pick, op and
+export is against the wrong triangles.
+
+**2. A stale tree does not answer slowly, it answers WRONGLY.**
+`applyDeltaToSelection` writes into the position attribute in place on every
+frame of a drag, and `snapTargetAt` raycasts during that drag. So `bvhUsable`
+is asked on EVERY raycast and returns false when
+`tree._kubikPosVer !== position.version`; the ray goes to the captured stock
+raycast instead. The freshness check lives inside the patched raycast on
+purpose - there are eight sites that raycast an App mesh, and a check at seven
+of them is a wrong answer at the eighth. The stamp lives on the TREE, not in
+`userData`, so it cannot travel to a geometry that has no tree.
+
+**3. The patch goes on AFTER the library loads, never before.** three-mesh-bvh
+captures `Mesh.prototype.raycast` into a table at its own module load and calls
+it as the fallback for geometry with no tree. Patch first and that fallback is
+the wrapper: every unaccelerated mesh recurses until the stack goes.
+
+### The economics, which the first version had backwards
+
+A refit is 3.6-5.8 ms on an 18050-triangle mesh. ONE brute-force ray against the
+same mesh is 1.2 ms. A drag fires a single `snapTargetAt` ray per frame, so
+refitting to serve it cost three to five times what it saved, every frame, on
+the heaviest gesture in the app. So:
+
+- **During a drag**: no tree is built and no stale tree is used. The ray goes
+  to the stock raycast, which is the right tool for one ray.
+- **At the settle**: `settleShadingAfterDrag` refits once. 4 ms buys the 400x
+  back on every tap after it. `directDrag = null` happens in exactly two places
+  and both call it.
+- **The gate is PER MESH, not global** (found in review). `snapTargetAt`
+  raycasts every OTHER object to find something to snap to, and those are
+  static for the whole gesture. A global gate refused them a tree too - losing
+  the speedup on precisely the frame loop this exists for. `bvhDraggingMesh`
+  compares `mesh.userData.objId` against `dragCtx.objId`, which
+  `captureDragContext` sets only for an ELEMENT drag; an object drag moves the
+  matrix and not one position, so there is nothing to gate.
+- **The build is scheduled, not synchronous** (found in review). Every op
+  replaces the geometry and drops the tree, so the first raycast after a confirm
+  used to rebuild it inside `pointerdown`. `bvhBuildWhenIdle` moves it to
+  `requestIdleCallback`, re-checking on arrival that the geometry is still live,
+  still wanted, still treeless and nothing is moving.
+
+### What v2.23 actually bought here, corrected
+
+The library's README says "A separate bounds tree root is generated for each
+geometry group", which would have meant 9025 roots for a 9025-face character.
+**That is not true in indirect mode in 0.9.7** - `getRootRanges` returns one
+range covering the whole indirect buffer whatever the group count. Review read
+the library rather than the README and the original note here was wrong.
+
+The real dependency is the next sentence: "Triangles excluded from these groups
+are not included in the BVH". In indirect mode the indirect buffer is built only
+from triangles inside some group, and that holds even for a single-material mesh
+where stock three would still test every triangle. A triangle outside every
+group is invisible to the tree and visible to the stock raycast - the two paths
+would disagree, which is the one thing this must never do. `runsCoverIndex` in
+`_facemap`, the check that the draw runs tile the index buffer exactly once, is
+what makes that impossible, and it is now load-bearing for PICKING and not only
+for drawing.
+
+### Where it attaches
+
+`BVH_MIN_TRIS = 256`, a floor rather than a crossover - the tree wins at every
+size measured and the build pays for itself inside the first set of rays, so the
+number only stops a scene of fifty cubes carrying fifty trees for gains nobody
+can perceive. Loaded lazily from `rebuildFromEditable` and `restoreDoc`
+(`maybeLoadBVH`), which is every op, every import and every file load.
+Correctness never depends on the load arriving: a phone in a tunnel keeps the
+stock raycast and behaves exactly as v2.24 did.
+
+`setBVHEnabled(on)` switches the whole thing, which is what lets `_bvhchk` fire
+the same ray both ways. `_bvhOn` tracks whether it is on RIGHT NOW, as against
+`_bvhAccel` which only ever says the library once installed - asking the wrong
+one left the settle paying for trees nothing would read (found in review).
+
+### The probe
+
+`py _bvhchk.py` - 36 checks. Almost none of it is a speed measurement; the
+claim under test is that the accelerated answer is the SAME answer. It fires the
+same rays both ways and compares `faceIndex`, `materialIndex`, point, distance
+and hit count: 400 rays framed, 2000 across five camera poses, `DoubleSide` and
+`FrontSide` from behind, and 36 real `pickFaceOnActive` taps. It also asserts
+the index buffer is byte-identical after the tree is built, drives a REAL drag
+through `beginDirectDrag`, and measures the crossover table quoted above.
+
+Two broken builds earn it: `py _mkbvhbroken.py` (indirect dropped, staleness
+test removed, settle stops repairing → 6 failures) and `policy` (refit per ray,
+build mid-drag, global gate → 3 failures).
+
+### FABLE's first run on this codebase
+
+Reviewed by `fable` rather than `opus`, per the subagent rules, since this is
+geometry code where a subtle error is expensive to find later. It downloaded
+`three-mesh-bvh`, `three-bvh-csg` and `three` and cited line numbers inside
+them - which is how it found that the README-based rationale above was wrong,
+something no amount of reading this file could have shown. Four findings, all
+real, none a false alarm: the global drag gate, the synchronous build on the
+tap, the wrong prerequisite comment, and the settle ignoring the switch. For
+comparison: opus found 5 real defects on Spin, 4 on v2.9 and 1 critical on
+v2.23, also with no false alarms. Fable's edge here was not the count but that
+it went and read the dependency.
 
 ## A character from the pipeline opens (v2.24)
 
