@@ -1258,13 +1258,26 @@
   .mat-card.active { border-color: var(--signal); }
   .mat-card { position: relative; }
   /* The edit affordance rides whichever card the selection is wearing. */
+  /* ON EVERY CARD (v2.30), not just the active one. It is the only way to
+     open a material that the selection is not already wearing, and reaching
+     it through a 500ms hold does not survive a scrolling shelf on iOS. A
+     control may not be gesture-only - the same rule as no hover-only.
+     Still ONE red mark in the shelf: the pencil is quiet everywhere except
+     on the applied card, so a2.101's signal is intact. */
   .mat-edit {
     position: absolute; top: 2px; right: 2px; width: 20px; height: 20px;
-    border-radius: 0; background: var(--signal); color: var(--on-accent);
-    font-size: 11px; line-height: 20px; text-align: center; display: none;
+    border-radius: 0; background: var(--panel2); color: var(--text-dim);
+    font-size: 11px; line-height: 20px; text-align: center; display: block;
   }
-  .mat-card.active .mat-edit { display: block; }
+  /* A FINGER IS BIGGER THAN 20 PIXELS. The hit area reaches past the glyph
+     without changing what the glyph looks like. */
+  .mat-edit::after { content: ''; position: absolute; inset: -6px; }
+  .mat-card.active .mat-edit { background: var(--signal); color: var(--on-accent); }
   .mat-card.add { color: var(--text-dim); font-size: 22px; min-height: 44px; justify-content: center; }
+  /* Sits beside the + at the end of the shelf, same quiet weight - a word
+     rather than a glyph, because a second big symbol next to + reads as
+     another way to add something (v2.30). */
+  .mat-card.sweep { font-size: 10px; letter-spacing: 0.06em; }
 
   /* ---- Material editor: the card column swaps out for this panel ---- */
   #matEditor {
@@ -2380,7 +2393,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.29</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.30</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -27655,7 +27668,20 @@ function serializeDoc() {
        keeps a doc and then edits state, which is why "deep-copy a serialised
        doc before touching anything" was a rule people had to remember. It is
        the code's job now. */
-    materialLib: JSON.parse(JSON.stringify(Array.from(MATERIALS.values()).map(normaliseDefMasks))),
+    /* WHAT THE DOCUMENT USES, not the whole library (v2.30, found in review).
+       Writing every entry meant a file put back everything CLEAN had just
+       removed - and a library that only ever grows was the bug in the first
+       place. The three presets always travel, because they carry the
+       overrides a person made to them and are three entries. */
+    materialLib: JSON.parse(JSON.stringify(Array.from(MATERIALS.values())
+      .filter(d => {
+        if (presetDefaults(d.id)) return true;
+        return App.objects.some(o => {
+          const fin = o.mesh.userData.finishes || {};
+          return Object.keys(fin).some(g => fin[g] === d.id);
+        });
+      })
+      .map(normaliseDefMasks))),
     /* Fifteen numbers, not twelve megabytes - the reason the environment is
        procedural at all. A shared file arrives lit the way it was made. */
     environment: { preset: App.env.preset, rotation: App.env.rotation, intensity: App.env.intensity },
@@ -27917,6 +27943,50 @@ function restoreDoc(doc, opts = {}) {
          anything by it (a2.65a). */
       if (d.envMapIntensity !== undefined) delete d.envMapIntensity;
       if (d.srcSig) d.srcSig = migrateSig(d.srcSig);
+      /* A PRESET ID IS THAT PRESET, AND NEVER A COPY OF IT (v2.30).
+
+         standard, plastic and metal belong to the APP, not to any document:
+         there is exactly one Solid, and a shelf card called "Solid (imported)"
+         is incoherent by construction. But a document records a preset's
+         colour as it stood when it was saved, and `color: null` - "follow the
+         theme" - comes back as an explicit grey the moment anyone nudges a
+         slider while that preset is open (see meApplyLive, which is the
+         upstream half of this bug). That frozen grey then misses the signature
+         index, the id is already taken, and the only branch left was to MINT.
+
+         Measured on a real project file: three entries in, nine out, two of
+         them "Solid (imported)" and "Plastic (imported)" - and one more pair
+         for every theme the file travels through.
+
+         Said out loud rather than dropped silently: a file whose preset really
+         does differ - someone's Metal with scratches on it - is the case the
+         minting branch was built for, and the person deserves to know their
+         own is being shown instead of a second card appearing for ever. */
+      if (presetDefaults(d.id)) {
+        const mine = MATERIALS.get(d.id);
+        /* COLOUR IS THEME DATA ON A PRESET, NOT DOCUMENT DATA (v2.30, narrowed
+           in review). `color: null` means "the theme's grey", and an older
+           build froze that to an explicit hex the moment any slider moved
+           while the preset was open - which is the whole bug. So a difference
+           in COLOUR ALONE is a serialisation artefact and this IS our preset:
+           resolve to it, mint nothing, say nothing, because there is nothing
+           to say.
+
+           ANY OTHER DIFFERENCE - masks, bevel, roughness, metalness, name -
+           is something a person made, and falls through to the branch that
+           has always carried it: "Metal (imported)", remapped onto the faces
+           that wore it. That is the a2.6x rule ("add scratches to Metal, save,
+           open the file anywhere else") and it stays intact.
+
+           The first cut of this guard returned for EVERY preset and toasted
+           when the signatures differed. Both halves were wrong: it discarded
+           real customisation, and it toasted on every open of the very file
+           it was written for - where the only difference IS the frozen grey.
+           The toast was also invisible, overwritten by loadProject's own
+           "Opened ..." in the same tick. */
+        if (mine && materialDefSig(Object.assign({}, d, { color: mine.color })) ===
+                    materialDefSig(mine)) return;
+      }
       /* IS THIS LOOK - OR THIS NAME - ALREADY IN THE LIBRARY, under any id?
          Then point at it and add nothing.
 
@@ -33796,12 +33866,23 @@ function buildMatTray() {
     /* Tap applies. The pencil on the ACTIVE card - or a long press on any
        card - opens the editor instead; the long-press flag keeps the click
        that follows the release from also applying. */
-    let lpTimer = null, longPressed = false;
-    b.addEventListener('pointerdown', () => {
+    let lpTimer = null, longPressed = false, lpX = 0, lpY = 0;
+    b.addEventListener('pointerdown', (ev) => {
       longPressed = false;
+      lpX = ev.clientX; lpY = ev.clientY;
       lpTimer = setTimeout(() => { longPressed = true; openMatEditor(k); }, 500);
     });
     const cancelLp = () => { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } };
+    /* MOVEMENT is what says "this is a scroll, not a hold" (v2.30) - the same
+       rule the outliner's hold and a2.94's pickup already use. v2.3b read
+       pointercancel as that signal instead, which is true on a desktop and
+       false on a phone: iOS fires it for a STATIONARY press once the scroller
+       decides it might own the gesture, so the hold could not complete at all
+       on the shelf this matters most in. A flick moves, so it still cancels. */
+    b.addEventListener('pointermove', (ev) => {
+      if (!lpTimer) return;
+      if (Math.abs(ev.clientX - lpX) + Math.abs(ev.clientY - lpY) > 8) cancelLp();
+    });
     b.addEventListener('pointerup', cancelLp);
     b.addEventListener('pointerleave', cancelLp);
     /* AND pointercancel (v2.3b). The tray is a vertical scroller, and a
@@ -33812,6 +33893,13 @@ function buildMatTray() {
        for a material the user was only scrolling past. Every other hold in
        this app already guards this - the outliner row through dropHold, the
        tool ring through the canvas's own pointercancel handler. */
+    /* BLANKET AGAIN, as v2.3b had it (found in review). Making it conditional
+       on movement was dead code - the flag was only ever set in the block that
+       had already cancelled - and the reasoning behind it is gone anyway: the
+       pencil is on every card now, so a hold that iOS eats costs nothing,
+       while a hold that survives a scroll opens an editor for a card the
+       person was only scrolling past. The pointermove guard above stays as the
+       belt for browsers that deliver a move but no cancel. */
     b.addEventListener('pointercancel', cancelLp);
     b.addEventListener('click', (ev) => {
       if (longPressed) { ev.preventDefault(); return; }
@@ -33854,6 +33942,67 @@ function buildMatTray() {
     openMatEditor(id);
   });
   matTrayInnerEl.appendChild(add);
+
+  /* CLEAN UP (v2.30). A LIBRARY ONLY EVER GREW. Every project file opened
+     brings its materials, nothing ever removed one again, and before this
+     version a preset minted a copy of itself on the way in - so a shelf ends
+     up thirty cards long, most of them nobody's. Deleting those one editor at
+     a time, on a phone, is not a thing anyone will actually do.
+
+     SAFE BY CONSTRUCTION: it removes only what NOTHING in the scene wears, so
+     the picture cannot change, and never a preset, which must always be on the
+     shelf. The one thing it can take that you might want is a material made
+     with + and not yet applied to anything - hence the count in the toast, so
+     an unexpected number is visible rather than silent. */
+  const sweep = document.createElement('button');
+  sweep.className = 'mat-card add sweep';
+  sweep.title = 'Remove materials nothing is wearing';
+  sweep.textContent = 'CLEAN';
+  sweep.addEventListener('click', () => {
+    const worn = new Set();
+    App.objects.forEach(o => {
+      const fin = o.mesh.userData.finishes || {};
+      Object.keys(fin).forEach(g => worn.add(fin[g]));
+    });
+    /* AND EVERY HISTORY STEP (found in review). "Nothing in the scene wears
+       it" is true of the scene and false of what undo can put back: delete the
+       one object wearing a material, sweep, undo, and the object returned
+       wearing Solid with its masks gone and no way back - the harvest does not
+       re-adopt on undo, because undo passes keepAppearance. */
+    (App.history || []).forEach(doc => {
+      ((doc && doc.objects) || []).forEach(o => {
+        const fin = o.finishes || {};
+        Object.keys(fin).forEach(g => worn.add(fin[g]));
+      });
+    });
+    const doomed = [];
+    MATERIALS.forEach((d, id) => {
+      if (isPresetDef(d) || worn.has(id)) return;
+      doomed.push(id);
+    });
+    if (!doomed.length) { toast('Nothing unused to remove'); return; }
+    doomed.forEach(id => {
+      MATERIALS.delete(id);
+      /* The same retirement meDelete does, for the same reason: an instance
+         left in the pool goes on drawing a definition the library no longer
+         has. */
+      prunePool(id + '|', null);
+      dropMaskTexture(id);
+      if (_matPreviewRig) {
+        const pm = _matPreviewRig.mats.get(id);
+        if (pm) { pm.dispose(); _matPreviewRig.mats.delete(id); }
+      }
+    });
+    App.objects.forEach(o => dressFromPool(o));
+    pruneMaskImages();
+    saveMaterialLibrary();
+    if (matEditingId && !MATERIALS.has(matEditingId)) closeMatEditor(false);
+    _matPreviews = null;
+    buildMatTray();
+    refreshMatTray();
+    toast('Removed ' + doomed.length + ' unused material' + (doomed.length > 1 ? 's' : ''));
+  });
+  matTrayInnerEl.appendChild(sweep);
 }
 
 /* ---------------- The pick-up (a2.94) ----------------
@@ -34833,6 +34982,16 @@ matTabEl.addEventListener('click', () => setMatTrayOpen(!matTrayIsOpen()));
    whatever wore them falls back to Solid. */
 let matEditingId = null;
 const meImg = document.getElementById('meImg');
+/* HAS THE PERSON TOUCHED THE COLOUR PICKER since this editor opened (v2.30)?
+   meApplyLive runs for all four controls and cannot otherwise tell which one
+   fired, and a preset's `color: null` must survive a nudge of roughness.
+
+   A STICKY FLAG, not a comparison against the opening value (found in review):
+   dragging the picker to red and back to the gold it started on left d.color
+   red while the swatch showed gold, because "differs right now" is not "was
+   moved". Set by a listener on meColor itself, registered before the shared
+   one so it is already true when meApplyLive reads it. */
+let meColorTouched = false;
 const meName = document.getElementById('meName');
 const meColor = document.getElementById('meColor');
 const meMetal = document.getElementById('meMetal');
@@ -34857,6 +35016,7 @@ function openMatEditor(id) {
   matEditingId = id;
   meName.textContent = d.name + (isPresetDef(d) ? ' (preset)' : '');
   meColor.value = d.color || '#' + DEFAULT_MATERIAL_COLOR.toString(16).padStart(6, '0');
+  meColorTouched = false;
   meMetal.value = d.metalness;
   meRough.value = d.roughness;
   meBevel.value = d.bevel || 0;
@@ -34883,7 +35043,15 @@ function meApplyLive() {
   // Strict: the fallback would write all eleven controls into Solid (v2.29).
   const d = liveMaterialDef(matEditingId);
   if (!d) return;
-  d.color = meColor.value;
+  /* `color: null` ON A PRESET MEANS "THE THEME'S GREY" (v2.30). Writing the
+     picker back unconditionally froze that to an explicit hex the moment
+     anyone nudged roughness on Solid: the preset stopped following the theme,
+     saveMaterialLibrary wrote a presetOverride, serializeDoc put the frozen
+     grey into every saved file, and every later open of that file minted a
+     "Solid (imported)" beside it. So the colour is written only when the
+     picker has actually MOVED. For a material that already has a colour this
+     changes nothing - opened value and current value are the same string. */
+  if (meColorTouched) d.color = meColor.value;
   d.metalness = parseFloat(meMetal.value);
   d.roughness = parseFloat(meRough.value);
   const hadBevel = !!d.bevel;
@@ -34943,6 +35111,8 @@ function meCommit() {
   meImg.src = (_matPreviews && _matPreviews[keep]) || '';
 }
 
+// FIRST, so the flag is already set when meApplyLive reads it below.
+['input', 'change'].forEach(ev => meColor.addEventListener(ev, () => { meColorTouched = true; }));
 [meColor, meMetal, meRough, meBevel].forEach(el => {
   el.addEventListener('input', meApplyLive);
   el.addEventListener('change', () => { meApplyLive(); meCommit(); });

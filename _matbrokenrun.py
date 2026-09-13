@@ -15,6 +15,16 @@ EXPECT = {
     'save':         ['3.8'],
     'heal':         ['3.9'],
     'mute':         ['3.3', '3.10'],
+    'presetmint':   ['4.1'],
+    'pincolor':     ['4.3'],
+    'nocolor':      ['4.4'],
+    'sweeppreset':  ['4.5'],
+    'sweepworn':    ['4.5'],
+    'guardwide':    ['4.2'],
+    'guardcolour':  ['4.1'],
+    'colorsticky':  ['4.4'],
+    'docall':       ['4.6'],
+    'sweepnohistory': ['4.7'],
 }
 
 blind = 0

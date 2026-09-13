@@ -126,6 +126,67 @@ elif MODE == 'mute':
     rep("  if (isPresetDef(d)) { toast('Solid, Plastic and Metal cannot be deleted \\u2014 use Reset'); return; }",
         "  if (isPresetDef(d)) { return; }")
 
+elif MODE == 'presetmint':
+    # The harvest stops treating a preset id as that preset, so a document
+    # whose Solid carries a frozen grey mints a copy again. Expect 4.1.
+    rep("      if (presetDefaults(d.id)) {", "      if (false && presetDefaults(d.id)) {")
+
+elif MODE == 'pincolor':
+    # meApplyLive writes the picker back unconditionally, so nudging roughness
+    # on Solid freezes its colour again - the upstream cause. Expect 4.3.
+    rep("  if (meColorTouched) d.color = meColor.value;",
+        "  d.color = meColor.value;")
+
+elif MODE == 'nocolor':
+    # ...and the opposite: the colour field itself stops working. Expect 4.4.
+    rep("  if (meColorTouched) d.color = meColor.value;",
+        "  if (false) d.color = meColor.value;")
+
+elif MODE == 'sweeppreset':
+    # The sweep stops sparing presets (all but Solid, so the app still runs
+    # and the probe reaches its checks rather than throwing). Expect 4.5.
+    rep("      if (isPresetDef(d) || worn.has(id)) return;",
+        "      if (isPresetDef(d) && d.id === 'standard') return;\n"
+        "      if (worn.has(id)) return;")
+
+elif MODE == 'sweepworn':
+    # The sweep stops sparing what the scene is wearing. Expect 4.5.
+    rep("      if (isPresetDef(d) || worn.has(id)) return;",
+        "      if (isPresetDef(d)) return;")
+
+elif MODE == 'guardwide':
+    # The guard returns for EVERY preset, so a file's genuinely customised
+    # Metal (a mask on it) is discarded instead of arriving as a copy - the
+    # a2.6x regression the review caught in the first cut. Expect 4.2.
+    rep("        if (mine && materialDefSig(Object.assign({}, d, { color: mine.color })) ===\n"
+        "                    materialDefSig(mine)) return;",
+        "        if (mine) return;")
+
+elif MODE == 'guardcolour':
+    # The guard compares the colour too, so the frozen theme grey reads as a
+    # difference again and mints "Solid (imported)". Expect 4.1.
+    rep("        if (mine && materialDefSig(Object.assign({}, d, { color: mine.color })) ===\n"
+        "                    materialDefSig(mine)) return;",
+        "        if (mine && materialDefSig(d) === materialDefSig(mine)) return;")
+
+elif MODE == 'colorsticky':
+    # Back to "differs from the value it opened with" instead of a sticky
+    # flag: moving the picker away and back leaves the away value. Expect 4.4.
+    rep("let meColorTouched = false;", "let meColorTouched = false;\nlet meColorOpened = null;")
+    rep("  meColorTouched = false;", "  meColorTouched = false; meColorOpened = meColor.value;")
+    rep("  if (meColorTouched) d.color = meColor.value;",
+        "  if (meColor.value !== meColorOpened) d.color = meColor.value;")
+
+elif MODE == 'docall':
+    # A document carries the WHOLE library again, so the next open puts back
+    # everything CLEAN removed. Expect 4.6.
+    rep("        if (presetDefaults(d.id)) return true;", "        if (true) return true;")
+
+elif MODE == 'sweepnohistory':
+    # CLEAN reads only the live scene, so a material only an undo step wears
+    # is taken. Expect 4.7.
+    rep("    (App.history || []).forEach(doc => {", "    (false && App.history || []).forEach(doc => {")
+
 else:
     raise SystemExit('unknown mode ' + MODE)
 
