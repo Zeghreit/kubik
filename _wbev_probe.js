@@ -83,9 +83,18 @@
         (buckets[own] = buckets[own] || []).push(l2);
       }
 
+      /* A hole is not the only way a patch can be wrong. A face wound the
+         other way round is invisible from outside (the app culls back faces)
+         and closes the hole count just as well as a correct one - so every
+         case asks the app's own audit too. `ok` ignores boundary edges, which
+         a sheet legitimately has. */
+      var w = k.auditWinding(o);
+
       return {
         verts: n, faces: ed.groups.length, open: open, twins: twins,
-        worstTwin: worst, nearestNonTwin: closest === Infinity ? -1 : closest
+        worstTwin: worst, nearestNonTwin: closest === Infinity ? -1 : closest,
+        conflict: w.conflictEdges, reversed: w.reversed, nonManifold: w.nonManifold,
+        wok: w.ok
       };
     }
 
@@ -142,10 +151,13 @@
         '\n  open edges ' + a.open + ', twins ' + a.twins +
         (a.twins ? ' (worst separation ' + a.worstTwin.toExponential(2) + ')' : '') +
         (a.nearestNonTwin >= 0 ? ', nearest other pair ' + a.nearestNonTwin.toExponential(2) : '') +
-        '\n' + verdict(a.open === 0 && a.twins === 0,
-          'closed, and no two logical vertices share a place',
+        '\n  winding: ' + a.conflict + ' conflicting edge(s), ' + a.reversed +
+        ' face(s) the wrong way round, ' + a.nonManifold + ' non-manifold' +
+        '\n' + verdict(a.open === 0 && a.twins === 0 && a.wok,
+          'closed, stitched, and every face the same way round',
           (a.open ? a.open + ' OPEN EDGE(S) ' : '') +
-          (a.twins ? a.twins + ' UNSTITCHED POINT(S)' : '')));
+          (a.twins ? a.twins + ' UNSTITCHED POINT(S) ' : '') +
+          (a.wok ? '' : a.conflict + ' CONFLICTING EDGE(S), ' + a.reversed + ' FACE(S) FLIPPED')));
       return o;
     }
 
@@ -594,6 +606,325 @@
           lp2.map(function (l3) { return pos[l3].distanceTo(pole).toFixed(4); }).join(' '));
       }
       log('7.4 every face within 0.2 of the old pole, by logical corner id\n  ' + near.join('\n  '));
+    })();
+
+    log('');
+    log('=== 8. a strip that STOPS at a vertex other faces also use ===');
+    /* The tear lives at the END of a selection, not along it: a vertex where
+       some faces moved and some did not. Section 7 found one arrangement of
+       that (a whole edge star at a pole). These are the others, and each one
+       reaches a different branch: one spoke (two untouched faces flanking the
+       run, both keeping the corner), two opposite spokes (a single untouched
+       face between two runs - it throws its corner away and lays a chord
+       across nothing), three in a row, and a profile with points partway
+       along it. Winding is asserted with the hole count, because a patch put
+       in backwards closes the count and is invisible from outside. */
+    function topLogical(o) {
+      var top = -1, ty = -1e9;
+      for (var l = 0; l < o.mesh.userData.topo.logicalCount; l++) {
+        var p = k.logicalPos(o, l);
+        if (p.y > ty) { ty = p.y; top = l; }
+      }
+      return top;
+    }
+    // Rotational order round the pole, so "opposite" and "in a row" mean what
+    // they say - topo edge ids are in build order, not angle order.
+    function spokesSorted(o) {
+      var l0 = topLogical(o), e = o.mesh.userData.topo.edges, arr = [];
+      for (var i = 0; i < e.length; i++) {
+        if (e[i][0] !== l0 && e[i][1] !== l0) continue;
+        var other = e[i][0] === l0 ? e[i][1] : e[i][0];
+        var p = k.logicalPos(o, other);
+        arr.push({ id: i, a: Math.atan2(p.z, p.x) });
+      }
+      arr.sort(function (x, y) { return x.a - y.a; });
+      return arr.map(function (x) { return x.id; });
+    }
+    var sphere6 = function () { return makePrim('sphere', { h: 6, v: 6 }); };
+    var sphere8 = function () { return makePrim('sphere', { h: 8, v: 6 }); };
+
+    run('8.1 sphere pole, ONE spoke of six, flat', sphere6, function (o) {
+      return [spokesSorted(o)[0]];
+    }, 0.03, 1, 'flat');
+
+    run('8.2 sphere pole, two OPPOSITE spokes of six, flat', sphere6, function (o) {
+      var s = spokesSorted(o);
+      return [s[0], s[3]];
+    }, 0.03, 1, 'flat');
+
+    run('8.3 sphere pole, three spokes in a row of eight, flat', sphere8, function (o) {
+      var s = spokesSorted(o);
+      return [s[0], s[1], s[2]];
+    }, 0.03, 1, 'flat');
+
+    run('8.4 sphere pole, two neighbouring spokes, round 3 seg', sphere6, function (o) {
+      var s = spokesSorted(o);
+      return [s[0], s[1]];
+    }, 0.03, 3, 'round');
+
+    run('8.4a sphere pole, ONE spoke, round 3 seg', sphere6, function (o) {
+      return [spokesSorted(o)[0]];
+    }, 0.03, 3, 'round');
+
+    run('8.4b sphere pole, two neighbouring spokes, flat 1 seg', sphere6, function (o) {
+      var s = spokesSorted(o);
+      return [s[0], s[1]];
+    }, 0.03, 1, 'flat');
+
+    run('8.4c sphere pole, two neighbouring spokes, round 2 seg', sphere6, function (o) {
+      var s = spokesSorted(o);
+      return [s[0], s[1]];
+    }, 0.03, 2, 'round');
+
+    run('8.5 tube, one vertical edge (the cap meets the wall there)', tube, function (o) {
+      var ids = edgesWhere(o, function (p, q) { return Math.abs(p.y - q.y) > 1e-6; });
+      return ids.slice(0, 1);
+    }, 0.04, 2, 'round');
+
+    /* 8.6 THE FLAT CASE, which is NOT a hole. On a flat grid the corner sits
+       exactly between the two points its faces move to, so the gap has no
+       area - a T-junction, not a tear. The patch deliberately declines to put
+       a zero-area face (with a cloned material of its own) there, so open
+       edges are EXPECTED; what must hold is that nothing is left unstitched
+       and nothing is wound backwards. */
+    (function () {
+      clearScene();
+      var o = makePrim('plane', { h: 3, v: 3 });
+      var b = survey(o);
+      var ids = edgesWhere(o, function (p, q) {
+        return Math.abs(p.x) < 1e-9 && Math.abs(q.x) < 1e-9 && Math.abs(p.z - q.z) > 1e-9;
+      });
+      if (!ids.length) ids = [allEdgeIds(o)[0]];
+      bevel(o, ids, 0.03, 1, 'flat');
+      var a = survey(o);
+      log('8.6 flat grid, one interior edge (a T-junction, not a hole)' +
+        '\n  ' + ids.length + ' edges, verts ' + b.verts + ' -> ' + a.verts +
+        ', faces ' + b.faces + ' -> ' + a.faces +
+        '\n  open edges ' + b.open + ' -> ' + a.open + ' (a sheet has a rim), twins ' + a.twins +
+        '\n  winding: ' + a.conflict + ' conflicting, ' + a.reversed + ' flipped' +
+        '\n' + verdict(a.twins === 0 && a.wok,
+          'stitched, and no zero-area patch went in',
+          (a.twins ? a.twins + ' UNSTITCHED POINT(S) ' : '') +
+          (a.wok ? '' : a.conflict + ' CONFLICTING EDGE(S), ' + a.reversed + ' FLIPPED')));
+    })();
+
+    /* 8.7 WHERE the multi-segment tear is. 8.4a is the smallest failing case -
+       ONE spoke, round 3 seg - and its flat twin passes, so the profile points
+       are the whole difference. Dump the faces and the open edges instead of
+       deducing them. Distances are given as (from the old pole / from the old
+       far end), so a point on the profile is recognisable by both. */
+    (function () {
+      clearScene();
+      var o = sphere6();
+      var top = topLogical(o);
+      var sp = spokesSorted(o), id = sp[0];
+      var e0 = o.mesh.userData.topo.edges[id];
+      var pole = k.logicalPos(o, top).clone();
+      var far = k.logicalPos(o, e0[0] === top ? e0[1] : e0[0]).clone();
+      bevel(o, [sp[0], sp[1]], 0.03, 2, 'round');
+
+      var ed = k.toEditable(o.mesh), L = k.edLogical(ed), pos = [];
+      for (var l = 0; l < L.logicalGroups.length; l++) {
+        var ai = L.logicalGroups[l][0];
+        pos.push(new V3(ed.positions[ai * 3], ed.positions[ai * 3 + 1], ed.positions[ai * 3 + 2]));
+      }
+      var cnt = {}, holder = {}, loops = [];
+      for (var gi = 0; gi < ed.groups.length; gi++) {
+        var lp = k.getGroupBoundaryLoopAttr(ed, gi).map(function (a) { return L.logicalOf[a]; });
+        loops.push(lp);
+        for (var q = 0; q < lp.length; q++) {
+          var a1 = lp[q], b1 = lp[(q + 1) % lp.length];
+          if (a1 === b1) continue;
+          var key = a1 < b1 ? a1 + '_' + b1 : b1 + '_' + a1;
+          cnt[key] = (cnt[key] || 0) + 1;
+          (holder[key] = holder[key] || []).push(gi);
+        }
+      }
+      var d = function (l) {
+        return pos[l].distanceTo(pole).toFixed(4) + '/' + pos[l].distanceTo(far).toFixed(4);
+      };
+      var lines = [];
+      Object.keys(cnt).forEach(function (key) {
+        if (cnt[key] === 2) return;
+        var ab = key.split('_').map(Number);
+        lines.push('[' + ab[0] + '-' + ab[1] + '] used by ' + cnt[key] + ' face(s) [' +
+          holder[key].join(',') + ']  ' + d(ab[0]) + ' , ' + d(ab[1]));
+      });
+      log('8.7 8.4a dumped - every edge NOT used by exactly two faces\n  ' +
+        (lines.length ? lines.join('\n  ') : '(none)'));
+      var near = [];
+      loops.forEach(function (lp, g2) {
+        var close = false;
+        lp.forEach(function (l3) {
+          if (pos[l3].distanceTo(pole) < 0.25 || pos[l3].distanceTo(far) < 0.25) close = true;
+        });
+        if (close) near.push('face ' + g2 + ': [' + lp.join(' ') + ']  ' + lp.map(d).join('  '));
+      });
+      log('  faces near either end of the beveled edge\n  ' + near.join('\n  '));
+    })();
+
+    log('');
+    log('=== 9. two arrangements a reviewer named, and the probe had not ===');
+
+    /* 9.1 AN OPEN MESH. Step 5 drops any chain that reaches either end of an
+       open fan, on the grounds that the gap there is the rim of the sheet.
+       That is only true when the face at that end MOVED. Cut one triangle out
+       beside the pole and bevel each spoke in turn: for a spoke that does not
+       touch the hole nothing about the rim changes, so the open count must
+       come back exactly as it went in. */
+    function openKeys(o) {
+      var ed = k.toEditable(o.mesh), L = k.edLogical(ed), cnt = {}, set = {};
+      for (var gi = 0; gi < ed.groups.length; gi++) {
+        var lp = k.getGroupBoundaryLoopAttr(ed, gi).map(function (a) { return L.logicalOf[a]; });
+        for (var i = 0; i < lp.length; i++) {
+          var a = lp[i], b = lp[(i + 1) % lp.length];
+          if (a === b) continue;
+          var key = a < b ? a + '_' + b : b + '_' + a;
+          cnt[key] = (cnt[key] || 0) + 1;
+        }
+      }
+      Object.keys(cnt).forEach(function (x) { if (cnt[x] !== 2) set[x] = cnt[x]; });
+      return set;
+    }
+    /* On a sheet the count of open edges is the wrong question - a bevel that
+       reaches the rim legitimately makes the rim longer. The invariant is that
+       the boundary stays ONE closed loop: a tear adds a second one. */
+    function boundaryLoops(o) {
+      var keys = Object.keys(openKeys(o)), adj = {}, n = 0;
+      keys.forEach(function (key) {
+        var ab = key.split('_');
+        (adj[ab[0]] = adj[ab[0]] || []).push(ab[1]);
+        (adj[ab[1]] = adj[ab[1]] || []).push(ab[0]);
+      });
+      var seen = {};
+      Object.keys(adj).forEach(function (v) {
+        if (seen[v]) return;
+        n++;
+        var stack = [v];
+        while (stack.length) {
+          var x = stack.pop();
+          if (seen[x]) continue;
+          seen[x] = 1;
+          (adj[x] || []).forEach(function (y) { if (!seen[y]) stack.push(y); });
+        }
+      });
+      return n;
+    }
+    function holedSphere() {
+      var ed = k.buildPrimitiveEditable('sphere', { h: 6, v: 6 });
+      var maxy = -1e9, n = ed.positions.length / 3;
+      for (var i = 0; i < n; i++) maxy = Math.max(maxy, ed.positions[i * 3 + 1]);
+      var drop = -1;
+      for (var g = 0; g < ed.groups.length && drop < 0; g++) {
+        var tri = ed.groups[g].triangles;
+        for (var t = 0; t < tri.length && drop < 0; t++)
+          for (var q = 0; q < 3; q++)
+            if (ed.positions[tri[t][q] * 3 + 1] > maxy - 1e-6) drop = g;
+      }
+      ed.groups.splice(drop, 1);
+      var mats = k.makeMaterialSet(ed.groups.length, 0x9aa3ad, null);
+      var o = k.createObjectFromEditable('sphere', new V3(0, 0, 0), ed, mats, {});
+      A.activeObjectId = o.id;
+      A.selectedObjectIds = new Set([o.id]);
+      k.ensureHelpers(o);
+      return o;
+    }
+    (function () {
+      var lines = [], bad = 0;
+      for (var si = 0; si < 6; si++) {
+        clearScene();
+        var o = holedSphere();
+        var sp = spokesSorted(o);
+        if (si >= sp.length) break;
+        var b = survey(o), bk = openKeys(o), bl = boundaryLoops(o);
+        var e = o.mesh.userData.topo.edges[sp[si]];
+        var key = e[0] < e[1] ? e[0] + '_' + e[1] : e[1] + '_' + e[0];
+        var onRim = !!bk[key];
+        bevel(o, [sp[si]], 0.03, 1, 'flat');
+        var a = survey(o), al = boundaryLoops(o);
+        var ok = al === bl && a.twins === 0 && a.wok;
+        if (!ok) bad++;
+        lines.push('spoke ' + si + (onRim ? ' (an edge of the hole)' : '') +
+          ': rim loops ' + bl + ' -> ' + al + ', open ' + b.open + ' -> ' + a.open +
+          ', faces ' + b.faces + ' -> ' + a.faces + (ok ? '' : '   <-- TORE'));
+      }
+      log('9.1 a sphere with one triangle cut out, each pole spoke in turn\n  ' +
+        lines.join('\n  ') + '\n' + verdict(bad === 0,
+          'the sheet still has exactly one boundary, wherever the bevel went',
+          bad + ' SPOKE(S) OPENED A SECOND BOUNDARY'));
+    })();
+
+    /* 9.2 A VERTEX WITH NO UNTOUCHED NEIGHBOUR TO FAN FROM. Two edges meeting
+       at a four-quad vertex: three faces move, the fourth has a moved face on
+       both sides, so nothing round that vertex keeps its corner. There is then
+       no surviving corner for the patch to fan from and it falls back to the
+       projection, which is what tore in the first place. Curved and
+       multi-segment on purpose - a flat one has no fold to mis-project. */
+    (function () {
+      clearScene();
+      var o = makePrim('sphere', { h: 8, v: 6 });
+      var topo = o.mesh.userData.topo, ys = [];
+      for (var l = 0; l < topo.logicalCount; l++) ys.push(k.logicalPos(o, l).y);
+      var uniq = ys.slice().sort(function (a, b) { return b - a; })
+        .filter(function (v, i, arr) { return i === 0 || Math.abs(v - arr[i - 1]) > 1e-6; });
+      var ty = uniq[2], v0 = -1;
+      for (var l2 = 0; l2 < topo.logicalCount && v0 < 0; l2++) if (Math.abs(ys[l2] - ty) < 1e-6) v0 = l2;
+      var ring = -1, up = -1;
+      for (var i = 0; i < topo.edges.length; i++) {
+        var e = topo.edges[i];
+        if (e[0] !== v0 && e[1] !== v0) continue;
+        var d = k.logicalPos(o, e[0] === v0 ? e[1] : e[0]).y - ty;
+        if (Math.abs(d) < 1e-6) { if (ring < 0) ring = i; }
+        else if (d > 0) { if (up < 0) up = i; }
+      }
+      var b = survey(o);
+      var vpos = k.logicalPos(o, v0).clone();
+      bevel(o, [ring, up], 0.03, 3, 'round');
+      var a = survey(o);
+      (function () {
+        var ed = k.toEditable(o.mesh), L = k.edLogical(ed), pos = [], cnt = {}, hold = {};
+        for (var l = 0; l < L.logicalGroups.length; l++) {
+          var ai = L.logicalGroups[l][0];
+          pos.push(new V3(ed.positions[ai * 3], ed.positions[ai * 3 + 1], ed.positions[ai * 3 + 2]));
+        }
+        var loops = [];
+        for (var gi = 0; gi < ed.groups.length; gi++) {
+          var lp = k.getGroupBoundaryLoopAttr(ed, gi).map(function (x) { return L.logicalOf[x]; });
+          loops.push(lp);
+          for (var q = 0; q < lp.length; q++) {
+            var a1 = lp[q], b1 = lp[(q + 1) % lp.length];
+            if (a1 === b1) continue;
+            var key = a1 < b1 ? a1 + '_' + b1 : b1 + '_' + a1;
+            cnt[key] = (cnt[key] || 0) + 1;
+            (hold[key] = hold[key] || []).push(gi);
+          }
+        }
+        var dd = function (l) { return pos[l].distanceTo(vpos).toFixed(4); };
+        var bad = [];
+        Object.keys(cnt).forEach(function (key) {
+          if (cnt[key] === 2) return;
+          var ab = key.split('_').map(Number);
+          bad.push('[' + ab[0] + '-' + ab[1] + '] used by ' + cnt[key] + ' [' + hold[key].join(',') +
+            ']  d ' + dd(ab[0]) + ' , ' + dd(ab[1]));
+        });
+        var near = [];
+        loops.forEach(function (lp, g2) {
+          if (!lp.some(function (l3) { return pos[l3].distanceTo(vpos) < 0.2; })) return;
+          near.push('face ' + g2 + ': [' + lp.join(' ') + ']  ' + lp.map(dd).join(' '));
+        });
+        log('  dump: edges not used by exactly two faces\n    ' +
+          (bad.length ? bad.join('\n    ') : '(none)') +
+          '\n  faces within 0.2 of the vertex\n    ' + near.join('\n    '));
+      })();
+      log('9.2 an L of two edges at a four-quad vertex, round 3 seg' +
+        '\n  verts ' + b.verts + ' -> ' + a.verts + ', faces ' + b.faces + ' -> ' + a.faces +
+        '\n  open edges ' + a.open + ', twins ' + a.twins +
+        '\n  winding: ' + a.conflict + ' conflicting, ' + a.reversed + ' flipped, ' +
+        a.nonManifold + ' non-manifold' +
+        '\n' + verdict(a.open === 0 && a.twins === 0 && a.wok,
+          'closed, stitched, and every face the same way round',
+          (a.open ? a.open + ' OPEN EDGE(S) ' : '') +
+          (a.wok ? '' : a.conflict + ' CONFLICTING, ' + a.reversed + ' FLIPPED')));
     })();
 
     out.push('');

@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.31a**
+- Version at time of writing: **2.32**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -3903,6 +3903,79 @@ none under 20°. Current worst: 36°.
 
 
 
+
+## Edge bevel closes the ends of the strip (2.32)
+
+A bevel lays a strip along every selected edge. Where the selection STOPS - at
+a vertex that not every surrounding face shares - the strip used to end in mid
+air. On a closed body that is a hole you can see through: an edge star at a
+sphere's pole tore three edges open for every selected spoke.
+
+Step 5 of `bevelEdgesOp` closes it. Round the vertex the faces form a ring;
+read it as one ring and CUT it wherever the surface is already closed - between
+two faces that neither moved (they still share their original edge), and at a
+run step 4 has already copied onto a face it trimmed. What is left between two
+cuts is one hole, and one polygon fills it: faces that moved bring the point
+they moved to, faces that kept their corner bring the corner, faces step 4 cut
+the corner off of bring nothing (their chord IS one side of the hole), and a
+selected edge crossed on the way brings its profile.
+
+Three decisions in it are not obvious and were each paid for:
+
+- **Fan the patch from the corner that survived, not from a best-fit plane.**
+  With a round profile the strip's arc dips back TOWARDS that corner, so the
+  outline is concave and nowhere near flat. `polygonTriangles` answers a shape
+  it cannot read by flattening it and ear-clipping, and a fold this tight
+  projects across itself - the triangles come back overlapping and the outline
+  traces twice, which from outside is the same tear again. Every point of the
+  hole is visible from the corner that stayed; no plane is needed.
+- **When nothing kept its corner, give the ring a centre.** An L of two edges
+  at a four-quad vertex moves three faces and step 4 cuts the fourth's corner
+  off, so the hole is a closed ring with no point on it that sees the rest.
+  A ring like that is star-shaped about its own middle - one new vertex there
+  and a triangle per side.
+- **Reaching the end of an open fan does not mean the rim.** It means the rim
+  only when the face at that end MOVED; if it kept its corner, its rim edge
+  still reaches the vertex and the gap is walled on every side. Testing the
+  chain's POSITION instead declined every open mesh silently, because on an
+  open fan one chain always starts at index 0 and one always ends at the last.
+
+Two tests the patches share with step 3, each written once: `enclosesArea`
+(Newell's RAW length against the outline's own perimeter - `loopNormal`
+normalises, so its length only ever says whether the sum was bit-exactly zero)
+and `doublesBack` (a trace that returns to a place it has been is pinched, and
+what is past the pinch is already closed).
+
+Measured by `_wbev_probe.py` / `_wbev_probe.js` (port 8871, ~40 s, writes
+`_wbev_out.txt`): 9 sections, every plain case, every valence 4-16 at a pole,
+runs that stop mid-loop, profiles of 1-3 segments, an open mesh with a triangle
+cut out, and a flat grid where the "hole" is a T-junction with no area and must
+NOT be filled. It asks two different questions - open edges through the app's
+own weld, and twin vertices within 1e-5 - plus the winding audit, because a
+patch put in backwards closes the open count just as well as a correct one.
+
+### Deliberately absent - do not rebuild these
+
+- **A patch at a T-junction.** On a flat grid the corner sits exactly between
+  the two points its faces move to. The gap has no area; a zero-area face with
+  a cloned material of its own is not the answer to it.
+- **A patch where a round profile's middle lands ON the surviving corner.** On
+  an edge whose faces are nearly in one plane the profile through the corner IS
+  a straight line through it, and the weld makes them one point. The walk is
+  pinched there and BOTH halves have no area - the strip already closes to that
+  corner on both sides. The walk is cut at every return to that point and each
+  piece stands or falls on its own area.
+
+### Still open
+
+- `bevelProfile`'s round arc centres on `p1 + p2 - pOrig`, which is tangent to
+  both faces only at a 90 degree dihedral. At 150 degrees the arc mid-point
+  sits ABOVE the original ridge instead of below it, so a round bevel on a
+  many-sided tube bulges where it should fillet. Reported by review, not
+  measured yet, and not what step 5 is about.
+- A selected edge with one face or three is left with no strip at all (step 2
+  returns for it) while step 1 has already moved the faces around it, and
+  nothing refuses. Pre-existing.
 
 ## Vertex bevel, round by default (a2.113)
 

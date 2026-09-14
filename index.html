@@ -2393,7 +2393,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.31a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.32</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -12515,7 +12515,7 @@ function bevelEdgesOp(obj, logicalEdges, distance, segments = 1, profile = 'flat
   const posOf = l => vecAt(ed, L.logicalGroups[l][0]);
 
   const selected = new Set(logicalEdges.map(([a, b]) => edgeKey(a, b)));
-  if (!selected.size) return false;
+  if (!selected.size) return refuseOp('those edges are not there any more');
 
   // Two separate limits, both needed:
   //   - half the shortest edge being beveled, so an offset can't run past the
@@ -12550,7 +12550,7 @@ function bevelEdgesOp(obj, logicalEdges, distance, segments = 1, profile = 'flat
     }
   });
 
-  if (!Number.isFinite(shortest)) return false;
+  if (!Number.isFinite(shortest)) return refuseOp('those edges are not on a face this can bevel');
   if (!Number.isFinite(narrowest)) narrowest = shortest;
   // Right up to the geometric limit. Beyond it the offsets cross and the face
   // turns inside out - the guard below catches that - but there's no reason to
@@ -12560,6 +12560,8 @@ function bevelEdgesOp(obj, logicalEdges, distance, segments = 1, profile = 'flat
   const faceNormal = loops.map(lp => loopNormal(ed, lp));
   const cornerIdx = new Map();   // "face:vertex" -> index of that face's corner
   const cornerMoved = new Map(); // "face:vertex" -> did it move?
+  const keptCorner = new Map();  // "face:vertex" -> step 4 left the original corner in place
+  const sewnRun = new Map();     // "vertex|edge" -> step 4 copied that strip run onto an untouched face
   let inverted = false;
 
   // --- 1. offset selected edges inside each face -------------------------
@@ -12616,7 +12618,10 @@ function bevelEdgesOp(obj, logicalEdges, distance, segments = 1, profile = 'flat
     ed.groups[gi].triangles = polygonTriangles(ed, newLoop);
   });
 
-  if (inverted) return false;
+  // bevelEdgesOp used to return false here and applyPendingOpInner ignores a
+  // return value, so the guard was silent: "did nothing" and "there was
+  // nothing to do" looked the same from outside.
+  if (inverted) return refuseOp('that much would fold the shape inside out');
 
   const originalGroupCount = ed.groups.length;
   const edgeFaces = new Map();
@@ -12640,6 +12645,42 @@ function bevelEdgesOp(obj, logicalEdges, distance, segments = 1, profile = 'flat
     while (clean.length > 2 &&
       vecAt(ed, clean[0]).distanceToSquared(vecAt(ed, clean[clean.length - 1])) <= 1e-10) clean.pop();
     return clean;
+  };
+
+  /* Does this outline enclose anything? loopNormal NORMALISES, so its length
+     answers "did Newell's sum come out bit-exactly zero" and nothing else -
+     three points in a line on a mesh that isn't axis-aligned leave a residue
+     of 1e-17, which normalises to a unit vector like any real face. Newell's
+     raw length is twice the area; compare it against the outline's own size
+     so the test means the same thing on a thumbnail and on a landscape. */
+  const enclosesArea = (loop) => {
+    const n = new THREE.Vector3();
+    let perim = 0;
+    for (let i = 0; i < loop.length; i++) {
+      const a = vecAt(ed, loop[i]), b = vecAt(ed, loop[(i + 1) % loop.length]);
+      n.x += (a.y - b.y) * (a.z + b.z);
+      n.y += (a.z - b.z) * (a.x + b.x);
+      n.z += (a.x - b.x) * (a.y + b.y);
+      perim += a.distanceTo(b);
+    }
+    return perim > 0 && n.length() > 1e-6 * perim * perim;
+  };
+
+  /* Does the trace visit the same place twice? Then it has doubled back, and
+     what is on the far side of the pinch is already closed - a patch there
+     would fold over the top of it. Consecutive repeats alone don't catch it:
+     the return can be halfway round. By POSITION, because two faces hold
+     different corners at the same place, and on the app's own weld grid. */
+  const doublesBack = (loop) => {
+    const seen = new Set();
+    return loop.some(i => {
+      const p = vecAt(ed, i);
+      const key = Math.round(p.x * 1e4) + '_' + Math.round(p.y * 1e4) + '_' +
+        Math.round(p.z * 1e4);
+      if (seen.has(key)) return true;
+      seen.add(key);
+      return false;
+    });
   };
 
   const addFace = (verts, srcGi) => {
@@ -12753,19 +12794,7 @@ function bevelEdgesOp(obj, logicalEdges, distance, segments = 1, profile = 'flat
     let poly = dedupeLoop(walk.filter(x => x !== undefined));
     if (poly.length < 3) return;
 
-    // If the trace visits the same spot twice it has doubled back on itself:
-    // the strips meeting here already share their boundary, so the corner is
-    // closed and a patch would just fold over the top of it. Consecutive
-    // duplicates alone don't catch this - the repeat can be halfway round.
-    const visited = new Set();
-    let doublesBack = false;
-    poly.forEach(i => {
-      const p = vecAt(ed, i);
-      const k = Math.round(p.x * 1e4) + '_' + Math.round(p.y * 1e4) + '_' + Math.round(p.z * 1e4);
-      if (visited.has(k)) doublesBack = true;
-      visited.add(k);
-    });
-    if (doublesBack) return;
+    if (doublesBack(poly)) return;
     const outward = new THREE.Vector3();
     ordered.forEach(gi => outward.add(faceNormal[gi]));
     if (loopNormal(ed, poly).dot(outward) < 0) poly = poly.slice().reverse();
@@ -12816,12 +12845,20 @@ function bevelEdgesOp(obj, logicalEdges, distance, segments = 1, profile = 'flat
           if ((edgeFaces.get(bridgeKey) || [])[0] !== before.face) middle.reverse();
           newLoop.push(...middle);
         }
+        // A bridge means this face now carries a copy of that strip run, so
+        // the run is closed and step 5 must stop there instead of patching
+        // over it.
+        if (bridgeKey) sewnRun.set(cur + '|' + bridgeKey, true);
         newLoop.push(after.idx);
         changed = true;
       }
-      else if (before) { newLoop.push(before.idx, mine); changed = true; }
-      else if (after) { newLoop.push(mine, after.idx); changed = true; }
-      else newLoop.push(mine);
+      // Step 5 has to know which corners are still standing. Deriving it
+      // there a second time from the same rule would be two copies of one
+      // decision, and two copies drift - so the decision is recorded here and
+      // read there.
+      else if (before) { newLoop.push(before.idx, mine); changed = true; keptCorner.set(gi + ':' + cur, true); }
+      else if (after) { newLoop.push(mine, after.idx); changed = true; keptCorner.set(gi + ':' + cur, true); }
+      else { newLoop.push(mine); keptCorner.set(gi + ':' + cur, true); }
     }
 
     if (changed) {
@@ -12829,6 +12866,188 @@ function bevelEdgesOp(obj, logicalEdges, distance, segments = 1, profile = 'flat
       if (clean.length >= 3) ed.groups[gi].triangles = polygonTriangles(ed, clean);
     }
   }
+
+  // --- 5. close the ends of the strip -----------------------------------
+  // Where a selected edge STOPS at a vertex not every face around it shares,
+  // nothing above closes the gap. Step 3 only patches a corner every face
+  // pulled away from. Step 4 closes one case of this: an untouched face whose
+  // two edges at the vertex BOTH lead to a face that moved throws its corner
+  // away and, when those two faces share the selected edge, copies that
+  // strip's run - so its own outline becomes the far side of the strip. Every
+  // other arrangement was left open: three open edges per selected edge at an
+  // edge star on a sphere's pole, and a plain hole for an L of two edges at a
+  // four-face vertex, where step 4's chord cuts straight across and matches
+  // nothing.
+  //
+  // Read as one ring: walk the faces round the vertex, and cut that ring
+  // wherever the surface is already closed - between two untouched faces,
+  // which still share the original edge, and at a run step 4 has copied.
+  // What is left between two cuts is one hole, and one polygon fills it:
+  // moved faces bring the point they moved to, faces that kept the corner
+  // bring the corner, faces step 4 cut the corner off of bring nothing at all
+  // (their chord IS one side of the hole), and a selected edge crossed on the
+  // way brings its profile.
+  facesAtVert.forEach((fs, l) => {
+    const isMoved = gi => !!cornerMoved.get(gi + ':' + l);
+    const movedCount = fs.reduce((acc, gi) => acc + (isMoved(gi) ? 1 : 0), 0);
+    if (!movedCount || movedCount === fs.length) return; // nothing moved, or step 3's case
+
+    // Rotational order round the vertex, by the edges the faces share at it.
+    const ends = new Map(), byKey = new Map();
+    fs.forEach(gi => {
+      const lp = logLoops[gi], n = lp.length, i = lp.indexOf(l);
+      const inKey = edgeKey(lp[(i - 1 + n) % n], l), outKey = edgeKey(l, lp[(i + 1) % n]);
+      ends.set(gi, { inKey, outKey });
+      [inKey, outKey].forEach(k => {
+        if (!byKey.has(k)) byKey.set(k, []);
+        byKey.get(k).push(gi);
+      });
+    });
+    const nextOf = gi => (byKey.get(ends.get(gi).outKey) || []).find(g => g !== gi);
+    const prevOf = gi => (byKey.get(ends.get(gi).inKey) || []).find(g => g !== gi);
+
+    // Walk back first, so an open fan starts at its boundary face.
+    let first = fs[0];
+    for (let k = 0; k < fs.length; k++) {
+      const p = prevOf(first);
+      if (p === undefined || p === fs[0]) break;
+      first = p;
+    }
+    const seq = [], crs = [], seen = new Set();
+    let cur = first;
+    while (cur !== undefined && !seen.has(cur)) {
+      seen.add(cur); seq.push(cur); crs.push(ends.get(cur).outKey);
+      cur = nextOf(cur);
+    }
+    const m = seq.length;
+    if (m !== fs.length) return; // the star is not one fan - leave it alone
+    const closed = nextOf(seq[m - 1]) === seq[0];
+
+    // crs[i] is the edge between seq[i] and the face after it.
+    const cut = seq.map((g, i) => {
+      const nx = (i + 1 < m) ? seq[i + 1] : (closed ? seq[0] : undefined);
+      if (nx === undefined) return true;                      // the outer end of an open fan
+      if (!isMoved(g) && !isMoved(nx)) return true;           // both untouched: the edge is still shared
+      return !!sewnRun.get(l + '|' + crs[i]);                 // step 4 already closed this run
+    });
+
+    const chains = [];
+    if (closed && !cut.some(Boolean)) chains.push({ idx: seq.map((g, i) => i), cyclic: true });
+    else {
+      const from = cut.lastIndexOf(true);
+      let acc = [];
+      for (let step = 1; step <= m; step++) {
+        const i = (from + step) % m;
+        acc.push(i);
+        if (cut[i]) { chains.push({ idx: acc, cyclic: false }); acc = []; }
+      }
+      if (acc.length) chains.push({ idx: acc, cyclic: false });
+    }
+
+    chains.forEach(ch => {
+      // An open fan's two outer ends can be a RIM: the gap there is the edge
+      // of the sheet, and closing it would put a face where the mesh stops.
+      // But only if the face at that end PULLED AWAY from the rim. If it kept
+      // its corner, its rim edge still reaches the vertex, the gap is walled
+      // on every side, and it is an ordinary hole - reaching the end of the
+      // fan says nothing by itself. Position was the first test here and it
+      // silently declined every open mesh: on an open fan the last crossing
+      // is always cut, so one chain always starts at 0 and one always ends at
+      // m - 1.
+      if (!closed && ch.idx[0] === 0 && isMoved(seq[0])) return;
+      if (!closed && ch.idx[ch.idx.length - 1] === m - 1 && isMoved(seq[m - 1])) return;
+      if (!ch.idx.some(i => isMoved(seq[i]))) return;
+
+      const walk = [], survived = new Set();
+      ch.idx.forEach((i, t) => {
+        const g = seq[i];
+        const kept = !isMoved(g) && !!keptCorner.get(g + ':' + l);
+        if (isMoved(g) || kept) {
+          const c = cornerIdx.get(g + ':' + l);
+          if (c !== undefined) { walk.push(c); if (kept) survived.add(c); }
+        }
+        if (t === ch.idx.length - 1 && !ch.cyclic) return;
+        const nx = seq[ch.idx[(t + 1) % ch.idx.length]];
+        const run = runAt.get(l + '|' + crs[i]);
+        if (!run || run.length < 3) return;
+        const middle = run.slice(1, -1);
+        // Runs are stored first-face to second-face; flip when this walk goes
+        // the other way round the vertex.
+        if ((edgeFaces.get(crs[i]) || [])[0] === nx) middle.reverse();
+        walk.push(...middle);
+      });
+
+      // The walk follows the order the faces were visited, which is the
+      // direction those same faces already traverse these edges - step 4
+      // writes `l, c(next)` on the face whose outgoing edge leads into the
+      // run, and every shared edge has to be walked once each way. So the
+      // patch runs the other way round. That is topology, not a guess at a
+      // normal: the sum of the moved faces' normals is perpendicular to this
+      // polygon in the ordinary case, which makes it useless as a test.
+      let poly = dedupeLoop(walk).reverse();
+      if (poly.length < 3) return;
+      // Newell's normal comes out zero-length when the points are all on one
+      // line - a flat grid puts the corner exactly between its two offsets.
+      // That is a T-junction with no area, not a tear, and a zero-area face
+      // carrying its own cloned material is not the answer to it. The test
+      // runs on each piece below, where the walk is cut into more than one.
+      // This hole is NOT flat, and with a round profile it is not convex
+      // either: the strip's arc dips back towards the corner that survived,
+      // and the more segments it has the deeper it dips. polygonTriangles
+      // answers a shape it cannot read by projecting onto a best-fit plane
+      // and ear-clipping there - and on a fold this tight the projection
+      // crosses itself, so the triangles come back overlapping and the
+      // outline traces twice. That is a tear from the outside, and it is why
+      // a 3-segment round bevel on a single sphere spoke opened up while its
+      // flat twin closed. No plane is needed: every point of the hole is
+      // visible from the corner that stayed, so fan it from there.
+      const apex = poly.findIndex(v => survived.has(v));
+      if (apex < 0) {
+        if (!enclosesArea(poly) || doublesBack(poly)) return;
+        // Nothing round this vertex kept its corner, so the hole is a closed
+        // ring and no point ON it can see all the others - an L of two edges
+        // at a four-quad vertex ends up here, with a profile arc dipping
+        // towards the vertex from two different directions. Give the ring a
+        // centre and put a triangle on every side. addFace would hand this to
+        // polygonTriangles, which flattens the ring onto a best-fit plane to
+        // ear-clip it, and two arcs folded towards each other project across
+        // each other - the triangles come back overlapping and the hole stays
+        // open. A ring like this is star-shaped about its own middle; that is
+        // the one thing about it no projection can take away.
+        const mid = new THREE.Vector3();
+        poly.forEach(v => mid.add(vecAt(ed, v)));
+        mid.divideScalar(poly.length);
+        const ci = ed.positions.length / 3;
+        ed.positions.push(mid.x, mid.y, mid.z);
+        mats.push((mats[seq[ch.idx[0]]] || mats[0]).clone());
+        ed.groups.push({
+          triangles: poly.map((v, i) => [ci, v, poly[(i + 1) % poly.length]])
+        });
+        return;
+      }
+      if (apex > 0) poly = poly.slice(apex).concat(poly.slice(0, apex));
+      // That corner can turn up more than once round the walk. On an edge
+      // whose two faces are nearly in one plane the middle of a round profile
+      // lands ON it - the profile through a straight corner IS a straight
+      // line through the corner - and the weld makes them one point. The walk
+      // is pinched there: what reads as one hole is two, and on a flat enough
+      // edge neither has any area, because the strip already closes to that
+      // corner on both sides. So cut the walk at every return to that point
+      // and fan each piece by itself; a piece with no area drops out.
+      const home = vecAt(ed, poly[0]);
+      const starts = [];
+      poly.forEach((v, i) => {
+        if (i === 0 || vecAt(ed, v).distanceToSquared(home) <= 1e-10) starts.push(i);
+      });
+      starts.forEach((s0, si) => {
+        const piece = poly.slice(s0, si + 1 < starts.length ? starts[si + 1] : poly.length);
+        if (piece.length < 3) return;
+        if (!enclosesArea(piece) || doublesBack(piece)) return;
+        mats.push((mats[seq[ch.idx[0]]] || mats[0]).clone());
+        ed.groups.push({ triangles: fanTriangles(piece) });
+      });
+    });
+  });
 
   rebuildFromEditable(obj, ed);
   return true;
