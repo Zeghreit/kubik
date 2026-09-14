@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.36**
+- Version at time of writing: **2.37**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -51,6 +51,135 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Save under a name holds a real model now (2.37)
+
+The wall 2.36 left standing. `saveProject` wrote the whole document,
+pictures included, into localStorage, so the character that could finally be
+**built** and **kept in the library** still could not be **saved under a
+name** — and the message it got, "Not enough room to save", named the wrong
+cause.
+
+Named saves now live in IndexedDB, in a `projects` store in the same `kubik`
+database as the textures. Measured by the probe rather than argued: a record
+of **5,496kb** saves and opens, against the ~5,090kb that was the whole
+origin's ceiling.
+
+### The autosave stayed in localStorage, deliberately
+
+Not an oversight. It is read **synchronously** at boot, by `init()`, to
+decide whether to build a fresh cube — making it async means either an
+`await` in front of the whole of `init()` or a cube that flashes up and is
+replaced. And it does not need to move: `serializeDoc()` with no options
+carries no pictures, so it is geometry and definitions, about 1,375kb on the
+heaviest thing measured. Once the named saves left, the autosave has the
+whole ~5,090kb to itself, which is the most room it has ever had. Probe
+section 8 asserts this, so a later version cannot move it by accident and
+leave `init` reading a promise.
+
+### Both roads, always
+
+`listProjects` merges IndexedDB with whatever is still in localStorage, and
+`readProject` tries both. A record left behind by an interrupted migration is
+still the user's model, and a list that hides it looks exactly like one that
+lost it. `deleteProject` clears both for the same reason — deleting only the
+new road leaves a copy that comes back on the next reload, which reads as
+"delete did not work".
+
+The migration itself follows the 2.36 rule: the localStorage copy goes only
+after the write has **committed**, and a database that cannot be reached is
+left alone rather than handed the only copy there is.
+
+### Dates live apart from models, and that is not premature
+
+`listProjects` needs a name and a date per model. With the date inside the
+record, getting it means deserialising **every saved model in full** — and a
+record carries its own pictures now, so ten models is ~90MB read, two
+integers used, and the rest dropped, on every save, every delete and every
+boot. The dates are in a `projectMeta` store, written in the **same
+transaction** as the record so the two cannot drift, and the probe asserts
+every record has one and that it is the record's own.
+
+### What the review changed
+
+Nine findings; these were defects, and the first two would have hit a large
+share of users on release day.
+
+- **A "no" from the database was remembered for ever.** `texDb()` memoises,
+  and `onblocked` / `onerror` / the 6-second clock all resolved null into
+  that memo. Anyone upgrading with a second Kubik tab already open — holding
+  the v1 connection, which 2.36 never yields — got blocked, fell back, and
+  stayed on localStorage for the whole session: writing multi-megabyte
+  textured documents into a 5MB store while being told the model was too big,
+  with a reload the only cure and nothing saying so. A null is now remembered
+  for **fifteen seconds**, long enough not to hammer a genuinely blocked
+  open, short enough that closing the other window fixes it by itself.
+- **The re-open after an upgrade asked for the version it already knew.**
+  `onversionchange` closed the connection and cleared the memo, then the next
+  call opened at `TEXDB_VERSION` — which, after somebody else's upgrade, is
+  by definition the old version, so `VersionError`, and (with the bug above)
+  permanent demotion. It now opens with **no version** after a versionchange:
+  an upgrade only ever adds stores, and every caller already treats a missing
+  store as the fallback road.
+- **The migration was gated on a write probe to the store it was escaping.**
+  `listProjectsLocal` called `storageAvailable()`, which writes a test key —
+  and that throws exactly when localStorage is full, the one condition this
+  version exists for. The models stayed on the retired road, vanished from
+  the drawer, and IndexedDB was never asked. Reading needs no room.
+- **The migration overwrote whatever was already there.** A blind `put`
+  could carry a stale localStorage copy over a newer record and then delete
+  the source. It compares `savedAt` now and drops the older copy instead.
+- **Delete said "Deleted" whatever happened.** Every outcome collapsed into
+  one `res()`, so an aborted delete left the row in the list under a toast
+  saying it had gone.
+- **Two list refreshes could finish out of order** and put back a row that
+  had just been deleted, which then reported "That model could not be read"
+  when tapped. A generation counter: the last refresh **started** wins.
+
+Not a defect, and worth recording because it is the trap this shape usually
+falls into: the transactions are created inside a `.then` and the requests
+issued after an `await`, but both run in the same microtask checkpoint, so
+the transaction is still active. No dead transactions.
+
+### Probe
+
+`_projchk.py` / `_projchk.js`, 9 sections, on a real wall clock with results
+by POST and a threaded server — all three learned on `_texchk` one version
+ago. Section 4 is the one that matters: it builds a record past the old
+ceiling and asserts it lands, in bytes.
+
+Two things the probe taught, both about itself:
+
+- **Section 4's first fixture weighed 2,570kb and said so** rather than
+  passing. Two reasons, in order: it loaded its extra maps onto the first
+  definition in `MATERIALS` that had any — and `MATERIALS` still holds the
+  previous section's definitions, because `clearScene` removes objects and
+  not definitions, so the pictures went onto something nothing wore. Then,
+  with that fixed, the sheets had flat colour round a noisy middle and JPEG
+  ate it. A real roughness or AO bake has detail everywhere.
+- **Sections 5 and 6 broke the moment section 4 started working**, because
+  they built their fixture by putting the *current* scene into localStorage —
+  and the current scene was now 5,496kb. The probe hit the exact wall it had
+  just finished measuring.
+
+And one about a different probe: `_texchk`'s section 6c opened the database
+**at version 1**, so the version bump made it report "INDEXEDDB WAS NOT
+REACHABLE" — a probe failure dressed as an app failure, which is the most
+expensive kind. **A reader must not pin a database version.**
+
+Five broken builds, all caught: `nodocdb` (no IndexedDB, so the old road is
+the only road), `copynotmove` (written to both, so the old ceiling is still
+the ceiling), `flatrecord` (the record names its pictures and carries none —
+saves, lists, opens flat on somebody else's machine), `halfdelete` (the
+localStorage copy survives and returns on the next reload), `nodates` (the
+dates store stops being written, so every record sorts to the bottom for
+ever).
+
+Said out loud rather than quietly missing: the migration's "remove the old
+copy only after the write has committed" **cannot be broken observably**. In
+a healthy run the end state is identical either way; the difference only
+shows when the write fails, which needs a simulated quota. It is held by
+construction, and shared with the same rule at 2.36.
 
 ## The pictures left localStorage (2.36)
 
@@ -125,6 +254,9 @@ That shape is indistinguishable from a material library that failed to load,
 and the wrong guess deletes everything.
 
 ### Still on localStorage, and still capped: Save under a name
+
+**Removed at 2.37 — see the section above.** Kept here because the reasoning
+is what produced that version.
 
 `saveProject` writes `serializeDoc({withTextures: true})` into
 `localStorage` under `kubik.project.*`. The measurement that motivated this

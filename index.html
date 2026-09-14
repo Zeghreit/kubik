@@ -2412,7 +2412,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.36</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.37</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -4859,15 +4859,44 @@ function pruneTextures() {
    is worse than IndexedDB and better than nothing. */
 const TEXDB_NAME = 'kubik';
 const TEXDB_STORE = 'textures';
+/* The named saves live here too, from 2.37. Same database on purpose: one
+   open, one upgrade, one connection to reason about. */
+const DOCDB_STORE = 'projects';
+/* WHEN each named save happened, kept apart from WHAT it is. The list needs
+   two integers per model; with the timestamp inside the record, getting them
+   means deserialising every saved model in full - and a record now carries
+   its own pictures, so ten models is ninety megabytes read, two numbers
+   used, and the rest dropped. On every save, every delete, and every boot.
+   Written in the SAME transaction as the record, so the two cannot drift. */
+const DOCMETA_STORE = 'projectMeta';
+const TEXDB_VERSION = 3;
 let _texDbP = null;
+/* A "no" IS NOT REMEMBERED FOR EVER. Blocked by another tab mid-upgrade, or
+   an open slow enough to hit the clock, used to pin this tab to localStorage
+   for the whole session - so the moment the other window closed, the
+   database was healthy and this tab never found out. Remembered for fifteen
+   seconds instead, which is long enough not to hammer a genuinely blocked
+   open and short enough that closing the other window fixes it by itself. */
+let _texDbFailedAt = 0;
+/* After another connection has upgraded the database, THIS build's version
+   number is the old one, and asking for it by name is a VersionError. Follow
+   whatever is there instead: an upgrade only ever adds stores, and every
+   caller already treats a missing store as the fallback road. */
+let _texDbFollow = false;
 function texDb() {
   if (_texDbP) return _texDbP;
-  _texDbP = new Promise((res) => {
+  if (Date.now() - _texDbFailedAt < 15000) return Promise.resolve(null);
+  const p = new Promise((res) => {
     let req;
-    try { req = indexedDB.open(TEXDB_NAME, 1); } catch (e) { return res(null); }
+    try {
+      req = _texDbFollow ? indexedDB.open(TEXDB_NAME)
+                         : indexedDB.open(TEXDB_NAME, TEXDB_VERSION);
+    } catch (e) { return res(null); }
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(TEXDB_STORE)) db.createObjectStore(TEXDB_STORE);
+      if (!db.objectStoreNames.contains(DOCDB_STORE)) db.createObjectStore(DOCDB_STORE);
+      if (!db.objectStoreNames.contains(DOCMETA_STORE)) db.createObjectStore(DOCMETA_STORE);
     };
     /* EVERY ROAD OUT OF HERE NEEDS AN EVENT TO FIRE, so there is a clock on
        it. An open that neither succeeds nor errors - a partitioned file://
@@ -4883,13 +4912,45 @@ function texDb() {
       settled = true; res(v);
     };
     setTimeout(() => give(null), 6000);
-    req.onsuccess = () => give(req.result);
+    req.onsuccess = () => {
+      /* GET OUT OF THE WAY OF THE NEXT UPGRADE. A tab still holding an old
+         version blocks a newer one from opening at all, and our onblocked
+         road answers null - so one window left open since yesterday would
+         push a fresh one back onto localStorage without saying why. Closing
+         and forgetting the memoised promise lets this tab re-open at the new
+         version on its next call. */
+      try {
+        req.result.onversionchange = () => {
+          try { req.result.close(); } catch (e) {}
+          _texDbFollow = true;      // the version we know is now the old one
+          _texDbP = null;
+        };
+      } catch (e) {}
+      give(req.result);
+    };
     // Refused, or blocked by another tab mid-upgrade. Null means "use the
     // fallback", which is a road, not a failure.
     req.onerror = () => give(null);
     req.onblocked = () => give(null);
   });
-  return _texDbP;
+  _texDbP = p;
+  p.then(db => {
+    if (db) return;
+    _texDbFailedAt = Date.now();
+    if (_texDbP === p) _texDbP = null;   // so the next call tries again
+  });
+  return p;
+}
+
+/* A transaction on the documents store, or null when there is no IndexedDB
+   to be had. Null is the signal to take the localStorage road, which is
+   still there and still works - just with the ceiling it always had. */
+function docsTx(mode, stores) {
+  return texDb().then(db => {
+    if (!db) return null;
+    try { return db.transaction(stores || [DOCDB_STORE, DOCMETA_STORE], mode); }
+    catch (e) { return null; }
+  });
 }
 
 let _texLibWarned = false;
@@ -29629,10 +29690,18 @@ function storageAvailable() {
   } catch (err) { return false; }
 }
 
-function listProjects() {
-  if (!storageAvailable()) return [];
+/* THE OLD ROAD, kept whole. Everything below falls back to it when there is
+   no IndexedDB, and the migration reads it once. */
+function listProjectsLocal() {
+  /* NOT storageAvailable(), which writes a key to find out. That test throws
+     exactly when localStorage is FULL - the one condition this whole version
+     exists to escape - and returning [] there hid every model still waiting
+     to be migrated AND stopped the migration from running at all. Reading
+     needs no room. */
+  let n = 0;
+  try { n = localStorage.length; } catch (err) { return []; }
   const out = [];
-  for (let i = 0; i < localStorage.length; i++) {
+  for (let i = 0; i < n; i++) {
     const k = localStorage.key(i);
     if (!k || !k.startsWith(PROJECT_PREFIX)) continue;
     try {
@@ -29640,36 +29709,115 @@ function listProjects() {
       out.push({ name: k.slice(PROJECT_PREFIX.length), savedAt: rec.savedAt || 0 });
     } catch (err) { /* skip anything unreadable */ }
   }
-  return out.sort((a, b) => b.savedAt - a.savedAt);
+  return out;
 }
 
-function saveProject(name) {
+async function listProjects() {
+  const tx = await docsTx('readonly');
+  let out = null;
+  if (tx) {
+    out = await new Promise(res => {
+      let ks, mk, mv;
+      try {
+        /* KEYS from the records, DATES from the small store beside them.
+           getAll() on the records would deserialise every saved model in
+           full - and a record carries its own pictures now - to read one
+           integer from each. */
+        ks = tx.objectStore(DOCDB_STORE).getAllKeys();
+        const mt = tx.objectStore(DOCMETA_STORE);
+        mk = mt.getAllKeys(); mv = mt.getAll();
+      } catch (e) { return res(null); }
+      tx.oncomplete = () => {
+        const when = new Map();
+        (mk.result || []).forEach((k, i) => {
+          when.set(k, ((mv.result || [])[i] || {}).savedAt || 0);
+        });
+        // A record with no date is one an older build wrote: list it last.
+        res((ks.result || []).map(k => ({ name: k, savedAt: when.get(k) || 0 })));
+      };
+      tx.onerror = tx.onabort = () => res(null);
+    });
+  }
+  /* Both roads, always. A record left in localStorage by a session that was
+     interrupted mid-migration is still the user's model, and a list that
+     hides it looks exactly like one that lost it. */
+  const seen = new Set((out || []).map(r => r.name));
+  const merged = (out || []).concat(
+    listProjectsLocal().filter(r => !seen.has(r.name)));
+  return merged.sort((a, b) => b.savedAt - a.savedAt);
+}
+
+async function saveProject(name) {
   const clean = (name || '').trim().slice(0, 40);
   if (!clean) { toast('Give the model a name first'); return false; }
-  if (!storageAvailable()) { toast('This browser is blocking storage'); return false; }
   /* The pictures arrive after the first frame now. Saving in that gap writes
      a file whose materials name keys with no bytes behind them - it looks
      normal, downloads without complaint, and opens flat on the next
      machine, which is the one thing withTextures exists to prevent. */
   if (!_texLoaded) { toast('Pictures are still loading - try again in a moment'); return false; }
+  const rec = { savedAt: Date.now(), doc: serializeDoc({ withTextures: true }) };
+  const tx = await docsTx('readwrite');
+  if (tx) {
+    const ok = await new Promise(res => {
+      try {
+        tx.objectStore(DOCDB_STORE).put(rec, clean);
+        tx.objectStore(DOCMETA_STORE).put({ savedAt: rec.savedAt }, clean);
+      } catch (e) { return res(false); }
+      tx.oncomplete = () => res(true);
+      tx.onerror = tx.onabort = () => res(false);
+    });
+    if (ok) {
+      /* And drop any older copy of the same name from the road it used to
+         live on, so the merged list does not show it twice. */
+      try { localStorage.removeItem(PROJECT_PREFIX + clean); } catch (err) {}
+      await refreshProjectList();
+      toast('Saved "' + clean + '"');
+      return true;
+    }
+    /* IndexedDB has a quota too - a fraction of the free disk rather than
+       five megabytes - so this message is now true when it appears instead
+       of being the everyday outcome for anything textured. */
+    toast('Not enough room to save - delete an older model');
+    return false;
+  }
+  if (!storageAvailable()) { toast('This browser is blocking storage'); return false; }
   try {
-    localStorage.setItem(PROJECT_PREFIX + clean,
-      JSON.stringify({ savedAt: Date.now(), doc: serializeDoc({ withTextures: true }) }));
-    refreshProjectList();
+    localStorage.setItem(PROJECT_PREFIX + clean, JSON.stringify(rec));
+    await refreshProjectList();
     toast('Saved "' + clean + '"');
     return true;
   } catch (err) {
-    // Nearly always the quota, which is worth naming rather than shrugging at.
-    toast('Not enough room to save - delete an older model');
+    /* The old ceiling, and on this road it really is about five megabytes,
+       so a textured model will not fit. Say the one thing that always works. */
+    toast('Too big for this browser - use Download .json to keep it');
     console.error(err);
     return false;
   }
 }
 
-function loadProject(name) {
+async function readProject(name) {
+  const tx = await docsTx('readonly');
+  if (tx) {
+    const rec = await new Promise(res => {
+      let g;
+      try { g = tx.objectStore(DOCDB_STORE).get(name); } catch (e) { return res(null); }
+      tx.oncomplete = () => res(g.result || null);
+      tx.onerror = tx.onabort = () => res(null);
+    });
+    if (rec && rec.doc) return rec;
+  }
+  // Not migrated yet, or no IndexedDB at all.
   try {
     const rec = JSON.parse(localStorage.getItem(PROJECT_PREFIX + name));
-    if (!rec || !rec.doc) { toast('That model could not be read'); return; }
+    if (rec && rec.doc) return rec;
+  } catch (err) { /* fall through to the message below */ }
+  return null;
+}
+
+async function loadProject(name) {
+  try {
+    const rec = await readProject(name);
+    if (!rec) { toast('That model could not be read'); return; }
     restoreDoc(rec.doc);
     App.history = [stripDocTextures(rec.doc)];
     App.historyIndex = 0;
@@ -29681,10 +29829,83 @@ function loadProject(name) {
   }
 }
 
-function deleteProject(name) {
+async function deleteProject(name) {
+  /* BOTH ROADS. Deleting only the new one leaves an un-migrated copy that
+     the merged list would show again the moment the page reloads, which
+     reads as "delete did not work". */
+  const tx = await docsTx('readwrite');
+  let ok = true;
+  if (tx) {
+    ok = await new Promise(res => {
+      try {
+        tx.objectStore(DOCDB_STORE).delete(name);
+        tx.objectStore(DOCMETA_STORE).delete(name);
+      } catch (e) { return res(false); }
+      tx.oncomplete = () => res(true);
+      tx.onerror = tx.onabort = () => res(false);
+    });
+  }
   try { localStorage.removeItem(PROJECT_PREFIX + name); } catch (err) { /* nothing to do */ }
-  refreshProjectList();
-  toast('Deleted "' + name + '"');
+  await refreshProjectList();
+  /* NOT an unconditional "Deleted". Every outcome used to collapse into the
+     same message, so a delete that aborted left the row sitting in the list
+     under a toast saying it had gone, and clicking it again did the same
+     nothing. */
+  toast(ok ? 'Deleted "' + name + '"' : 'That model could not be deleted');
+  return ok;
+}
+
+/* ONCE, at startup. Same discipline as the pictures at 2.36: the localStorage
+   copy is removed only after the write has COMMITTED, and a database that
+   cannot be reached is left alone entirely rather than being handed the only
+   copy there is. A model left behind by a failed run still shows in the list
+   and still opens - listProjects reads both roads. */
+async function migrateProjects() {
+  const legacy = listProjectsLocal();
+  if (!legacy.length) return;
+  const tx = await docsTx('readwrite');
+  if (!tx) return;
+  const moved = [];
+  const ok = await new Promise(res => {
+    let st, mt, when;
+    try {
+      st = tx.objectStore(DOCDB_STORE);
+      mt = tx.objectStore(DOCMETA_STORE);
+      when = mt.getAll();
+      const wk = mt.getAllKeys();
+      /* ASK WHAT IS ALREADY THERE FIRST. A tab stranded on the old road goes
+         on writing localStorage copies, and a blind put would carry one of
+         those over a newer record and then delete the source - work gone,
+         with no copy anywhere and nothing said. */
+      wk.onsuccess = () => {
+        const dates = new Map();
+        (wk.result || []).forEach((k, i) => {
+          dates.set(k, ((when.result || [])[i] || {}).savedAt || 0);
+        });
+        legacy.forEach(it => {
+          let rec = null;
+          try { rec = JSON.parse(localStorage.getItem(PROJECT_PREFIX + it.name)); } catch (e) {}
+          if (!rec || !rec.doc) return;
+          const mine = rec.savedAt || 0;
+          if (dates.has(it.name) && dates.get(it.name) >= mine) {
+            /* The database already holds this name, saved at least as
+               recently. Drop the old copy rather than the new one. */
+            moved.push(it.name);
+            return;
+          }
+          st.put(rec, it.name);
+          mt.put({ savedAt: mine }, it.name);
+          moved.push(it.name);
+        });
+      };
+    } catch (e) { return res(false); }
+    tx.oncomplete = () => res(true);
+    tx.onerror = tx.onabort = () => res(false);
+  });
+  if (!ok) return;
+  moved.forEach(n => {
+    try { localStorage.removeItem(PROJECT_PREFIX + n); } catch (e) {}
+  });
 }
 
 // Keeps whatever you were last doing, so closing the tab isn't destructive.
@@ -29727,10 +29948,17 @@ function restoreAutosave() {
   } catch (err) { return false; }
 }
 
-function refreshProjectList() {
+/* Two read-only transactions over the same store may finish in either
+   order, so without this the second delete's list could be overwritten by
+   the first delete's - putting a row back that is no longer there, which
+   then reports "That model could not be read" when tapped. */
+let _projListGen = 0;
+async function refreshProjectList() {
   const el = document.getElementById('projList');
   if (!el) return;
-  const items = listProjects();
+  const gen = ++_projListGen;
+  const items = await listProjects();
+  if (gen !== _projListGen) return;
   el.innerHTML = '';
   if (!items.length) {
     const empty = document.createElement('div');
@@ -29758,9 +29986,9 @@ function refreshProjectList() {
   });
 }
 
-document.getElementById('btnProjSave').addEventListener('click', () => {
+document.getElementById('btnProjSave').addEventListener('click', async () => {
   const input = document.getElementById('projName');
-  if (saveProject(input.value)) input.value = '';
+  if (await saveProject(input.value)) input.value = '';
 });
 document.getElementById('projName').addEventListener('keydown', (ev) => {
   ev.stopPropagation();
@@ -38482,7 +38710,7 @@ function init() {
     const obj = createCubeObject('Cube 1', new THREE.Vector3(0, 0.5, 0));
     App.selectedObjectIds = new Set([obj.id]);
   }
-  refreshProjectList();
+  migrateProjects().then(refreshProjectList);
   refreshUI();
   refreshGizmoAttachment();
   pushHistory();
@@ -38690,6 +38918,11 @@ if (PICK_DEBUG) {
     textureFor, applyMaps, grabImportMaps, encodeImportTexture,
     saveTextureLibrary, loadTextureLibrary, IMPORT_TEX_BUDGET, TEX_MAX,
     texDb, TEXDB_NAME, TEXDB_STORE, adoptTextureRecords, texturesArrived,
+    /* v2.37: the named saves. The STORE name and the legacy prefix are here
+       so a probe can look in both roads itself rather than believing the
+       list, which is the only way to tell "moved" from "copied". */
+    DOCDB_STORE, DOCMETA_STORE, PROJECT_PREFIX, saveProject, loadProject, deleteProject,
+    listProjects, readProject, migrateProjects,
     get texLoaded() { return _texLoaded; },
     pooledMaterial, dressFromPool, applyFinish, pruneTextures, prunePool,
     /* v2.35: the picture channels. encodePicture is here because it is the

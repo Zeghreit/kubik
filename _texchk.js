@@ -341,7 +341,9 @@
     function idbKeys() {
       return new Promise(function (res) {
         var req;
-        try { req = indexedDB.open(k.TEXDB_NAME, 1); } catch (e) { return res(null); }
+        // NO VERSION. Pinning one makes this section fail on the next bump,
+        // and say the app is broken when it is the probe that is.
+        try { req = indexedDB.open(k.TEXDB_NAME); } catch (e) { return res(null); }
         req.onsuccess = function () {
           var db = req.result, tx;
           try { tx = db.transaction(k.TEXDB_STORE, 'readonly'); } catch (e) { return res(null); }
