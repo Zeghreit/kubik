@@ -2393,7 +2393,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.33a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.34</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -4789,32 +4789,6 @@ function applyMaps(mat, d, uvless) {
   if (changed) mat.needsUpdate = true;
 }
 
-/* THE ONE CONFLICT v2.33 DID NOT FIX, written as a predicate so it is asked
-   in one place and can be asserted.
-
-   The mask patch replaces <normal_fragment_maps> and, the moment Round edges
-   or a Bump mask is live, sets the normal from the VERTEX normal - throwing
-   away whatever three's chunk just computed from normalMap. The comment on
-   that line has predicted this release since the bevel was written: "harmless,
-   because nothing in this app binds a normalMap - but the day something does,
-   this is the line that will be quietly ignoring it."
-
-   The fix is not "compose after the chunk", it is "bend BEFORE it": the bend
-   belongs inside <normal_fragment_begin>, ahead of the tbn three builds there,
-   so the map rides on the bent normal instead of being overwritten by it. That
-   means inlining a chunk of three's own shader (this app is pinned to 0.184)
-   and a probe of its own, so it is its own version. Until then this says so. */
-function normalMapShadowed(d) {
-  if (!d || !d.maps || !d.maps.normal) return false;
-  return (+d.bevel || 0) > 0 || defWantsBump(d);
-}
-let _shadowWarned = false;
-function noteShadowedNormalMap() {
-  if (_shadowWarned) return;
-  _shadowWarned = true;
-  toast('Round edges and Bump take over the normal map on that material - the map is not being used');
-}
-
 let _texMissWarned = false;
 function noteMissingTexture() {
   if (_texMissWarned) return;
@@ -5129,9 +5103,6 @@ function applyFinish(mat, id) {
      userData - Material.clone JSON-copies it, which is what wants copying. */
   applyMaps(mat, d, mat.userData.kubikNoUV === true);
   applyMaskPatch(mat, d);
-  /* SAID OUT LOUD, because the alternative is a picture that is loaded,
-     uploaded, saved and exported and changes not one pixel. */
-  if (normalMapShadowed(d)) noteShadowedNormalMap();
   /* No blanket needsUpdate: this runs per slider TICK during live edits.
      Colour/roughness/metalness are uniform-tracked by three on their own,
      and applyMaskPatch sets needsUpdate itself on the one change that
@@ -6385,6 +6356,23 @@ function applyMaskPatch(mat, d) {
         '  vec3 grad = sign(det) * (dHx * R1 + dHy * R2);',
         '  return normalize(abs(det) * n - grad);',
         '}',
+        /* TURN v BY THE ROTATION THAT TAKES a TO b (v2.34). Rodrigues with
+           no trig call: cross(a,b) is the axis, its length is the sine and
+           dot(a,b) is the cosine, so the whole rotation is already in those
+           two numbers and both are needed anyway.
+
+           Antiparallel has no unique axis, and a bevel or a bump leans the
+           normal by far less than a right angle - so the degenerate bar is
+           not a case to handle, it is a case that cannot arise, and leaving
+           v alone is the honest answer if it ever does. */
+        'vec3 kubikTurn(vec3 a, vec3 b, vec3 v) {',
+        '  vec3 ax = cross(a, b);',
+        '  float s2 = dot(ax, ax);',
+        '  if (s2 < 1e-14) return v;',
+        '  float c = dot(a, b);',
+        '  vec3 k = ax * inversesqrt(s2);',
+        '  return v * c + cross(k, v) * sqrt(s2) + k * dot(k, v) * (1.0 - c);',
+        '}',
         'vec3 kubikBlend(vec3 base, vec3 top, int mode) {',
         '  if (mode == 1) return base * top;',
         '  if (mode == 2) return 1.0 - (1.0 - base) * (1.0 - top);',
@@ -6407,11 +6395,47 @@ function applyMaskPatch(mat, d) {
          whatever that left. Written as two separate blocks they would
          each have started from the raw vertex normal and the second one
          to run would have thrown the first away. */
-      /* AND IT OWNS THE NORMAL OUTRIGHT once either is live: it starts
-         from the vertex normal, not from whatever the chunk above produced.
-         True of the bevel since it was written and harmless, because nothing
-         in this app binds a normalMap - but the day something does, this is
-         the line that will be quietly ignoring it. */
+      /* AND IT NO LONGER OWNS THE NORMAL OUTRIGHT (v2.34). It used to end
+         `normal = normalize(uKubikNrmMat * kbB) * faceDirection` - starting
+         from the VERTEX normal and discarding whatever the chunk above had
+         just computed, which since v2.33 can be a real normal map. The
+         comment that stood here said so and named the day: "harmless, because
+         nothing in this app binds a normalMap - but the day something does,
+         this is the line that will be quietly ignoring it."
+
+         So the bend is applied as a ROTATION instead of a replacement: the
+         turn that takes the plain geometric normal to the bent one, applied
+         to whatever the chunk produced. With no map bound the chunk leaves
+         `normal` AT the geometric normal, so that turn lands exactly where
+         the old line did and nothing about Round edges or Bump moves. With a
+         map bound, the map rides on the bent surface.
+
+         faceDirection needs no mention now. three has already applied it,
+         and a rotation taking a to b takes -a to -b - so a back face turns by
+         the same amount in the same direction, which is what the old line's
+         trailing `* faceDirection` was doing by hand.
+
+         NOT "inline three's chunk and bend before it builds the tbn", and
+         the reason is better than the one first written here. That comment
+         said the two differ at second order; review did the algebra and they
+         do not differ at all in the part that matters. For a tangent-space
+         map the chunk computes normalize(tbn * mapN), and turning THAT by R
+         is exactly (R * tbn) * mapN - rotating the result and rotating the
+         frame are the same operation.
+
+         What bending first would really change is the frame getTangentFrame
+         BUILDS: its tangent and bitangent come from the position derivatives
+         crossed with the normal it is given, so a bent normal yields a
+         tangent that differs at FIRST order in the bend angle. Neither frame
+         is more nearly right - both take their tangents from derivatives of
+         the UNBENT position - so what is at stake is the map's apparent
+         in-plane orientation inside the bevel band, and nothing about whether
+         the map is applied.
+
+         Against that: a verbatim copy of a chunk of three's own shader,
+         pinned to 0.184, that fails SILENTLY if the string ever moves - the
+         replace finds nothing, the patch does nothing, and Round edges stops
+         working with no error anywhere. */
       .replace('#include <normal_fragment_maps>', ['#include <normal_fragment_maps>',
         '#ifndef FLAT_SHADED',
         '{',
@@ -6420,7 +6444,9 @@ function applyMaskPatch(mat, d) {
         '  if (uKubikBevel > 0.0) kbB = kubikBevelN(kbN, uKubikBevel, kubikF0.r);',
         '  if (kubikHOn > 0.5) kbB = kubikBumpN(vKubikPos, kbB, dFdx(kubikH), dFdy(kubikH));',
         '  if (dot(kbB - kbN, kbB - kbN) > 1e-12) {',
-        '    normal = normalize(uKubikNrmMat * kbB) * faceDirection;',
+        '    vec3 kvN = normalize(uKubikNrmMat * kbN);',
+        '    vec3 kvB = normalize(uKubikNrmMat * kbB);',
+        '    normal = normalize(kubikTurn(kvN, kvB, normal));',
         '  }',
         '}',
         '#endif'].join('\n'))
@@ -38282,7 +38308,6 @@ if (PICK_DEBUG) {
     textureFor, applyMaps, grabImportMaps, encodeImportTexture,
     saveTextureLibrary, loadTextureLibrary, IMPORT_TEX_BUDGET, TEX_MAX,
     pooledMaterial, dressFromPool, applyFinish, pruneTextures, prunePool,
-    normalMapShadowed,
     /* The TRAY, so the + can be pressed rather than reimplemented. The
        whole reason the fork lost its pictures is that it copies a
        definition by hand, and a probe that copies it by hand too would

@@ -514,30 +514,6 @@
       (stripped.textures ? 'STRIP DID NOTHING; ' : '') +
       (!fake.textures ? 'STRIP MUTATED THE ORIGINAL' : '')));
 
-    /* ---- 15. the conflict this release did NOT fix ----
-       A normal map and the mask patch cannot both own the normal, and the
-       patch wins. The rule lives in one predicate so the toast and this
-       check cannot drift; what is asserted is that it fires on exactly the
-       two things that overwrite the normal and on nothing else. */
-    mark('section15');
-    var sh = k.normalMapShadowed;
-    var withN = { maps: { normal: 'x' } };
-    var cases = [
-      ['a normal map alone', sh({ maps: { normal: 'x' } }), false],
-      ['with Round edges', sh({ maps: { normal: 'x' }, bevel: 0.4 }), true],
-      ['with a Bump mask', sh({ maps: { normal: 'x' }, masks: [{ on: true, type: 'fbm', bump: 0.5, amount: 1 }] }), true],
-      ['a colour mask only', sh({ maps: { normal: 'x' }, masks: [{ on: true, type: 'fbm', colorOn: true, amount: 1 }] }), false],
-      ['Round edges, no map', sh({ bevel: 0.4 }), false]
-    ];
-    var wrong = cases.filter(function (c) { return !!c[1] !== c[2]; });
-    log('');
-    log('=== 15. the normal map and the mask patch ===');
-    cases.forEach(function (c) { log('  ' + c[0] + ': ' + (c[1] ? 'shadowed' : 'fine')); });
-    log(verdict(wrong.length === 0,
-      'the app knows when it is ignoring a normal map, and says so',
-      wrong.length + ' CASE(S) ANSWERED THE WRONG WAY: ' +
-        wrong.map(function (c) { return c[0]; }).join(', ')));
-
     finishUp();
   }
 

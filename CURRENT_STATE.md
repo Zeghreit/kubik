@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.33a**
+- Version at time of writing: **2.34**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -51,6 +51,69 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## A normal map survives Round edges and Bump (2.34)
+
+v2.33 brought normal maps in. This one stops the app throwing them away.
+
+Two things bend the shading normal here - Round edges leans it towards the
+nearest edge, Bump climbs a mask's height - and both wrote their answer
+straight into three's `normal`, starting from the VERTEX normal and
+discarding whatever `<normal_fragment_maps>` had just computed. The comment on
+that line had predicted this release since the bevel was written: *"harmless,
+because nothing in this app binds a normalMap - but the day something does,
+this is the line that will be quietly ignoring it."*
+
+**The bend is a ROTATION now, not a replacement.** `kubikTurn` takes the turn
+that carries the plain geometric normal to the bent one and applies it to
+whatever the chunk produced. With no map bound the chunk leaves `normal` at
+the geometric normal, so the turn lands exactly where the old line did; with a
+map bound, the map rides on the bent surface. `faceDirection` needs no mention
+any more - three has already applied it, and a rotation taking a to b takes
+-a to -b, which is what the old line's trailing `* faceDirection` did by hand.
+
+### Why not "bend before three builds the tbn"
+
+That is the textbook answer and it was the plan written down at v2.33. Review
+did the algebra and it is not the win it looks like: for a tangent-space map
+the chunk computes `normalize(tbn * mapN)`, and turning THAT by R is exactly
+`(R * tbn) * mapN` - rotating the result and rotating the frame are the same
+operation. What bending first would really change is the frame
+`getTangentFrame` builds, whose tangent comes from the position derivatives
+crossed with the normal it is handed; a bent normal gives a tangent differing
+at FIRST order in the bend angle. Neither frame is more nearly right - both
+take their tangents from derivatives of the UNBENT position - so what is at
+stake is the map's apparent in-plane orientation inside the bevel band.
+
+Against that, bending first costs a verbatim copy of a chunk of three's own
+shader, pinned to 0.184, that fails SILENTLY if the string ever moves: the
+replace finds nothing, the patch does nothing, and Round edges stops working
+with no error anywhere. **Do not rebuild it that way.**
+
+### How it was measured, and what the measurement got wrong twice
+
+`_nmapchk.py` / `_nmapchk.js` renders the same cube six ways and diffs the
+pixels; `_vsheadnm.py` runs the whole probe against `git show HEAD:index.html`
+as well, because half the claim is about a release that no longer exists.
+
+Against 2.33a: **of the 27,593 pixels Round edges bends, not one moved when
+the normal map was bound**, and with Bump not one pixel of the model moved.
+Against this build both pass, and the three no-map renders come out identical
+to 2.33a's to within zero tile levels - so neither bend moved.
+
+Two things the probe got wrong first, both of the kind this file keeps
+recording:
+
+- **It measured the cube changing size.** `landImport` frames the object it
+  makes with an ANIMATION, and in a headless page rAF runs when it likes, so
+  one shot caught the cube mid-flight and the next caught it settled. 216,845
+  pixels moved, mean 171 of 255, and every word of it was about framing. The
+  numbers looked healthy; only the pictures said otherwise. The camera is
+  pinned per frame now.
+- **It passed on the broken build.** Round edges bends the normal only near an
+  edge, so on the flat faces - which are most of the pixels - the map survived
+  even in 2.33a. Asking the question over the whole model answered a different
+  question. Section 1 masks itself to the pixels the bevel actually moved.
 
 ## An import brings its pictures with it (2.33, fixed at 2.33a)
 
@@ -162,13 +225,8 @@ a probe that would have caught this and the one that did.
 
 ### Still open
 
-- **A normal map and the mask patch cannot both own the normal, and the patch
-  wins.** Once Round edges or a Bump mask is live it sets the normal from the
-  VERTEX normal and throws away what `<normal_fragment_maps>` produced. The
-  app now SAYS so (`normalMapShadowed`), which is the honest half. The fix is
-  not "compose after the chunk" but "bend before it" - inside
-  `<normal_fragment_begin>`, ahead of the tbn three builds there - and that
-  means inlining a chunk of three's own shader and a probe of its own.
+- ~~A normal map and the mask patch cannot both own the normal.~~ **Fixed at
+  2.34**, and not the way this entry prescribed - see the section above.
 - **A texture-library write that fails** leaves definitions naming keys that
   cannot resolve. `applyMaps` says so once rather than drawing a material that
   is textured everywhere except on screen, but there is no repair path short
