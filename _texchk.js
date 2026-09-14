@@ -23,9 +23,10 @@
   /* A WATCHDOG, because a probe that hangs prints nothing and a script that
      never ran prints nothing, and those read identically from the runner.
      `at` says how far it got. */
-  setTimeout(function () { if (!done) { out.push('WATCHDOG at ' + at); finishUp(); } }, 25000);
+  setTimeout(function () { if (!done) { hardFail = 'the probe hung at ' + at; out.push('WATCHDOG at ' + at); finishUp(); } }, 150000);
   function log(s) { out.push(s); }
   function mark(s) { at = s; }
+  var hardFail = '';
   function verdict(ok, good, bad) { if (!ok) fails++; return ok ? '  ok  ' + good : '  FAIL ' + bad; }
 
   async function main() {
@@ -331,6 +332,91 @@
       (!sceneWithMap ? 'NOTHING TEXTURED WAS IN THE SCENE - this section tested nothing. ' : '') +
       (expWithMap ? '' : 'THE CLONES LOST THEIR MAPS - a textured model would export flat. ') +
       (expNoUV ? expNoUV + ' MESH(ES) LOST THEIR UV' : '')));
+
+    /* ---- 6c. the bytes are not in localStorage any more ----
+       Measured at 2.35: the origin quota is about 5,090kb and one 1024-square
+       picture is about 1,162kb, so four of them filled it for the whole app.
+       This asserts where they live now, and that the old road is closed. */
+    mark('section6c');
+    function idbKeys() {
+      return new Promise(function (res) {
+        var req;
+        try { req = indexedDB.open(k.TEXDB_NAME, 1); } catch (e) { return res(null); }
+        req.onsuccess = function () {
+          var db = req.result, tx;
+          try { tx = db.transaction(k.TEXDB_STORE, 'readonly'); } catch (e) { return res(null); }
+          var g = tx.objectStore(k.TEXDB_STORE).getAllKeys();
+          tx.oncomplete = function () { res(g.result || []); };
+          tx.onerror = function () { res(null); };
+        };
+        req.onerror = function () { res(null); };
+      });
+    }
+    k.saveTextureLibrary();
+    await sleep(500);
+    var stored = await idbKeys();
+    var inUse = [];
+    k.MATERIALS.forEach(function (d) {
+      Object.values(k.mapList(d)).forEach(function (x) { if (inUse.indexOf(x) < 0) inUse.push(x); });
+    });
+    var missing = inUse.filter(function (x) { return !stored || stored.indexOf(x) < 0; });
+    var lsLeft = 0;
+    try { lsLeft = (localStorage.getItem('kubik.textures.v1') || '').length; } catch (e) {}
+    log('');
+    log('=== 6c. where the bytes live ===');
+    log('  ' + inUse.length + ' pictures in use, ' + (stored ? stored.length : 'NO') +
+      ' in IndexedDB, ' + lsLeft + ' bytes left in localStorage');
+    log(verdict(!!stored && inUse.length > 0 && missing.length === 0 && lsLeft === 0,
+      'the store is IndexedDB and the old road is closed',
+      (!stored ? 'INDEXEDDB WAS NOT REACHABLE - this section tested nothing; ' : '') +
+      (missing.length ? missing.length + ' PICTURE(S) NEVER REACHED THE STORE; ' : '') +
+      (lsLeft ? 'localStorage STILL HOLDS ' + lsLeft + ' BYTES OF PICTURES' : '')));
+
+    /* ---- 6d. and a reload finds them ----
+       The cost of the move is that it is async: the pictures arrive after the
+       first frame. Forgetting the store and loading it again is the closest a
+       probe gets to a reload, and what it has to show is not just that the
+       bytes came back but that the MATERIAL was told - a picture nobody
+       re-binds is a picture nobody sees. */
+    mark('section6d');
+    var beforeKey = inUse[0];
+    var wasBound = 0;
+    A.objects.forEach(function (o) {
+      matsOf(o).forEach(function (m) { if (m && m.map) wasBound++; });
+    });
+    k.TEX_STORE.clear();
+    /* AND TAKE THE PICTURES OFF BY HAND. Forgetting the store does not unbind
+       anything - the material holds its own THREE.Texture - so without this
+       the count was 12 -> 12 no matter what the app did, and a build with
+       updateMaterialEverywhere torn out sailed through. Flat materials and an
+       empty store is the state a real reload's first frame is in. */
+    A.objects.forEach(function (o) {
+      matsOf(o).forEach(function (m) {
+        if (m && m.map) { m.map = null; m.needsUpdate = true; }
+      });
+    });
+    var boundBefore = 0;
+    A.objects.forEach(function (o) {
+      matsOf(o).forEach(function (m) { if (m && m.map) boundBefore++; });
+    });
+    k.loadTextureLibrary();
+    for (var w6 = 0; w6 < 150 && !k.TEX_STORE.has(beforeKey); w6++) await sleep(20);
+    await sleep(200);
+    var boundAfter = 0;
+    A.objects.forEach(function (o) {
+      matsOf(o).forEach(function (m) { if (m && m.map) boundAfter++; });
+    });
+    log('');
+    log('=== 6d. forgetting the store, and loading it again ===');
+    log('  store ' + k.TEX_STORE.size + ' back, materials with a map ' +
+      wasBound + ' -> ' + boundBefore + ' (unbound by hand) -> ' + boundAfter);
+    log(verdict(k.TEX_STORE.has(beforeKey) && wasBound > 0 && boundBefore === 0 &&
+      boundAfter >= wasBound,
+      'the pictures came back and the materials were told',
+      (!wasBound ? 'NOTHING WAS BOUND TO BEGIN WITH - this section tested nothing; ' : '') +
+      (boundBefore ? 'THE UNBIND DID NOT TAKE - this section tested nothing; ' : '') +
+      (!k.TEX_STORE.has(beforeKey) ? 'THE BYTES DID NOT COME BACK; ' : '') +
+      (boundAfter < wasBound ? 'THEY CAME BACK AND NOTHING RE-BOUND THEM - a picture nobody sees' : '')));
 
     /* ---- 7. the flip branch, asked directly ----
        Section 2 is an identity chain on purpose, so the one line that turns a
@@ -669,24 +755,32 @@
     if (done) return;
     done = true;
     out.push('');
-    out.push('VERDICT=' + (fails ? 'FAIL (' + fails + ')' : 'PASS'));
+    if (hardFail) out.push('DID NOT FINISH: ' + hardFail);
+    out.push('VERDICT=' + ((fails || hardFail) ?
+      'FAIL (' + (fails + (hardFail ? 1 : 0)) + ')' : 'PASS'));
     out.push('page.errors=' + (errs.length ? errs.join(' | ').slice(0, 400) : 'none'));
     var pre = document.createElement('pre');
     pre.id = 'probeOut';
     pre.textContent = '<<<PROBE\n' + out.join('\n') + '\nPROBE>>>';
     document.body.appendChild(pre);
     document.title = 'PROBE-DONE';
+    try {
+      var x = new XMLHttpRequest();
+      x.open('POST', '/__probe', true);
+      x.send(out.join('\n'));
+    } catch (e) {}
   }
   function ready(cb, t) {
     t = t || 0;
     if (window.__kubik && window.__kubik.App && window.__kubik.App.objects) return cb();
-    if (t > 300) { out.push('ERROR=no __kubik'); return finishUp(); }
+    if (t > 300) { hardFail = 'the app never came up'; out.push('ERROR=no __kubik'); return finishUp(); }
     setTimeout(function () { ready(cb, t + 1); }, 20);
   }
   setTimeout(function () {
     ready(function () {
       setTimeout(function () {
         main().catch(function (e) {
+          hardFail = 'it threw';
           out.push('ERROR=' + (e && e.stack ? e.stack.split('\n').slice(0, 8).join(' / ') : e));
           finishUp();
         });

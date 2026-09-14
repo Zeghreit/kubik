@@ -2412,7 +2412,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.35</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.36</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -4810,6 +4810,11 @@ function applyMaps(mat, d, uvless) {
 
 let _texMissWarned = false;
 function noteMissingTexture() {
+  /* NOT UNTIL THE STORE HAS ANSWERED (v2.36). The pictures arrive after the
+     first frame now, so between startup and that moment every textured
+     material legitimately has a key it cannot resolve. Saying so there would
+     accuse the app of losing them on every single load. */
+  if (!_texLoaded) return;
   if (_texMissWarned) return;
   _texMissWarned = true;
   toast('A material is missing its picture - open the file it came from to bring it back');
@@ -4823,6 +4828,7 @@ function noteMissingTexture() {
    outweigh the budget TEX_MAX was chosen to keep. */
 function pruneTextures() {
   const live = texKeysInUse();
+  TEX_STORE.forEach((e, k) => { if (!live.has(k)) _texDropped.add(k); });
   TEX_STORE.forEach((e, k) => {
     if (live.has(k)) return;
     e.tex.forEach(t => t.dispose());
@@ -4833,48 +4839,200 @@ function pruneTextures() {
 /* Persisted beside the library, and pruned to it. The library outlives the
    scene - a material the person keeps is in the tray whether or not anything
    in the document wears it - so the bytes cannot live only in the document.
-   Same reactive failure as the library itself: storage is not guaranteed,
-   and a picture that does not survive a reload looks like a bug rather than
-   a full disk, so it says so once. */
+
+   AND THEY LEFT localStorage AT v2.36, because the measurement said so.
+   `_heavychk` filled the quota in this browser: about 5,090kb, against about
+   1,162kb for one 1024-square picture as a data URL. Four of them, in total,
+   for the whole origin - and a character with two materials and four maps
+   each is eight. IndexedDB is the only store a browser offers without that
+   ceiling.
+
+   THE COST OF THE MOVE IS THAT IT IS ASYNC, and everything here is built to
+   survive the gap: textureFor answers null for a key it has not got yet,
+   applyMaps binds nothing, and the material draws in its flat colour until
+   the load settles and re-dresses it. The missing-picture toast is HELD until
+   then, or every startup would accuse the app of losing them.
+
+   localStorage stays as the fallback, not as the road. A page opened from
+   file:// - which this app is built to be - can have IndexedDB refused, and
+   so can a private window; there the old ceiling is still the ceiling, which
+   is worse than IndexedDB and better than nothing. */
+const TEXDB_NAME = 'kubik';
+const TEXDB_STORE = 'textures';
+let _texDbP = null;
+function texDb() {
+  if (_texDbP) return _texDbP;
+  _texDbP = new Promise((res) => {
+    let req;
+    try { req = indexedDB.open(TEXDB_NAME, 1); } catch (e) { return res(null); }
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(TEXDB_STORE)) db.createObjectStore(TEXDB_STORE);
+    };
+    /* EVERY ROAD OUT OF HERE NEEDS AN EVENT TO FIRE, so there is a clock on
+       it. An open that neither succeeds nor errors - a partitioned file://
+       origin, a private window, an extension sitting on storage - would
+       otherwise park this promise forever: not just no IndexedDB, but no
+       fallback either, because saveTextureLibrary waits on it too. A whole
+       session of pictures written nowhere, with nothing on screen to say so.
+       And if the open lands late we CLOSE it, rather than leaking a live
+       connection with no onversionchange to block the next upgrade. */
+    let settled = false;
+    const give = (v) => {
+      if (settled) { try { if (v && v.close) v.close(); } catch (e) {} return; }
+      settled = true; res(v);
+    };
+    setTimeout(() => give(null), 6000);
+    req.onsuccess = () => give(req.result);
+    // Refused, or blocked by another tab mid-upgrade. Null means "use the
+    // fallback", which is a road, not a failure.
+    req.onerror = () => give(null);
+    req.onblocked = () => give(null);
+  });
+  return _texDbP;
+}
+
 let _texLibWarned = false;
+let _texLoaded = false;
+let _texMigrated = false;
+/* WHAT THIS TAB HAS DROPPED, and the only thing it is allowed to delete off
+   the disk. The sweep used to ask "which keys on disk does MATERIALS not
+   want", and MATERIALS is one tab's snapshot: a window left open since this
+   morning, nudged once, would delete every picture a second window had
+   imported since. A key this tab has never held is somebody else's. */
+const _texDropped = new Set();
 function texKeysInUse() {
   const used = new Set();
   MATERIALS.forEach(d => Object.values(mapList(d)).forEach(k => used.add(k)));
   return used;
 }
-function saveTextureLibrary() {
-  const used = texKeysInUse();
+
+function texRecord(e) {
+  return { url: e.url, wrap: e.wrap, rep: e.rep, off: e.off,
+    rot: e.rot || 0, cen: e.cen || [0, 0] };
+}
+
+function saveTextureLibraryLocal(used) {
   const out = {};
-  TEX_STORE.forEach((e, k) => {
-    if (!used.has(k)) return;
-    out[k] = { url: e.url, wrap: e.wrap, rep: e.rep, off: e.off,
-      rot: e.rot || 0, cen: e.cen || [0, 0] };
-  });
+  TEX_STORE.forEach((e, k) => { if (used.has(k)) out[k] = texRecord(e); });
   try {
     if (Object.keys(out).length) localStorage.setItem(TEXLIB_KEY, JSON.stringify(out));
     else localStorage.removeItem(TEXLIB_KEY);
   } catch (e) {
-    if (!_texLibWarned) { _texLibWarned = true; toast('Textures are too big to keep in the browser'); }
+    if (!_texLibWarned) { _texLibWarned = true; toast('Textures are too big to keep in this browser'); }
   }
 }
-function loadTextureLibrary() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(TEXLIB_KEY) || '{}');
-    Object.keys(raw).forEach(k => {
-      const e = raw[k];
-      if (!e || typeof e.url !== 'string' || !/^data:image\//.test(e.url)) return;
-      if (TEX_STORE.has(k)) return;
-      TEX_STORE.set(k, {
-        url: e.url,
-        wrap: Array.isArray(e.wrap) ? e.wrap.map(Number) : [THREE.RepeatWrapping, THREE.RepeatWrapping],
-        rep: Array.isArray(e.rep) ? e.rep.map(Number) : [1, 1],
-        off: Array.isArray(e.off) ? e.off.map(Number) : [0, 0],
-        rot: +e.rot || 0,
-        cen: Array.isArray(e.cen) ? e.cen.map(Number) : [0, 0],
-        tex: new Map()
-      });
+
+function saveTextureLibrary(onCommit) {
+  const used = texKeysInUse();
+  texDb().then(db => {
+    if (!db) return saveTextureLibraryLocal(used);
+    let tx;
+    try { tx = db.transaction(TEXDB_STORE, 'readwrite'); } catch (e) { return saveTextureLibraryLocal(used); }
+    const store = tx.objectStore(TEXDB_STORE);
+    TEX_STORE.forEach((e, k) => { if (used.has(k)) store.put(texRecord(e), k); });
+    /* AND EVERYTHING THIS TAB HAS DROPPED. A store that only grows is the
+       same leak localStorage had with a bigger ceiling to hide it in - and a
+       ceiling you cannot see is worse than one you can. But only what THIS
+       tab dropped: asking the disk what MATERIALS does not want makes one
+       stale window authoritative over every other one. The `used` test stays
+       as well, for a key that was dropped and then worn again. */
+    _texDropped.forEach(k => { if (!used.has(k)) store.delete(k); });
+    if (onCommit) tx.oncomplete = () => onCommit();
+    /* onabort too: the first put to fail rolls the whole transaction back,
+       puts and deletes together, and onerror alone does not see every way
+       that happens. */
+    tx.onerror = tx.onabort = () => {
+      if (!_texLibWarned) { _texLibWarned = true; toast('Textures could not be saved in this browser'); }
+    };
+  });
+}
+
+// Shared by both roads in and by a project file: validate, then keep.
+function adoptTextureRecords(raw) {
+  if (!raw || typeof raw !== 'object') return 0;
+  let n = 0;
+  Object.keys(raw).forEach(k => {
+    const e = raw[k];
+    if (!e || typeof e.url !== 'string' || !/^data:image\//.test(e.url)) return;
+    if (TEX_STORE.has(k)) return;
+    TEX_STORE.set(k, {
+      url: e.url,
+      wrap: Array.isArray(e.wrap) ? e.wrap.map(Number) : [THREE.RepeatWrapping, THREE.RepeatWrapping],
+      rep: Array.isArray(e.rep) ? e.rep.map(Number) : [1, 1],
+      off: Array.isArray(e.off) ? e.off.map(Number) : [0, 0],
+      rot: +e.rot || 0,
+      cen: Array.isArray(e.cen) ? e.cen.map(Number) : [0, 0],
+      tex: new Map()
     });
-  } catch (e) { /* a broken entry must never stop the app */ }
+    n++;
+  });
+  return n;
+}
+
+/* The pictures have arrived after the first frame, so everything that drew
+   without them has to be told. Cheap and once: nothing here runs unless a
+   definition actually carries a map. */
+function texturesArrived(hadLegacy) {
+  // An aborted transaction fires once per pending request, and this road
+  // deletes things. Telling the materials, below, is idempotent and may
+  // happen as often as it likes.
+  if (hadLegacy && !_texMigrated) {
+    _texMigrated = true;
+    /* THE OLD ROAD CLOSES ONLY ONCE THE NEW ONE HAS COMMITTED. The write is
+       asynchronous; removing the localStorage copy in the same turn - which
+       is what this did - leaves the pictures nowhere at all if the write
+       then hits the quota, or the tab closes, or the database is the reason
+       we are here in the first place. */
+    saveTextureLibrary(() => {
+      try { localStorage.removeItem(TEXLIB_KEY); } catch (e) {}
+    });
+  }
+  let any = false;
+  MATERIALS.forEach(d => { if (hasMaps(d)) { any = true; updateMaterialEverywhere(d.id); } });
+  if (!any) return;
+  App.objects.forEach(o => dressFromPool(o));
+  _matPreviews = null;
+  if (typeof refreshMatTrayIfOpen === 'function') refreshMatTrayIfOpen();
+  /* Only now is it safe to ask what nothing wears: the definitions are
+     loaded and the bytes have landed. Anything orphaned by a session that
+     closed before it could tidy up gets dropped here and swept on the next
+     save. Deliberately NOT done when no definition carries a map at all -
+     that shape is indistinguishable from a library that failed to load, and
+     the wrong guess deletes everything. */
+  pruneTextures();
+  invalidate();
+}
+
+function loadTextureLibrary() {
+  // The old road, read once and drained into the new one.
+  let legacy = null;
+  try { legacy = localStorage.getItem(TEXLIB_KEY); } catch (e) { legacy = null; }
+  if (legacy) {
+    try { adoptTextureRecords(JSON.parse(legacy)); } catch (e) { legacy = null; }
+  }
+  texDb().then(db => {
+    if (!db) { _texLoaded = true; texturesArrived(false); return; }
+    let tx;
+    try { tx = db.transaction(TEXDB_STORE, 'readonly'); }
+    catch (e) { _texLoaded = true; texturesArrived(false); return; }
+    const store = tx.objectStore(TEXDB_STORE);
+    const keys = store.getAllKeys(), vals = store.getAll();
+    tx.oncomplete = () => {
+      const rec = {};
+      const ks = keys.result || [], vs = vals.result || [];
+      for (let i = 0; i < ks.length; i++) rec[ks[i]] = vs[i];
+      adoptTextureRecords(rec);
+      _texLoaded = true;
+      texturesArrived(!!legacy);
+    };
+    /* NOT texturesArrived(!!legacy). A read that aborted is the strongest
+       evidence available that this database is unhealthy, and migrating
+       means writing into it and then deleting the only other copy. The
+       legacy bytes are already in the store for this session; a later load
+       that works will move them. */
+    tx.onerror = tx.onabort = () => { _texLoaded = true; texturesArrived(false); };
+  });
 }
 
 // JSON.stringify emits INSERTION order, which is not a property of the value.
@@ -28709,6 +28867,9 @@ function restoreDoc(doc, opts = {}) {
       }));
       bySig.set(sig, nid);
     });
+    /* The file's pictures are in the store now and its definitions are in
+       the library, so anything the LAST file left behind can go. */
+    pruneTextures();
     saveMaterialLibrary();
     _matPreviews = null;
   }
@@ -29486,6 +29647,11 @@ function saveProject(name) {
   const clean = (name || '').trim().slice(0, 40);
   if (!clean) { toast('Give the model a name first'); return false; }
   if (!storageAvailable()) { toast('This browser is blocking storage'); return false; }
+  /* The pictures arrive after the first frame now. Saving in that gap writes
+     a file whose materials name keys with no bytes behind them - it looks
+     normal, downloads without complaint, and opens flat on the next
+     machine, which is the one thing withTextures exists to prevent. */
+  if (!_texLoaded) { toast('Pictures are still loading - try again in a moment'); return false; }
   try {
     localStorage.setItem(PROJECT_PREFIX + clean,
       JSON.stringify({ savedAt: Date.now(), doc: serializeDoc({ withTextures: true }) }));
@@ -29602,6 +29768,7 @@ document.getElementById('projName').addEventListener('keydown', (ev) => {
 });
 
 function saveProjectFile() {
+  if (!_texLoaded) { toast('Pictures are still loading - try again in a moment'); return; }
   const doc = serializeDoc({ withTextures: true });
   downloadBlob([JSON.stringify(doc)], 'kubik-project.json', 'application/json', 'Project saved');
 }
@@ -38522,6 +38689,8 @@ if (PICK_DEBUG) {
     MAP_SLOTS, TEX_STORE, mapList, hasMaps, texKeyOf, registerTexture,
     textureFor, applyMaps, grabImportMaps, encodeImportTexture,
     saveTextureLibrary, loadTextureLibrary, IMPORT_TEX_BUDGET, TEX_MAX,
+    texDb, TEXDB_NAME, TEXDB_STORE, adoptTextureRecords, texturesArrived,
+    get texLoaded() { return _texLoaded; },
     pooledMaterial, dressFromPool, applyFinish, pruneTextures, prunePool,
     /* v2.35: the picture channels. encodePicture is here because it is the
        ONE place the resize-and-format rules live now, and refreshMapControls

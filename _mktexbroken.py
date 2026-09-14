@@ -16,7 +16,7 @@ s0 = io.open(ROOT + r'\index.html', encoding='utf-8', newline='').read()
 BREAKS = [
     # section 7: the picture is never turned over
     ('flip',
-     "  if (t.flipY) { c2.translate(0, h); c2.scale(1, -1); }",
+     "  if (flipY) { c2.translate(0, h); c2.scale(1, -1); }",
      "  if (false) { c2.translate(0, h); c2.scale(1, -1); }"),
     # sections 4 and 5: the bytes ride on every document, history included
     ('history',
@@ -41,8 +41,8 @@ BREAKS = [
      "      const lit = 0x000000;"),
     # section 10: the encoder chooses by the material's flags again
     ('alpha',
-     "  const png = sl.key === 'normal' || hasAlpha;",
-     "  const png = sl.key === 'normal';"),
+     "  const png = slotKey === 'normal' || hasAlpha;",
+     "  const png = slotKey === 'normal';"),
     # section 13: nothing frees the pictures when the last wearer goes
     ('prune',
      "function pruneTextures() {\n  const live = texKeysInUse();",

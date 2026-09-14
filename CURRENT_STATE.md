@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.35**
+- Version at time of writing: **2.36**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -51,6 +51,145 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## The pictures left localStorage (2.36)
+
+Wall 1 of the stage-2 measurement, removed. The texture store now lives in
+**IndexedDB** — database `kubik`, object store `textures`, one record per
+content key, the same `{url, wrap, rep, off, rot, cen}` shape the localStorage
+road used. localStorage is still the FALLBACK, and only the fallback: a
+private window, a `file://` origin with storage partitioned away, a browser
+that refuses. There the old ~5,090kb ceiling is still the ceiling, which is
+worse than IndexedDB and better than nothing.
+
+Nothing about the design above the store changed. Definitions still carry
+keys and not bytes, a key is still a hash of the content plus the sampler
+settings, a history step still carries neither, and a project file still
+carries its own copy so it opens on somebody else's machine.
+
+### The one real cost: the pictures arrive after the first frame
+
+IndexedDB is asynchronous, so the app draws once before it knows what the
+materials are wearing. `texturesArrived()` is what closes that gap: it calls
+`updateMaterialEverywhere` for every definition that carries a map, then
+re-dresses the objects and drops the material previews. **`updateMaterialEverywhere`
+is the load-bearing line** — it re-binds the pooled material in place, so a
+material that drew flat a moment ago is repainted. `dressFromPool` behind it
+is belt and braces, for an object whose pooled instance has to be swapped
+rather than mutated.
+
+Two doors refuse to open in that gap, because a file written there would look
+perfectly normal and be wrong: **Save under a name** and **Download .json**
+both check `_texLoaded` first and say "Pictures are still loading - try again
+in a moment". Without that check the file names map keys with no bytes behind
+them, downloads without complaint, and opens flat on the next machine — the
+one thing `withTextures` exists to prevent.
+
+### What the review changed, and why each one matters
+
+Nine findings on the first draft; these are the ones that were defects.
+
+- **The migration burned the only copy.** `localStorage.removeItem` ran in
+  the same turn as the IndexedDB write was *asked for*, not when it
+  committed — and it also ran from the READ's error road, so a database sick
+  enough to abort a read was answered by writing to it and then deleting the
+  fallback. It now removes the old key from the write's `tx.oncomplete`, and
+  a failed read does not migrate at all. The legacy bytes stay put; the next
+  healthy load moves them.
+- **A stale tab deleted a live tab's pictures.** The delete sweep asked
+  "which keys on disk does `MATERIALS` not want", and `MATERIALS` is one
+  tab's snapshot, taken at load and never refreshed. A window left open since
+  the morning, nudged once, would delete everything a second window had
+  imported since — off the disk, with the second window still happily
+  drawing them from memory and reporting nothing. The sweep now deletes only
+  `_texDropped`: keys **this tab** has held and let go. A key it has never
+  heard of belongs to somebody else.
+- **`texDb()` could hang forever.** Every road out of it needed an event to
+  fire. An open that neither succeeds nor errors parked the promise, and with
+  it every save *and* the fallback, so a whole session of pictures was
+  written nowhere with nothing on screen to say so. There is a 6-second clock
+  on it now, and a connection that lands late is closed rather than leaked.
+- **A transaction that aborts is not the same as one that errors.** Both
+  `saveTextureLibrary` and `loadTextureLibrary` now handle `onabort` as well;
+  without it `_texLoaded` could stay false for the life of the page, which
+  mutes the "missing picture" message forever.
+- **Opening files leaked the store.** `restoreDoc` adopted a file's pictures
+  and never let the previous file's go. Five files in a row, four 1024 maps
+  each, and the store holds twenty entries of base64 plus a `THREE.Texture`
+  apiece. It prunes once the definitions are in the library.
+
+### Deliberately not done
+
+`pruneTextures()` is **not** called when no definition carries a map at all.
+That shape is indistinguishable from a material library that failed to load,
+and the wrong guess deletes everything.
+
+### Still on localStorage, and still capped: Save under a name
+
+`saveProject` writes `serializeDoc({withTextures: true})` into
+`localStorage` under `kubik.project.*`. The measurement that motivated this
+version applies to it unchanged — ~5,090kb, ~1,162kb a picture. So the
+character that can now be **built** and **kept in the library** still cannot
+be saved under a name in the browser, and the message it gets, "Not enough
+room to save - delete an older model", names the wrong cause. Download .json
+has no such limit. **This is the next wall**, and it is a known one, not a
+surprise.
+
+### Probe
+
+`_texchk.py` / `_texchk.js`, 23 sections. Two are new:
+
+- **6c "where the bytes live"** — save, then read the IndexedDB keys
+  directly, and assert every picture in use is there *and* that
+  `kubik.textures.v1` is empty. Caught both of its broken builds.
+- **6d "forgetting the store, and loading it again"** — clear `TEX_STORE`,
+  load again, and assert not only that the bytes came back but that the
+  materials are **bound** again. A picture nobody re-binds is a picture
+  nobody sees.
+
+**The runner had to change with them.** It used `--virtual-time-budget` and
+`--dump-dom`, and section 6c hung on every run: IndexedDB is real off-thread
+I/O, and under virtual time the clock races to the end of the budget before a
+single request completes. Now real wall clock, results by POST — the third
+probe in this project to learn that lesson, after `_prof_probe` for
+`performance.now()` and `_texchk` itself for image decode. **If it is
+asynchronous and off the main thread, it needs a real clock.**
+
+And the hang exposed a worse hole: the probe printed `WATCHDOG at section6c`
+and then `VERDICT=PASS`. A run that stopped half way had been counting as a
+pass, because the verdict only counted sections that had actually run — every
+section after the hang tested nothing and said nothing. The watchdog, a
+thrown error, and "the app never came up" all force a FAIL now.
+
+`_mkidbbroken.py` makes three broken builds: `noidb` (IndexedDB refused, so
+the fallback is the only road), `bothroads` (written to IndexedDB *and* left
+in localStorage — a move that is really a copy), `silent`
+(`updateMaterialEverywhere` never called, so the bytes arrive and nothing is
+told). The first draft of `silent` broke `dressFromPool` instead and the
+probe passed, correctly: a break the probe shrugs at is a break aimed at the
+wrong line.
+
+Three more things this round found, all of them in the harness rather than
+the app, and all of them the kind that make a suite quietly stop testing:
+
+- **6d was vacuous.** It cleared `TEX_STORE` and counted bound maps before
+  and after - but clearing the store does not unbind anything, because the
+  material holds its own `THREE.Texture`. The count was 12 -> 12 whatever the
+  app did, and the log line said "(they were unbound in between)", which was
+  simply untrue. It now takes the pictures off by hand first, which is the
+  state a real reload's first frame is in, and prints `12 -> 0 (unbound by
+  hand) -> 12`. It fails if the unbind does not take, too.
+- **The probe's own web server was single-threaded.** A page that leaves a
+  socket open - which the no-IndexedDB build does - blocked the POST carrying
+  the result forever, and the probe reported `NO PROBE OUTPUT` as though the
+  build were dead. `ThreadingTCPServer` now.
+- **Two anchors in `_mktexbroken.py` had been stale since 2.33.** v2.35
+  factored the resize-and-format rules into `encodePicture`, where the
+  arguments are `flipY` and `slotKey` rather than `t.flipY` and `sl.key`, and
+  the `flip` and `alpha` breaks had silently stopped applying. They assert on
+  their anchor, which is the only reason it was caught. **Run the whole
+  broken-build suite after a refactor, not only the sections you touched.**
+  All eleven breaks are caught now.
 
 ## What a textured model actually costs (measured, 2.35)
 
