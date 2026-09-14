@@ -483,6 +483,154 @@
       'an object taking its private instance away actually frees it',
       'THE INSTANCE SURVIVED prunePool - it would leak for the session'));
 
+    /* ---- 12c. the editor's own door ----
+       DRIVEN THROUGH THE REAL CONTROLS, not through the functions behind
+       them. a2.78 passed twelve sections against a worker while the tool
+       itself was broken in six places, all of them in the controls - so this
+       opens the editor, clicks the chips and fires the file input. */
+    mark('section12c');
+    var editId = null;
+    k.MATERIALS.forEach(function (d, i) { if (!editId && !d.preset && !k.hasMaps(d)) editId = i; });
+    if (!editId) {
+      editId = 'mp_probe';
+      k.MATERIALS.set(editId, { id: editId, preset: false, name: 'Picker probe',
+        color: '#8899aa', roughness: 0.5, metalness: 0 });
+    }
+    var beforeSig = k.materialDefSig(k.getMaterialDef(editId));
+    k.openMatEditor(editId);
+    var chipRow = document.getElementById('mpChips');
+    var chips = chipRow ? Array.prototype.slice.call(chipRow.querySelectorAll('button')) : [];
+    var labels = chips.map(function (b) { return b.dataset.slot; }).join(',');
+
+    // A File, made here, handed to the real <input type="file">. Declared
+    // with `function` so the sections below reach it too.
+    function fileFrom(cvs) {
+      return new Promise(function (res) {
+        cvs.toBlob(function (b) { res(new File([b], 'probe.png', { type: b.type })); }, 'image/png');
+      });
+    }
+    function handTo(input, file) {
+      var dt = new DataTransfer();
+      dt.items.add(file);
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    var picked = await fileFrom(sheet('#20c020', '#203080', 128));
+    // The normal channel, deliberately: it is the one the encoder treats
+    // differently, and picking the first chip would not have said so.
+    var normalChip = chips.filter(function (b) { return b.dataset.slot === 'normal'; })[0];
+    if (normalChip) normalChip.click();
+    var onNormal = k.mpEditing;
+    handTo(document.getElementById('mpFile'), picked);
+    var def2 = k.getMaterialDef(editId);
+    for (var t2 = 0; t2 < 150 && !(def2.maps && def2.maps.normal); t2++) await sleep(20);
+    var gotKey = def2.maps && def2.maps.normal;
+    var gotEntry = gotKey ? k.TEX_STORE.get(gotKey) : null;
+    var chipsAfter = Array.prototype.slice.call(chipRow.querySelectorAll('button'));
+    var dotted = chipsAfter.filter(function (b) { return /\u2022/.test(b.textContent); })
+      .map(function (b) { return b.dataset.slot; }).join(',');
+    log('');
+    log('=== 12c. assigning a picture in the editor ===');
+    log('  chips: ' + labels + ', editing slot ' + onNormal);
+    log('  after the pick: key ' + (gotKey ? 'set' : 'MISSING') + ', dotted chips [' + dotted + ']' +
+      ', stored as ' + (gotEntry ? gotEntry.url.slice(5, 15) : '?'));
+    log(verdict(chips.length === 6 && labels === 'base,normal,rough,metal,ao,emissive' &&
+      !!gotKey && dotted === 'normal' && gotEntry &&
+      /^data:image\/png/.test(gotEntry.url),
+      'the picker put the picture on the channel that was open, and said so',
+      (chips.length !== 6 ? 'THE CHIP ROW IS ' + chips.length + ' LONG; ' : '') +
+      (!gotKey ? 'NOTHING LANDED ON THE DEFINITION; ' : '') +
+      (dotted !== 'normal' ? 'THE DOTS SAY [' + dotted + ']; ' : '') +
+      (gotEntry && !/^data:image\/png/.test(gotEntry.url) ? 'A NORMAL MAP WAS ENCODED AS JPEG' : '')));
+
+    /* ---- 12d. and taking it off again leaves NO trace ----
+       A definition that has had every picture removed has to sign exactly
+       like one that never had any, or it stops matching itself across a file
+       and mints a copy on the next open - the a2.65a failure, which this
+       release has already had to design around once. */
+    mark('section12d');
+    document.getElementById('mpClear').click();
+    var def3 = k.getMaterialDef(editId);
+    var afterSig = k.materialDefSig(def3);
+    log('');
+    log('=== 12d. and taking it off again ===');
+    log('  maps key present after removal: ' + ('maps' in def3) +
+      ', signature ' + (afterSig === beforeSig ? 'unchanged' : 'MOVED'));
+    log(verdict(!('maps' in def3) && afterSig === beforeSig,
+      'the material signs exactly as it did before it ever had a picture',
+      ('maps' in def3 ? 'AN EMPTY maps KEY WAS LEFT BEHIND; ' : '') +
+      (afterSig !== beforeSig ? 'THE SIGNATURE MOVED - it would mint a copy of itself on the next open' : '')));
+
+    /* ---- 12e. two picks, and the document that has to know ----
+       Both halves are review findings. A second pick used to land in DECODE
+       order rather than pick order, so a big photo chosen first could arrive
+       last and overwrite the small one chosen instead of it. And nothing in
+       this editor ever scheduled an autosave, so the last autosaved document
+       predated every change made here - which on reload does not lose a
+       tweak, it mints "Solid (imported)" and repoints every face. */
+    mark('section12e');
+    k.openMatEditor('metal');
+    var row2 = document.getElementById('mpChips');
+    var baseChip = Array.prototype.slice.call(row2.querySelectorAll('button'))
+      .filter(function (b) { return b.dataset.slot === 'base'; })[0];
+    if (baseChip) baseChip.click();
+    // The FIRST one is big and noisy on purpose: it has to be the slower
+    // decode, or "the last pick wins" would pass by luck on a build that
+    // simply takes whichever finishes last.
+    var slowPick = await fileFrom(sheet('#e02020', '#2040e0', 1024));
+    var fastPick = await fileFrom(sheet('#20c020', '#101010', 32));
+    /* THE KEY IS CLEARED FIRST, AND ONLY AFTER ANY PENDING WRITE HAS FIRED.
+       Without this the check passed on the build that never schedules one:
+       landImport pushes a history step several sections ago, that schedules
+       an autosave on a 900ms debounce, and it lands after this edit and
+       writes the map out anyway. The question is whether THIS editor tells
+       the document, so the document has to be empty when it is asked. */
+    await sleep(1200);
+    try { localStorage.removeItem('kubik.autosave'); } catch (e) {}
+    var input2 = document.getElementById('mpFile');
+    handTo(input2, slowPick);
+    handTo(input2, fastPick);
+    await sleep(1400);                 // both decodes, and the 900ms autosave
+    var metal = k.getMaterialDef('metal');
+    var mEntry = metal.maps && metal.maps.base ? k.TEX_STORE.get(metal.maps.base) : null;
+    var mPix = mEntry ? await pixelAt(mEntry.url, 0.05, 0.05) : null;
+    var GREEN = !!mPix && mPix.g > 150 && mPix.r < 90;
+    var saved = '';
+    try { saved = localStorage.getItem('kubik.autosave') || ''; } catch (e) { saved = ''; }
+    var inDoc = !!(metal.maps && metal.maps.base) && saved.indexOf(metal.maps.base) >= 0;
+    log('');
+    log('=== 12e. two picks, and the autosave ===');
+    log('  landed: ' + (mPix ? 'rgb(' + [mPix.r, mPix.g, mPix.b].join(',') + ')' : 'nothing') +
+      ' - the second pick is green, the first is red');
+    log('  the autosaved document names the key: ' + inDoc);
+    log(verdict(GREEN && inDoc,
+      'the pick you made last is the one you get, and the document knows about it',
+      (!mPix ? 'NO PICTURE LANDED AT ALL; ' : '') +
+      (mPix && !GREEN ? 'THE FIRST PICK OVERWROTE THE SECOND; ' : '') +
+      (!inDoc ? 'THE AUTOSAVE PREDATES THE EDIT - a reload would mint a copy of this material' : '')));
+
+    /* ---- 12f. and Reset really resets ----
+       MATERIAL_DEFAULTS has no `maps` key, so Object.assign cannot clear one:
+       a preset kept its picture through a Reset that said "Reset to default",
+       and went on failing to match stock in every file opened afterwards. */
+    mark('section12f');
+    var stockSig = k.materialDefSig(Object.assign({ id: 'metal', preset: true },
+      k.MATERIAL_DEFAULTS.metal));
+    document.getElementById('meReset').click();
+    var metal2 = k.getMaterialDef('metal');
+    var prevEl = document.getElementById('mpPrev');
+    log('');
+    log('=== 12f. Reset takes the picture off too ===');
+    log('  maps key after Reset: ' + ('maps' in metal2) +
+      ', signature ' + (k.materialDefSig(metal2) === stockSig ? 'back to stock' : 'STILL MOVED') +
+      ', preview src attribute: ' + (prevEl.hasAttribute('src') ? 'set' : 'none'));
+    log(verdict(!('maps' in metal2) && k.materialDefSig(metal2) === stockSig &&
+      !prevEl.hasAttribute('src'),
+      'a reset preset is stock again, down to its signature',
+      ('maps' in metal2 ? 'THE PICTURE SURVIVED THE RESET; ' : '') +
+      (k.materialDefSig(metal2) !== stockSig ? 'THE SIGNATURE IS NOT STOCK; ' : '') +
+      (prevEl.hasAttribute('src') ? 'AN EMPTY PREVIEW STILL CARRIES src - that is a fetch of index.html' : '')));
+
     /* ---- 13. deleting the material frees the pictures ---- */
     mark('section13');
     var hadStore = k.TEX_STORE.size;

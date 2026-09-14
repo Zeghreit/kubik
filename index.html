@@ -2307,6 +2307,25 @@
              the edges are, so it is a gradient and three extra taps. -->
         <label>Round edges <span id="meBevelV"></span></label>
         <input type="range" id="meBevel" min="0" max="1" step="0.02">
+        <!-- PICTURES (v2.35). Six channels, one chip each, and the same
+             "a chip picks what you are editing" shape the masks next door
+             use: a second interaction vocabulary inside a 198px column would
+             be a worse answer than a familiar one. A chip whose channel has a
+             picture carries a dot, so which of the six are set is legible
+             without opening any of them - the accent is already spoken for by
+             "this is the one you are editing", and those are two different
+             questions. -->
+        <label>Pictures</label>
+        <div id="mpChips" class="mk-chips"></div>
+        <div id="mePic" style="display:flex; flex-direction:column; gap:6px;">
+          <img id="mpPrev" alt="" class="mk-imgprev">
+          <div id="mpNote" class="mk-note"></div>
+          <div class="me-row">
+            <button id="mpImage" class="small">Choose</button>
+            <button id="mpClear" class="small">Remove</button>
+          </div>
+        </div>
+        <input type="file" id="mpFile" accept="image/*" style="display:none;">
         <label>Masks</label>
         <!-- One row of chips picks WHICH mask you are editing, and one set of
              controls edits it. Four masks' worth of controls stacked in a
@@ -2393,7 +2412,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.34</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.35</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -30184,10 +30203,18 @@ const IMPORT_TEX_BUDGET = 24;
    A TAINTED CANVAS RETURNS NULL. toDataURL throws on a cross-origin image,
    which an .mtl pointing at a URL can produce; that is a map left behind,
    not an import that fails. */
-function encodeImportTexture(t, sl, src) {
+function encodeImportTexture(t, sl) {
   const img = t.image;
-  const w0 = img.width || img.videoWidth || 0;
-  const h0 = img.height || img.videoHeight || 0;
+  return encodePicture(img, img.width || img.videoWidth || 0,
+    img.height || img.videoHeight || 0, sl.key, !!t.flipY);
+}
+
+/* AND THE RULES THEMSELVES, IN ONE PLACE (v2.35). Two doors let a picture in
+   now - an import and the material editor's file picker - and both have to
+   resize it, choose a format and lay a ground the same way. A second copy of
+   that decision is a second answer waiting to disagree with the first, which
+   this file has watched happen to a rule about edges twice. */
+function encodePicture(img, w0, h0, slotKey, flipY) {
   if (!w0 || !h0) return null;
   const k = Math.min(1, TEX_MAX / Math.max(w0, h0));
   const w = Math.max(1, Math.round(w0 * k)), h = Math.max(1, Math.round(h0 * k));
@@ -30195,7 +30222,7 @@ function encodeImportTexture(t, sl, src) {
   cvs.width = w; cvs.height = h;
   const c2 = cvs.getContext('2d');
   if (!c2) return null;
-  if (t.flipY) { c2.translate(0, h); c2.scale(1, -1); }
+  if (flipY) { c2.translate(0, h); c2.scale(1, -1); }
   try { c2.drawImage(img, 0, 0, w, h); } catch (e) { return null; }
   /* THE PIXELS DECIDE, not the material's flags. A glTF OPAQUE material can
      carry a base colour with a real alpha channel - atlas exporters do it
@@ -30211,7 +30238,7 @@ function encodeImportTexture(t, sl, src) {
     const d = c2.getImageData(0, 0, w, h).data;
     for (let i = 3; i < d.length; i += 4) { if (d[i] !== 255) { hasAlpha = true; break; } }
   } catch (e) { return null; }
-  const png = sl.key === 'normal' || hasAlpha;
+  const png = slotKey === 'normal' || hasAlpha;
   if (!png) {
     /* JPEG has no alpha, so a ground goes behind the picture rather than
        under it - drawn into a second canvas, because the first one is the
@@ -36122,6 +36149,8 @@ function openMatEditor(id) {
   document.getElementById('meReset').style.display = isPresetDef(d) ? '' : 'none';
   document.getElementById('meDelete').style.display = isPresetDef(d) ? 'none' : '';
   mkEditing = 0;   // a freshly opened editor starts on the first mask
+  mpEditing = 0;   // and on the first picture channel
+  refreshMapControls(d);
   refreshMaskControls(d);
   matFlyEl.classList.add('editing');
 }
@@ -36190,6 +36219,23 @@ function meApplyLive() {
 function meCommit() {
   if (!matEditingId) return;
   saveMaterialLibrary();
+  /* AND THE DOCUMENT (v2.35, found in review). The library is not the whole
+     story: appearance lives in the doc too, and nothing in this editor ever
+     scheduled an autosave - only pushHistory and undo/redo did. So the last
+     autosave was whatever an OP wrote, with a materialLib that predates every
+     change made here.
+
+     That is not a lost tweak, it is a lost material. On reload,
+     loadMaterialLibrary restores the edited definition from localStorage and
+     then restoreDoc applies the stale doc's library over it: the signatures
+     disagree, the preset shortcut falls through, and Solid is minted again as
+     "Solid (imported)" with every face that wore it repointed onto the copy -
+     the exact v2.30 failure the merge has a long comment about, reached by
+     "put a picture on Solid and close the tab".
+
+     Here rather than in the picture funnel, because every control in this
+     editor commits through meCommit and every one of them had the hole. */
+  scheduleAutosave();
   const keep = matEditingId;
   if (!_matPreviews) {
     buildMatTray();
@@ -36226,8 +36272,20 @@ document.getElementById('meReset').addEventListener('click', () => {
   // reason d.masks is emptied by hand a line or two below.
   d.bevel = 0;
   d.masks = [];     // Object.assign can't clear it (QA finding 5)
+  /* And neither can it clear the pictures (v2.35). MATERIAL_DEFAULTS has no
+     `maps` key, so a preset that had one kept it through a Reset that said
+     "Reset to default" - and went on failing to match stock Solid in every
+     file opened afterwards. DELETED, not emptied: an empty object would move
+     the signature, which is the whole reason mpClear deletes the key too. */
+  delete d.maps;
   rebakeMaskTexture(d);
   updateMaterialEverywhere(d.id);
+  /* Dropping the last picture changes which pool leg an unwrapped mesh wants,
+     so the instances have to be retired and re-made - the same pair the
+     picture funnel does. */
+  prunePool(d.id + '|', null);
+  App.objects.forEach(o => dressFromPool(o));
+  pruneTextures();
   saveMaterialLibrary();
   toast('Reset to default');
   meCommit();
@@ -36305,6 +36363,163 @@ function mkStructural(d) {
   refreshMaskControls(d);
   meCommit();
 }
+
+/* ---------------- the picture channels (v2.35) ---------------- */
+
+let mpEditing = 0;
+
+/* IS ANYTHING WEARING THIS DEFINITION UNWRAPPED? A picture on a mesh with no
+   `uv` attribute is bound to nothing, and WebGL hands an absent attribute
+   (0,0) - so the whole model would draw in the picture's corner texel. The
+   pool gives such a mesh a mapless instance instead (v2.33), which is the
+   right answer and an invisible one: you pick a picture and nothing happens.
+   Saying it here is the difference between "this app cannot do it" and "this
+   model cannot". */
+function defHasUnwrappedWearer(id) {
+  return App.objects.some(o => {
+    const fin = o.mesh.userData.finishes || {};
+    if (!Object.keys(fin).some(g => fin[g] === id)) return false;
+    return !o.mesh.geometry.getAttribute('uv');
+  });
+}
+
+function refreshMapControls(d) {
+  const chips = document.getElementById('mpChips');
+  if (!chips || !d) return;
+  const maps = mapList(d);
+  if (!(mpEditing >= 0 && mpEditing < MAP_SLOTS.length)) mpEditing = 0;
+  chips.innerHTML = '';
+  MAP_SLOTS.forEach((sl, i) => {
+    const b = document.createElement('button');
+    b.textContent = sl.label + (maps[sl.key] ? ' \u2022' : '');
+    b.className = i === mpEditing ? 'active' : (maps[sl.key] ? '' : 'muted');
+    b.title = sl.label + (maps[sl.key] ? '' : ' (no picture)');
+    b.dataset.slot = sl.key;
+    b.addEventListener('click', () => {
+      mpEditing = i;
+      refreshMapControls(getMaterialDef(matEditingId));
+    });
+    chips.appendChild(b);
+  });
+  const slot = MAP_SLOTS[mpEditing];
+  const entry = maps[slot.key] ? TEX_STORE.get(maps[slot.key]) : null;
+  const prev = document.getElementById('mpPrev');
+  /* NOT `src = ''`. An empty src resolves against the document base, so the
+     browser fetches index.html - this whole app - and decodes it as an image
+     before failing, on every chip tap. */
+  if (entry) prev.src = entry.url; else prev.removeAttribute('src');
+  prev.style.display = entry ? '' : 'none';
+  document.getElementById('mpClear').style.display = entry ? '' : 'none';
+  const warn = defHasUnwrappedWearer(d.id)
+    ? 'No UV layout on this model - pictures will not draw' : '';
+  document.getElementById('mpNote').textContent =
+    warn || (entry ? '' : 'No picture yet');
+}
+
+/* The funnel, and mkStructural next door is the model for it: adding or
+   removing a picture is the one thing in this section that changes which
+   POOLED INSTANCE a mesh wants - a definition with maps and a mesh without
+   UVs get an instance of their own - so re-dressing is not optional. Nothing
+   here runs per slider tick, so it can afford to. */
+function mpStructural(d) {
+  updateMaterialEverywhere(d.id);
+  /* RETIRED, THEN RE-MADE. This is the only funnel in the editor that changes
+     a pool KEY: the first picture moves an unwrapped mesh from `id|side||own`
+     to `id|side|nouv|own`, and the last one moves it back. dressFromPool
+     makes the new instance but nothing retires the old one, so add-and-remove
+     in a loop left a dead MeshStandardMaterial - with its mask patch and its
+     uniforms - in the pool for the session. Everything still worn is rebuilt
+     on the next line, which is the shape meDelete already uses. */
+  prunePool(d.id + '|', null);
+  App.objects.forEach(o => dressFromPool(o));
+  pruneTextures();                      // the picture it replaced, if any
+  saveMaterialLibrary();
+  if (matEditingId === d.id) refreshMapControls(d);
+  meCommit();
+}
+
+document.getElementById('mpImage').addEventListener('click', () =>
+  document.getElementById('mpFile').click());
+
+document.getElementById('mpClear').addEventListener('click', () => {
+  // liveMaterialDef for the same reason the picker uses it - see below.
+  const d = liveMaterialDef(matEditingId);
+  const slot = MAP_SLOTS[mpEditing];
+  _picGen++;                         // a decode in flight must not land after this
+  if (!d || !slot || !d.maps || !d.maps[slot.key]) return;
+  delete d.maps[slot.key];
+  // Absent rather than empty, so a material that has had every picture taken
+  // off signs and serialises exactly as one that never had any.
+  if (!hasMaps(d)) delete d.maps;
+  mpStructural(d);
+});
+
+/* Your picture, resized and re-encoded by the same function the import uses
+   before anything keeps it - so what lands in the library and in every file
+   that references the material is the 1024px version, not the 4000px photo
+   you picked. */
+/* ONE PICK AT A TIME, AND THE LAST ONE WINS (found in review). Two picks on
+   one channel land in DECODE order, not pick order: choose a 12 MP photo, see
+   nothing happen, choose a small PNG instead, and the PNG decodes first, the
+   photo lands on top of it, and pruneTextures throws away the picture you
+   actually chose. The token is bumped by Remove as well, so a decode cannot
+   land after the channel has been cleared. */
+let _picGen = 0;
+document.getElementById('mpFile').addEventListener('change', (ev) => {
+  const file = ev.target.files && ev.target.files[0];
+  ev.target.value = '';              // so picking the same file twice still fires
+  const slot = MAP_SLOTS[mpEditing];
+  const gen = ++_picGen;
+  /* The material is captured HERE, not when the decode finishes - the same
+     note the mask picker carries: decoding a phone photo takes long enough to
+     close the editor in, and reading matEditingId at the end would send the
+     result to whatever was open by then, or to Solid. */
+  /* liveMaterialDef, NOT getMaterialDef: the latter falls back to Solid, and
+     the comment on it says the material editor is the one caller for which
+     that is a lie. A file opened or an import run while this editor is up can
+     remap or drop the id under it, and the fallback would write the picture
+     onto Solid. */
+  const d = liveMaterialDef(matEditingId);
+  if (!file || !d || !slot) return;
+  if (file.size > MASK_IMG_MAX_BYTES) {
+    toast('That picture is too large - under 25 MB please');
+    return;
+  }
+  // An object URL, not readAsDataURL - see the mask picker's note.
+  const objUrl = URL.createObjectURL(file);
+  const im = new Image();
+  im.onload = () => {
+    URL.revokeObjectURL(objUrl);
+    if (!im.naturalWidth || !im.naturalHeight) {
+      toast('That picture would not decode');
+      return;
+    }
+    /* flipY FALSE. A file's first row is the top of the picture and the
+       store's convention is glTF's, so there is nothing to turn over - the
+       flip exists for an import, whose texture may say otherwise. */
+    /* BOTH CHECKS BEFORE THE STORE IS TOUCHED. registering first and
+       returning afterwards left a megabyte of encoded picture in TEX_STORE
+       owned by nobody - saveTextureLibrary filters by what is in use, so it
+       was memory-only and invisible until some unrelated prune swept it. The
+       mask picker has these the right way round; this did not. */
+    if (gen !== _picGen) return;             // a later pick is already in flight
+    if (MATERIALS.get(d.id) !== d) return;   // the material was deleted meanwhile
+    const url = encodePicture(im, im.naturalWidth, im.naturalHeight, slot.key, false);
+    const key = url ? registerTexture(url, {}) : null;
+    if (!key) { toast('That picture would not encode'); return; }
+    // The same guard mapList and hasMaps use: a definition arrives from a
+    // file, and `"maps": "x"` would survive `d.maps || {}` and swallow the
+    // assignment without a word.
+    d.maps = (d.maps && typeof d.maps === 'object') ? d.maps : {};
+    d.maps[slot.key] = key;
+    mpStructural(d);
+  };
+  im.onerror = () => {
+    URL.revokeObjectURL(objUrl);
+    toast('That file did not open as a picture');
+  };
+  im.src = objUrl;
+});
 
 function refreshMaskControls(d) {
   const list = maskList(d);
@@ -38308,6 +38523,12 @@ if (PICK_DEBUG) {
     textureFor, applyMaps, grabImportMaps, encodeImportTexture,
     saveTextureLibrary, loadTextureLibrary, IMPORT_TEX_BUDGET, TEX_MAX,
     pooledMaterial, dressFromPool, applyFinish, pruneTextures, prunePool,
+    /* v2.35: the picture channels. encodePicture is here because it is the
+       ONE place the resize-and-format rules live now, and refreshMapControls
+       because a probe that rebuilt the chip row itself would agree with any
+       bug in the real one. */
+    encodePicture, refreshMapControls, defHasUnwrappedWearer, openMatEditor,
+    get mpEditing() { return mpEditing; },
     /* The TRAY, so the + can be pressed rather than reimplemented. The
        whole reason the fork lost its pictures is that it copies a
        definition by hand, and a probe that copies it by hand too would

@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.34**
+- Version at time of writing: **2.35**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -51,6 +51,86 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Pictures are yours to assign (2.35)
+
+Maps stopped being a privilege of the import. The material editor grows a
+**Pictures** section: six channels, a chip each, a preview, Choose and Remove.
+It is the last piece of stage 1 of `uv-commands-maps-plan.md`.
+
+The shape is the masks' shape next door - a chip picks WHICH channel you are
+editing and one set of controls edits it - because a second interaction
+vocabulary inside a 198px column is a worse answer than a familiar one. A chip
+whose channel has a picture carries a **dot**: the accent is already spoken for
+by "this is the one you are editing", and those are two different questions.
+
+`encodePicture` is now the ONE place the resize-and-format rules live, called
+by both doors a picture comes in by. A second copy of that decision is a second
+answer waiting to disagree with the first, which this file has watched happen
+to a rule about edges twice.
+
+**It says when it cannot work.** A picture on a mesh with no `uv` attribute is
+bound to nothing, and the pool gives such a mesh a mapless instance - the right
+answer and an invisible one, so you would pick a picture and watch nothing
+happen. The note under the preview says so instead.
+
+### What review found, and one of it was not about pictures at all
+
+Eight defects, all fixed here. The one worth reading twice:
+
+- **Nothing in the material editor ever scheduled an autosave.** Only
+  `pushHistory` and undo/redo did, so the last autosaved document predated
+  every change made in the editor - masks included, since long before this
+  release. That does not lose a tweak. On reload `loadMaterialLibrary`
+  restores the edited definition from localStorage, `restoreDoc` then applies
+  the stale document's library over it, the signatures disagree, the preset
+  shortcut falls through, and Solid is minted again as "Solid (imported)" with
+  every face that wore it repointed onto the copy. One line in `meCommit`
+  closes it for every control in the editor.
+- **Reset could not clear a picture.** `MATERIAL_DEFAULTS` has no `maps` key
+  and `Object.assign` cannot remove one - the same reason `d.masks` is emptied
+  by hand on the line above. A preset kept its picture through a Reset that
+  said "Reset to default", and went on failing to match stock in every file
+  opened afterwards.
+- **Two picks landed in DECODE order, not pick order.** Choose a 12 MP photo,
+  see nothing happen, choose a small one instead, and the photo arrives last
+  and overwrites the picture you actually chose. A generation token, bumped by
+  Remove as well.
+- **`registerTexture` ran before the "deleted meanwhile" check**, leaving a
+  megabyte in the store owned by nobody - invisible, because
+  `saveTextureLibrary` filters by what is in use.
+- **`getMaterialDef` where `liveMaterialDef` belongs.** The fallback returns
+  Solid, and the comment on it says the editor is the one caller for which
+  that is a lie: a file opened while the editor is up would have sent the next
+  picture onto Solid.
+- **The abandoned pool leg was never retired** - adding the first picture
+  moves an unwrapped mesh to a different key, and the old instance stayed for
+  the session.
+- **`d.maps = d.maps || {}`** trusted a shape the rest of the file refuses to.
+- **`prev.src = ''`** is a fetch of index.html, decoded as an image, on every
+  chip tap.
+
+### Deliberately absent - do not rebuild these
+
+- **Per-map tiling and offset controls.** The sampler settings are part of the
+  store KEY, so a tiling change is a different entry; they ride in from an
+  import and there is no UI for them yet. A slider here would need the key to
+  be rewritten on every tick.
+- **A second interaction for Remove.** Two taps on a chip toggles a MASK off
+  next door; here the second tap would have to mean "delete the picture",
+  which is not undoable and not what a repeated tap means anywhere else.
+
+Measured by `_texchk`: 21 sections now, the new ones driven through the REAL
+controls - the editor is opened, the chips are clicked and a File is handed to
+the real `<input type="file">`, because a2.78 passed twelve sections against a
+worker while the tool itself was broken in six places. Seven deliberately
+broken builds (`_mkpicbroken.py`), one per decision.
+
+**And one of those seven passed at first.** The autosave check was being
+rescued by a history step several sections earlier, whose own 900ms autosave
+landed after the edit and wrote the picture out anyway - so the check said yes
+on a build that never schedules one. It clears the key first now, after any
+pending write has fired. *A check that cannot fail is not a check.*
 
 ## A normal map survives Round edges and Bump (2.34)
 
