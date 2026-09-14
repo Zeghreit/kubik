@@ -2393,7 +2393,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.32</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.33</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -4602,6 +4602,288 @@ const MATERIALS = new Map();
 let nextMaterialNum = 1;
 const MATLIB_KEY = 'kubik.materials.v1';
 
+/* ---------------- TEXTURE MAPS (v2.33) ----------------
+
+   The six channels MeshStandardMaterial reads. `prop` is three's name for
+   it; `srgb` is the one entry here that is not a matter of taste. Base
+   colour and emission carry a picture of LIGHT and have to be decoded from
+   sRGB; the other four carry NUMBERS - a direction, a roughness, a
+   metalness, an occlusion - and decoding those is not a tint, it is wrong
+   arithmetic: three picks the texture's internal format on the GPU from
+   colorSpace, so the sampler itself does the conversion.
+
+   All six sample the FIRST uv set. aoMap used to be wired to a second one
+   and the docs page still says so; since r152 a texture carries `channel`
+   and it defaults to 0, which the source says and the page does not. */
+const MAP_SLOTS = [
+  { key: 'base',     prop: 'map',          srgb: true,  label: 'Colour' },
+  { key: 'normal',   prop: 'normalMap',    srgb: false, label: 'Normal' },
+  { key: 'rough',    prop: 'roughnessMap', srgb: false, label: 'Rough' },
+  { key: 'metal',    prop: 'metalnessMap', srgb: false, label: 'Metal' },
+  { key: 'ao',       prop: 'aoMap',        srgb: false, label: 'AO' },
+  { key: 'emissive', prop: 'emissiveMap',  srgb: true,  label: 'Glow' }
+];
+const MAP_KEYS = MAP_SLOTS.map(s => s.key);
+
+/* THE BYTES ARE NOT ON THE DEFINITION, and that is the whole design.
+   pushHistory stores what serializeDoc returns, and serializeDoc deep-copies
+   materialLib - so a picture ON a definition is a picture in EVERY history
+   step. The mask pictures already carry that scar (v2.27: forty masks came
+   to ~2 MB of base64 per step against a 48 MB ceiling). A definition holds a
+   KEY; the bytes live here once, and travel by themselves. */
+const TEX_STORE = new Map();   // key -> { url, wrap, rep, off, tex: Map }
+const TEXLIB_KEY = 'kubik.textures.v1';
+// Long side, in pixels. A phone is the main surface and five 2048 maps on
+// one material is over 20 MB of video memory; 1024 is a character's face at
+// arm's length. Imports are resampled to it on the way in.
+const TEX_MAX = 1024;
+
+/* CONTENT-ADDRESSED, so one picture is one entry however many materials
+   reach for it: the same file opened twice, or a model whose four materials
+   share a sheet, upload once and draw from one THREE.Texture.
+
+   TWO hashes and the length. One 32-bit hash over a megabyte of base64
+   collides often enough to matter, and a collision here does not throw - it
+   silently serves one person's picture in place of another's. */
+function texKeyOf(url, xf) {
+  let a = 0x811c9dc5, b = 5381;
+  for (let i = 0; i < url.length; i++) {
+    const c = url.charCodeAt(i);
+    a = Math.imul(a ^ c, 16777619) >>> 0;
+    b = ((b * 33) ^ c) >>> 0;
+  }
+  return a.toString(36) + '-' + b.toString(36) + '-' + url.length.toString(36) +
+    (xf ? '.' + xf : '');
+}
+
+/* The sampler settings ride with the BYTES, not with the definition. A tiling
+   that differs is a different texture as far as the store is concerned - it
+   is in the key - so a definition stays a short string and two materials that
+   tile the same sheet differently still get their own instances. */
+/* ROTATION AND CENTRE TOO, not just scale and offset. GLTFLoader folds
+   KHR_texture_transform into exactly these five fields, and carrying three of
+   them lands a rotated map with its scale and offset applied and its rotation
+   missing - which is further from right than not carrying any of them.
+
+   Quantised to three decimals, so two sheets whose repeat differs by less
+   than that share a key and the first one registered wins. That is a choice,
+   not an oversight: the alternative is a separate upload for a difference
+   nothing can see. */
+function texXfOf(wrap, rep, off, rot, cen) {
+  const q = x => Math.round((+x || 0) * 1000) / 1000;
+  return wrap.join('_') + '_' + q(rep[0]) + '_' + q(rep[1]) + '_' +
+    q(off[0]) + '_' + q(off[1]) + '_' + q(rot) + '_' + q(cen[0]) + '_' + q(cen[1]);
+}
+
+function registerTexture(url, opt) {
+  /* The same gate the mask pictures use, and for the same reason: a project
+     file is JSON somebody handed you, and anything that is not a data: image
+     here would become a URL this app fetches on their behalf. */
+  if (typeof url !== 'string' || !/^data:image\//.test(url)) return null;
+  const o = opt || {};
+  const R = THREE.RepeatWrapping;
+  const wrap = [(o.wrap && +o.wrap[0]) || R, (o.wrap && +o.wrap[1]) || R];
+  const rep = [(o.rep && +o.rep[0]) || 1, (o.rep && +o.rep[1]) || 1];
+  const off = [(o.off && +o.off[0]) || 0, (o.off && +o.off[1]) || 0];
+  const rot = +o.rot || 0;
+  const cen = [(o.cen && +o.cen[0]) || 0, (o.cen && +o.cen[1]) || 0];
+  const key = texKeyOf(url, texXfOf(wrap, rep, off, rot, cen));
+  if (!TEX_STORE.has(key)) TEX_STORE.set(key, { url: url, wrap: wrap, rep: rep, off: off, rot: rot, cen: cen, tex: new Map() });
+  return key;
+}
+
+/* One THREE.Texture per (picture, colour space). Two, not one, because the
+   same greyscale sheet is a legitimate roughness map AND a legitimate colour
+   map, and colorSpace is baked into the upload. */
+function textureFor(key, srgb) {
+  const e = TEX_STORE.get(key);
+  if (!e) return null;
+  const slot = srgb ? 's' : 'l';
+  let t = e.tex.get(slot);
+  if (t) return t;
+  const img = new Image();
+  t = new THREE.Texture(img);
+  t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+  /* KUBIK'S UV CONVENTION IS glTF'S: the picture's first row is the top of
+     the sheet and V runs down from it. GLTFLoader sets flipY false on every
+     texture it makes for exactly that reason, and v2.28 already committed
+     this app to the same side of the argument by writing `1-v` on the .obj
+     export - the one format that disagrees. Leaving flipY at its true
+     default would turn every imported model's texture upside down. */
+  t.flipY = false;
+  t.wrapS = e.wrap[0]; t.wrapT = e.wrap[1];
+  t.repeat.set(e.rep[0], e.rep[1]);
+  t.offset.set(e.off[0], e.off[1]);
+  t.rotation = +e.rot || 0;
+  t.center.set((e.cen && e.cen[0]) || 0, (e.cen && e.cen[1]) || 0);
+  // Decoding is async even from a data URL, and a texture that arrives
+  // between frames needs a frame to arrive in.
+  img.onload = function () {
+    t.needsUpdate = true;
+    /* THE TRAY'S CARDS ARE ONE RENDER EACH, captured to a data URL the moment
+       they are built - so a card built in the tick this texture was created
+       is a black ball that never repaints itself, and the cache being truthy
+       means nothing rebuilds it either. landImport nulls the cache and
+       refreshes the tray SYNCHRONOUSLY, which is the tick before this one. */
+    _matPreviews = null;
+    if (typeof refreshMatTrayIfOpen === 'function') refreshMatTrayIfOpen();
+    invalidate();
+  };
+  img.src = e.url;
+  e.tex.set(slot, t);
+  return t;
+}
+
+// The maps a definition actually carries, as a plain object of key -> store
+// key. Never trusts the shape: a definition arrives from a file.
+function mapList(d) {
+  const out = {};
+  const m = d && d.maps;
+  if (!m || typeof m !== 'object') return out;
+  MAP_KEYS.forEach(k => { if (typeof m[k] === 'string' && m[k]) out[k] = m[k]; });
+  return out;
+}
+function hasMaps(d) {
+  const m = d && d.maps;
+  if (!m || typeof m !== 'object') return false;
+  for (let i = 0; i < MAP_KEYS.length; i++) {
+    if (typeof m[MAP_KEYS[i]] === 'string' && m[MAP_KEYS[i]]) return true;
+  }
+  return false;
+}
+
+/* Binds what the definition asks for and unbinds what it no longer does.
+
+   `uvless` is not a preference. A geometry with no `uv` attribute still
+   compiles a shader that reads one, and WebGL hands an absent attribute
+   (0,0) - so every pixel of the model samples the picture's corner texel and
+   the model comes out a flat wash of whatever colour happens to be there.
+   That is indistinguishable from a bug, so a mesh without UVs is drawn by an
+   instance of its own with no maps bound at all. */
+function applyMaps(mat, d, uvless) {
+  let changed = false, missing = false;
+  MAP_SLOTS.forEach(sl => {
+    const key = uvless ? null : (d && d.maps ? d.maps[sl.key] : null);
+    const want = (typeof key === 'string' && key) ? textureFor(key, sl.srgb) : null;
+    if (key && !uvless && !want) missing = true;
+    if (mat[sl.prop] !== want) { mat[sl.prop] = want; changed = true; }
+    /* three MULTIPLIES the emissive map by material.emissive, which starts
+       black - so an emissive map on a default material is a picture times
+       zero: an upload, a program variant and a budget slot spent on something
+       that provably cannot show. The import does not carry emissive colour
+       (it is not a field a definition has), so white is the only honest
+       multiplier here: the map IS the emission. */
+    if (sl.key === 'emissive') {
+      const lit = want ? 0xffffff : 0x000000;
+      if (mat.emissive && mat.emissive.getHex() !== lit) mat.emissive.setHex(lit);
+    }
+  });
+  /* A KEY THAT RESOLVES TO NOTHING is a material that is textured everywhere
+     except on screen, and it is reachable: a library saved while the texture
+     store could not be written, or a hand-edited file. Silence there looks
+     exactly like a model that was never textured. */
+  if (missing) noteMissingTexture();
+  /* Only on a change - applyFinish runs per slider TICK. And it IS needed:
+     WebGLRenderer.setProgram short-circuits on material.version, so a map
+     assigned without this is never sampled. */
+  if (changed) mat.needsUpdate = true;
+}
+
+/* THE ONE CONFLICT v2.33 DID NOT FIX, written as a predicate so it is asked
+   in one place and can be asserted.
+
+   The mask patch replaces <normal_fragment_maps> and, the moment Round edges
+   or a Bump mask is live, sets the normal from the VERTEX normal - throwing
+   away whatever three's chunk just computed from normalMap. The comment on
+   that line has predicted this release since the bevel was written: "harmless,
+   because nothing in this app binds a normalMap - but the day something does,
+   this is the line that will be quietly ignoring it."
+
+   The fix is not "compose after the chunk", it is "bend BEFORE it": the bend
+   belongs inside <normal_fragment_begin>, ahead of the tbn three builds there,
+   so the map rides on the bent normal instead of being overwritten by it. That
+   means inlining a chunk of three's own shader (this app is pinned to 0.184)
+   and a probe of its own, so it is its own version. Until then this says so. */
+function normalMapShadowed(d) {
+  if (!d || !d.maps || !d.maps.normal) return false;
+  return (+d.bevel || 0) > 0 || defWantsBump(d);
+}
+let _shadowWarned = false;
+function noteShadowedNormalMap() {
+  if (_shadowWarned) return;
+  _shadowWarned = true;
+  toast('Round edges and Bump take over the normal map on that material - the map is not being used');
+}
+
+let _texMissWarned = false;
+function noteMissingTexture() {
+  if (_texMissWarned) return;
+  _texMissWarned = true;
+  toast('A material is missing its picture - open the file it came from to bring it back');
+}
+
+/* Everything the pictures cost, dropped the moment nothing wears them. The
+   masks have had this pair since a2.20 (dropMaskTexture + pruneMaskImages)
+   and the reason is the same: trying a material, looking at it and deleting
+   it again used to leave the whole upload behind. A 1024 sheet with mipmaps
+   is around 5.5 MB of video memory, so three tried-and-dropped imports
+   outweigh the budget TEX_MAX was chosen to keep. */
+function pruneTextures() {
+  const live = texKeysInUse();
+  TEX_STORE.forEach((e, k) => {
+    if (live.has(k)) return;
+    e.tex.forEach(t => t.dispose());
+    TEX_STORE.delete(k);
+  });
+}
+
+/* Persisted beside the library, and pruned to it. The library outlives the
+   scene - a material the person keeps is in the tray whether or not anything
+   in the document wears it - so the bytes cannot live only in the document.
+   Same reactive failure as the library itself: storage is not guaranteed,
+   and a picture that does not survive a reload looks like a bug rather than
+   a full disk, so it says so once. */
+let _texLibWarned = false;
+function texKeysInUse() {
+  const used = new Set();
+  MATERIALS.forEach(d => Object.values(mapList(d)).forEach(k => used.add(k)));
+  return used;
+}
+function saveTextureLibrary() {
+  const used = texKeysInUse();
+  const out = {};
+  TEX_STORE.forEach((e, k) => {
+    if (!used.has(k)) return;
+    out[k] = { url: e.url, wrap: e.wrap, rep: e.rep, off: e.off,
+      rot: e.rot || 0, cen: e.cen || [0, 0] };
+  });
+  try {
+    if (Object.keys(out).length) localStorage.setItem(TEXLIB_KEY, JSON.stringify(out));
+    else localStorage.removeItem(TEXLIB_KEY);
+  } catch (e) {
+    if (!_texLibWarned) { _texLibWarned = true; toast('Textures are too big to keep in the browser'); }
+  }
+}
+function loadTextureLibrary() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(TEXLIB_KEY) || '{}');
+    Object.keys(raw).forEach(k => {
+      const e = raw[k];
+      if (!e || typeof e.url !== 'string' || !/^data:image\//.test(e.url)) return;
+      if (TEX_STORE.has(k)) return;
+      TEX_STORE.set(k, {
+        url: e.url,
+        wrap: Array.isArray(e.wrap) ? e.wrap.map(Number) : [THREE.RepeatWrapping, THREE.RepeatWrapping],
+        rep: Array.isArray(e.rep) ? e.rep.map(Number) : [1, 1],
+        off: Array.isArray(e.off) ? e.off.map(Number) : [0, 0],
+        rot: +e.rot || 0,
+        cen: Array.isArray(e.cen) ? e.cen.map(Number) : [0, 0],
+        tex: new Map()
+      });
+    });
+  } catch (e) { /* a broken entry must never stop the app */ }
+}
+
 // JSON.stringify emits INSERTION order, which is not a property of the value.
 function stableStringify(v) {
   if (v === null || typeof v !== 'object') return JSON.stringify(v);
@@ -4629,7 +4911,7 @@ function stableStringify(v) {
 function materialDefSig(d) {
   if (!d) return '';
   const n = normaliseDefMasks(Object.assign({}, d));
-  return stableStringify({
+  const sig = {
     name: n.name || '',
     color: n.color || null,
     roughness: +n.roughness || 0,
@@ -4640,7 +4922,16 @@ function materialDefSig(d) {
        files still carry the key; leaving it out is what makes them match. */
     bevel: +n.bevel || 0,
     masks: maskList(n)
-  });
+  };
+  /* ADDED ONLY WHEN THERE IS ONE (v2.33). An empty `maps` key would change
+     the signature of every material that has never seen a texture - and
+     srcSig strings are PERSISTED, into localStorage and into every saved
+     file. That is exactly the trap envMapIntensity sprang at a2.65a, where
+     one dead key made every old material mint a copy of itself on the next
+     open, and "Metal (imported) (imported)" on the one after. */
+  const mm = mapList(n);
+  if (Object.keys(mm).length) sig.maps = mm;
+  return stableStringify(sig);
 }
 
 /* A SIGNATURE THE CURRENT CODE CANNOT PRODUCE NEVER MATCHES (a2.65a).
@@ -4757,6 +5048,9 @@ function loadMaterialLibrary() {
     });
     if (Number.isFinite(raw.nextNum)) nextMaterialNum = raw.nextNum;
   } catch (e) { /* a broken library entry must never stop the app */ }
+  // After the library, so the prune in saveTextureLibrary has something to
+  // measure against, and before anything draws.
+  loadTextureLibrary();
 }
 
 let _matLibWarned = false;
@@ -4769,13 +5063,21 @@ function saveMaterialLibrary() {
     if (!base) { customs.push(d); return; }   // flagged preset, no default (v2.29)
     if (d.color !== base.color || d.roughness !== base.roughness ||
         d.metalness !== base.metalness ||
-        d.name !== base.name || (d.masks && d.masks.length) || d.bevel) {
+        d.name !== base.name || (d.masks && d.masks.length) || d.bevel ||
+        hasMaps(d)) {
       presetOverrides[d.id] = { name: d.name, color: d.color, roughness: d.roughness,
-        metalness: d.metalness, masks: d.masks, bevel: d.bevel || 0 };
+        metalness: d.metalness, masks: d.masks, bevel: d.bevel || 0,
+        /* An EXPLICIT field list, so anything a definition grows has to be
+           added here too or it is dropped on a preset override and kept on a
+           custom - which is the sort of difference nobody finds for a year.
+           Omitted entirely when empty, for the same reason the signature
+           omits it. */
+        maps: hasMaps(d) ? mapList(d) : undefined };
     }
   });
   try {
     localStorage.setItem(MATLIB_KEY, JSON.stringify({ customs: customs, presetOverrides: presetOverrides, nextNum: nextMaterialNum }));
+    saveTextureLibrary();
   } catch (e) {
     /* Storage full or blocked. The session still works, but a picture that
        does not survive a reload looks like a bug rather than a full disk,
@@ -4820,7 +5122,16 @@ function applyFinish(mat, id) {
   mat.userData.themedDefault = (d.color === null || d.color === undefined);
   mat.roughness = d.roughness;
   mat.metalness = d.metalness;
+  /* The flag is on the MATERIAL, not passed in, because applyFinish is
+     reached from a dozen places (the editor's live update, the pool, an op
+     re-dressing a clone) and only one of them knows what geometry the
+     instance is for. A plain boolean is the one other thing that is safe in
+     userData - Material.clone JSON-copies it, which is what wants copying. */
+  applyMaps(mat, d, mat.userData.kubikNoUV === true);
   applyMaskPatch(mat, d);
+  /* SAID OUT LOUD, because the alternative is a picture that is loaded,
+     uploaded, saved and exported and changes not one pixel. */
+  if (normalMapShadowed(d)) noteShadowedNormalMap();
   /* No blanket needsUpdate: this runs per slider TICK during live edits.
      Colour/roughness/metalness are uniform-tracked by three on their own,
      and applyMaskPatch sets needsUpdate itself on the one change that
@@ -6336,14 +6647,29 @@ function makeMaterialSet(count, hex, finish) {
    hook at all, so the two cannot drift apart. */
 function defNeedsOwn(d) { return defWantsField(d) || defWantsBump(d); }
 
-function pooledMaterial(id, side, own) {
-  const key = id + '|' + side + '|' + (own || '');
+/* THE FOURTH LEG IS THE GEOMETRY'S, not the definition's (v2.33). One
+   textured definition worn by an unwrapped cube and by an imported head is
+   two instances, because binding a map on a mesh with no `uv` attribute
+   paints the whole thing in the picture's corner texel. Absent for every
+   material that carries no map, so nothing that existed before this release
+   changed key. */
+/* THE LEG GOES BEFORE `own`, and that is not cosmetic: disposeObject retires
+   an object's private instances with prunePool(null, '|' + obj.id), a SUFFIX
+   test. Appending the new leg after `own` made those keys end in 'nouv', so a
+   textured definition that also wants a per-object instance - any bevel, any
+   shape or bump mask - leaked its material, its uniforms and its field for
+   the session, and left a stale instance for an id that was deleted and
+   re-declared. Join always produces a mesh with no UVs, so it is one tap
+   away. */
+function pooledMaterial(id, side, own, uvless) {
+  const key = id + '|' + side + (uvless ? '|nouv' : '') + '|' + (own || '');
   let m = _matPool.get(key);
   if (!m) {
     m = new THREE.MeshStandardMaterial({ side: side });
     _pooledMats.add(m);
     m.__dispose = m.dispose;
     m.dispose = function () {};
+    if (uvless) m.userData.kubikNoUV = true;
     applyFinish(m, id);
     _matPool.set(key, m);
   }
@@ -6533,6 +6859,9 @@ function dressFromPool(obj) {
   };
   const n = faceCount(mesh.geometry);      // faces, not draw groups (v2.23)
   const side = objectSide(mesh);
+  /* Asked of the GEOMETRY, once. A definition with maps drawn on a mesh with
+     no UVs has to get a mapless instance - see pooledMaterial. */
+  const uvless = !mesh.geometry.getAttribute('uv');
   const old = Array.isArray(mesh.material) ? mesh.material
             : (mesh.material ? [mesh.material] : []);
   const out = [];
@@ -6546,16 +6875,16 @@ function dressFromPool(obj) {
        they already had, and they still do; they join the pool the moment
        something gives them a definition. */
     const id = fin[gi];
-    if (MATERIALS.has(id)) out.push(pooledMaterial(id, side, ownFor(id)));
+    if (MATERIALS.has(id)) out.push(pooledMaterial(id, side, ownFor(id), uvless && hasMaps(getMaterialDef(id))));
     /* A finish NAMING a definition the library no longer has is a custom
        that was deleted while this face wore it. It must land on Solid - the
        entry below is for a group with no finish at all, which is a different
        thing and keeps what it had. Getting these two the same way round was
        what left a deleted material still drawn on the model, because the
        old repaint path is refused on a pooled instance now. */
-    else if (id !== undefined) out.push(pooledMaterial('standard', side, ''));
+    else if (id !== undefined) out.push(pooledMaterial('standard', side, '', false));
     else if (old[gi]) { out.push(old[gi]); kept.add(old[gi]); }
-    else out.push(pooledMaterial('standard', side, ''));
+    else out.push(pooledMaterial('standard', side, '', false));
   }
   // Single material for a single group, array otherwise - the shape the rest
   // of the file has always tested for.
@@ -27872,7 +28201,48 @@ document.getElementById('isoChipOut').addEventListener('click', (ev) => {
 
 /* ---------------- Serialize / Undo / Save / Load ---------------- */
 
-function serializeDoc() {
+/* THE BYTES TRAVEL SEPARATELY, AND ONLY WHEN THEY HAVE TO (v2.33).
+
+   pushHistory stores what this returns, sixty times over, so a picture in
+   here is a picture sixty times - the trap the mask data URLs already sprang
+   at v2.27, with a 48 MB ceiling and Undo giving up after twelve presses on
+   a cube. A definition carries a KEY; the pictures live in TEX_STORE.
+
+   Two callers need them anyway, for two different reasons. A .json file
+   leaves this browser, so it has to be self-contained or it opens flat on
+   somebody else's machine. A NAMED save outlives the material that made it -
+   delete the material and the texture library prunes its pictures away, and
+   a project saved a month ago would come back without them.
+
+   The autosave does NOT ask. It is re-read only by this browser, where the
+   texture library is sitting beside it, and it is written every 900 ms. */
+function serializeDoc(opts) {
+  const doc = serializeDocBody();
+  if (opts && opts.withTextures) {
+    const out = {};
+    (doc.materialLib || []).forEach(def => {
+      Object.values(mapList(def)).forEach(k => {
+        const e = TEX_STORE.get(k);
+        if (e && !out[k]) out[k] = { url: e.url, wrap: e.wrap, rep: e.rep,
+          off: e.off, rot: e.rot || 0, cen: e.cen || [0, 0] };
+      });
+    });
+    if (Object.keys(out).length) doc.textures = out;
+  }
+  return doc;
+}
+
+/* The same doc without its pictures, for a history that does not need them:
+   restoreDoc has already taken them into the store, modelPartOf does not look
+   at them, and every step written after this one leaves them out. */
+function stripDocTextures(doc) {
+  if (!doc || !doc.textures) return doc;
+  const out = Object.assign({}, doc);
+  delete out.textures;
+  return out;
+}
+
+function serializeDocBody() {
   return {
     version: 1,
     nextId: App.nextId,
@@ -28121,6 +28491,55 @@ function restoreDoc(doc, opts = {}) {
      common case and it must not breed copies on every re-open. Same id, a
      DIFFERENT look, and the incoming one comes in under a fresh id, with
      every face that referenced the old one repointed at it. */
+  /* BEFORE THE LIBRARY IS JUDGED. A definition's signature contains its map
+     keys, and the merge below decides what is already in the tray by that
+     signature - so the pictures have to be in the store first, or a file's
+     textured Metal is compared against a store that has not heard of it.
+     Registering is idempotent: the key IS the content, so a second open of
+     the same file adds nothing. */
+  const remapTex = new Map();
+  if (doc.textures && typeof doc.textures === 'object') {
+    Object.keys(doc.textures).forEach(k => {
+      const e = doc.textures[k];
+      if (!e || typeof e.url !== 'string') return;
+      if (TEX_STORE.has(k)) return;
+      /* Stored under the key the FILE used, not under a recomputed one. A
+         key is a hash of the bytes plus the sampler settings, and if this
+         build ever computes it differently the definitions in the same file
+         would point at a key nothing holds. Re-registering also gives the
+         store its own entry for the same bytes, which is what the guard
+         above is for. */
+      if (!/^data:image\//.test(e.url)) return;
+      const R = THREE.RepeatWrapping;
+      const wrap = Array.isArray(e.wrap) ? e.wrap.map(Number) : [R, R];
+      const rep = Array.isArray(e.rep) ? e.rep.map(Number) : [1, 1];
+      const off = Array.isArray(e.off) ? e.off.map(Number) : [0, 0];
+      const rot = +e.rot || 0;
+      const cen = Array.isArray(e.cen) ? e.cen.map(Number) : [0, 0];
+      /* RECOMPUTED, NOT BELIEVED. A key is a hash of the bytes and everything
+         downstream treats it as one - so a file claiming a key for bytes that
+         do not hash to it would seed the store under a name the next honest
+         import is going to ask for, and be served in its place. A project
+         file is JSON somebody handed you. A mismatch is not refused: the
+         picture is registered under the key it actually has and the
+         definitions in the same file are pointed at it. */
+      const real = texKeyOf(e.url, texXfOf(wrap, rep, off, rot, cen));
+      if (real !== k) remapTex.set(k, real);
+      if (!TEX_STORE.has(real)) {
+        TEX_STORE.set(real, { url: e.url, wrap: wrap, rep: rep, off: off,
+          rot: rot, cen: cen, tex: new Map() });
+      }
+    });
+    if (remapTex.size && Array.isArray(doc.materialLib)) {
+      doc.materialLib.forEach(d => {
+        if (!d || !d.maps || typeof d.maps !== 'object') return;
+        MAP_KEYS.forEach(mk => {
+          const r = remapTex.get(d.maps[mk]);
+          if (r) d.maps[mk] = r;
+        });
+      });
+    }
+  }
   const matIdRemap = new Map();
   if (doc.materialLib && !opts.keepAppearance) {
     /* Indexed by what a definition IS, not by what it is called. This is what
@@ -28733,6 +29152,14 @@ function estimateDocBytes(d) {
   (d.materialLib || []).forEach(def => {
     n += 256;
     if (def && def.name) n += def.name.length * 2;
+    /* A KEY, NOT A PICTURE (v2.33). This is the whole reason the texture
+       bytes are not on the definition: six of these cost under half a
+       kilobyte a step, where six data URLs would cost megabytes and the
+       ceiling would be reached in a dozen edits. If a later release ever
+       does put bytes on a definition, this line is the one that has to
+       change with it - see the mask line below, which is what that looks
+       like. */
+    n += Object.keys(mapList(def)).length * 80;
     const ms = def && def.masks;
     if (Array.isArray(ms)) ms.forEach(mk => {
       n += 192;
@@ -28740,6 +29167,19 @@ function estimateDocBytes(d) {
       if (mk && typeof mk.img === 'string') n += mk.img.length;
     });
   });
+  /* AND THE PICTURES, WHERE A DOCUMENT IS CARRYING ANY. A history step never
+     is - that is the whole point of keys on the definition - but a project
+     opened from a file starts its history AS that file's doc, textures and
+     all, and six megabytes of base64 invisible to trimHistory is how a cap
+     stops being a cap. Counted here as well as stripped at the two places
+     that seed a history from a loaded doc, because one of those is easy to
+     add a third of and forget. */
+  if (d.textures && typeof d.textures === 'object') {
+    Object.keys(d.textures).forEach(x => {
+      const e = d.textures[x];
+      if (e && typeof e.url === 'string') n += e.url.length;
+    });
+  }
   /* A DOCUMENT CAN BE HAND-EDITED, and one non-numeric field makes this NaN -
      `"name": 1` survives restoreDoc, which copies od.name with no coercion.
      A NaN is then cached in _stepCost, every `total > HISTORY_MAX_BYTES` is
@@ -29003,7 +29443,7 @@ function saveProject(name) {
   if (!storageAvailable()) { toast('This browser is blocking storage'); return false; }
   try {
     localStorage.setItem(PROJECT_PREFIX + clean,
-      JSON.stringify({ savedAt: Date.now(), doc: serializeDoc() }));
+      JSON.stringify({ savedAt: Date.now(), doc: serializeDoc({ withTextures: true }) }));
     refreshProjectList();
     toast('Saved "' + clean + '"');
     return true;
@@ -29020,7 +29460,7 @@ function loadProject(name) {
     const rec = JSON.parse(localStorage.getItem(PROJECT_PREFIX + name));
     if (!rec || !rec.doc) { toast('That model could not be read'); return; }
     restoreDoc(rec.doc);
-    App.history = [rec.doc];
+    App.history = [stripDocTextures(rec.doc)];
     App.historyIndex = 0;
     setDrawerOpen(false);
     toast('Opened "' + name + '"');
@@ -29070,7 +29510,7 @@ function restoreAutosave() {
     const rec = JSON.parse(localStorage.getItem(AUTOSAVE_KEY));
     if (!rec || !rec.doc || !rec.doc.objects || !rec.doc.objects.length) return false;
     restoreDoc(rec.doc);
-    App.history = [rec.doc];
+    App.history = [stripDocTextures(rec.doc)];
     App.historyIndex = 0;
     return true;
   } catch (err) { return false; }
@@ -29117,7 +29557,7 @@ document.getElementById('projName').addEventListener('keydown', (ev) => {
 });
 
 function saveProjectFile() {
-  const doc = serializeDoc();
+  const doc = serializeDoc({ withTextures: true });
   downloadBlob([JSON.stringify(doc)], 'kubik-project.json', 'application/json', 'Project saved');
 }
 document.getElementById('btnSave').addEventListener('click', saveProjectFile);
@@ -29130,7 +29570,7 @@ document.getElementById('fileLoad').addEventListener('change', (ev) => {
     try {
       const doc = JSON.parse(reader.result);
       restoreDoc(doc);
-      App.history = [doc];
+      App.history = [stripDocTextures(doc)];
       App.historyIndex = 0;
       toast('Project loaded');
     } catch (err) {
@@ -29645,12 +30085,17 @@ function collectImportableMeshes(root, flat) {
    metalness, roughnessFactor -> roughness. Nothing is invented: what is not
    in that list is not mapped.
 
-   WHAT IS DELIBERATELY DROPPED. Textures (Kubik has no UVs at all - the
-   masks are triplanar and procedural), emissive, opacity, normal and AO
-   maps, and every KHR extension. A textured material lands on its base
-   colour, which is the tint the exporter already multiplied the map by and
-   the closest honest answer available without UVs. It is not a silent loss:
-   a lost texture reads as "flat colour", which is what this app is.
+   THE PICTURES COME TOO, since v2.33 - base colour, normal, roughness,
+   metalness, occlusion and emission, by grabImportMaps below. The line that
+   used to stand here said textures were dropped because "Kubik has no UVs at
+   all"; v2.28 made that false and this release makes it visible.
+
+   WHAT IS STILL DROPPED. Emissive colour and intensity, opacity, and every
+   KHR extension - including texture transforms, so a map that relies on
+   KHR_texture_transform lands untransformed. A map bound to the SECOND uv
+   set is left behind on purpose rather than bound to the first: the import
+   carries one set, and sampling the wrong one is a flat wash, which reads as
+   a broken model rather than a missing feature.
 
    COLOUR IS READ WITH getHexString(), which converts three's linear working
    colour to sRGB. That is the same call harvestLegacyMaterials makes and the
@@ -29670,6 +30115,114 @@ function collectImportableMeshes(root, flat) {
    after the import is undone. Past the cap faces land on Solid, which is
    exactly where they landed before this release. */
 const IMPORT_MATERIAL_BUDGET = 64;
+
+/* A SECOND CAP, on pictures rather than entries. Twenty-four is six full
+   channels on four materials; past it the maps are left behind and the
+   colours still arrive, which is where this all was before the release. */
+const IMPORT_TEX_BUDGET = 24;
+
+/* Resampled, re-encoded, and handed to the store as a key. Four decisions,
+   each made once here so nothing downstream has to ask:
+
+   RESAMPLED TO TEX_MAX. A download is routinely 2048 or 4096 a side per
+   channel; five of those on one material is over 20 MB of video memory on a
+   phone, for detail nobody sees at arm's length.
+
+   PNG FOR A NORMAL MAP, JPEG FOR THE REST. A normal map is a DIRECTION per
+   pixel, and JPEG's ringing at an edge becomes a moving shimmer in the
+   highlight - the one artefact that reads as "the model is wrong" rather
+   than "the picture is soft". Colour, roughness, metalness and occlusion
+   survive q=0.86 with nothing to see. A colour map on a material that
+   punches holes is PNG as well, because JPEG has no alpha and the holes
+   would fill in.
+
+   FLIPPED HERE IF THE SOURCE WANTS IT. The store's convention is glTF's -
+   first row at the top, flipY false - so a texture arriving the other way up
+   is turned over once, on the way in, and every reader downstream has one
+   answer instead of a flag to remember.
+
+   A TAINTED CANVAS RETURNS NULL. toDataURL throws on a cross-origin image,
+   which an .mtl pointing at a URL can produce; that is a map left behind,
+   not an import that fails. */
+function encodeImportTexture(t, sl, src) {
+  const img = t.image;
+  const w0 = img.width || img.videoWidth || 0;
+  const h0 = img.height || img.videoHeight || 0;
+  if (!w0 || !h0) return null;
+  const k = Math.min(1, TEX_MAX / Math.max(w0, h0));
+  const w = Math.max(1, Math.round(w0 * k)), h = Math.max(1, Math.round(h0 * k));
+  const cvs = document.createElement('canvas');
+  cvs.width = w; cvs.height = h;
+  const c2 = cvs.getContext('2d');
+  if (!c2) return null;
+  if (t.flipY) { c2.translate(0, h); c2.scale(1, -1); }
+  try { c2.drawImage(img, 0, 0, w, h); } catch (e) { return null; }
+  /* THE PIXELS DECIDE, not the material's flags. A glTF OPAQUE material can
+     carry a base colour with a real alpha channel - atlas exporters do it
+     routinely - and JPEG would composite those texels against the ground,
+     changing colours the original render never sampled. Asking costs one
+     pass over the resampled picture, once, on import.
+
+     getImageData throws on a canvas tainted by a cross-origin image, which an
+     .mtl pointing at a URL can produce. That is a map left behind, not an
+     import that fails, and toDataURL below would throw for the same reason. */
+  let hasAlpha = false;
+  try {
+    const d = c2.getImageData(0, 0, w, h).data;
+    for (let i = 3; i < d.length; i += 4) { if (d[i] !== 255) { hasAlpha = true; break; } }
+  } catch (e) { return null; }
+  const png = sl.key === 'normal' || hasAlpha;
+  if (!png) {
+    /* JPEG has no alpha, so a ground goes behind the picture rather than
+       under it - drawn into a second canvas, because the first one is the
+       only copy of what was resampled. */
+    const flat = document.createElement('canvas');
+    flat.width = w; flat.height = h;
+    const f2 = flat.getContext('2d');
+    if (!f2) return null;
+    f2.fillStyle = '#fff'; f2.fillRect(0, 0, w, h);
+    f2.drawImage(cvs, 0, 0);
+    try { return flat.toDataURL('image/jpeg', 0.86); } catch (e) { return null; }
+  }
+  try { return cvs.toDataURL('image/png'); } catch (e) { return null; }
+}
+
+function grabImportMaps(src, acc) {
+  const out = {};
+  if (!src) return out;
+  MAP_SLOTS.forEach(sl => {
+    const t = src[sl.prop];
+    if (!t || !t.isTexture || !t.image) return;
+    if (+t.channel) { acc.uvset++; return; }
+    /* MEMOISED ON THE TEXTURE, not on the material. idFor caches per source
+       MATERIAL, so a model whose four materials share one atlas sheet used to
+       resample and re-encode it four times - four synchronous toDataURL calls
+       on a 1024 canvas, every one of them thrown away by the store's content
+       dedup - and, worse, spend four budget slots on one picture, so six
+       sheets could exhaust a budget of twenty-four. Keyed by slot KIND as
+       well, because the normal branch encodes differently. */
+    const seen = acc.seen || (acc.seen = new Map());
+    const kind = sl.key === 'normal' ? 'n' : 'c';
+    let per = seen.get(t);
+    if (per && per[kind]) { out[sl.key] = per[kind]; return; }
+    if (acc.taken >= IMPORT_TEX_BUDGET) { acc.budget++; return; }
+    const url = encodeImportTexture(t, sl, src);
+    if (!url) { acc.failed++; return; }
+    const key = registerTexture(url, {
+      wrap: [t.wrapS, t.wrapT],
+      rep: [t.repeat ? t.repeat.x : 1, t.repeat ? t.repeat.y : 1],
+      off: [t.offset ? t.offset.x : 0, t.offset ? t.offset.y : 0],
+      rot: t.rotation || 0,
+      cen: [t.center ? t.center.x : 0, t.center ? t.center.y : 0]
+    });
+    if (!key) { acc.failed++; return; }
+    out[sl.key] = key;
+    if (!per) { per = {}; seen.set(t, per); }
+    per[kind] = key;
+    acc.taken++;
+  });
+  return out;
+}
 
 // The theme's current default grey, as the '#rrggbb' the library speaks.
 function themedGreyHex() {
@@ -29748,8 +30301,12 @@ function importMaterialContext() {
      glTF materials must ask three times, not four hundred. */
   const cache = new Map();
   let minted = 0;
+  // One tally for the whole file, so the report is "this import" and not
+  // "this material" - the same reason the context itself is per file.
+  const tex = { taken: 0, uvset: 0, budget: 0, failed: 0 };
   return {
     get minted() { return minted; },
+    get textures() { return tex; },
     // Migrated strings were healed on the objects above; they only stop
     // being written back out if the library is saved, and an import that
     // minted nothing would otherwise not save.
@@ -29767,6 +30324,12 @@ function importMaterialContext() {
       const q = x => Math.round(Math.min(1, Math.max(0, x)) * 1000) / 1000;
       const rough = q(Number.isFinite(src.roughness) ? src.roughness : 1);
       const metal = q(Number.isFinite(src.metalness) ? src.metalness : 0);
+      /* BEFORE THE SIGNATURE, because the pictures are part of what this
+         material IS: a textured Metal and a plain one are two entries, and
+         the same textured Metal arriving twice is one, because the store
+         keys on the bytes. */
+      const maps = grabImportMaps(src, tex);
+      const hasM = Object.keys(maps).length > 0;
       /* String(), because a glTF name is whatever the JSON chunk says.
          GLTFLoader assigns materialDef.name with no coercion, so
          `"name": 123` gave a number here and `.trim is not a function`
@@ -29792,7 +30355,7 @@ function importMaterialContext() {
          crashes on it; it is simply garbage in a format that outlives the
          session, so it never gets in. */
       if (!themedSrc && !/^#[0-9a-f]{6}$/.test(hex)) { cache.set(src, 'standard'); return 'standard'; }
-      const sig = materialDefSig({ name: raw, color: defColor, roughness: rough, metalness: metal });
+      const sig = materialDefSig({ name: raw, color: defColor, roughness: rough, metalness: metal, maps: maps });
       /* THE LIBRARY IS ASKED FIRST. This used to sit below the themed-preset
          shortcut, which meant a material a person had mixed by hand to be
          exactly the theme grey - named, exported, re-imported - was answered
@@ -29815,7 +30378,9 @@ function importMaterialContext() {
          came back as 0.4000000059604645 - and because a colour that goes
          sRGB -> linear -> sRGB can land one 8-bit step out. */
       const themed = themedGreyHex();
-      if (!themedSrc && nearHex(hex, themed)) {
+      // A textured material is never a preset, whatever its base colour is.
+      // Solid is grey by definition and would throw the pictures away.
+      if (!themedSrc && !hasM && nearHex(hex, themed)) {
         let hit = null;
         MATERIALS.forEach((v, id) => {
           if (hit || !isPresetDef(v)) return;
@@ -29845,7 +30410,14 @@ function importMaterialContext() {
          stored one (found in review): two names that differ only after
          character 32 are two names, and a library entry whose own name is
          longer than that has to be findable by it. */
-      if (full) {
+      /* NOT WHEN PICTURES ARE INVOLVED (v2.33). The merge exists for a look
+         that differs by a rounding step, and it hands the LOCAL definition
+         the argument - which is right for a roughness of 0.52 against 0.5,
+         and wrong for a map: "Skin" in the tray with no texture would eat
+         the textured Skin the file brought, silently, and the model would
+         open flat. An exact match on the maps is the signature's job and has
+         already been asked one branch above. */
+      if (full && !hasM) {
         const byn = byName.get(full.toLowerCase());
         if (byn) { cache.set(src, byn); return byn; }
       }
@@ -29859,6 +30431,9 @@ function importMaterialContext() {
       const nid = freshMaterialId(raw.replace(/[^a-z0-9]/gi, '').toLowerCase() || 'imp');
       MATERIALS.set(nid, Object.assign({ id: nid, preset: false, name: name,
         color: defColor, roughness: rough, metalness: metal, srcSig: sig },
+        // Absent rather than empty, so a material with no pictures serialises
+        // and signs exactly as it did before this release.
+        hasM ? { maps: maps } : null,
         // Only when it is not already the name - no reason to carry a copy.
         full && full !== name ? { srcName: full } : null));
       /* `taken`, NOT byName - see the note on the two indexes. A material
@@ -30844,6 +31419,16 @@ function landImport(built, label, skipped, rewound) {
     // the library repaints it; without this the new materials only appear
     // after it is closed and opened again.
     if (typeof refreshMatTrayIfOpen === 'function') refreshMatTrayIfOpen();
+  }
+  /* SAID OUT LOUD, like every other partial import in this file. A texture
+     that quietly did not arrive looks like a model that was never textured,
+     and the person has no way to tell the two apart. */
+  const tx = matCtx.textures;
+  const left = tx.uvset + tx.budget + tx.failed;
+  if (left) {
+    toast(left + (left === 1 ? ' texture was' : ' textures were') + ' left behind' +
+      (tx.uvset ? ' - ' + tx.uvset + ' on a second UV set' : '') +
+      (tx.budget ? ' - ' + tx.budget + ' over the limit' : ''));
   }
   App.selectedObjectIds = new Set(made.map(x => x.obj.id));
   App.activeObjectId = made[made.length - 1].obj.id;
@@ -34392,7 +34977,14 @@ function buildMatTray() {
          one. Copied one level deep so the fork's masks are its own: a
          shallow array would hand the new material the SAME mask objects,
          and editing one would silently edit both. */
-      masks: (src.masks || []).map(m => Object.assign({}, m)) });
+      masks: (src.masks || []).map(m => Object.assign({}, m)),
+      /* AND THE PICTURES (v2.33), by the same argument. This is the THIRD
+         explicit field list of a definition in the file - the other two are
+         materialDefSig and saveMaterialLibrary's preset overrides - and a
+         field that is not added to all three is dropped by whichever one was
+         missed. The values are store keys, so the fork shares the pictures
+         rather than doubling them. */
+      maps: hasMaps(src) ? mapList(src) : undefined });
     saveMaterialLibrary();
     if ((App.mode === 'face' && App.selectedElements.size) ||
         (App.mode !== 'face' && (App.selectedObjectIds.size || App.activeObjectId))) {
@@ -34457,6 +35049,7 @@ function buildMatTray() {
     });
     App.objects.forEach(o => dressFromPool(o));
     pruneMaskImages();
+    pruneTextures();
     saveMaterialLibrary();
     if (matEditingId && !MATERIALS.has(matEditingId)) closeMatEditor(false);
     _matPreviews = null;
@@ -35623,6 +36216,7 @@ document.getElementById('meDelete').addEventListener('click', () => {
   App.objects.forEach(o => dressFromPool(o));
   dropMaskTexture(d.id);        // one definition of the operation (v2.8c)
   pruneMaskImages();
+  pruneTextures();
   if (_matPreviewRig) {
     const _pm = _matPreviewRig.mats.get(d.id);
     if (_pm) { _pm.dispose(); _matPreviewRig.mats.delete(d.id); }
@@ -37663,6 +38257,24 @@ if (PICK_DEBUG) {
     uvsStillValid, uvIndexSigOf, createCubeObject, separateObject, detachFacesOp,
     captureObjectState, restoreObjectState, createObjectFromEditable,
     HISTORY_HARD_BYTES,
+    /* v2.33: the texture store and the two questions a definition answers
+       about it. The STORE itself is exported because the whole design is
+       "the bytes are not on the definition" - a probe that cannot look in
+       the store can only ask whether a picture is somewhere, which is the
+       question that was already true before the release. grabImportMaps is
+       here so one incoming material can be asked on its own, like
+       importMaterialContext above it. */
+    MAP_SLOTS, TEX_STORE, mapList, hasMaps, texKeyOf, registerTexture,
+    textureFor, applyMaps, grabImportMaps, encodeImportTexture,
+    saveTextureLibrary, loadTextureLibrary, IMPORT_TEX_BUDGET, TEX_MAX,
+    pooledMaterial, dressFromPool, applyFinish, pruneTextures, prunePool,
+    normalMapShadowed,
+    /* The TRAY, so the + can be pressed rather than reimplemented. The
+       whole reason the fork lost its pictures is that it copies a
+       definition by hand, and a probe that copies it by hand too would
+       agree with the bug. */
+    buildMatTray, refreshMatTray,
+    stripDocTextures, texXfOf,
     undo, redo, findObject,
     HISTORY_MAX_STEPS, HISTORY_MAX_BYTES, HISTORY_MIN_STEPS,
     exactBounds,

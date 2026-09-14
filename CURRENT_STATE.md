@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.32**
+- Version at time of writing: **2.33**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -51,6 +51,121 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## An import brings its pictures with it (2.33)
+
+A textured .glb used to open grey. The comment in `importMaterialContext`
+said why, and said it honestly - "Kubik has no UVs at all" - and v2.28 made
+that false. This release reads base colour, normal, roughness, metalness,
+occlusion and emission off the incoming material and puts them on the model.
+It is stage 1 of `uv-commands-maps-plan.md`.
+
+### The design is one sentence: a definition carries a KEY
+
+`pushHistory` stores what `serializeDoc` returns, sixty steps against a 48 MB
+ceiling, and `serializeDoc` deep-copies the material library - so a picture ON
+a definition is a picture sixty times over. That is not a hypothesis; it is
+what the mask photos did at v2.27, where Undo gave up after twelve presses on
+a cube. So:
+
+- `TEX_STORE` holds the bytes, keyed by CONTENT - two hashes and the length
+  over the data URL, plus the sampler settings. The same sheet worn by four
+  materials is one entry, one upload, one `THREE.Texture` per colour space.
+- A definition carries `maps: { base, normal, rough, metal, ao, emissive }`,
+  values are store keys. A step costs 80 bytes a map.
+- `serializeDoc({ withTextures: true })` adds the bytes. The .json download
+  and a NAMED save ask (one leaves the browser, the other outlives the
+  material that made it); `pushHistory` and the autosave do not - the autosave
+  is re-read only here, where `kubik.textures.v1` is sitting beside it.
+- `estimateDocBytes` counts a `textures` block anyway, because a project
+  opened from a file starts its history AS that file's doc. Both places that
+  do that now strip it first; the accounting is the belt to that braces.
+
+### What three 0.184 actually does, checked in the source
+
+- **`aoMap` does NOT need a second UV set.** Since r152 a texture has
+  `channel`, default 0 = `uv`. The docs page still says otherwise; it is stale.
+- **roughness reads G, metalness B, occlusion R**, and all three are
+  MULTIPLIED by the material's scalar, not replaced - so an ORM texture drops
+  straight in and the imported factor is the right multiplier.
+- **sRGB on base colour and emission, none on the other four.** `colorSpace`
+  picks the GPU's internal format, so getting it wrong is not a tint.
+- **Tangent-space normal maps need no `tangent` attribute** -
+  `normal_fragment_begin` builds the frame from screen-space derivatives when
+  the geometry has none.
+- **`Texture.flipY` defaults true**; GLTFLoader sets it false on everything it
+  makes. Kubik's convention is glTF's, which v2.28 already committed to by
+  writing `1-v` on the .obj export alone.
+
+### Five decisions taken once, on the way in
+
+- **1024 on the long side.** Five 2048 maps on one material is over 20 MB of
+  video memory on the surface this app is for.
+- **PNG for a normal map, JPEG q0.86 for the rest** - JPEG ringing on a
+  direction becomes a moving shimmer in the highlight.
+- **THE PIXELS DECIDE WHETHER THERE IS ALPHA**, not the material's flags. An
+  OPAQUE glTF can carry a base colour with a real alpha channel, and choosing
+  by `transparent` composited those texels against white.
+- **Flipped once, here**, if the source wants it, so nothing downstream
+  carries a flag.
+- **One picture is encoded once**, memoised on the TEXTURE. `idFor` caches per
+  material, so four materials sharing an atlas used to resample it four times
+  and spend four of the 24 budget slots on one sheet.
+
+### A definition is copied by hand in THREE places
+
+`materialDefSig`, `saveMaterialLibrary`'s preset overrides, and the tray's `+`.
+A field added to fewer than all three is dropped by whichever was missed -
+review found `maps` missing from two of them. `maps` is added to a signature
+only when non-empty, so every material that has never seen a picture signs
+byte-identically to before the release; an empty key would have minted a copy
+of every old material on the next open, which is what `envMapIntensity` did at
+a2.65a.
+
+### The pool grew a fourth leg, BEFORE `own`
+
+A mesh with no `uv` attribute still compiles a shader that reads one, and
+WebGL hands an absent attribute (0,0) - so the whole model draws in the
+picture's corner texel, which reads as a bug rather than a missing feature.
+Such a mesh gets an instance with nothing bound. The leg sits before `own`
+because `disposeObject` retires private instances by SUFFIX (`'|' + obj.id`);
+appending it after `own` leaked the material, its uniforms and its field for
+the session, and Join produces an unwrapped mesh in one tap.
+
+### Deliberately absent - do not rebuild these
+
+- **Emissive colour.** `mat.emissive` is set to white when an emission map
+  lands and black when it goes, because three MULTIPLIES the map by it and
+  the default is black: the map is the emission. A separate emissive colour
+  on the definition is a different feature.
+- **A map on the second UV set is left behind**, not bound to the first. The
+  import carries one set; sampling the wrong one is a flat wash.
+- **KHR_texture_transform** is carried only as far as GLTFLoader folds it into
+  `repeat`/`offset`/`rotation`/`center`, which this release now carries whole.
+  The extension itself is not read.
+
+### Still open
+
+- **A normal map and the mask patch cannot both own the normal, and the patch
+  wins.** Once Round edges or a Bump mask is live it sets the normal from the
+  VERTEX normal and throws away what `<normal_fragment_maps>` produced. The
+  app now SAYS so (`normalMapShadowed`), which is the honest half. The fix is
+  not "compose after the chunk" but "bend before it" - inside
+  `<normal_fragment_begin>`, ahead of the tbn three builds there - and that
+  means inlining a chunk of three's own shader and a probe of its own.
+- **A texture-library write that fails** leaves definitions naming keys that
+  cannot resolve. `applyMaps` says so once rather than drawing a material that
+  is textured everywhere except on screen, but there is no repair path short
+  of opening the file again. A named save also stores its pictures inline
+  ON TOP of the same bytes in `kubik.textures.v1`, so two named saves of one
+  textured model is three copies against a ~5 MB origin quota. If that bites,
+  IndexedDB is the answer.
+- **No unwrap.** Maps are useful on what comes in from outside and on a
+  primitive's own UVs, and nothing in the app makes a UV layout.
+
+Measured by `_texchk.py` / `_texchk.js`: 16 sections, and eight deliberately
+broken builds (`_mktexbroken.py`) - one per decision, each caught by exactly
+the section written for it and none of them stopping the probe early.
 
 ## Edge bevel closes the ends of the strip (2.32)
 
