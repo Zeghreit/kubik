@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.30**
+- Version at time of writing: **2.31a**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -51,6 +51,107 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## .fbx opens (v2.31, fixed at v2.31a)
+
+The format Maya and ZBrush actually hand you, and the one Kubik could not read
+at all. It cost a parser and nothing else, which is what the a2.70 shape
+promised: FBXLoader returns an Object3D tree exactly like GLTFLoader does, so
+`collectImportableMeshes`, `editableFromImportedMeshes` and `landImport` took
+it unchanged, and every budget, refusal, quad pairing and material mapping
+came along for free.
+
+### Fetched on first use
+
+FBXLoader is 110kB and pulls `fflate` and `NURBSCurve` in behind it. Charging
+that to every cold open of a single-file app, for a format most sessions never
+touch, is the trade the CSG libraries already refused - so it is a dynamic
+`import()` behind `fbxLoaderClass()`. The importmap resolves `three` inside it
+to the one three@0.184.0 instance already loaded; the lazy copy is not a
+second three.
+
+### Refused before the expensive part
+
+`parse()` is ONE synchronous call that inflates every embedded texture and
+builds every geometry before a triangle can be counted, so what can be decided
+from the first bytes is decided there: the full 23-byte binary signature
+(`Kaydara FBX Binary  ` - two spaces - then `00 1A 00`), the little-endian
+version at offset 23 against three's floor of 6400, a text file with no
+`FBXHeaderExtension` anywhere in its first 4kB, and a byte length over 64MB.
+Each says what to do about it rather than "Could not read that file".
+
+### Textures beside the file are swallowed, and counted
+
+A file picker hands over the files it was given; there is no directory to
+resolve a texture path against - the wall `mtllib` already hits in the .obj
+reader. Left alone, FBXLoader's TextureLoader fires one request per map at a
+path relative to the PAGE, and a file opened from disk answers those with a
+console full of failures. A `LoadingManager` with a URL modifier passes
+`data:` and `blob:` straight through (embedded media, the case that works) and
+swaps everything else for a 1x1, counting as it goes. The count becomes a
+footnote toast - guarded by a generation counter, because `toast` is one
+shared element and an ungated `setTimeout` lands its message on whatever the
+person is doing 2.2 seconds later.
+
+### Four things the reviewer found, all real
+
+1. **Every import pinned the whole parsed file for the life of the tab.**
+   FBXLoader keeps `fbxTree`, `connections` and `sceneGraph` in MODULE-scope
+   variables and never clears them, so dropping the returned root frees
+   nothing; embedded textures are blob: URLs it never revokes. A character
+   with four 2K maps held roughly 60MB per import.
+   `editableFromImportedMeshes` clones what it needs, so the tree is now
+   walked and disposed by hand - geometries, materials, textures, and
+   `URL.revokeObjectURL` on every blob.
+2. **Parts of one model landed as a single inseparable object.**
+   `collectImportableMeshes`'s owner rule merges meshes under a shared Group,
+   which is right for glTF (a Group there IS one mesh's primitives) and can
+   only over-merge for FBX, where a Group is any null and there is exactly one
+   Mesh per Model node. It takes a `flat` argument now, set only on this path.
+3. **Every FBX material landed dead matte.** FBXLoader builds
+   `MeshPhongMaterial`, which has no `roughness` - so `importMaterialContext`
+   took its `roughness = 1` fallback for every surface ever imported, and a
+   chrome or gloss-painted model was indistinguishable from a plastic one.
+   `shininess` is converted by the standard Blinn-Phong fit
+   `r = sqrt(2 / (shininess + 2))`. Metalness is NOT guessed: Phong's
+   `reflectivity` defaults to 1 and reading it would make every imported
+   surface metal, a worse wrong answer than the honest zero.
+4. **"Check the connection and try again" was advice that cannot work.** A
+   module script whose fetch fails has its module-map entry set to null, and
+   every later import of that URL resolves the null without refetching -
+   clearing our own promise does not clear the browser's map. The message says
+   reload.
+
+### Deliberately NOT done: unit scale
+
+FBX carries `GlobalSettings.UnitScaleFactor` and FBXLoader reads it into
+`userData` without applying it. Applying it normalises to CENTIMETRES, which
+would land every FBX 100x larger than a glTF authored in metres - the
+inconsistency, not the fix. Normalising to metres instead would shrink by 100
+any file whose exporter wrote the default 1, which is most of them. Kubik has
+no unit and no other importer rescales, so neither does this one: an fbx lands
+at the numbers in the file, and `landImport` frames the camera on it. **If it
+is ever revisited, the decision belongs to every format at once, not to fbx.**
+
+### Probe
+
+`_fbx_probe` (port 8873) over four fixtures. Three are three.js's own example
+models, fetched by the runner; the fourth is written by `_mkfbx.py`, because
+three ships nothing under Kubik's budget and without a small file every
+section would prove a REFUSAL and never once prove that an fbx opens:
+`_fbxfix_cube.fbx` is 6 quads and 2 materials, `_fbxfix_two.fbx` is two named
+meshes under one Null - the shape that caught the over-merge. Verified against
+**9 deliberately broken builds plus one control** that must still pass
+(removing the early triangle count changes nothing, because `landImport` asks
+again - it is an optimisation, not a guard).
+
+Two traps the probe fell into first, both worth more than the sections they
+broke: **`applyPendingOp` does not commit an operation** - it changes the mesh
+and leaves the op open, and the next `beginPendingOp` restores that op's
+snapshot, so a probe measuring a second operation without pressing `#opOk` is
+measuring the first one being undone. And **a shared
+`--disk-cache-dir=_httpcache`** makes Chrome exit with an empty DOM and an
+empty stderr after a hung run, which reads exactly like a broken build.
 
 ## A preset is never a copy of itself (v2.30)
 

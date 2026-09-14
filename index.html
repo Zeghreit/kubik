@@ -2393,7 +2393,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.30</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.31a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -2499,7 +2499,7 @@
                .mtl. Everything else takes the first file and ignores the
                rest; asking for two files up front would be worse than
                losing the colours of the one format that has a sidecar. -->
-          <label class="btn fileBtn">Bring in a model<input type="file" id="fileImport" multiple accept=".glb,.gltf,.obj,.mtl,.stl,model/gltf-binary,model/gltf+json" /></label>
+          <label class="btn fileBtn">Bring in a model<input type="file" id="fileImport" multiple accept=".glb,.gltf,.obj,.mtl,.stl,.fbx,model/gltf-binary,model/gltf+json" /></label>
         </div>
         <div class="drawer-note">.glb, .gltf, .obj or .stl. A model comes back
           as faces, not triangles, so it edits like something you built here.
@@ -29394,13 +29394,19 @@ function editableFromImportedMeshes(meshes) {
    Anything else - a lone node, a single-primitive mesh - is its own object.
    Non-mesh children are skipped, which is also how the .glb's edge-outline
    LineSegments stays out of the geometry. */
-function collectImportableMeshes(root) {
+/* `flat` is for FBX. The owner rule below was written for glTF, where a
+   Group means "the primitives of one glTF mesh" and merging them is the
+   whole point. FBXLoader makes a Group for every FBX null/empty and exactly
+   one Mesh per Model node, so on that path the rule can only ever
+   over-merge: a character authored as five named parts under one null landed
+   as a single inseparable object. */
+function collectImportableMeshes(root, flat) {
   root.updateMatrixWorld(true);
   const byOwner = new Map();
   root.traverse(n => {
     if (!n.isMesh || !n.geometry || !n.geometry.attributes.position) return;
     if (n.geometry.attributes.position.count < 3) return;
-    const owner = (n.parent && n.parent !== root && n.parent.isGroup) ? n.parent : n;
+    const owner = (!flat && n.parent && n.parent !== root && n.parent.isGroup) ? n.parent : n;
     if (!byOwner.has(owner)) byOwner.set(owner, []);
     byOwner.get(owner).push(n);
   });
@@ -30185,6 +30191,241 @@ function gltfRefusal(buf) {
   return null;
 }
 
+/* ---------------- FBX ----------------
+
+   The format Maya and ZBrush actually hand you, and the one Kubik could not
+   open at all. It is a parser and nothing else: FBXLoader gives back an
+   Object3D tree exactly like GLTFLoader does, so collectImportableMeshes,
+   editableFromImportedMeshes and landImport take it unchanged. That is the
+   whole point of the a2.70 shape.
+
+   FETCHED ON FIRST USE, not on load. FBXLoader is 110kB and pulls fflate
+   and NURBSCurve in behind it; charging that to every cold open of a
+   single-file app, for a format most sessions never touch, is the trade the
+   CSG libraries already refused. The importmap resolves `three` inside it to
+   the one three@0.184.0 instance this file already has, so the lazy copy is
+   not a second three. */
+const FBX_BYTE_LIMIT = 64 * 1024 * 1024;
+
+let _fbxLoaderPromise = null;
+function fbxLoaderClass() {
+  if (!_fbxLoaderPromise) {
+    _fbxLoaderPromise = import('three/addons/loaders/FBXLoader.js')
+      .then(m => m.FBXLoader)
+      .catch(e => { _fbxLoaderPromise = null; throw e; });
+  }
+  return _fbxLoaderPromise;
+}
+
+/* Refused BEFORE the 110kB fetch and before the parse, for the two cases
+   that are certain from the first 32 bytes. Everything else is left to the
+   loader, whose own message names what it could not read.
+
+   Binary FBX opens with "Kaydara FBX Binary  \0\x1a\0" and puts a uint32
+   version at offset 23; three's BinaryParser refuses below 6400 and says so
+   in a throw, which is a worse place to find out than here. An ASCII file
+   has no magic at all - the version lives in a "; FBX 7.4.0 project file"
+   comment or a FBXVersion property - so the text case is the loader's. */
+function fbxRefusal(buf) {
+  /* SIZE IS CERTAIN BEFORE ANYTHING IS READ, and fbx is the format most
+     likely to be enormous: embedded 4K media is routine, and parse() is one
+     synchronous call that inflates every texture and builds every geometry
+     before the triangle budget is consulted. A 150MB file froze the tab for
+     several seconds and only then said it was too heavy. */
+  if (buf && buf.byteLength > FBX_BYTE_LIMIT) {
+    return Math.round(buf.byteLength / 1048576) + 'MB - too big to open in a browser tab. Export just the mesh, without its textures.';
+  }
+  try {
+    const head = new Uint8Array(buf, 0, Math.min(32, buf.byteLength));
+    /* THE WHOLE 23-BYTE SIGNATURE: "Kaydara FBX Binary  " - with TWO
+       trailing spaces - then 00 1A 00. Comparing only the readable 18
+       classed a file as binary that three then read as text, so the two
+       disagreed and the person got the generic message instead of this
+       one. */
+    const MAGIC = 'Kaydara FBX Binary  \u0000\u001a\u0000';
+    let binary = head.length >= MAGIC.length;
+    for (let i = 0; binary && i < MAGIC.length; i++) {
+      if (head[i] !== MAGIC.charCodeAt(i)) binary = false;
+    }
+    if (binary) {
+      if (buf.byteLength < 27) return 'That .fbx is truncated.';
+      const v = new DataView(buf).getUint32(23, true);
+      if (v < 6400) {
+        return 'That .fbx is version ' + v + ' - three.js reads binary FBX from 6400 up. Re-export it as FBX 2013 or newer.';
+      }
+      return null;
+    }
+    /* Not binary. A text FBX says so somewhere in its header; anything else
+       is a file that was renamed, and "Could not read that file" tells the
+       person nothing they can act on. */
+    const scan = new TextDecoder('utf-8', { fatal: false })
+      .decode(new Uint8Array(buf, 0, Math.min(4096, buf.byteLength)));
+    if (scan.indexOf('FBXHeaderExtension') < 0 && scan.indexOf('FBXVersion') < 0) {
+      return 'That does not look like an .fbx inside.';
+    }
+  } catch (e) { return null; }        // let the loader have it
+  return null;
+}
+
+/* TEXTURES BESIDE THE FILE ARE UNREACHABLE, AND SAYING SO BEATS TRYING.
+   A file picker hands over the files it was given; there is no directory to
+   resolve a texture path against - the same wall `mtllib` hits in the .obj
+   reader. Left alone, FBXLoader's TextureLoader would fire a request per
+   map at a path relative to the PAGE, and a single-file app opened from
+   disk answers those with a console full of failures.
+
+   So external paths are swallowed and counted, and embedded media - which
+   arrives as a data: or blob: URL and is the case that actually works - is
+   let through untouched. Kubik has no texture channel yet either way
+   (that is stage 1 of the maps plan), so what survives is the material's
+   colour and its roughness/metalness, which is what the importer reads. */
+function fbxTextureManager(counter) {
+  const mgr = new THREE.LoadingManager();
+  const BLANK = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8Xw8AAoMBgDTD2qgAAAAASUVORK5CYII=';
+  mgr.setURLModifier((url) => {
+    const u = String(url || '');
+    if (u.slice(0, 5) === 'data:' || u.slice(0, 5) === 'blob:') return u;
+    counter.n++;
+    return BLANK;
+  });
+  return mgr;
+}
+
+let _fbxImportGen = 0;
+
+async function importFbxBuffer(buf, label) {
+  const gen = ++_fbxImportGen;
+  const why = fbxRefusal(buf);
+  if (why) { toast(why); return; }
+
+  let FBXLoader;
+  try {
+    FBXLoader = await fbxLoaderClass();
+  } catch (e) {
+    console.error('FBXLoader failed to load', e);
+    /* "try again" would be a lie: a module script whose fetch fails has
+       its module-map entry set to null, and every later import of the same
+       URL resolves that null without refetching. Clearing our own promise
+       does not clear the browser's map. Only a reload does. */
+    toast('Could not fetch the FBX reader - reload the page and try again.');
+    return;
+  }
+
+  const missing = { n: 0 };
+  let root;
+  try {
+    /* parse(), not parseAsync(): FBXLoader has no async entry and its parse
+       is synchronous. The path argument is what textures resolve against,
+       and there is nothing to resolve against, so it is empty. */
+    root = new FBXLoader(fbxTextureManager(missing)).parse(buf, '');
+  } catch (err) {
+    const m = String((err && err.message) || '');
+    if (/version not supported/i.test(m)) {
+      toast('That .fbx is too old for three.js to read - re-export it as FBX 2013 or newer.');
+      return;
+    }
+    console.error('fbx parse failed', err);
+    toast('Could not read that .fbx');
+    return;
+  }
+  if (!root) { toast('Could not read that .fbx'); return; }
+
+  /* FBXLoader BUILDS PHONG MATERIALS, AND PHONG HAS NO ROUGHNESS.
+     importMaterialContext reads src.roughness / src.metalness and falls back
+     to 1 and 0 when they are not finite - which, for every FBX ever, they
+     are not. So a chrome or gloss-painted model arrived with the right
+     colour and dead matte, indistinguishable from a plastic version of
+     itself, and nothing in the app could tell.
+
+     shininess -> roughness by the standard Blinn-Phong fit
+     r = sqrt(2 / (shininess + 2)): 0 gives 1.0, three's default 30 gives
+     0.25, 1000 gives 0.04. Metalness is NOT guessed - Phong's `reflectivity`
+     defaults to 1 and reading it would make every imported surface metal,
+     which is a worse wrong answer than the honest zero. */
+  root.traverse(n => {
+    if (!n.isMesh) return;
+    (Array.isArray(n.material) ? n.material : [n.material]).forEach(mm => {
+      if (!mm || Number.isFinite(mm.roughness)) return;
+      const sh = Number.isFinite(mm.shininess) ? Math.max(0, mm.shininess) : 30;
+      mm.roughness = Math.min(1, Math.max(0, Math.sqrt(2 / (sh + 2))));
+    });
+  });
+
+  const parts = collectImportableMeshes(root, true);
+  if (!parts.length) { toast('No mesh in that file'); return; }
+
+  /* The same early count the glTF reader does, for the same reason: a
+     character with a skeleton is routinely tens of thousands of triangles,
+     and converting it first only to refuse it wastes the wait. landImport
+     asks again and is the check that cannot be forgotten. */
+  let total = 0;
+  parts.forEach(p => p.meshes.forEach(m => {
+    const g = m.geometry;
+    if (!g || !g.attributes.position) return;
+    total += (g.index ? g.index.count : g.attributes.position.count) / 3;
+  }));
+  if (total > IMPORT_TRI_BUDGET) {
+    toast(Math.round(total / 1000) + 'k triangles - too heavy to edit (limit ' +
+      Math.round(IMPORT_TRI_BUDGET / 1000) + 'k)');
+    return;
+  }
+
+  const built = [];
+  for (const part of parts) {
+    const ed = editableFromImportedMeshes(part.meshes);
+    if (!ed || !ed.groups.length) continue;
+    built.push({ name: part.name, ed });
+  }
+  /* EVERYTHING THE PARSE BUILT IS RELEASED HERE, and it has to be done by
+     hand. FBXLoader keeps `fbxTree`, `connections` and `sceneGraph` in
+     MODULE-scope variables and never clears them, so dropping `root` frees
+     nothing: every original BufferGeometry, every MeshPhongMaterial and
+     every Texture with its decoded image stays reachable for the life of the
+     tab. Embedded textures are blob: URLs and FBXLoader never revokes one,
+     which pins the compressed bytes as well.
+
+     editableFromImportedMeshes CLONES what it needs, so nothing below is
+     still in use by the objects that just landed. A character with four 2K
+     maps was holding ~60MB per import before this.
+
+     What cannot be freed from here is fbxTree's own inflated Video.Content
+     arrays; they are overwritten by the next parse and unreachable from the
+     app in the meantime. */
+  root.traverse(n => {
+    if (!n.isMesh) return;
+    if (n.geometry) n.geometry.dispose();
+    (Array.isArray(n.material) ? n.material : [n.material]).forEach(mm => {
+      if (!mm) return;
+      for (const key in mm) {
+        const t = mm[key];
+        if (!t || !t.isTexture) continue;
+        const src = t.image && t.image.src;
+        if (typeof src === 'string' && src.slice(0, 5) === 'blob:') URL.revokeObjectURL(src);
+        t.image = null;
+        if (t.source) t.source.data = null;
+        t.dispose();
+      }
+      mm.dispose();
+    });
+  });
+
+  landImport(built, label);
+  /* After landImport, so its own toast is the one that stays up when both
+     have something to say - the face count is what the person is waiting
+     for, and this is a footnote.
+
+     AND ONLY IF NOTHING HAS HAPPENED SINCE. toast is one shared element with
+     one shared timer, so a late message overwrites whatever is on screen:
+     import, press undo, and 2.2s later a note about textures for a model
+     that is no longer there. The generation is bumped on entry, so a second
+     import silently cancels the first one's footnote. */
+  if (missing.n && built.length && gen === _fbxImportGen) {
+    setTimeout(() => { if (gen !== _fbxImportGen) return; toast(missing.n === 1
+      ? 'One texture sits beside the file, which a file picker cannot reach - colours came through, the map did not.'
+      : missing.n + ' textures sit beside the file, which a file picker cannot reach - colours came through, the maps did not.'); }, 2200);
+  }
+}
+
 async function importGltfBuffer(buf, label) {
   const why = gltfRefusal(buf);
   if (why) { toast(why); return; }
@@ -30449,6 +30690,8 @@ function wireImport() {
       toast('Reading ' + main.name + '…');
       if (kind === 'stl') {
         importStlBuffer(await main.arrayBuffer(), stem);
+      } else if (kind === 'fbx') {
+        await importFbxBuffer(await main.arrayBuffer(), stem);
       } else if (kind === 'obj') {
         /* An .obj names its .mtl, but the browser cannot go and fetch it -
            a file input hands over the files it was given and nothing else,
@@ -37099,7 +37342,8 @@ if (PICK_DEBUG) {
     // Import (a2.68). buildExportGroup is here too so a harness can measure
     // the ROUND TRIP through the real export path rather than a shortcut to
     // GLTFExporter, which is how a bug that did not exist got reported once.
-    importGltfBuffer, mergeCoplanarTriangles, editableFromImportedMeshes,
+    importGltfBuffer, importFbxBuffer, fbxRefusal, fbxLoaderClass,
+  mergeCoplanarTriangles, editableFromImportedMeshes,
     collectImportableMeshes, buildExportGroup,
     // a2.69: the glTF-PBR -> library mapping, askable of one material.
     importMaterialContext,
