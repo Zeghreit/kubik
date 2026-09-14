@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.33**
+- Version at time of writing: **2.33a**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -52,7 +52,7 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
-## An import brings its pictures with it (2.33)
+## An import brings its pictures with it (2.33, fixed at 2.33a)
 
 A textured .glb used to open grey. The comment in `importMaterialContext`
 said why, and said it honestly - "Kubik has no UVs at all" - and v2.28 made
@@ -132,6 +132,22 @@ because `disposeObject` retires private instances by SUFFIX (`'|' + obj.id`);
 appending it after `own` leaked the material, its uniforms and its field for
 the session, and Join produces an unwrapped mesh in one tap.
 
+### One material means one material, whatever the groups say (2.33a)
+
+`editableFromImportedMeshes` resolved every geometry group through its
+`materialIndex`, which is right for a mesh that carries an ARRAY of materials
+and wrong for one that carries a single material: three itself ignores
+`geo.groups` in that case and draws the whole geometry with the one material,
+while BoxGeometry, CylinderGeometry and the rest still BUILD six groups with
+materialIndex 0..5 for the multi-material case. So group 0 got the material
+and groups 1..5 got nothing - five of a cube's six faces landed on Solid,
+grey, with the imported look on one of them.
+
+Found by the texture probe, not by reading: it noticed that two cubes painted
+with two textured materials arrived carrying two maps between twelve faces.
+The count is asserted now rather than printed, which is the difference between
+a probe that would have caught this and the one that did.
+
 ### Deliberately absent - do not rebuild these
 
 - **Emissive colour.** `mat.emissive` is set to white when an emission map
@@ -163,9 +179,21 @@ the session, and Join produces an unwrapped mesh in one tap.
 - **No unwrap.** Maps are useful on what comes in from outside and on a
   primitive's own UVs, and nothing in the app makes a UV layout.
 
-Measured by `_texchk.py` / `_texchk.js`: 16 sections, and eight deliberately
+Measured by `_texchk.py` / `_texchk.js`: 17 sections, and eight deliberately
 broken builds (`_mktexbroken.py`) - one per decision, each caught by exactly
 the section written for it and none of them stopping the probe early.
+
+**A section has to be able to REACH its subject.** 6b (what the export group
+is handed) was written after section 8, which clears the scene and stands up a
+cube with no UVs on purpose - so it measured that cube, failed, and not one
+word of the failure was about the export. It sits after the round trip now and
+checks its own fixture before it asserts anything.
+
+**And `_imp_probe` fetches GLTFExporter from the CDN**, so it can go silent
+with `NO PROBE OUTPUT` for reasons that have nothing to do with the app. The
+way to tell a regression from the flake is to run it against
+`git show HEAD:index.html` and see whether that is silent too - which is what
+happened here.
 
 ## Edge bevel closes the ends of the strip (2.32)
 

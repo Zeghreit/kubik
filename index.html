@@ -2393,7 +2393,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.33</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.33a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -30000,12 +30000,26 @@ function editableFromImportedMeshes(meshes) {
        merged multi-material mesh can point two groups at one material, and
        three does not promise groups[i] and material[i] line up. */
     const msrc = Array.isArray(m.material) ? m.material : [m.material];
+    /* ONE MATERIAL MEANS ONE MATERIAL, WHATEVER THE GROUPS SAY (v2.33a).
+       three itself ignores `geo.groups` when `mesh.material` is not an array -
+       WebGLRenderer draws the whole geometry with that one material - but
+       BoxGeometry, CylinderGeometry and friends still BUILD six groups with
+       materialIndex 0..5 for the multi-material case. Resolving through
+       materialIndex there handed group 0 the material and groups 1..5
+       `msrc[1..5]`, which is nothing: five of a cube's six faces landed on
+       Solid, grey, with the imported look on one of them.
+       Found by the v2.33 texture probe, which noticed that two cubes painted
+       with two textured materials arrived carrying two maps between twelve
+       faces instead of twelve. */
+    const single = !Array.isArray(m.material) && !!m.material;
     for (let gi = 0; gi < (gsrc ? gsrc.length : 1); gi++) {
       const mi2 = gsrc ? gsrc[gi].materialIndex : 0;
       /* null, not a neighbour. A group whose materialIndex is out of range
          is a group three itself draws with nothing; guessing a different
-         material would paint a face a colour that is in no file. */
-      matSrc.set(mi * 4096 + gi, msrc[mi2] || null);
+         material would paint a face a colour that is in no file. That rule is
+         about a mesh that really does carry several materials - it has
+         nothing to say about one that carries a single one. */
+      matSrc.set(mi * 4096 + gi, single ? m.material : (msrc[mi2] || null));
     }
     for (let t = 0; t < n; t++) {
       const tri = geo.index

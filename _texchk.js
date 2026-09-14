@@ -169,9 +169,18 @@
     var mats = [];
     objs.forEach(function (o) { matsOf(o).forEach(function (m) { mats.push(m); }); });
     var withMap = mats.filter(function (m) { return !!m.map; });
-    log(verdict(added > 0 && withMap.length > 0,
-      'the pictures arrived bound to the material',
-      'NOTHING CAME IN WITH A MAP (' + mats.length + ' materials, 0 with one)'));
+    /* EVERY face, not one of them. Two cubes painted with two textured
+       materials is twelve faces wearing a map; the first run of this probe
+       printed TWO, which is how v2.33a's bug was found. three ignores
+       geo.groups when a mesh carries a single material, and BoxGeometry
+       builds six of them regardless - so five faces in six landed on Solid.
+       The count is asserted rather than printed for exactly that reason. */
+    log('  ' + withMap.length + ' of ' + mats.length + ' face materials carry a map');
+    log(verdict(added > 0 && withMap.length === mats.length && mats.length >= 12,
+      'every face the file painted arrived painted',
+      withMap.length ? withMap.length + ' OF ' + mats.length +
+        ' FACES GOT THE MATERIAL - the rest landed on Solid'
+        : 'NOTHING CAME IN WITH A MAP (' + mats.length + ' materials, 0 with one)'));
     if (!withMap.length) { finishUp(); return; }
 
     /* ---- 2. bound the right way up, in the right space, at a size a phone
@@ -282,6 +291,46 @@
     log(verdict(back.length > 0 && backKey && backEntry && RED(backPx),
       'the file brought its own pictures back, the same way up',
       back.length ? 'THE MAP CAME BACK EMPTY OR TURNED OVER' : 'NOTHING CAME BACK WITH A MAP'));
+
+    /* ---- 6b. and back OUT again ----
+       An import that keeps its pictures and an export that drops them is half
+       a feature. What Kubik owns here is buildExportGroup: it clones every
+       material and wipes the geometry's userData, and a clone that lost its
+       maps - or a geometry that lost its uv - would leave GLTFExporter
+       nothing to write. The exporter's own correctness is three's; this asks
+       only about the group handed to it. */
+    mark('section6b');
+    /* CHECK THE FIXTURE FIRST. This section sits here, straight after the
+       round trip, because it needs a textured model in the SCENE - and the
+       first version of it sat after section 8, which clears the scene and
+       stands up a cube with no UVs on purpose. It failed, and not one word of
+       the failure was about the export. */
+    var sceneWithMap = 0;
+    A.objects.forEach(function (o) {
+      matsOf(o).forEach(function (m) { if (m && m.map) sceneWithMap++; });
+    });
+    var group = k.buildExportGroup();
+    var expMats = 0, expWithMap = 0, expNoUV = 0, expMeshes = 0;
+    group.traverse(function (n) {
+      if (!n.isMesh) return;
+      expMeshes++;
+      if (!n.geometry.getAttribute('uv')) expNoUV++;
+      (Array.isArray(n.material) ? n.material : [n.material]).forEach(function (m) {
+        if (!m) return;
+        expMats++;
+        if (m.map) expWithMap++;
+      });
+    });
+    log('');
+    log('=== 6b. what the exporter is handed ===');
+    log('  ' + expMeshes + ' mesh(es), ' + expMats + ' material(s), ' +
+      expWithMap + ' carrying a colour map, ' + expNoUV + ' without uv');
+    log('  (the scene it was built from has ' + sceneWithMap + ' material(s) with a map)');
+    log(verdict(sceneWithMap > 0 && expMeshes > 0 && expWithMap > 0 && expNoUV === 0,
+      'the export group carries the pictures and the uv they need',
+      (!sceneWithMap ? 'NOTHING TEXTURED WAS IN THE SCENE - this section tested nothing. ' : '') +
+      (expWithMap ? '' : 'THE CLONES LOST THEIR MAPS - a textured model would export flat. ') +
+      (expNoUV ? expNoUV + ' MESH(ES) LOST THEIR UV' : '')));
 
     /* ---- 7. the flip branch, asked directly ----
        Section 2 is an identity chain on purpose, so the one line that turns a
