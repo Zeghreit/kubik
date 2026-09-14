@@ -52,6 +52,60 @@ app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
 
+## What a textured model actually costs (measured, 2.35)
+
+Stage 2 of the UV plan, as far as a harness can honestly take it.
+`_heavychk.py` / `_heavychk.js` builds 20 shells, 5,760 triangles, all with
+UVs, wearing four materials with a colour, normal and roughness map each, and
+measures. Two walls came out of it, and **both are new** - the pictures put
+them there.
+
+### Wall 1: four pictures and localStorage is full
+
+Measured in the browser rather than remembered: the ceiling is about
+**5,090kb**, a 1024-square picture costs about **1,162kb** as a data URL, so
+there is room for about **four of them in total**. Three were already in from
+the fixture. A character with two materials and four maps each does not fit.
+
+That is not a warning about some future model - `kubik.textures.v1` held
+3,486kb of the 3,490kb in use. The plan's line "if that bites, IndexedDB is the
+answer" was written as a contingency; it bites at four pictures.
+
+### Wall 2: a history step is 1,375kb, so Undo is 35 deep, not 60
+
+On this model `estimateDocBytes` says 1,375kb a step, which reaches the 48MB
+ceiling at **35 steps** - before the 60-step cap, so the BYTES are what bite.
+No picture is in a step (that is the v2.33 design and the probe asserts it);
+the weight is geometry: separated attribute vertices, the per-face maps, and
+UV, which costs two floats a vertex against position's three.
+
+### What is comfortably fine
+
+- **41 draw calls** for 20 objects, and 5,760 triangles rasterised - v2.23's
+  draw-group work holding.
+- **`rebuildFromEditable` 1.96ms** on a 160-face shell; every op funnels
+  through it.
+- **`pickVertexOnActive` 0.15ms** a tap, BVH usable.
+- **7 shader programs** for four materials.
+- `serializeDoc` 7-13ms, which is per history step, so per operation. On a
+  phone that is the one number here worth watching.
+
+### What this harness CANNOT answer, and must not pretend to
+
+fps, heat, and whether a tap feels immediate. It runs headless on SwiftShader,
+a software rasteriser: its frame time is about this CPU, not a phone's GPU.
+The probe prints it as "software raster", never as fps, and stage 2 is not
+finished until the phone has answered the other three.
+
+**And the first run of it measured nothing at all.** Every timing came back
+`0ms`, because the runner was copied from `_texchk.py`, which uses
+`--virtual-time-budget` - under virtual time `performance.now()` does not
+advance across synchronous work. The counts and the byte sizes were real; the
+clock was not. `_prof_probe.py` had already learned this and says so in its
+header: **real wall clock, no virtual time, results by POST.** The probe now
+prints `UNMEASURABLE (the clock did not move)` rather than a zero, so the next
+runner cannot report free work quietly.
+
 ## Pictures are yours to assign (2.35)
 
 Maps stopped being a privilege of the import. The material editor grows a
