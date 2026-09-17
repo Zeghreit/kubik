@@ -20,7 +20,7 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~39,200 lines)
 - Version at time of writing: **2.38**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
@@ -51,6 +51,109 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## Loose ends (gathered 17.09.2026, from all 61 project docs)
+
+Every doc in the project was read and audited on this date. What follows is
+everything recorded as broken, deferred or unfinished **that was never
+closed**, in one place, because it was spread across fourteen documents and
+nobody could hold it. Each one names the doc that owns it.
+
+**A note is not a measurement, and an old note is not even a hypothesis** —
+check before believing any of these. That rule has caught this file out
+repeatedly; the v2.8d audit found three of nine items already fixed.
+
+### Correctness — things that are wrong, not slow
+
+1. **Undo is 35 steps deep on a heavy mesh, not 60.** Measured at v2.35: a
+   step is 1,375kb and the 48MB ceiling bites before the step count does.
+   Wall 2 of stage 2, unfixed. (`heavy-mesh-plan.md` item 5 still carries the
+   *old* estimate — 60 snapshots, ~270MB — which the measurement replaced.)
+2. **`bevelProfile`'s round arc is only tangent at a 90° dihedral.** At 150°
+   the middle of the arc sits above the original edge.
+   (`bevel-tears-open-ends.md`)
+3. **A selected edge with one or three faces gets no bevel strip and no
+   refusal** — step 1 has already moved the neighbours.
+   (`bevel-tears-open-ends.md`)
+4. **`opRefusal` is never cleared on the immediate path**, so Slide can show
+   Circularize's reason — "a confident wrong answer about the shape under
+   your finger". #2 on the stage-3 ranked list. (`command-layer-v238.md`)
+5. **`applyPendingOp` is not exception-safe**: `op.lastWhy` is written last,
+   so `confirmPendingOp` could commit a half-applied mesh. (`hardening-v23bc`)
+6. **Box select over a cylinder takes the back half** — 18 of 24 vertices,
+   pinned by a probe. The facing test does not work on organics.
+   (`region-select-a2.76.md`, `heavy-mesh-plan.md` wall 4)
+7. **Connect on a quad's diagonal silently does nothing** — a silent no-op,
+   which this project calls the worst failure mode. (`crosstest-findings.md`)
+8. **`edgeChains` drops edges silently on a branching selection**, and its
+   `ringGroup` comparison is set-vs-cyclic. Two reviewer follow-ups, never
+   closed. (`crosstest-findings.md`)
+9. **Ortho: a document saved while flat reloads in perspective** (the
+   projection is not serialised), and focusing while flat drops you back to
+   perspective. (`ortho-camera-a2.85.md`)
+10. **Extrude's floor** — `needsFloor` is decided on a rim that can be
+    incomplete, the floor gets no `smoothGroups` entry, and Each over several
+    faces of a sheet returns an open non-manifold shell.
+    (`extrude-floor-a2.84.md`)
+11. **Solidify**: T-junctions overlap, the vertex normal is unweighted, and
+    past ~41° the surface thins with no self-intersection check.
+    (`solidify-a2.79.md`)
+12. **`InstancedMesh` loses every instance but the first; `SkinnedMesh`
+    imports its bind pose. Both silent.** (`import-review-a2.68.md`)
+13. **`.gltf` with an external `.bin` or textures 404s** — they resolve
+    against the page URL. (`import-review-a2.68.md`)
+14. **`_maskTex` and preview-rig materials are never pruned** for definitions
+    minted by a file open or an import. (`hardening-v23bc.md`)
+15. **`flushMatBin` is missed on `applyPendingOp`'s object-gone branch.**
+    (`hardening-v23bc.md`)
+
+### Decisions owed to Zeghreit
+
+- **Masks on a preset material, in a project file.** `restoreDoc` adopts a
+  definition only when its id is absent, so they are silently dropped on
+  open. Three options: file wins, local wins, or import under a new id. Asked
+  three times, never answered. (`session-note-a2.30a.md`)
+- **FBX unit scale.** Characters out of Maya/ZBrush arrive in the hundreds.
+  The non-decision was deliberate — whatever is decided applies to every
+  format at once. (`fbx-import-v231.md`)
+- **The promotion plan.** Week 1's "instrument first" gated the whole
+  six-week runbook on a baseline number, and at day 11 there is no evidence
+  the analytics landed. Either instrument this week or write it off.
+  (`promotion-plan-sep-oct-2026.md`)
+
+### Performance, suspected and never measured
+
+- **The `#N` program fork in `applyMaskPatch`** — one `WebGLProgram` per
+  material on repaint. Named in v2.1 *and* v2.3b as the largest suspected GPU
+  item; never revisited.
+- **`2c_windingComponents`** — 8–16% of `applyShading` "and its share grows
+  with the model. Never looked at." (`performance-a2.82.md`)
+- **`outlineUses` is recomputed every live-drag frame in Extrude.** Called
+  "the obvious a2.84a" ten versions before it was still open. One drag frame
+  33.6 → 38.4ms on a 2048-quad Plane. (`extrude-floor-a2.84.md`)
+- **A first tray open compiles a program per masked definition** — forty for
+  forty, on the main thread. Only ever timed on a software rasteriser, which
+  exaggerates a compile ~20×. Ask the phone before building anything.
+- **`cancelPendingOp` re-applies the whole op only to discard it** — a stall
+  on ✕ on a dense mesh. (`hardening-v23bc.md`)
+- **`mkStructural` re-bakes the 128² cloth on a component tick that changes
+  no cloth.** (`hardening-v23bc.md`)
+- **`backdrop-filter: blur` over the live canvas**, and `antialias: true` on
+  the main context. Both knowingly left alone. (`performance-a2.96.md`)
+- **Unmeasured on a phone:** stage 2's fps / heat / "does a tap feel
+  immediate"; the environment's full-float DataTexture
+  (`OES_texture_float_linear` is missing on many mobile GPUs); the atlas's
+  two-tap slice interpolation.
+
+### Unbuilt, and worth building
+
+- **The bevel shader for free.** "The gradient of the distance field IS the
+  bevel normal." The best unbuilt idea in the doc set.
+  (`wear-shading-prior-art.md` §5C)
+- **Warp the lookup, not the distance** — same doc, §5B.
+- **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
+  reserved in the file format), edge snapping while drawing, and a Lathe that
+  sweeps an arc rather than a full turn.
 
 ## An immediate edit has one ending (2.38)
 
@@ -10696,6 +10799,42 @@ otherwise the inspector reports the position the object was reflected FROM.
   history push, and has to be special-cased in export is the shape of the
   problem.
 
+### Added 17.09.2026, from the a2.x record
+
+These were built, tested and removed on purpose, or explicitly rejected, and
+were recorded only in per-version docs where nobody would find them.
+
+- **The ortho "turning returns you to perspective" rule.** Inverted on
+  purpose at a2.86: every gesture now stays flat and the pill is the only
+  thing that changes projection. `ORTHO_TURN_COS`, `_turnFrom`, `_turnNow`,
+  `watchingTurn` and `cubeAlignTo`'s re-arm all went. **`ortho-camera-a2.85`
+  documents the old rule as current — do not read it without a2.86.**
+- **Triangulate.** "No `.glb`, `.obj` or `.stl` this app has ever written
+  contained an n-gon" — it would have been an op that did nothing. (a2.81)
+- **A modifier stack.** The app owns both directions by choice; destructive
+  with a strong undo is the right trade. Separate is the way back. (a2.78)
+- **Groups as `THREE.Group`, or group records in `App.objects`.** Rejected
+  after reading 55 references. (a2.93)
+- **Scaling `PICK_RADIUS_PX`.** A constant pixel threshold is right, and
+  scaling it was removed on purpose. (a2.72)
+- **Visibility filtering on grow / shrink / loop / ring / symmetry.**
+  Unfiltered on purpose: filtering would make grow stop at the silhouette,
+  which is a bug, not a feature. (a2.76)
+- **Surfacing on the drawer, material tray, toast, tool ring and ring
+  label.** "Replacing it would be undoing design." (a2.73)
+- **The baseline `computeVertexNormals()` in `applyShading`.** Deleted; the
+  fallback it existed for rendered vertices black and cannot fire. Only the
+  allocation stays. (a2.83)
+- **Face mode for Slide** — Inset does it better. **Non-uniform scale** on
+  Array/Ring and Solidify, and **rim creases** in Solidify — all refused on
+  purpose. (a2.79, a2.80)
+- **A drag handle on outliner rows**, and horizontal bail-out on a lift.
+  Design note, not a defect. (a2.94)
+- **`dblclick → focusOnObject` on outliner rows** — removed; the viewport
+  double-tap already does it. (a2.92)
+- **Desktop access to Turn / Strength** — touch only, an a2.23 decision that
+  the camera-linked headlight did not change. (a2.95)
+
 ## Hard-won lessons
 
 - **Measure, don't reason.** Every layout, geometry and picking bug in this
@@ -14342,10 +14481,14 @@ because the primitive is upstream of the operation.
 - **Masks do not survive an export.** A .glb, .obj or .stl carries the base
   colour and roughness and nothing else: `buildExportGroup` wipes `userData`
   and clones the materials, and a clone loses `onBeforeCompile`, so the cloth
-  and the bump exist only inside this app. Baking them into a texture is not
-  a small job - **there is no UV attribute anywhere in the file**, on purpose,
-  which is why the whole mask system is triplanar - so it would need an
-  unwrap first. Say that plainly when it is reported as a bug.
+  and the bump exist only inside this app.
+  **The reason given here is dead.** It used to read "there is no UV
+  attribute anywhere in the file, on purpose, which is why the whole mask
+  system is triplanar" — that policy was **reversed at v2.28**, and v2.33–2.35
+  put six texture channels on UV. The mask system is still triplanar and
+  still does not export, but it is now unfinished work rather than policy.
+  What is still missing is an UNWRAP: the app has no way to make UVs, only to
+  carry ones it was given. Say that plainly when it is reported as a bug.
 - **A first tray open compiles a program per masked definition.** Forty for
   forty, on the main thread, and nothing spreads them. Measured at v2.10a and
   left alone deliberately: the only timings available are a software
@@ -14440,8 +14583,9 @@ because the primitive is upstream of the operation.
   at v2.8b, and easy to rebuild.
 - **Read the drawer markup before proposing a feature that stores something.**
   Named saves already exist and have since well before v2.4 - `#projName`,
-  `#btnProjSave`, `#projList`, kept in localStorage with the last state
-  restored automatically - and were proposed again at v2.4 as if new.
+  `#btnProjSave`, `#projList` - and were proposed again at v2.4 as if new.
+  (They moved to IndexedDB at v2.37; the autosave is still localStorage, and
+  deliberately so.)
 - **Masks on a preset material do survive a project file**, and have since
   `materialDefSig` learned to include `masks`. One comes back under a new id
   as "Metal (imported)" with every face repointed, and the preset stays plain.
