@@ -4214,6 +4214,7 @@ const THEME = {
      crease keeps its own warmer orange: it marks a PROPERTY of the mesh,
      not a state of the app, and it has to stay separable from select. */
   select: 0xff5230, vert: 0x8b939c, edge: 0x5a626b, crease: 0xff7a45,
+  seam: 0x3ad1c9,
   material: 0x303338
 };
 
@@ -4248,6 +4249,12 @@ let CREASE_COLOR = THEME.crease;
    cannot see a normal, only its effect. Warm against the crease colour so
    the two marks never read as the same thing on one mesh. */
 const SHARP_COLOR = 0xff8a3d;
+/* Seam is a cyan/teal, deliberately outside the orange cluster that select,
+   crease and sharp already occupy - a seamed edge must never be mistaken
+   for any of the other three marks at a glance. Read from THEME and
+   reassigned in applyTheme(), same as CREASE_COLOR - one definition, not
+   a claim that anything actually re-themes at runtime today. */
+let SEAM_COLOR = THEME.seam;
 
 // Objects already in the scene keep whatever colour they were given - only the
 // default for new ones follows the theme.
@@ -4395,6 +4402,7 @@ function applyTheme() {
   UNSELECT_VERT_COLOR = t.vert;
   UNSELECT_EDGE_COLOR = t.edge;
   CREASE_COLOR = t.crease;
+  SEAM_COLOR = t.seam;
   DEFAULT_MATERIAL_COLOR = t.material;
 
   // Face overlays bake the selection colour into their material, so retint
@@ -7607,26 +7615,29 @@ function snapshotEdgeMarks(obj) {
   if (!topo) return null;
   const shade = obj.mesh.userData.edgeShade || {};
   const creases = obj.mesh.userData.creases || {};
-  if (!Object.keys(shade).length && !Object.keys(creases).length) return null;
+  const seams = obj.mesh.userData.seams || {};
+  if (!Object.keys(shade).length && !Object.keys(creases).length && !Object.keys(seams).length) return null;
   const out = [];
   topo.edges.forEach(e => {
     const k = creaseKeyFor(logicalPos(obj, e[0]), logicalPos(obj, e[1]));
-    const sv = shade[k], cv = !!creases[k];
-    if (sv || cv) out.push([e[0], e[1], sv || null, cv]);
+    const sv = shade[k], cv = !!creases[k], mv = !!seams[k];
+    if (sv || cv || mv) out.push([e[0], e[1], sv || null, cv, mv]);
   });
   return out.length ? out : null;
 }
 
 function rewriteEdgeMarks(obj, snap) {
   if (!snap) return;
-  const shade = {}, creases = {};
+  const shade = {}, creases = {}, seams = {};
   snap.forEach(pair => {
     const k = creaseKeyFor(logicalPos(obj, pair[0]), logicalPos(obj, pair[1]));
     if (pair[2]) shade[k] = pair[2];
     if (pair[3]) creases[k] = true;
+    if (pair[4]) seams[k] = true;
   });
   obj.mesh.userData.edgeShade = shade;
   obj.mesh.userData.creases = creases;
+  obj.mesh.userData.seams = seams;
 }
 
 /* ---------------- The edge distance field (a2.28) ----------------
@@ -9931,10 +9942,21 @@ function collapseEdgesOp(obj, edgeIndices) {
      map through the same moves: both ends inside one run means the edge is
      gone and so is its crease. */
   const creases = obj.mesh.userData.creases;
+  const seams = obj.mesh.userData.seams;
   let newCreases = creases;
-  if (creases && Object.keys(creases).length) {
-    const idOfKey = new Map();
+  let newSeams = seams;
+  const hasCreasesToMove = creases && Object.keys(creases).length;
+  const hasSeamsToMove = seams && Object.keys(seams).length;
+  // One shared position->logical-id map, built at most once and reused by
+  // both rekeying passes below - creases and seams move for the same reason
+  // (this op moves vertices), so there is no need to walk every logical
+  // vertex twice to learn the same thing twice.
+  let idOfKey = null;
+  if (hasCreasesToMove || hasSeamsToMove) {
+    idOfKey = new Map();
     for (let l = 0; l < topo.logicalCount; l++) idOfKey.set(posKey(logicalPos(obj, l)), l);
+  }
+  if (hasCreasesToMove) {
     newCreases = {};
     Object.keys(creases).forEach(k => {
       const half = k.split('|');
@@ -9946,11 +9968,26 @@ function collapseEdgesOp(obj, edgeIndices) {
       newCreases[ka < kb ? ka + '|' + kb : kb + '|' + ka] = true;
     });
   }
+  // Same rekeying, for the seam map - a seam on a collapsed edge is exactly
+  // as meaningless as a crease on one, for the same reason.
+  if (hasSeamsToMove) {
+    newSeams = {};
+    Object.keys(seams).forEach(k => {
+      const half = k.split('|');
+      if (half.length !== 2) return;
+      const la = idOfKey.get(half[0]), lb = idOfKey.get(half[1]);
+      const ka = (la !== undefined && movedTo.has(la)) ? movedTo.get(la) : half[0];
+      const kb = (lb !== undefined && movedTo.has(lb)) ? movedTo.get(lb) : half[1];
+      if (ka === kb) return;
+      newSeams[ka < kb ? ka + '|' + kb : kb + '|' + ka] = true;
+    });
+  }
 
   obj.mesh.material = carried.mats;
   obj.mesh.userData.smoothGroups = carried.smooth;
   obj.mesh.userData.finishes = carried.fin;
   if (newCreases !== creases) obj.mesh.userData.creases = newCreases;
+  if (newSeams !== seams) obj.mesh.userData.seams = newSeams;
   rebuildFromEditable(obj, ed);
   return done;
 }
@@ -12409,6 +12446,14 @@ function creaseSet(obj) {
   if (!obj.mesh.userData.creases) obj.mesh.userData.creases = {};
   return obj.mesh.userData.creases;
 }
+// Seams share the crease/sharp architecture exactly: a position-keyed map,
+// same key function, same survive-a-rebuild treatment. What a seam MEANS is
+// different (a cut edge for the unwrap, stage 5 of uv-commands-maps-plan.md)
+// but nothing about how it is stored needs to be.
+function seamSet(obj) {
+  if (!obj.mesh.userData.seams) obj.mesh.userData.seams = {};
+  return obj.mesh.userData.seams;
+}
 
 /* ---------------- Subdivision ----------------
    Every face is split into one quad per corner, meeting at the face centre.
@@ -12586,6 +12631,13 @@ function subdivideOp(obj, mode) {
   const srcShade = mesh.userData.edgeShade || {};
   const hasShade = Object.keys(srcShade).length > 0;
   const newShade = {};
+  // A seam survives a Subdivide exactly like a crease or a sharp mark - the
+  // same posOf-vs-pa/pb reasoning applies (smooth subdivision moves the
+  // original vertices), or the first Subdivide after marking a seam would
+  // silently erase your cut lines.
+  const srcSeams = mesh.userData.seams || {};
+  const hasSeamsSrc = Object.keys(srcSeams).length > 0;
+  const newSeams = {};
   edgeFaces.forEach((faces, k) => {
     const [a, b] = k.split('_').map(Number);
     const pa = vertPoint.get(a), pb = vertPoint.get(b), pm = edgePoint.get(k);
@@ -12603,6 +12655,10 @@ function subdivideOp(obj, mode) {
         newShade[creaseKeyFor(pa, pm)] = m;
         newShade[creaseKeyFor(pm, pb)] = m;
       }
+    }
+    if (hasSeamsSrc && srcSeams[creaseKeyFor(posOf(a), posOf(b))]) {
+      newSeams[creaseKeyFor(pa, pm)] = true;
+      newSeams[creaseKeyFor(pm, pb)] = true;
     }
   });
 
@@ -12624,6 +12680,7 @@ function subdivideOp(obj, mode) {
   mesh.userData.smoothGroups = smoothGroups;
   mesh.userData.creases = newCreases;
   mesh.userData.edgeShade = newShade;
+  mesh.userData.seams = newSeams;
   rebuildFromEditable(obj, { positions, groups });
   return true;
 }
@@ -14082,6 +14139,9 @@ function captureObjectState(obj) {  const ed = toEditable(obj.mesh);
        moved onto the same kind of map. */
     creases: { ...(obj.mesh.userData.creases || {}) },
     edgeShade: { ...(obj.mesh.userData.edgeShade || {}) },
+    // Same reasoning as creases/edgeShade above - a cancelled op must not
+    // leave a seam mark behind, or erase one that was already there.
+    seams: { ...(obj.mesh.userData.seams || {}) },
     autoSmoothAngle: obj.mesh.userData.autoSmoothAngle
   };
 }
@@ -14187,6 +14247,7 @@ function restoreObjectState(obj, st) {
   if (st.finishes) obj.mesh.userData.finishes = { ...st.finishes };
   if (st.creases) obj.mesh.userData.creases = { ...st.creases };
   if (st.edgeShade) obj.mesh.userData.edgeShade = { ...st.edgeShade };
+  if (st.seams) obj.mesh.userData.seams = { ...st.seams };
   // Undefined is a real value here - it means "use the app default" - so
   // this is assigned unconditionally, not guarded like the maps above.
   obj.mesh.userData.autoSmoothAngle = st.autoSmoothAngle;
@@ -16780,9 +16841,10 @@ function mergeByDistanceOp(obj, fraction) {
      lands there. remapMarksByPoint drops those and carries the rest. */
   const pointMap = new Map();
   for (let l = 0; l < n; l++) pointMap.set(posKey(pts[l]), target.get(find(l)));
-  const creases = {}, edgeShade = {};
+  const creases = {}, edgeShade = {}, seams = {};
   remapMarksByPoint(mesh.userData.creases || {}, creases, pointMap);
   remapMarksByPoint(mesh.userData.edgeShade || {}, edgeShade, pointMap);
+  remapMarksByPoint(mesh.userData.seams || {}, seams, pointMap);
   for (let l = 0; l < n; l++) {
     const t = target.get(find(l));
     L.logicalGroups[l].forEach(ai => {
@@ -17833,6 +17895,58 @@ function clearAllCreases() {
   toast('All creases cleared');
 }
 
+// Edge mode: mark or clear a UV seam - a cut edge for the unwrap
+// (uv-commands-maps-plan.md stage 5). Architected exactly like
+// creaseSelection - same position-keyed map, same toggle logic - because a
+// seam has to survive drags and rebuilds the identical way a crease does.
+function markSeamSelection(on) {
+  if (App.mode !== 'edge') { toast('Seam works in Edge mode'); return; }
+  const obj = findObject(App.activeObjectId);
+  if (!obj || !App.selectedElements.size) { toast('Select an edge first'); return; }
+
+  ensureHelpers(obj);
+  symExpand(obj);   // a flag per edge - per-element, so the union is right
+  const seams = seamSet(obj);
+  const keys = [];
+  App.selectedElements.forEach(ei => { const k = edgeKeyAt(obj, ei); if (k) keys.push(k); });
+  if (!keys.length) { toast('Nothing to seam there'); return; }
+
+  // A toggle, like Crease and Mark Sharp: seaming an already-seamed edge
+  // clears it. `on` is honoured when a caller asks for a specific state.
+  const allSeamed = keys.every(k => !!seams[k]);
+  const want = (on === undefined) ? !allSeamed : !!on;
+  let changed = 0;
+  keys.forEach(k => {
+    if (want) { if (!seams[k]) { seams[k] = true; changed++; } }
+    else if (seams[k]) { delete seams[k]; changed++; }
+  });
+  if (!changed) {
+    toast(want ? 'Already seamed' : 'No seams on that edge');
+    return;
+  }
+
+  // A seam has no say in shading or Subdivide - unlike crease and sharp it
+  // marks nothing applyShading needs to redo, only a future cut for the
+  // unwrap - so there is no applyShading call here.
+  refreshElementColors(obj);
+  hideRadialMenu();
+  refreshUI();
+  pushHistory();
+  toast(want ? changed + ' edge(s) seamed' : changed + ' seam(s) cleared');
+}
+
+function clearAllSeams() {
+  const obj = findObject(App.activeObjectId) ||
+    findObject(Array.from(App.selectedObjectIds)[0]);
+  if (!obj) { toast('Select an object first'); return; }
+  obj.mesh.userData.seams = {};
+  ensureHelpers(obj);
+  refreshElementColors(obj);
+  refreshUI();
+  pushHistory();
+  toast('All seams cleared');
+}
+
 // Joins two selections with new faces: two faces become a tube, two runs of
 // edges become a sheet.
 /* Bridge is a live op now: the section count and the straight/curved choice
@@ -18540,8 +18654,10 @@ function refreshElementColors(obj) {
     const col = lines.geometry.attributes.color.array;
     const creases = obj.mesh.userData.creases || {};
     const shade = obj.mesh.userData.edgeShade || {};
+    const seams = obj.mesh.userData.seams || {};
     const hasCreases = Object.keys(creases).length > 0;
     const hasShade = Object.keys(shade).length > 0;
+    const hasSeams = Object.keys(seams).length > 0;
     const showSel = App.mode === 'edge';
     /* THE MODE'S MULTIPLIER BELONGS TO THE PLAIN WIREFRAME ALONE (a2.62a).
        It used to be a scalar on the whole material, and this one buffer
@@ -18556,15 +18672,20 @@ function refreshElementColors(obj) {
     const wire = modeView().frame;
     topo.edges.forEach((e, i) => {
       let c = UNSELECT_EDGE_COLOR, k = wire;
-      /* Both marks read at a glance: the crease colour says what a smooth
-         Subdivide will hold, the sharp colour says where the shading breaks.
-         Sharp is checked last of the two so that an edge carrying both shows
-         as sharp - that is the one you can see in the render, and the one
-         you are most likely to be hunting for. */
-      const key = (hasCreases || hasShade)
+      /* Three marks read at a glance: the crease colour says what a smooth
+         Subdivide will hold, the sharp colour says where the shading breaks,
+         the seam colour says where the (future) unwrap will cut. This is a
+         fixed, permanent display order, not a mode the ring switches: sharp
+         is checked after crease so an edge carrying both always shows as
+         sharp - the one you can see in the render, and the one you are most
+         likely to be hunting for. Seam is checked last of the three and so
+         always wins on an edge that honestly wears all three at once - the
+         same kind of permanent precedence sharp already has over crease. */
+      const key = (hasCreases || hasShade || hasSeams)
         ? creaseKeyFor(logicalPos(obj, e[0]), logicalPos(obj, e[1])) : null;
       if (hasCreases && creases[key]) { c = CREASE_COLOR; k = 1; }
       if (hasShade && shade[key] === 'sharp') { c = SHARP_COLOR; k = 1; }
+      if (hasSeams && seams[key]) { c = SEAM_COLOR; k = 1; }
       if (showSel && App.selectedElements.has(i)) { c = SELECT_COLOR; k = 1; }
       setColScaled(col, i * 2, c, k); setColScaled(col, i * 2 + 1, c, k);
     });
@@ -26809,9 +26930,11 @@ function arrayOp(obj, count, mode, amount, axis) {
      Copy 0 does not move, so its keys are carried across untouched. */
   const srcCreases = obj.mesh.userData.creases || {};
   const srcShade = obj.mesh.userData.edgeShade || {};
+  const srcSeams = obj.mesh.userData.seams || {};
   const creases = { ...srcCreases };
   const edgeShade = { ...srcShade };
-  const hasMarks = Object.keys(srcCreases).length || Object.keys(srcShade).length;
+  const seams = { ...srcSeams };
+  const hasMarks = Object.keys(srcCreases).length || Object.keys(srcShade).length || Object.keys(srcSeams).length;
 
   const m = new THREE.Matrix4();
   const p = new THREE.Vector3();
@@ -26851,6 +26974,7 @@ function arrayOp(obj, count, mode, amount, axis) {
     if (hasMarks) {
       moveMarkKeys(srcCreases, creases, m);
       moveMarkKeys(srcShade, edgeShade, m);
+      moveMarkKeys(srcSeams, seams, m);
     }
   }
 
@@ -26869,6 +26993,7 @@ function arrayOp(obj, count, mode, amount, axis) {
   obj.mesh.userData.finishes = finishes;
   obj.mesh.userData.creases = creases;
   obj.mesh.userData.edgeShade = edgeShade;
+  obj.mesh.userData.seams = seams;
   rebuildFromEditable(obj, { positions, groups });
   return true;
 }
@@ -27153,14 +27278,17 @@ function solidifyOp(obj, thickness, mode) {
      A mark on a RIM edge is dropped rather than carried: that edge is now the
      joint between the face and its new wall, and an explicit "smooth" there
      beats the angle rule and smears the one edge of a solidified card that
-     should be crisp. */
+     should be crisp. A seam does NOT follow this rule: the rim of a
+     solidified card is exactly where an unwrap most wants a cut, so a seam
+     placed there is kept, not dropped. */
   const rimKeys = new Set();
   rim.forEach(([la, lb]) => {
     rimKeys.add(creaseKeyFor(vecAt(ed, L.logicalGroups[la][0]), vecAt(ed, L.logicalGroups[lb][0])));
   });
-  const creases = {}, edgeShade = {};
+  const creases = {}, edgeShade = {}, seams = {};
   remapMarksByPoint(mesh.userData.creases || {}, creases, pointMap, rimKeys);
   remapMarksByPoint(mesh.userData.edgeShade || {}, edgeShade, pointMap, rimKeys);
+  remapMarksByPoint(mesh.userData.seams || {}, seams, pointMap);
 
   const outgoing = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
   mesh.material = mats.length > 1 ? mats : mats[0];
@@ -27170,6 +27298,7 @@ function solidifyOp(obj, thickness, mode) {
   mesh.userData.finishes = finishes;
   mesh.userData.creases = creases;
   mesh.userData.edgeShade = edgeShade;
+  mesh.userData.seams = seams;
   rebuildFromEditable(obj, { positions: ed.positions, groups });
   return true;
 }
@@ -28605,6 +28734,8 @@ function serializeDocBody() {
         finishes: { ...(o.mesh.userData.finishes || {}) },
         creases: { ...(o.mesh.userData.creases || {}) },
         edgeShade: { ...(o.mesh.userData.edgeShade || {}) },
+        // Same position-keyed shape as creases/edgeShade.
+        seams: { ...(o.mesh.userData.seams || {}) },
         /* DEGREES in the file, radians in memory. A bare number in JSON with
            no unit is a trap: anything that later wrote 33 meaning degrees
            would be read as 33 RADIANS, and the model would shade like
@@ -29061,6 +29192,8 @@ function restoreDoc(doc, opts = {}) {
     mesh.userData.smoothGroups = od.smoothGroups ? { ...od.smoothGroups } : {};
     mesh.userData.finishes = { ...finishes };
     mesh.userData.creases = od.creases ? { ...od.creases } : {};
+    // No migration needed, unlike edgeShade below - every file predates seams.
+    mesh.userData.seams = od.seams ? { ...od.seams } : {};
     /* A doc written before a2.18 has no edgeShade at all, which is the
        signal to convert its per-face flags and shading creases into edge
        marks. One written after has it, even when empty, and is left alone -
@@ -29358,7 +29491,9 @@ function estimateDocBytes(d) {
       n += (g.groups ? g.groups.length * 72 : 0);
     }
     n += (o.materials ? o.materials.length * 96 : 0);
-    ['smoothGroups', 'finishes', 'creases', 'edgeShade'].forEach(k => {
+    // 'seams' belongs in this list for the same reason edgeShade is - an
+    // uncounted map is exactly the miscount that starved Undo on masks (2.27).
+    ['smoothGroups', 'finishes', 'creases', 'edgeShade', 'seams'].forEach(k => {
       if (o[k]) n += Object.keys(o[k]).length * 72;
     });
     if (o.curve && o.curve.pts) n += o.curve.pts.length * 40;
@@ -32266,6 +32401,16 @@ const ICON = {
   smoothangle:'<path d="M4 19h15"/><path d="M4 19L17.5 6.5"/><path d="M13 19a9 9 0 0 0-2.6-6.4"/>',
   crease:  '<path d="M3 18Q12 5 21 18"/><path d="M12 4v5"/><circle cx="12" cy="11.4" r="1.9" fill="currentColor" stroke="none"/>',
   uncrease:'<path d="M3 18c4-6 14-6 18 0"/>',
+  // A cut line, dashed like a paper pattern's seam allowance - the one
+  // glyph in this set with no arc and no dot, on purpose.
+  seam:    '<path d="M4 20L20 4" stroke-dasharray="3 3"/>',
+  // Same line, mended: solid instead of dashed, and faded - the cut is
+  // closed, echoing how uncrease above simplifies crease's glyph rather
+  // than repeating it. seam/unseam sit only 45deg apart on the ring, so
+  // unlike crease/uncrease's opposite seats, this pair leans on the glyph
+  // itself (dashed vs solid, full vs faint) rather than distance to read
+  // apart at a glance.
+  unseam:  '<path d="M4 20L20 4" opacity=".4"/>',
   subdiv:  '<path d="M3 3h18v18H3z"/><path d="M12 3v18M3 12h18"/>',
   /* Two faces and the wall between them, shown mid-swing: the chord it is
      leaving drawn faint, the one it lands on solid. */
@@ -32403,8 +32548,15 @@ const HUB_TOOLS_EDGE = [
     { key: 'crease', icon: 'crease', label: 'Crease', seat: 2, run: () => creaseSelection() },
     /* Defined, working, and reachable from nowhere at all since the Subdivide
        drawer went. Crease's own bearing here is 2 and this is its undo-all, so
-       it takes the next seat in the door's fill order. */
-    { key: 'uncrease', icon: 'crease', label: 'Clear creases', seat: 6, run: clearAllCreases }
+       it takes the next seat in the door's fill order. Was seat 6 - collided
+       with slide's seat 6 above (toolRingAngles does no collision detection,
+       and the index-based tie-break in updateToolRingHover silently favoured
+       slide), which made this entry unreachable from the ring. Moved to 5,
+       the one seat this door had left free, while adding the seam entries
+       below. */
+    { key: 'uncrease', icon: 'crease', label: 'Clear creases', seat: 5, run: clearAllCreases },
+    { key: 'seam', icon: 'seam', label: 'Mark seam', seat: 3, run: () => markSeamSelection() },
+    { key: 'unseam', icon: 'unseam', label: 'Clear seams', seat: 4, run: clearAllSeams }
   ] }
 ];
 
@@ -37373,11 +37525,13 @@ HELP_SECTIONS.push(
       ['split', 'Split', 'A midpoint on every selected edge.'],
       ['collapse', 'Collapse', 'The selected edges shrink to nothing — each one’s two ends become a single point and the faces close over.'],
       ['cap', 'Cap hole', 'Closes the opening these edges are part of.'],
-      [null, 'FLOW — a door', 'Set flow, Slide, Circularize, Mark Sharp, Crease, Clear creases.'],
+      [null, 'FLOW — a door', 'Set flow, Slide, Circularize, Mark Sharp, Crease, Clear creases, Mark seam, Clear seams.'],
       ['slide', 'Slide', 'Runs the loop toward one neighbouring ring or the other, stopping just short of it.'],
       ['sharp', 'Mark Sharp', 'Breaks the shading across an edge whatever the angle says. Tap it again on the same edges to let the angle decide again.'],
       ['crease', 'Crease', 'Holds an edge hard through smoothing and Subdivide.'],
-      ['uncrease', 'Clear creases', 'Takes every crease off the object. The same button is in the drawer, under Editing.']
+      ['uncrease', 'Clear creases', 'Takes every crease off the object. The same button is in the drawer, under Editing.'],
+      ['seam', 'Mark seam', 'Marks an edge as a cut for the UV unwrap. Does not touch shading — a seam is only about how the mesh will one day be flattened.'],
+      ['unseam', 'Clear seams', 'Takes every seam off the object.']
     ]
   },
   {
@@ -39078,6 +39232,9 @@ if (PICK_DEBUG) {
     creaseSelection, deleteSelection, weldSelection, connectSelection,
     mergeSelection, detachFacesSelection, mergeVerticesOp, detachFacesOp,
     bridgeSelection, mirrorSelectedObjects,
+    // Seams (uv-commands-maps-plan.md stage 5) - same reason creaseSelection
+    // and markSharpSelection are here: let a harness drive the real toggle.
+    markSeamSelection, clearAllSeams, seamSet,
     /* The rest of the op set, so one harness can sweep ALL of them rather
        than the handful that happened to be exported. Every one of these is
        already a single tap away in the rings. */
