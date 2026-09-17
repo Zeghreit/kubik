@@ -2412,7 +2412,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.38</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.40</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -4135,6 +4135,11 @@ const App = {
   // side too, which is what made a selected object look transparent before
   // this was a choice rather than the only behaviour.
   xraySelection: false,
+  // A Face-mode preview, not document data: which faces the current seams
+  // would cut into separate UV islands, colour-coded, before there is any
+  // actual unwrap to check it against. Same transience as xraySelection -
+  // a view choice, never serialized, reset by nothing but the button.
+  showIslands: false,
   pendingOp: null,
   // The knife's points while a cut is being placed. Not a pendingOp: it
   // changes no geometry until OK, so there is nothing to re-run.
@@ -7438,6 +7443,13 @@ function disposeHelpersOnly(obj) {
   if (ud.edgeLines) { obj.mesh.remove(ud.edgeLines); ud.edgeLines.geometry.dispose(); ud.edgeLines.material.dispose(); ud.edgeLines = null; }
   if (ud.faceOverlay) { obj.mesh.remove(ud.faceOverlay); ud.faceOverlay.geometry.dispose(); ud.faceOverlay.material.dispose(); ud.faceOverlay = null; }
   ud.faceOverlayIds = null;
+  // Same story as faceOverlay above, and for the same reason it has to be
+  // here and not left for the next ensureHelpers: without this, every op
+  // orphans the old islandOverlay as a permanently visible child of the
+  // mesh being thrown away, holding the geometry's old position/index
+  // attributes alive as a ghost copy that never gets cleaned up.
+  if (ud.islandOverlay) { obj.mesh.remove(ud.islandOverlay); ud.islandOverlay.geometry.dispose(); ud.islandOverlay.material.dispose(); ud.islandOverlay = null; }
+  ud.islandCache = null;
   disposeSelectionOverlay(obj);
   disposeSoftOverlay(obj);
   ud.topo = null;
@@ -8875,6 +8887,10 @@ function ensureHelpers(obj) {
      mesh now, built on demand by syncFaceOverlay. */
   obj.mesh.userData.faceOverlay = null;
   obj.mesh.userData.faceOverlayIds = null;
+  // Same lazy-build story as faceOverlay, for the same reason: built on
+  // demand by syncIslandOverlay, only while the islands preview is on.
+  obj.mesh.userData.islandOverlay = null;
+  obj.mesh.userData.islandCache = null;
 }
 
 /* ONE overlay for the whole face selection (a2.54).
@@ -8970,6 +8986,168 @@ function syncFaceOverlay(obj) {
      mis-stated rather than fixed. */
   mesh.geometry.setIndex(new THREE.BufferAttribute(idx, 1));
   ud.faceOverlayIds = want;
+}
+
+/* UV ISLANDS (uv-commands-maps-plan.md stage 5, slice 2): which faces stay
+   connected once every current seam is treated as a cut. Pure function of
+   topology + seams, face-GROUP granularity (topo.faceGroups - one entry per
+   logical face, the same unit Face mode selects), not per-triangle - an
+   n-gon's own triangulation is never a cut regardless of how it happens to
+   be split.
+
+   Two neighbouring faces stay in the same island unless the edge between
+   them is: seamed; the mesh's own boundary (exactly one face touches it,
+   so there is no "other side" to join); or non-manifold (three or more
+   faces meet there, and this project's rule elsewhere - buildShadingTopo's
+   relSign pass - is the same: no consistent answer, so don't guess one).
+
+   Deliberately its own small pass rather than a reuse of buildShadingTopo's
+   edge records: that structure is drag-scoped, cleared the moment a drag
+   ends, and already the single most expensive phase of applyShading on a
+   heavy mesh. Coupling an on/off preview toggle to it would mean either
+   keeping it alive when nothing else needs it, or paying its full cost -
+   per-triangle winding, connected components, the incident-vertex maps -
+   for a question that only needs face-to-face adjacency by shared edge. */
+function computeUVIslands(obj) {
+  const topo = obj.mesh.userData.topo;
+  const geo = obj.mesh.geometry;
+  const index = geo.index;
+  const fgCount = topo.faceGroups.length;
+  const seams = obj.mesh.userData.seams;
+  const hasSeams = seams && Object.keys(seams).length > 0;
+
+  // Logical edge (lo_hi) -> the face groups touching it, deduped per group
+  // so a triangulated n-gon's own internal diagonal - used twice, but by
+  // the SAME face - never reads as a second face on that edge.
+  const edgeFaces = new Map();
+  topo.faceGroups.forEach((fg, gi) => {
+    const seenHere = new Set();
+    const end = (fg.triStart + fg.triCount) * 3;
+    for (let i = fg.triStart * 3; i < end; i += 3) {
+      const la = topo.logicalOf[index.getX(i)],
+            lb = topo.logicalOf[index.getX(i + 1)],
+            lc = topo.logicalOf[index.getX(i + 2)];
+      [[la, lb], [lb, lc], [lc, la]].forEach(([a, b]) => {
+        if (a === b) return;
+        const lo = a < b ? a : b, hi = a < b ? b : a;
+        const k = lo + '_' + hi;
+        if (seenHere.has(k)) return;
+        seenHere.add(k);
+        let arr = edgeFaces.get(k);
+        if (!arr) { arr = []; edgeFaces.set(k, arr); }
+        arr.push(gi);
+      });
+    }
+  });
+
+  // Union-find over face groups. Cheaper than an adjacency-list flood fill
+  // for this shape of problem, and every op in this file that merges
+  // equivalence classes (mergeByDistanceOp's pointMap, for one) uses the
+  // same trick.
+  const parent = new Int32Array(fgCount);
+  for (let i = 0; i < fgCount; i++) parent[i] = i;
+  function find(x) { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
+
+  edgeFaces.forEach((gis, key) => {
+    if (gis.length !== 2) return; // boundary (1) or non-manifold (3+): a cut either way
+    if (hasSeams) {
+      const us = key.split('_');
+      const lo = +us[0], hi = +us[1];
+      if (seams[creaseKeyFor(logicalPos(obj, lo), logicalPos(obj, hi))]) return;
+    }
+    const ra = find(gis[0]), rb = find(gis[1]);
+    if (ra !== rb) parent[ra] = rb;
+  });
+
+  // Compact the roots into island ids 0..count-1, in face-group order, so
+  // the same seam layout always numbers its islands the same way.
+  const islandOf = new Int32Array(fgCount);
+  const idOf = new Map();
+  let count = 0;
+  for (let gi = 0; gi < fgCount; gi++) {
+    const r = find(gi);
+    let id = idOf.get(r);
+    if (id === undefined) { id = count++; idOf.set(r, id); }
+    islandOf[gi] = id;
+  }
+  return { islandOf, count };
+}
+
+// Golden-angle hue step: well spread for any island count without knowing
+// the count in advance, so island 3 keeps its colour when island 9 shows up
+// a moment later from one more seam edit. Not for anything document-facing -
+// this is a debug/preview palette, not a design system.
+const _islandColorScratch = new THREE.Color();
+function islandColorHex(id) {
+  const hue = (id * 0.6180339887498949) % 1;
+  _islandColorScratch.setHSL(hue, 0.6, 0.55);
+  return _islandColorScratch.getHex();
+}
+
+/* The Face-mode "Show islands" preview (uv-commands-maps-plan.md stage 5,
+   slice 2). Same active-object-only guard as syncFaceOverlay and the same
+   reason: App.showIslands is global, every object keeps its own topo once
+   touched, and without the guard toggling it on while editing one object
+   would light up whichever face groups happen to share its indices on
+   every other object in the scene. */
+function syncIslandOverlay(obj) {
+  const ud = obj.mesh.userData;
+  const topo = ud.topo;
+  if (!topo) return;
+  // Also off while a live op is dragging: every frame installs a brand-new
+  // topo (rebuildFromEditable), and the cache below keys on topo identity -
+  // without this it would redo the full edge-map/union-find/recolour pass
+  // on every single frame of a bevel or inset slider. The preview reappears,
+  // correctly recomputed, the moment the op commits and topo stops changing.
+  const show = App.showIslands && App.mode === 'face' && obj.id === App.activeObjectId && !App.pendingOp;
+  if (!show) {
+    if (ud.islandOverlay) ud.islandOverlay.visible = false;
+    return;
+  }
+
+  const geo = obj.mesh.geometry;
+  const ver = ud.islandsVersion || 0;
+  if (!ud.islandCache || ud.islandCache.topo !== topo || ud.islandCache.ver !== ver) {
+    ud.islandCache = { topo, ver, data: computeUVIslands(obj) };
+  }
+
+  if (!ud.islandOverlay) {
+    const g = new THREE.BufferGeometry();
+    const m = new THREE.MeshBasicMaterial({
+      vertexColors: true, transparent: true, opacity: 0.55,
+      depthTest: false, side: THREE.DoubleSide, fog: false
+    });
+    const mesh = new THREE.Mesh(g, m);
+    mesh.frustumCulled = false;
+    // One below faceOverlay's 8, on purpose: a selection tint drawn while
+    // islands are showing has to read on TOP of the island colour, not lose
+    // to it, since selection is the more urgent of the two questions.
+    mesh.renderOrder = 7;
+    obj.mesh.add(mesh);
+    ud.islandOverlay = mesh;
+  }
+  const mesh = ud.islandOverlay;
+  mesh.visible = true;
+  // Shares position AND index with the real mesh - islands cover every face,
+  // never a subset, so there is no selective index to build the way
+  // syncFaceOverlay's is. Only the colour attribute is this overlay's own.
+  if (mesh.geometry.index !== geo.index) mesh.geometry.setIndex(geo.index);
+  if (mesh.geometry.attributes.position !== geo.attributes.position) {
+    mesh.geometry.setAttribute('position', geo.attributes.position);
+  }
+
+  if (mesh.userData.builtFor === ud.islandCache) return;
+  mesh.userData.builtFor = ud.islandCache;
+
+  const { islandOf } = ud.islandCache.data;
+  const index = geo.index;
+  const col = new Float32Array(geo.attributes.position.count * 3);
+  topo.faceGroups.forEach((fg, gi) => {
+    const hex = islandColorHex(islandOf[gi]);
+    const end = (fg.triStart + fg.triCount) * 3;
+    for (let i = fg.triStart * 3; i < end; i++) setCol(col, index.getX(i), hex);
+  });
+  mesh.geometry.setAttribute('color', new THREE.BufferAttribute(col, 3));
 }
 
 // ensureHelpers only builds these materials once per object, guarded by its
@@ -17928,6 +18106,10 @@ function markSeamSelection(on) {
   // A seam has no say in shading or Subdivide - unlike crease and sharp it
   // marks nothing applyShading needs to redo, only a future cut for the
   // unwrap - so there is no applyShading call here.
+  // islandsVersion: markSeamSelection mutates the existing seams object
+  // rather than replacing it, so syncIslandOverlay's cache (keyed on
+  // topo + this counter) needs an explicit bump to notice the edit.
+  obj.mesh.userData.islandsVersion = (obj.mesh.userData.islandsVersion || 0) + 1;
   refreshElementColors(obj);
   hideRadialMenu();
   refreshUI();
@@ -17940,6 +18122,7 @@ function clearAllSeams() {
     findObject(Array.from(App.selectedObjectIds)[0]);
   if (!obj) { toast('Select an object first'); return; }
   obj.mesh.userData.seams = {};
+  obj.mesh.userData.islandsVersion = (obj.mesh.userData.islandsVersion || 0) + 1;
   ensureHelpers(obj);
   refreshElementColors(obj);
   refreshUI();
@@ -18692,6 +18875,7 @@ function refreshElementColors(obj) {
     lines.geometry.attributes.color.needsUpdate = true;
   }
   syncFaceOverlay(obj);
+  syncIslandOverlay(obj);
   syncSelectionOverlay(obj);
   syncSoftOverlay(obj);
 }
@@ -19234,6 +19418,12 @@ function setActiveObjectHelpersVisible(obj, mode) {
   /* Hidden, not torn down: refreshElementColors runs right after every path
      that reaches here and turns it back on if the selection wants it. */
   if (ov) ov.visible = false;
+  // islandOverlay is not repainted by every caller the way ov's comment
+  // above assumes (the Scene-list re-target path calls this without a mode
+  // change, so refreshElementColors never runs) - hide it explicitly rather
+  // than leave a stale island tint on the object being stepped away from.
+  const io = obj.mesh.userData.islandOverlay;
+  if (io) io.visible = false;
 }
 
 /* The multiplier on the theme's own edge colour now comes from the MODE
@@ -19324,6 +19514,10 @@ function hideAllHelpers() {
     if (o.mesh.userData.vertexPoints) o.mesh.userData.vertexPoints.visible = false;
     if (o.mesh.userData.edgeLines) o.mesh.userData.edgeLines.visible = false;
     if (o.mesh.userData.faceOverlay) o.mesh.userData.faceOverlay.visible = false;
+    // Same reason as faceOverlay just above: syncIslandOverlay's own guard
+    // only re-hides it on the next call, and switching active object without
+    // a mode change (the Scene list, say) never makes that call.
+    if (o.mesh.userData.islandOverlay) o.mesh.userData.islandOverlay.visible = false;
   });
 }
 
@@ -32411,6 +32605,9 @@ const ICON = {
   // itself (dashed vs solid, full vs faint) rather than distance to read
   // apart at a glance.
   unseam:  '<path d="M4 20L20 4" opacity=".4"/>',
+  // Three separate filled shapes, on purpose - not one outline broken into
+  // pieces, which would read as "damaged" rather than "several islands".
+  islands: '<circle cx="6" cy="8" r="4" fill="currentColor" stroke="none"/><circle cx="17" cy="7" r="3" fill="currentColor" stroke="none"/><circle cx="12" cy="17" r="3.5" fill="currentColor" stroke="none"/>',
   subdiv:  '<path d="M3 3h18v18H3z"/><path d="M12 3v18M3 12h18"/>',
   /* Two faces and the wall between them, shown mid-swing: the chord it is
      leaving drawn faint, the one it lands on solid. */
@@ -32577,7 +32774,13 @@ const HUB_TOOLS_FACE = [
       on: () => App.shadeSmooth, run: toggleShading },
     { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 1, run: flipNormalsSelection },
     { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 7, run: setFlowSelection },
-    { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 2, run: circularizeSelection }
+    { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 2, run: circularizeSelection },
+    // UV islands preview (uv-commands-maps-plan.md stage 5, slice 2): which
+    // faces the current seams would cut apart, colour-coded. A reading of
+    // the surface, same family as Shade and Flip normals, so it lives here
+    // rather than earning a seat of its own on the outer ring.
+    { key: 'islands', icon: 'islands', label: 'Show islands', seat: 3,
+      on: () => App.showIslands, run: toggleShowIslands }
   ] }
 ];
 
@@ -37545,9 +37748,10 @@ HELP_SECTIONS.push(
       ['del', 'Delete', 'Cuts the faces away and leaves a hole. This is how you make one — every other mode’s Delete closes the gap instead.'],
       ['bridge', 'Bridge', 'Joins two selections with new faces.'],
       ['detach', 'Detach', 'The selected faces leave as their own object.'],
-      [null, 'SURFACE — a door', 'Shade, Flip normals, Set flow, Circularize.'],
+      [null, 'SURFACE — a door', 'Shade, Flip normals, Set flow, Circularize, Show islands.'],
       ['smooth', 'Shade', 'Flat or smooth, on the selected faces. In Edge mode use Mark Sharp instead — it is the same idea, said once.'],
-      ['flipnorm', 'Flip normals', 'Turns the selected faces inside out.']
+      ['flipnorm', 'Flip normals', 'Turns the selected faces inside out.'],
+      ['islands', 'Show islands', 'Colours the faces by which UV island they would fall into once cut along the current seams.']
     ]
   },
   {
@@ -37810,6 +38014,18 @@ function toggleXray() {
   App.xraySelection = !App.xraySelection;
   refreshXrayMode();
   toast(App.xraySelection ? 'Selection: see-through' : 'Selection: solid');
+}
+
+// Face-mode UV islands preview (uv-commands-maps-plan.md stage 5, slice 2).
+// Same shape as toggleXray - a transient view flag, not document data - but
+// the overlay is per-object (syncIslandOverlay reads App.showIslands plus
+// each object's own topo/seams), so flipping the flag has to sweep every
+// object rather than just the active one: an object the user isn't
+// currently editing still needs its overlay shown or hidden to match.
+function toggleShowIslands() {
+  App.showIslands = !App.showIslands;
+  App.objects.forEach(o => syncIslandOverlay(o));
+  toast(App.showIslands ? 'UV islands: shown' : 'UV islands: hidden');
 }
 // A plain flip-flop: 0/I, not a readout of the actual mixed shading state
 // across faces - it just toggles and applies, same pattern as the Material
@@ -39235,6 +39451,10 @@ if (PICK_DEBUG) {
     // Seams (uv-commands-maps-plan.md stage 5) - same reason creaseSelection
     // and markSharpSelection are here: let a harness drive the real toggle.
     markSeamSelection, clearAllSeams, seamSet,
+    // UV islands preview (uv-commands-maps-plan.md stage 5, slice 2) - lets a
+    // harness compute islands directly and inspect the overlay without
+    // pretending to be a finger on the ring.
+    computeUVIslands, syncIslandOverlay, toggleShowIslands, islandColorHex,
     /* The rest of the op set, so one harness can sweep ALL of them rather
        than the handful that happened to be exported. Every one of these is
        already a single tap away in the rings. */

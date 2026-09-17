@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~39,300 lines)
-- Version at time of writing: **2.39**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~39,550 lines)
+- Version at time of writing: **2.40**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -203,6 +203,95 @@ something scoped to "while marking".
 - Minor: `unseam` was reusing `seam`'s icon at an adjacent seat — now a
   faded, solid-line variant of the same glyph, mirroring how `uncrease`
   already simplifies `crease`'s icon rather than repeating it.
+
+## UV islands: computed and previewed, not yet cut (2.40)
+
+Stage 5 of `uv-commands-maps-plan.md`, slice 2 — the step right after Seams.
+Zeghreit chose the visible outcome for this slice explicitly: colour-coded
+island highlighting in Face mode, over the alternative of building the cut
+silently with nothing on screen to check it against. **This slice computes
+which faces WOULD separate; it does not separate anything.** No vertex is
+duplicated, no UV coordinate exists yet. Flattening, packing and the 2D
+editor are all still entirely unbuilt.
+
+`computeUVIslands(obj)` is a small, dedicated pass, not a reuse of anything
+already in the file — deliberately. `buildShadingTopo`'s edge structure
+already answers "which faces touch this edge" with more detail than this
+needs (full per-triangle winding, drag-scoped, documented elsewhere as one of
+the most expensive phases of `applyShading`), and coupling an on/off preview
+toggle to it would mean paying that cost, or keeping it alive, for a question
+that is really just face-to-face adjacency by shared edge. So islands build
+their own `edgeFaces` map straight from `topo.faceGroups` and the geometry
+index, at face-GROUP granularity (the same unit Face mode selects, not
+triangles — an n-gon's own triangulation is never itself a cut), then run
+union-find over face groups exactly the way `mergeByDistanceOp` already does
+for points. Two neighbouring faces stay in the same island unless the edge
+between them is seamed, is the mesh's own open boundary (one face touches
+it), or is non-manifold (three or more faces meet there — this project's
+existing rule elsewhere, `buildShadingTopo`'s winding pass, is the same: no
+consistent answer, so don't guess one). The seam lookup goes through the
+exact same `creaseKeyFor(logicalPos(...))` vocabulary seams themselves use,
+confirmed by review to produce identical keys to `markSeamSelection`'s own
+`edgeKeyAt` for the same edge.
+
+**Show islands** lives in Face mode's Surface door, seat 3, next to Shade and
+Flip normals — a reading of the surface, the same family, not a modelling
+operation, so it earns a seat in the existing door rather than a new one on
+the outer ring. It is a transient view flag (`App.showIslands`), architected
+exactly like the existing `xraySelection`/`toggleXray` pair: never
+serialized, reset by nothing but the button. The overlay itself is modelled
+on `syncFaceOverlay` — a lazily-built `THREE.Mesh` that borrows the real
+mesh's `position` and `index` attributes rather than copying them, so it
+tracks drags for free and needs no rebuild when only vertices move, colouring
+every face by island via a golden-angle hue step so island 3 keeps its colour
+when island 9 shows up a moment later from one more seam edit.
+
+Because `markSeamSelection` mutates the existing `seams` object in place
+(add/delete keys) rather than replacing its reference, the overlay's cache —
+keyed on `{topo, ver}` — could not otherwise tell a seam edit apart from no
+edit at all. Both `markSeamSelection` and `clearAllSeams` now bump a new
+`obj.mesh.userData.islandsVersion` counter for exactly this reason; every
+other writer of the seams map (`rewriteEdgeMarks`, the collapse/weld rekeys,
+Solidify, Cleanup, doc restore) ends in a fresh `topo` anyway, which
+invalidates the cache by identity and needs no counter.
+
+### What review found
+
+A Fable-caliber pass (opus) on the union-find/edge-map logic, the seam-key
+identity, and cache-invalidation completeness came back clean on all three —
+worth recording since those were exactly the places most likely to hide a
+subtle bug. It did catch three real defects, all fixed:
+
+- **Ghost overlays on every op.** `disposeHelpersOnly` — the function both
+  `rebuildFromEditable` and object-deletion route through before the old
+  geometry is thrown away — disposed `faceOverlay` but not `islandOverlay`.
+  With Show islands on, every extrude/bevel/loop cut/subdivide (and every
+  frame of an op-slider drag) orphaned the previous island overlay as a
+  permanently visible child holding the old geometry's attributes, while
+  `ensureHelpers` quietly built a new one beside it — an accumulating pile of
+  ghost meshes, confirmed live before the fix (never disposed) and after
+  (exactly one island-coloured mesh survives a commit, regardless of how many
+  ops ran first).
+- **Stale overlay across a Scene-list re-target.** `hideAllHelpers` and
+  `setActiveObjectHelpersVisible` both hide `faceOverlay` on their own
+  object-level sweep; neither knew about `islandOverlay`. Switching the
+  active object from the Scene list (no mode change, so the usual
+  `refreshElementColors` repaint never runs) left the OLD active object still
+  wearing a full island tint. Both functions now hide `islandOverlay` the
+  same way they already hide `faceOverlay`.
+- **Per-frame recompute during a live op drag.** The cache keys on `topo`
+  identity, and a live op installs a fresh `topo` every single frame
+  (`rebuildFromEditable`), so with the preview on, a bevel/inset/extrude drag
+  was paying for the full edge-map + union-find + recolour pass every frame —
+  exactly the per-frame churn earlier notes on `computeLogicalOf` went out of
+  their way to remove elsewhere. The overlay now hides for the duration of
+  `App.pendingOp` and recomputes once, correctly, the moment the op commits.
+
+One pre-existing gap surfaced adjacent to this slice, not caused by it:
+`cloneObjectInto` (Duplicate) copies `smoothGroups` and `finishes` but not
+`creases`, `edgeShade` or `seams` — duplicating a seamed object silently
+drops every mark. Not fixed here; noted for whoever picks up island cutting
+next, since it will otherwise look like an islands bug.
 
 ## An immediate edit has one ending (2.38)
 
