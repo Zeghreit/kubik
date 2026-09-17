@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~39,200 lines)
-- Version at time of writing: **2.38**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~39,300 lines)
+- Version at time of writing: **2.39**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -109,10 +109,6 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 
 ### Decisions owed to Zeghreit
 
-- **Masks on a preset material, in a project file.** `restoreDoc` adopts a
-  definition only when its id is absent, so they are silently dropped on
-  open. Three options: file wins, local wins, or import under a new id. Asked
-  three times, never answered. (`session-note-a2.30a.md`)
 - **FBX unit scale.** Characters out of Maya/ZBrush arrive in the hundreds.
   The non-decision was deliberate — whatever is decided applies to every
   format at once. (`fbx-import-v231.md`)
@@ -154,6 +150,59 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## Seams: the first cut for the UV unwrap (2.39)
+
+Stage 5 of `uv-commands-maps-plan.md`. Kubik has never been able to generate
+a UV layout of its own — it only ever carried UVs handed to it by an import,
+and lost them honestly (the `uvsSafe` flag) on any op that doesn't preserve
+vertex correspondence. Zeghreit asked for the most ambitious version of the
+fix: a full seam-based unwrap plus a 2D UV editor. This is the first, smallest
+piece that everything else needs first — a way to mark WHERE the cuts go.
+Island cutting, flattening, packing and the 2D editor itself are still
+entirely unbuilt; nothing in this release generates a UV coordinate.
+
+A seam is architected as a structural sibling of `creases` and `edgeShade`,
+not a new mechanism: the same position-keyed map (`obj.mesh.userData.seams`),
+the same `creaseKeyFor` key, the same rebuild-survivable shape. It goes
+through every place a crease already goes — snapshot/rewrite across a drag,
+capture/restore across a pending-op preview, the six carry-forward sites
+(Collapse, Subdivide, Merge by distance, Solidify, Array), serialize/restore,
+and `estimateDocBytes`'s undo-budget accounting — because a mark that only
+lives in some of those places is a mark that vanishes the first time someone
+does the wrong thing to it, which is exactly the failure this file has
+already watched happen to creases and edgeShade.
+
+One place it deliberately does NOT follow crease/edgeShade: **Solidify keeps
+a seam on a rim edge**, where creases and sharp are dropped there on purpose
+(an explicit "smooth" at the rim beats the angle rule). That reasoning is
+about shading, and does not transfer — the rim of a solidified card is
+exactly where an unwrap most wants a cut, so dropping it there would defeat
+marking it in the first place.
+
+**Mark seam** / **Clear seams** sit in Edge mode's Flow door, seats 3 and 4,
+next to Crease and Clear creases. Colour is a cyan/teal (`SEAM_COLOR`),
+chosen to sit outside the orange cluster select/crease/sharp already use, and
+wins display precedence over both of them on an edge wearing more than one
+mark — a fixed rule, the same kind sharp already has over crease, not
+something scoped to "while marking".
+
+### What review found
+
+- **A real design bug**: Solidify's seam remap was passed the same `rimKeys`
+  drop-set as creases and edgeShade, silently discarding exactly the marks
+  most likely to matter. Fixed — the seam call carries no `rimKeys`.
+- **A real miscount**: `estimateDocBytes` didn't count the `seams` map, which
+  is the exact miscount that starved Undo on masks at 2.27. Fixed.
+- **A real, previously undocumented ring bug, caught while placing the new
+  entries**: `uncrease` sat on seat 6 of the Flow door, which `slide` already
+  occupies — `toolRingAngles` has no collision detection, and the index-based
+  tie-break in `updateToolRingHover` silently favoured `slide`, making "Clear
+  creases" unreachable from the ring since whenever it was added. Moved
+  `uncrease` to seat 5, the door's one remaining free seat.
+- Minor: `unseam` was reusing `seam`'s icon at an adjacent seat — now a
+  faded, solid-line variant of the same glyph, mirroring how `uncrease`
+  already simplifies `crease`'s icon rather than repeating it.
 
 ## An immediate edit has one ending (2.38)
 
@@ -14518,6 +14567,18 @@ because the primitive is upstream of the operation.
 
 ### Retired by the audit
 
+- ~~**Masks on a preset material, in a project file, are silently dropped;
+  "asked three times, never answered."**~~ **Wrong when the 17.09.2026 audit
+  wrote it** — checked against the code at v2.39, not just against docs.
+  `restoreDoc`'s materialLib merge (~line 28920) mints a fresh id and names it
+  `<name> (imported)` for any definition whose signature differs from what
+  the id already holds, preset or not; only a colour-only difference (theme
+  drift) resolves to the existing entry. This is the `session-note-a2.30a.md`
+  question, answered and shipped at v2.29/v2.30, with the exact "Metal
+  (imported)" behaviour the "Decisions owed to Zeghreit" item above asked
+  for. The audit found the old unanswered note and never checked whether the
+  code had since moved past it — which is the mistake this whole section
+  exists to catch, now caught one level up: in the audit itself.
 - ~~New cubes should spawn at world centre instead of offsetting in a grid.~~
   They already do; the spawn position is a plain `(0, 0, 0)`. The grid offset
   was removed and the note was not.
