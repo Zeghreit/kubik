@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~39,550 lines)
-- Version at time of writing: **2.40**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~40,050 lines)
+- Version at time of writing: **2.41**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -203,6 +203,107 @@ something scoped to "while marking".
 - Minor: `unseam` was reusing `seam`'s icon at an adjacent seat — now a
   faded, solid-line variant of the same glyph, mirroring how `uncrease`
   already simplifies `crease`'s icon rather than repeating it.
+
+## UV unwrap: planar and cylindrical projection (2.41)
+
+Stage 5 of `uv-commands-maps-plan.md`, slice 3 — the step right after islands.
+Zeghreit's exact brief: "first version, but besides the best-fit plane, add
+a cylinder for objects like an arm, a leg, or any cylindrical object." This
+slice actually writes `ed.uvs` for the first time — everything before it
+only found or displayed where the cuts are. Packing islands into the 0-1
+square and the 2D UV editor are both still entirely unbuilt.
+
+Every island (from the existing `computeUVIslands`) is classified and
+projected independently. A **flat-ratio test** compares the two smaller of
+its three PCA variances (`v0 < 0.3*v1`) and catches genuinely flat panels
+first. Anything not flat is tested for being tube-shaped by an **angular-gap
+test around the dominant axis**: sort every point's angle around that axis,
+take the largest empty gap; a closed ring's worst gap is one tessellation
+step, a flat arc's is its missing wedge. Below `π/2` it is treated as a
+cylinder (unrolled to world-unit arc length × axial position); otherwise it
+falls back to the best-fit plane, projected along the two lower-variance
+axes.
+
+The eigen-decomposition behind all of this (`computeIslandFrame`, feeding
+`jacobiEigenSymmetric3x3`) uses a Jacobi sweep rather than a closed-form
+cubic solver, specifically because eigenvector recovery via cross products
+degenerates on repeated eigenvalues — exactly what a perfectly round
+cylinder cross-section produces by symmetry. Verified standalone against six
+matrices (including an exactly-repeated-eigenvalue case) before it went in.
+
+### What review found
+
+First use of a Fable-model review on this codebase, on Zeghreit's standing
+instruction that geometry/numerical code with a tolerance in it gets Fable
+rather than opus. Compared directly against the prior opus review (Islands,
+2.40): opus found 3 real defects with no false alarms; Fable found 2
+structural defects that neither `_verify.py` nor manual testing could have
+caught, plus 3 smaller real ones — no false alarms either. Judged comparable
+in usefulness; worth reusing for future geometry work.
+
+- **Cross-face angle discontinuity (structural).** The first version only
+  made a face's own corners agree with each other, by nudging each corner's
+  angle by whole turns to stay within the face. Two adjacent faces could
+  still each be internally consistent and disagree with each other by a full
+  turn at the shared edge — an invisible tear at an arbitrary `atan2`
+  branch-cut location, unrelated to any seam the user placed. Fixed with a
+  second pass: a BFS over the island's own face-adjacency graph, rigidly
+  shifting each newly-reached face by whatever whole-2π offset makes its copy
+  of the shared vertex agree with the neighbour that reached it first. A
+  correctly seamed tube now closes with zero mismatches; a deliberately
+  unseamed closed ring has exactly one, at the one edge that cannot be cut
+  without a seam — confirmed live on both.
+- **Classification failing on the app's own default cylinder (structural).**
+  The first classifier compared axial vs. radial variance directly
+  (`v1 < 0.35*v2`); the app's own default cylinder primitive (radius 0.5,
+  height 1) sits right on the wrong side of that ratio, and it gets worse
+  with every loop cut added, since axial variance dilutes toward h²/12 while
+  radial variance stays put. Replaced with the angular-gap test above, which
+  has no dependence on tessellation density or aspect ratio. Confirmed live
+  on the default cylinder with and without extra loop cuts, and on a tall
+  one.
+- **Orientation/mirroring was arbitrary.** PCA gives axes with no "outward"
+  sense, and Jacobi's eigenvector sign is arbitrary, so a cylinder or a plane
+  could unwrap mirrored at random between runs. Fixed by checking the sign
+  of triangle-normal alignment against the candidate radial/cross direction
+  and flipping if it disagrees — a best-effort fix that cannot resolve a
+  pathological whole-object island with no seams at all, where opposite
+  sides cancel in the sum.
+- **Metric mismatch.** Cylindrical U was in turns (`angle / 2π`) while V was
+  already in world units; U now uses arc length (`angle × meanRadius`) to
+  match.
+- **Two nitpicks, both fixed**: the PCA and angular-gap passes were running
+  over distinct *attribute* vertices rather than distinct *positions*, so a
+  corner touched by many small faces (courtesy of `separateGroupVertices`
+  giving every face group its own private copy) was over-weighted; and the
+  Jacobi convergence thresholds were absolute rather than relative to the
+  matrix's trace, so a mesh far outside the app's usual ~0.01-100 unit range
+  could silently skip every rotation. Both fixed.
+
+**One further bug, found by neither Fable nor `_verify.py` — caught during
+my own re-verification of the cross-face fix above.** The BFS adjacency
+graph it added never checked `seams` at all, so a seam splitting a still-
+single island (e.g. a tube with its end caps still attached to the same
+island) was silently bridged straight back over, defeating the seam in
+exactly the use case this feature exists for — a limb with a lengthwise cut.
+Root-caused by tracing through the graph (a ring-plus-caps shape has other
+cycle-closing paths through the caps, so removing one ring edge alone
+doesn't break the forced cycle — a genuine, separate gap, not a test
+artifact). Fixed by excluding seamed edges from the BFS's own adjacency map,
+via the same `creaseKeyFor(logicalPos(...))` lookup `computeUVIslands` uses.
+Confirmed with end caps pre-separated into their own islands: the natural
+pinch sat at one edge; adding a seam elsewhere moved the mismatch to exactly
+that seamed edge, with the original pinch now perfectly continuous.
+
+### What this slice deliberately does not do
+
+The angular parameterization centers on the PCA centroid, not a true Kåsa
+circle-fit center — imprecise for a significantly off-axis partial arc.
+Low severity per Fable, deferred rather than fixed. UV packing into the 0-1
+square (Stage 5, sub-step 4) and the 2D UV editor (sub-step 5) have not been
+started. The whole-object-with-no-seams case (one island covering the entire
+mesh) is not specially handled and can overlap itself under either
+projection — expected, not a bug, until packing exists.
 
 ## UV islands: computed and previewed, not yet cut (2.40)
 

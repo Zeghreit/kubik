@@ -2412,7 +2412,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.40</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.41</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -9148,6 +9148,449 @@ function syncIslandOverlay(obj) {
     for (let i = fg.triStart * 3; i < end; i++) setCol(col, index.getX(i), hex);
   });
   mesh.geometry.setAttribute('color', new THREE.BufferAttribute(col, 3));
+}
+
+/* UV UNWRAP (uv-commands-maps-plan.md stage 5, slice 3): turns the islands
+   computeUVIslands only counted and coloured into actual 2D coordinates -
+   the one algorithmic choice at the heart of Stage 5, decided by the user
+   directly rather than guessed at: best-fit-plane projection as the default,
+   plus a cylindrical mode for the case a flat projection stretches worst -
+   an arm, a leg, a bolt, any island whose cross-section is round rather
+   than flat.
+
+   No packing into a 0..1 square yet - islands are free to overlap and run
+   past their own bounds. That is stage 5's next sub-step, not this one, and
+   giving it up front would mean redoing every island's placement twice for
+   a mesh that has no unwrap at all yet. */
+
+// A Jacobi eigenvalue sweep for a symmetric 3x3 matrix, used below to find
+// each island's principal axes (PCA). Chosen over a closed-form cubic-
+// eigenvalue solver on purpose: recovering eigenvectors from a cubic's roots
+// normally falls back to a cross product of two rows of (A - lambda*I),
+// which is exactly the case that breaks on a REPEATED eigenvalue - and a
+// perfectly round cylinder's cross-section produces one by symmetry (its two
+// radial variances are identical). Jacobi never needs that cross product;
+// a repeated eigenvalue just means two columns rotate together, and any
+// orthonormal basis for that subspace falls out the far end, which is all a
+// projection axis ever needed anyway. Verified standalone against six cases
+// (diagonal, flat-panel-like, cylinder-like, exactly-repeated eigenvalues,
+// general dense, near-singular) before this went anywhere near the app.
+function jacobiEigenSymmetric3x3(cxx, cxy, cxz, cyy, cyz, czz) {
+  const A = [[cxx, cxy, cxz], [cxy, cyy, cyz], [cxz, cyz, czz]];
+  const V = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  const pairs = [[0, 1], [0, 2], [1, 2]];
+  // Scale-relative, not absolute (a Fable review of this function's first
+  // callers caught it): a mesh built far below this app's usual ~0.01-100
+  // unit range would have every entry of A under the old fixed 1e-15/1e-24
+  // floors, so every rotation would be skipped and the untouched diagonal
+  // handed back as though it already held eigenvalues. Scaling by the
+  // trace (0 only for an exactly-zero matrix, where no rotation is
+  // meaningful anyway) keeps this identical at the app's normal scale
+  // while staying correct far outside it.
+  const trace = Math.abs(cxx) + Math.abs(cyy) + Math.abs(czz) || 1;
+  const offEps = 1e-24 * trace * trace, apqEps = 1e-15 * trace;
+  for (let sweep = 0; sweep < 12; sweep++) {
+    let offSq = 0;
+    for (const [p, q] of pairs) offSq += A[p][q] * A[p][q];
+    if (offSq < offEps) break;
+    for (const [p, q] of pairs) {
+      const apq = A[p][q];
+      if (Math.abs(apq) < apqEps) continue;
+      const app = A[p][p], aqq = A[q][q];
+      const theta = (aqq - app) / (2 * apq);
+      const sign = theta === 0 ? 1 : Math.sign(theta);
+      const t = sign / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
+      const c = 1 / Math.sqrt(t * t + 1), s = t * c;
+      for (let k = 0; k < 3; k++) {
+        const akp = A[k][p], akq = A[k][q];
+        A[k][p] = akp * c - akq * s;
+        A[k][q] = akp * s + akq * c;
+      }
+      for (let k = 0; k < 3; k++) {
+        const apk = A[p][k], aqk = A[q][k];
+        A[p][k] = apk * c - aqk * s;
+        A[q][k] = apk * s + aqk * c;
+      }
+      for (let k = 0; k < 3; k++) {
+        const vkp = V[k][p], vkq = V[k][q];
+        V[k][p] = vkp * c - vkq * s;
+        V[k][q] = vkp * s + vkq * c;
+      }
+    }
+  }
+  const idx = [0, 1, 2].sort((i, j) => A[i][i] - A[j][j]);
+  return {
+    values: idx.map(i => A[i][i]),
+    vectors: idx.map(i => {
+      const v = [V[0][i], V[1][i], V[2][i]];
+      const len = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) || 1;
+      return v.map(x => x / len);
+    })
+  };
+}
+
+// Center, ranked orthonormal axes (smallest variance first) and their
+// variances for a set of points - the per-island frame every projection
+// below is built from. axes[0] is the flattest direction (a panel's own
+// normal); axes[2] is the longest (a tube's own length).
+function computeIslandFrame(points) {
+  const n = points.length;
+  const center = [0, 0, 0];
+  points.forEach(p => { center[0] += p[0]; center[1] += p[1]; center[2] += p[2]; });
+  center[0] /= n; center[1] /= n; center[2] /= n;
+  let cxx = 0, cxy = 0, cxz = 0, cyy = 0, cyz = 0, czz = 0;
+  points.forEach(p => {
+    const dx = p[0] - center[0], dy = p[1] - center[1], dz = p[2] - center[2];
+    cxx += dx * dx; cxy += dx * dy; cxz += dx * dz;
+    cyy += dy * dy; cyz += dy * dz; czz += dz * dz;
+  });
+  const eig = jacobiEigenSymmetric3x3(cxx, cxy, cxz, cyy, cyz, czz);
+  return { center, axes: eig.vectors, values: eig.values };
+}
+
+// Fixed world axes, used only to seed axisPerpBasis below.
+const _AXIS_X = [1, 0, 0], _AXIS_Y = [0, 1, 0], _AXIS_Z = [0, 0, 1];
+
+// A stable (u, v) pair perpendicular to `axis`, for measuring angle around a
+// cylinder. Crossing `axis` with whichever world axis it is LEAST parallel
+// to - rather than a fixed pick like world-up - keeps that cross product
+// away from the near-zero-length case a genuinely vertical tube would
+// otherwise hit against world-up.
+function axisPerpBasis(axis) {
+  const ax = Math.abs(axis[0]), ay = Math.abs(axis[1]), az = Math.abs(axis[2]);
+  const seed = (ax <= ay && ax <= az) ? _AXIS_X : (ay <= az ? _AXIS_Y : _AXIS_Z);
+  const u = [
+    seed[1] * axis[2] - seed[2] * axis[1],
+    seed[2] * axis[0] - seed[0] * axis[2],
+    seed[0] * axis[1] - seed[1] * axis[0]
+  ];
+  const ulen = Math.sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]) || 1;
+  u[0] /= ulen; u[1] /= ulen; u[2] /= ulen;
+  const v = [
+    axis[1] * u[2] - axis[2] * u[1],
+    axis[2] * u[0] - axis[0] * u[2],
+    axis[0] * u[1] - axis[1] * u[0]
+  ];
+  return { u, v };
+}
+
+// Classification thresholds. FLAT_RATIO is checked first: it compares only
+// the two SMALLEST variances, so - unlike the tube test below - it never
+// depends on how the largest axis behaves. 0.3 keeps a clearly-flattened
+// 4:1 ribbon planar while still letting a realistic ~1.3:1 oval limb
+// cross-section through as round.
+const UNWRAP_FLAT_RATIO = 0.3;
+
+/* TUBE_GAP replaces an earlier version of this test that compared axial to
+   radial VARIANCE (v1 < ratio*v2) - caught by this project's first Fable
+   review (compared afterward against the opus review from the previous
+   slice and found just as sharp: it flagged exactly what the manual
+   Playwright test could not have, since every tube that test built was
+   tall). A variance ratio needs height > ~2.4x radius before a shape reads
+   as a tube at all - which the app's OWN default cylinder (radius 0.5,
+   height 1) does not clear - and gets WORSE with more loop cuts, since
+   more rings dilutes the axial variance sum toward height^2/12 while
+   radial variance stays at radius^2/2 regardless of how many rings sample
+   it. Tessellation density should never change whether a shape looks like
+   a tube.
+
+   What actually matters is simpler: does the cross-section go all the way
+   around? So this measures the largest empty angular gap between
+   consecutive points around the candidate axis (frame.axes[2], the
+   largest-variance direction - found once, right after the flat check
+   above, and shared with the projection itself below). A full circle's
+   worst gap is one tessellation step; a flat panel's is whichever wide arc
+   the panel doesn't occupy; a half-pipe's is its missing half. Math.PI/2
+   reads a coarse hMin:3 triangular-prism "cylinder" (120 degree gaps) as
+   planar - reasonable, since three sides is barely tube-shaped to begin
+   with - while any realistic side count for an arm, a leg or a bolt clears
+   it easily. */
+const UNWRAP_TUBE_GAP = Math.PI / 2;
+
+// Computes new UV coordinates for every attribute vertex of `obj`, one
+// island (computeUVIslands) at a time: a best-fit-plane projection by
+// default, or - for an island whose cross-section goes all the way around
+// an axis rather than staying a flat panel or a partial arc - an
+// around-the-circumference/along-the-length cylindrical projection
+// instead. Both branches come out in the SAME world-unit scale (not turns,
+// not a 0..1 box), since nothing packs islands into a UV square yet and
+// mixing scales here would only make that step harder later. Returns a
+// flat Float32Array the same length as the position attribute, ready to
+// become ed.uvs (toEditable's 1:1, per-attribute-vertex layout - see
+// uv-commands-maps-plan.md).
+function computeIslandUVs(obj) {
+  const topo = obj.mesh.userData.topo;
+  const geo = obj.mesh.geometry;
+  const index = geo.index;
+  const pos = geo.attributes.position;
+  const seams = obj.mesh.userData.seams;
+  const hasSeams = seams && Object.keys(seams).length > 0;
+  const { islandOf, count } = computeUVIslands(obj);
+
+  const groupsOf = Array.from({ length: count }, () => []);
+  topo.faceGroups.forEach((fg, gi) => groupsOf[islandOf[gi]].push(fg));
+
+  const uv = new Float32Array(pos.count * 2);
+
+  // Every unique attribute-vertex INDEX a face group touches, in the order
+  // its triangles first mention them - used throughout below both to know
+  // what to write and, for the cylindrical branch, to find each face's own
+  // copy of a vertex it shares with a neighbour.
+  function cornersOf(fg) {
+    const seen = new Set(), list = [];
+    const end = (fg.triStart + fg.triCount) * 3;
+    for (let i = fg.triStart * 3; i < end; i++) {
+      const ai = index.getX(i);
+      if (!seen.has(ai)) { seen.add(ai); list.push(ai); }
+    }
+    return list;
+  }
+
+  groupsOf.forEach(groups => {
+    const attrIdx = new Set();
+    groups.forEach(fg => cornersOf(fg).forEach(ai => attrIdx.add(ai)));
+    const ids = Array.from(attrIdx);
+
+    /* PCA runs over distinct POSITIONS, not distinct attribute vertices -
+       also found in the Fable review above. Two face groups meeting at one
+       geometric point each own a private copy of it (separateGroupVertices'
+       whole job), so a corner where many small faces meet would otherwise
+       count once per incident face and tilt the frame toward wherever the
+       mesh happens to be more subdivided, rather than its actual shape.
+       Rounded to 1e-5 units, the same "same point" tolerance mergeByDistance
+       uses elsewhere in this file. */
+    const byPosition = new Map();
+    ids.forEach(ai => {
+      const x = pos.getX(ai), y = pos.getY(ai), z = pos.getZ(ai);
+      const k = Math.round(x * 1e5) + '_' + Math.round(y * 1e5) + '_' + Math.round(z * 1e5);
+      if (!byPosition.has(k)) byPosition.set(k, [x, y, z]);
+    });
+    const points = Array.from(byPosition.values());
+    const frame = computeIslandFrame(points);
+    const [v0, v1] = frame.values;
+    const isFlat = v0 < UNWRAP_FLAT_RATIO * v1;
+
+    let isCylinder = false, axis, perp;
+    if (!isFlat) {
+      axis = frame.axes[2];
+      perp = axisPerpBasis(axis);
+      const angles = points.map(p => {
+        const dx = p[0] - frame.center[0], dy = p[1] - frame.center[1], dz = p[2] - frame.center[2];
+        return Math.atan2(dx * perp.v[0] + dy * perp.v[1] + dz * perp.v[2],
+                           dx * perp.u[0] + dy * perp.u[1] + dz * perp.u[2]);
+      }).sort((a, b) => a - b);
+      let maxGap = 2 * Math.PI - (angles[angles.length - 1] - angles[0]);
+      for (let i = 1; i < angles.length; i++) maxGap = Math.max(maxGap, angles[i] - angles[i - 1]);
+      isCylinder = maxGap < UNWRAP_TUBE_GAP;
+    }
+
+    if (isCylinder) {
+      /* Outward check, also from the Fable review: PCA hands back an axis
+         with no notion of which way is "out", so without this, whether a
+         tube's texture reads right way round or mirrored is a coin flip on
+         Jacobi's arbitrary eigenvector sign. A wall's local outward normal
+         should point the same way as its own radial direction; average
+         that agreement - a plain dot product, summed unnormalised, only
+         its SIGN matters - over every triangle in the island, and flip
+         which way angle runs if it disagrees on average. */
+      let orientSum = 0;
+      groups.forEach(fg => {
+        const end = (fg.triStart + fg.triCount) * 3;
+        for (let i = fg.triStart * 3; i < end; i += 3) {
+          const a = index.getX(i), b = index.getX(i + 1), c = index.getX(i + 2);
+          const ax = pos.getX(a), ay = pos.getY(a), az = pos.getZ(a);
+          const bx = pos.getX(b), by = pos.getY(b), bz = pos.getZ(b);
+          const cx = pos.getX(c), cy = pos.getY(c), cz = pos.getZ(c);
+          const mx = (ax + bx + cx) / 3 - frame.center[0], my = (ay + by + cy) / 3 - frame.center[1], mz = (az + bz + cz) / 3 - frame.center[2];
+          const axial = mx * axis[0] + my * axis[1] + mz * axis[2];
+          const rx = mx - axial * axis[0], ry = my - axial * axis[1], rz = mz - axial * axis[2];
+          const abx = bx - ax, aby = by - ay, abz = bz - az;
+          const acx = cx - ax, acy = cy - ay, acz = cz - az;
+          const nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
+          orientSum += rx * nx + ry * ny + rz * nz;
+        }
+      });
+      const flip = orientSum < 0;
+
+      // Raw angle and radius per attribute vertex, plus axial V - settled
+      // immediately, since only U needs the continuity fix below.
+      const rawAngle = new Map(), radiusOf = new Map();
+      let radiusSum = 0;
+      ids.forEach(ai => {
+        const dx = pos.getX(ai) - frame.center[0], dy = pos.getY(ai) - frame.center[1], dz = pos.getZ(ai) - frame.center[2];
+        const axial = dx * axis[0] + dy * axis[1] + dz * axis[2];
+        const ru = dx * perp.u[0] + dy * perp.u[1] + dz * perp.u[2];
+        let rv = dx * perp.v[0] + dy * perp.v[1] + dz * perp.v[2];
+        if (flip) rv = -rv;
+        rawAngle.set(ai, Math.atan2(rv, ru));
+        const r2 = ru * ru + rv * rv;
+        radiusOf.set(ai, r2);
+        radiusSum += Math.sqrt(r2);
+        uv[ai * 2 + 1] = axial;
+      });
+      // Mean radius, so U (an angle) and V (already world units) share a
+      // scale, rather than a bare turn count squashing an r=2 tube's whole
+      // circumference to the same span as an r=0.02 one (also Fable).
+      const meanRadius = radiusSum / ids.length || 1;
+
+      /* Two-level angle continuity fix, rebuilt after the Fable review
+         found the first version only fixed a face's OWN corners, leaving
+         every face pair straddling the branch cut - which falls wherever
+         axisPerpBasis happens to seed it, nothing to do with any seam the
+         user placed - torn by a full turn even where nothing was actually
+         seamed.
+
+         Level 1, per face group: atan2 wraps at +/-pi, so pick the corner
+         with the LARGEST radius as that face's own reference (an on-axis
+         corner's angle is meaningless and must never anchor one), then
+         nudge every other corner by whole +/-2*pi turns to sit within pi
+         of it. This alone stops one face's own corners from tearing.
+
+         Level 2, across the island: a BFS over the face groups, walking
+         shared logical edges (the same adjacency computeUVIslands itself
+         builds, scoped here to just this island), rigidly shifting each
+         newly-reached face by whatever whole-turn offset makes its copy of
+         the shared vertex agree with the neighbour that reached it. A
+         genuinely closed tube with no lengthwise seam has one edge that
+         closes the loop back onto a face already visited - BFS leaves it
+         alone, which is the one unavoidable pinch a full wraparound always
+         has. A real seam removes that edge from the graph entirely (that
+         is exactly what a seam means to computeUVIslands), so a properly
+         cut tube gets none. */
+      const localAngle = new Map();
+      groups.forEach(fg => {
+        const corners = cornersOf(fg);
+        if (corners.length < 2) { corners.forEach(ai => localAngle.set(ai, rawAngle.get(ai))); return; }
+        let refAi = corners[0];
+        corners.forEach(ai => { if (radiusOf.get(ai) > radiusOf.get(refAi)) refAi = ai; });
+        const ref = rawAngle.get(refAi);
+        corners.forEach(ai => {
+          let a = rawAngle.get(ai);
+          while (a - ref > Math.PI) a -= 2 * Math.PI;
+          while (a - ref < -Math.PI) a += 2 * Math.PI;
+          localAngle.set(ai, a);
+        });
+      });
+
+      // Logical-edge -> the face(s) in THIS island touching it, each with
+      // its own attribute-vertex copy of the near endpoint - the same
+      // edgeFaces walk computeUVIslands itself uses, scoped to one island
+      // so the BFS below only ever crosses edges this island actually
+      // owns. A seam does not always split an island in two - one
+      // lengthwise cut on an otherwise-closed tube leaves it one connected
+      // island, just no longer a loop - so a seamed edge must be excluded
+      // here explicitly, the same way computeUVIslands excludes it from
+      // its own union-find, or the one cut the user placed to tell this
+      // function where to open the tube would get silently bridged back
+      // over and the tube would still come out uncut.
+      const edgeTouch = new Map();
+      groups.forEach((fg, gIdx) => {
+        const seenHere = new Set();
+        const end = (fg.triStart + fg.triCount) * 3;
+        for (let i = fg.triStart * 3; i < end; i += 3) {
+          const ia = index.getX(i), ib = index.getX(i + 1), ic = index.getX(i + 2);
+          const la = topo.logicalOf[ia], lb = topo.logicalOf[ib], lc = topo.logicalOf[ic];
+          [[la, lb, ia, ib], [lb, lc, ib, ic], [lc, la, ic, ia]].forEach(([a, b, aiA, aiB]) => {
+            if (a === b) return;
+            const lo = Math.min(a, b), hi = Math.max(a, b), k = lo + '_' + hi;
+            if (seenHere.has(k)) return;
+            seenHere.add(k);
+            if (hasSeams && seams[creaseKeyFor(logicalPos(obj, lo), logicalPos(obj, hi))]) return;
+            let arr = edgeTouch.get(k);
+            if (!arr) { arr = []; edgeTouch.set(k, arr); }
+            arr.push({ g: gIdx, aLo: a === lo ? aiA : aiB });
+          });
+        }
+      });
+      const adj = Array.from({ length: groups.length }, () => []);
+      edgeTouch.forEach(arr => {
+        if (arr.length !== 2) return; // island boundary or non-manifold here: nothing to bridge
+        const [t0, t1] = arr;
+        adj[t0.g].push({ to: t1.g, mine: t0.aLo, theirs: t1.aLo });
+        adj[t1.g].push({ to: t0.g, mine: t1.aLo, theirs: t0.aLo });
+      });
+      const visited = new Array(groups.length).fill(false);
+      const delta = new Array(groups.length).fill(0);
+      visited[0] = true;
+      const queue = [0];
+      while (queue.length) {
+        const g = queue.shift();
+        adj[g].forEach(({ to, mine, theirs }) => {
+          if (visited[to]) return;
+          const mineAngle = localAngle.get(mine) + delta[g];
+          delta[to] = Math.round((mineAngle - localAngle.get(theirs)) / (2 * Math.PI)) * (2 * Math.PI);
+          visited[to] = true;
+          queue.push(to);
+        });
+      }
+      groups.forEach((fg, gIdx) => {
+        cornersOf(fg).forEach(ai => { uv[ai * 2] = (localAngle.get(ai) + delta[gIdx]) * meanRadius; });
+      });
+    } else {
+      /* Planar: the flattest axis (frame.axes[0], not used directly here)
+         is the projection normal, the other two give the U/V basis - no
+         perpendicular-basis step needed, unlike the cylindrical case,
+         since PCA already handed back three mutually orthogonal
+         directions. Same outward-orientation idea as the cylinder branch
+         above (also Fable), simpler here since a flat panel has one normal
+         instead of one that turns with position: if the projection's own
+         handedness disagrees with which way the island's faces actually
+         point, negate V rather than leave a random mirroring. A no-op on
+         an island spanning faces that point every which way (the whole
+         object with no seams at all) where opposite faces cancel out in
+         the sum - that case has bigger problems already, since nothing
+         packs islands apart yet. */
+      const ubasis = frame.axes[1];
+      const vbasis = frame.axes[2].slice();
+      let nx = 0, ny = 0, nz = 0;
+      groups.forEach(fg => {
+        const end = (fg.triStart + fg.triCount) * 3;
+        for (let i = fg.triStart * 3; i < end; i += 3) {
+          const a = index.getX(i), b = index.getX(i + 1), c = index.getX(i + 2);
+          const abx = pos.getX(b) - pos.getX(a), aby = pos.getY(b) - pos.getY(a), abz = pos.getZ(b) - pos.getZ(a);
+          const acx = pos.getX(c) - pos.getX(a), acy = pos.getY(c) - pos.getY(a), acz = pos.getZ(c) - pos.getZ(a);
+          nx += aby * acz - abz * acy; ny += abz * acx - abx * acz; nz += abx * acy - aby * acx;
+        }
+      });
+      const crossX = ubasis[1] * vbasis[2] - ubasis[2] * vbasis[1];
+      const crossY = ubasis[2] * vbasis[0] - ubasis[0] * vbasis[2];
+      const crossZ = ubasis[0] * vbasis[1] - ubasis[1] * vbasis[0];
+      if (crossX * nx + crossY * ny + crossZ * nz < 0) { vbasis[0] = -vbasis[0]; vbasis[1] = -vbasis[1]; vbasis[2] = -vbasis[2]; }
+      ids.forEach(ai => {
+        const dx = pos.getX(ai) - frame.center[0], dy = pos.getY(ai) - frame.center[1], dz = pos.getZ(ai) - frame.center[2];
+        uv[ai * 2] = dx * ubasis[0] + dy * ubasis[1] + dz * ubasis[2];
+        uv[ai * 2 + 1] = dx * vbasis[0] + dy * vbasis[1] + dz * vbasis[2];
+      });
+    }
+  });
+
+  return uv;
+}
+
+// Face mode, whole object regardless of selection - the same scope
+// computeUVIslands and the "Show islands" preview already use, since an
+// island is a property of the mesh's seams, not of whatever happens to be
+// selected right now. finishMeshEdit's own ensureHelpers rebuilds topo
+// (rebuildFromEditable just nulled it via disposeHelpersOnly), so the UV
+// write below and finishMeshEdit's rebuild-driven recolour both see a
+// consistent topology.
+function unwrapSelection() {
+  if (refuseCurves('Unwrap')) return;
+  const obj = findObject(App.activeObjectId);
+  if (!obj) { toast('Select an object to unwrap'); return; }
+  ensureHelpers(obj);
+  // ensureHelpers leaves topo null for a curve (isCurve's own guard inside
+  // it) - read it once and check before touching .faceGroups rather than
+  // let that throw (Fable review). Unreachable from the ring, since
+  // refuseCurves already stops a selected curve, but this function is also
+  // exported to window.__kubik, which can reach it with any active object.
+  const topo = obj.mesh.userData.topo;
+  if (!topo || !topo.faceGroups.length) { toast('Nothing to unwrap'); return; }
+  const uv = computeIslandUVs(obj);
+  const ed = toEditable(obj.mesh);
+  ed.uvs = Array.from(uv);
+  rebuildFromEditable(obj, ed);
+  finishMeshEdit(obj, 'Unwrapped');
 }
 
 // ensureHelpers only builds these materials once per object, guarded by its
@@ -32608,6 +33051,10 @@ const ICON = {
   // Three separate filled shapes, on purpose - not one outline broken into
   // pieces, which would read as "damaged" rather than "several islands".
   islands: '<circle cx="6" cy="8" r="4" fill="currentColor" stroke="none"/><circle cx="17" cy="7" r="3" fill="currentColor" stroke="none"/><circle cx="12" cy="17" r="3.5" fill="currentColor" stroke="none"/>',
+  // An unfolded cube net - five faces laid flat in a cross - the shape
+  // every 3D app reaches for to mean "unwrap", so this one borrows it
+  // rather than inventing a new glyph for the same idea.
+  unwrap:  '<rect x="9" y="3" width="6" height="6"/><rect x="3" y="9" width="6" height="6"/><rect x="9" y="9" width="6" height="6"/><rect x="15" y="9" width="6" height="6"/><rect x="9" y="15" width="6" height="6"/>',
   subdiv:  '<path d="M3 3h18v18H3z"/><path d="M12 3v18M3 12h18"/>',
   /* Two faces and the wall between them, shown mid-swing: the chord it is
      leaving drawn faint, the one it lands on solid. */
@@ -32780,7 +33227,12 @@ const HUB_TOOLS_FACE = [
     // the surface, same family as Shade and Flip normals, so it lives here
     // rather than earning a seat of its own on the outer ring.
     { key: 'islands', icon: 'islands', label: 'Show islands', seat: 3,
-      on: () => App.showIslands, run: toggleShowIslands }
+      on: () => App.showIslands, run: toggleShowIslands },
+    // The unwrap itself (uv-commands-maps-plan.md stage 5, slice 3): writes
+    // real UV coordinates over the whole object from its current islands -
+    // best-fit-plane by default, cylindrical for a tube-shaped island.
+    // Same door as the preview it follows, one seat over.
+    { key: 'unwrap', icon: 'unwrap', label: 'Unwrap', seat: 4, run: unwrapSelection }
   ] }
 ];
 
@@ -37748,10 +38200,11 @@ HELP_SECTIONS.push(
       ['del', 'Delete', 'Cuts the faces away and leaves a hole. This is how you make one — every other mode’s Delete closes the gap instead.'],
       ['bridge', 'Bridge', 'Joins two selections with new faces.'],
       ['detach', 'Detach', 'The selected faces leave as their own object.'],
-      [null, 'SURFACE — a door', 'Shade, Flip normals, Set flow, Circularize, Show islands.'],
+      [null, 'SURFACE — a door', 'Shade, Flip normals, Set flow, Circularize, Show islands, Unwrap.'],
       ['smooth', 'Shade', 'Flat or smooth, on the selected faces. In Edge mode use Mark Sharp instead — it is the same idea, said once.'],
       ['flipnorm', 'Flip normals', 'Turns the selected faces inside out.'],
-      ['islands', 'Show islands', 'Colours the faces by which UV island they would fall into once cut along the current seams.']
+      ['islands', 'Show islands', 'Colours the faces by which UV island they would fall into once cut along the current seams.'],
+      ['unwrap', 'Unwrap', 'Lays out the whole object’s UV from its current islands — flat for a panel, wrapped around for a tube-shaped one.']
     ]
   },
   {
@@ -39455,6 +39908,11 @@ if (PICK_DEBUG) {
     // harness compute islands directly and inspect the overlay without
     // pretending to be a finger on the ring.
     computeUVIslands, syncIslandOverlay, toggleShowIslands, islandColorHex,
+    // The unwrap itself (uv-commands-maps-plan.md stage 5, slice 3) - the
+    // numerical pieces individually, so a harness can check a frame or a
+    // classification on one island without running the whole op, plus the
+    // op itself.
+    computeIslandFrame, jacobiEigenSymmetric3x3, computeIslandUVs, unwrapSelection,
     /* The rest of the op set, so one harness can sweep ALL of them rather
        than the handful that happened to be exported. Every one of these is
        already a single tap away in the rings. */
