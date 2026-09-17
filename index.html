@@ -2412,7 +2412,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.41</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.42</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -9307,17 +9307,154 @@ const UNWRAP_FLAT_RATIO = 0.3;
    it easily. */
 const UNWRAP_TUBE_GAP = Math.PI / 2;
 
+/* How much of the unit square's own edge, and the gap left between two
+   neighbouring islands, stays empty on purpose - baking and mip-mapping
+   both bleed colour across a UV seam with zero padding, at any texture
+   resolution. 1.5% of the whole square scales with whatever size the
+   texture ends up being, rather than hard-coding a texel count for a
+   resolution nothing here assumes. packIslandUVs shrinks this per call,
+   never grows it, once the island count is high enough that a FIXED
+   gutter would itself dominate the square - see there. */
+const UV_PACK_GUTTER = 0.015;
+
+// Scales and places every island's already-projected (world-unit) UVs into
+// the 0..1 square, side by side, preserving each island's own aspect ratio
+// - a texture painted or baked onto one island reads at the right
+// proportions, never squashed to fit. A shelf pack, not a general
+// rectangle bin-packer: tallest-island-first into rows, wrapping to a new
+// row once the current one runs out of width. Simple to get right, and
+// this app's islands are however many seams one editing session placed,
+// not an automated retopology dump, so packing efficiency past "nothing
+// overlaps, nothing spills outside 0..1" was never the point. Mutates `uv`
+// in place; `islandIds` and `islandBounds` are parallel arrays, one entry
+// per island, from computeIslandUVs below - which attribute vertices
+// belong to the island, and the raw world-unit box its projection left
+// them in.
+function packIslandUVs(uv, islandIds, islandBounds) {
+  const n = islandBounds.length;
+  if (!n) return;
+
+  // Floored to a hair above zero so a degenerate island - an exact point,
+  // or an axis-aligned sliver PCA still called "flat" - gets a real,
+  // packable footprint instead of a division by zero or a box that
+  // overlaps whatever else lands on the same spot. A NON-FINITE bound -
+  // corrupt geometry upstream, never produced by the projection this feeds
+  // from today, but nothing here can rule it out for good (Fable review) -
+  // gets the same MIN_DIM floor rather than turning into NaN: without
+  // this, one bad island's NaN dimension poisons the sort comparator, the
+  // scale search and therefore every OTHER island's placement too, not
+  // just its own.
+  const MIN_DIM = 1e-6;
+  const dims = islandBounds.map(b => {
+    const w = b.maxU - b.minU, h = b.maxV - b.minV;
+    return {
+      w: Number.isFinite(w) ? Math.max(w, MIN_DIM) : MIN_DIM,
+      h: Number.isFinite(h) ? Math.max(h, MIN_DIM) : MIN_DIM,
+    };
+  });
+
+  /* A fixed per-island gutter costs a growing SHARE of the square as more
+     islands compete for the same rows, and past a few thousand (this
+     app's own manual, seam-driven islands are never going to reach that,
+     but a heavy import or an unwelded Array result could in principle)
+     the gutter ALONE stops fitting, regardless of how far the islands
+     themselves shrink - the packer would silently spill past the 0..1
+     square rather than merely looking cramped (Fable review, MUST-FIX).
+     Scaling it down with the square root of the island count - a rough
+     estimate of how many rows a square-ish layout needs - keeps its total
+     footprint a roughly constant fraction of the square instead of
+     growing without bound, while leaving it untouched (still
+     UV_PACK_GUTTER) for the handful of islands one editing session
+     typically produces. */
+  const rowsGuess = Math.max(1, Math.ceil(Math.sqrt(n)));
+  const gutter = Math.min(UV_PACK_GUTTER, 0.4 / rowsGuess);
+
+  // Tallest-first is the standard shelf-packing order: it keeps a row's
+  // wasted headroom - the gap between its shelf height and a shorter
+  // island sharing the row - as small as that row's shortest resident
+  // allows, rather than locking in a tall row early and wasting height
+  // under everything placed beside it.
+  const order = dims.map((_, i) => i).sort((a, b) => dims[b].h - dims[a].h);
+
+  // Packs at one uniform scale and reports the total height used
+  // (gutters included). The caller only needs to know whether that height
+  // still fits the unit square - and, once it has settled on a scale,
+  // where the fitting run put everything.
+  function shelfPack(scale) {
+    const placements = new Array(n);
+    let shelfY = gutter, shelfH = 0, curX = gutter;
+    order.forEach(i => {
+      const w = dims[i].w * scale + gutter;
+      const h = dims[i].h * scale + gutter;
+      if (curX > gutter + 1e-9 && curX + w > 1 - gutter) {
+        shelfY += shelfH;
+        curX = gutter;
+        shelfH = 0;
+      }
+      placements[i] = { x: curX, y: shelfY };
+      curX += w;
+      shelfH = Math.max(shelfH, h);
+    });
+    return { height: shelfY + shelfH + gutter, placements };
+  }
+
+  /* Upper bound on the scale: the single widest-or-tallest island, alone,
+     at that scale, exactly fills the square's usable width. Nothing above
+     this can ever pack correctly no matter how the rows are arranged - an
+     island wider than the unwrapped square cannot be placed without
+     spilling, whatever shares its row - so the search below never wastes
+     iterations past it, and a pathological single giant island (the
+     whole-object-no-seams case computeIslandUVs already documents as
+     unhandled) at least lands clamped to the square instead of sitting in
+     raw world units outside it. */
+  let maxDim = MIN_DIM;
+  dims.forEach(d => { maxDim = Math.max(maxDim, d.w, d.h); });
+  const hiCap = Math.max((1 - 3 * gutter) / maxDim, MIN_DIM);
+
+  // Binary search for the largest scale whose shelf pack still fits the
+  // unit square's height - 30 halvings is far past the precision packing
+  // placement needs, and shelfPack itself is cheap (one pass over the
+  // islands, and this app's meshes have few enough of them per unwrap that
+  // re-running it 30 times is not worth caching). `lo` starts at MIN_DIM,
+  // not zero, specifically so it is a value shelfPack was actually asked
+  // about below - the fallback the loop leaves it at if even the smallest
+  // scale doesn't fit.
+  let lo = MIN_DIM, hi = hiCap;
+  for (let iter = 0; iter < 30; iter++) {
+    const mid = (lo + hi) / 2;
+    if (shelfPack(mid).height <= 1) lo = mid; else hi = mid;
+  }
+  const { placements } = shelfPack(lo);
+
+  islandBounds.forEach((b, i) => {
+    const { x, y } = placements[i];
+    // Same non-finite guard as `dims` above, applied to the per-vertex
+    // values this actually multiplies - a NaN bound implies the raw UVs
+    // it was measured from are themselves NaN, so this also stops THOSE
+    // from surviving into the packed result instead of just being offset
+    // by a sanitised origin that can't fix them.
+    const minU = Number.isFinite(b.minU) ? b.minU : 0;
+    const minV = Number.isFinite(b.minV) ? b.minV : 0;
+    islandIds[i].forEach(ai => {
+      const u = uv[ai * 2], v = uv[ai * 2 + 1];
+      uv[ai * 2] = Number.isFinite(u) ? (u - minU) * lo + x : x;
+      uv[ai * 2 + 1] = Number.isFinite(v) ? (v - minV) * lo + y : y;
+    });
+  });
+}
+
 // Computes new UV coordinates for every attribute vertex of `obj`, one
 // island (computeUVIslands) at a time: a best-fit-plane projection by
 // default, or - for an island whose cross-section goes all the way around
 // an axis rather than staying a flat panel or a partial arc - an
 // around-the-circumference/along-the-length cylindrical projection
-// instead. Both branches come out in the SAME world-unit scale (not turns,
-// not a 0..1 box), since nothing packs islands into a UV square yet and
-// mixing scales here would only make that step harder later. Returns a
-// flat Float32Array the same length as the position attribute, ready to
-// become ed.uvs (toEditable's 1:1, per-attribute-vertex layout - see
-// uv-commands-maps-plan.md).
+// instead. Both branches come out in the SAME world-unit scale (not
+// turns), since packIslandUVs (below) is the one place that has to know
+// about the 0..1 square at all - the two projections only ever need to
+// agree on scale with EACH OTHER, never with any particular texture
+// resolution. Returns a flat Float32Array the same length as the position
+// attribute, ready to become ed.uvs (toEditable's 1:1, per-attribute-vertex
+// layout - see uv-commands-maps-plan.md).
 function computeIslandUVs(obj) {
   const topo = obj.mesh.userData.topo;
   const geo = obj.mesh.geometry;
@@ -9331,6 +9468,11 @@ function computeIslandUVs(obj) {
   topo.faceGroups.forEach((fg, gi) => groupsOf[islandOf[gi]].push(fg));
 
   const uv = new Float32Array(pos.count * 2);
+  // Parallel to groupsOf, filled in as each island's projection finishes
+  // below - packIslandUVs needs both to scale and place every island
+  // afterwards, without re-walking the mesh a second time to rediscover
+  // what it just wrote.
+  const islandIds = [], islandBounds = [];
 
   // Every unique attribute-vertex INDEX a face group touches, in the order
   // its triangles first mention them - used throughout below both to know
@@ -9562,8 +9704,24 @@ function computeIslandUVs(obj) {
         uv[ai * 2 + 1] = dx * vbasis[0] + dy * vbasis[1] + dz * vbasis[2];
       });
     }
+
+    // Both branches above have now written every id's final world-unit UV
+    // - record this island's box for packIslandUVs, in the same pass
+    // rather than re-deriving `ids` and re-reading `uv` a second time
+    // after the fact.
+    let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+    ids.forEach(ai => {
+      const u = uv[ai * 2], v = uv[ai * 2 + 1];
+      if (u < minU) minU = u;
+      if (u > maxU) maxU = u;
+      if (v < minV) minV = v;
+      if (v > maxV) maxV = v;
+    });
+    islandIds.push(ids);
+    islandBounds.push({ minU, maxU, minV, maxV });
   });
 
+  packIslandUVs(uv, islandIds, islandBounds);
   return uv;
 }
 
@@ -39912,7 +40070,7 @@ if (PICK_DEBUG) {
     // numerical pieces individually, so a harness can check a frame or a
     // classification on one island without running the whole op, plus the
     // op itself.
-    computeIslandFrame, jacobiEigenSymmetric3x3, computeIslandUVs, unwrapSelection,
+    computeIslandFrame, jacobiEigenSymmetric3x3, computeIslandUVs, packIslandUVs, unwrapSelection,
     /* The rest of the op set, so one harness can sweep ALL of them rather
        than the handful that happened to be exported. Every one of these is
        already a single tap away in the rings. */

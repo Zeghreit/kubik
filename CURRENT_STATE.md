@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~40,050 lines)
-- Version at time of writing: **2.41**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~40,170 lines)
+- Version at time of writing: **2.42**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -203,6 +203,92 @@ something scoped to "while marking".
 - Minor: `unseam` was reusing `seam`'s icon at an adjacent seat — now a
   faded, solid-line variant of the same glyph, mirroring how `uncrease`
   already simplifies `crease`'s icon rather than repeating it.
+
+## UV packing: islands into the 0..1 square (2.42)
+
+Stage 5 of `uv-commands-maps-plan.md`, slice 4 - closes exactly the gap
+slice 3 ended on. `computeIslandUVs` projected each island in raw world
+units: islands could overlap, and coordinates could land outside 0..1.
+`packIslandUVs(uv, islandIds, islandBounds)` now runs as the last step
+inside `computeIslandUVs`, before it returns, and scales-and-places every
+island into the unit square. After this slice, Unwrap produces a
+production-ready result on its own - no 2D UV editor exists yet (Stage 5's
+still-unbuilt sub-step 5), but nothing needs one just to bake or paint a
+texture onto what Unwrap already laid out.
+
+A shelf pack, not a general rectangle bin-packer: islands sort
+tallest-first and go into rows, wrapping to a new row once the current one
+runs out of width. Simple to get right, and this app's islands are however
+many seams one editing session placed, not an automated retopology dump,
+so packing efficiency past "nothing overlaps, nothing spills outside 0..1"
+was never the point.
+
+**One scale for every island, not one scale per island.** Found by binary
+search: at each candidate scale, the whole shelf layout is recomputed (row
+membership, position), searching for the largest scale whose total row
+height still fits within 1. This - not fitting each island independently to
+its own cell - is the only way to keep both each island's own shape (also
+untouched either way; the pack only ever scales isotropically) AND, more
+importantly, the SIZE RATIO between different islands: one that was twice
+another's size in world units stays twice its size in UV, so texel density
+does not wander from island to island for no reason. A small gutter
+(`UV_PACK_GUTTER`, 1.5% of the square) separates neighbouring islands and
+rings the whole packed group - baking and mip-mapping both bleed colour
+across a UV seam at zero padding, at any texture resolution, which is why
+it's a fraction of the square rather than a texel count tied to one.
+
+### What review found
+
+Second use of Fable on this project (first: Islands' unwrap algorithm,
+2.41), and again comparable in usefulness: one structural (MUST-FIX) and
+one edge-case (SHOULD-FIX) finding, no false alarms, backed by a 2000-random-
+island-set harness with constructed counterexamples rather than general
+suspicion.
+
+- **MUST-FIX: the binary search's own floor scale was never itself
+  verified to fit.** The search's correctness invariant - "`lo` always
+  corresponds to a scale whose pack fits within height 1" - only holds if
+  that's true of the very first `lo`. Past enough islands (the gutter has
+  its own floor - at a scale approaching zero, every island still costs
+  roughly one gutter's worth of room) even the smallest scale in the search
+  stops fitting: confirmed by the harness at 4097 islands (pack height
+  1.005), climbing to 2.39 at 10000, with real island overlaps. Reaching
+  that many islands from actual seam-driven editing in this app is
+  effectively impossible, but nothing capped island count anywhere upstream
+  of this function, and leaving it unverified would have been exactly the
+  "confident wrong answer" this project has already called out by name
+  (Seams slice, the `slideSelection` comment about a stale `opRefusal`).
+  Fixed by shrinking the gutter with the square root of the island count
+  (`Math.min(UV_PACK_GUTTER, 0.4/Math.ceil(sqrt(n)))`) - unchanged for the
+  handful of islands one editing session typically produces (the threshold
+  doesn't bite until the hundreds), but keeps the gutters' total share of
+  the square from growing without bound as island count does. Verified with
+  the harness up to 10000 islands: zero overlaps, zero out-of-range
+  coordinates.
+- **SHOULD-FIX: one island with NaN bounds (corrupted geometry upstream -
+  Fable could not find a live source for this in today's code, and could
+  not rule one out either) poisoned every OTHER island's placement, not
+  just its own.** NaN flows into the sort comparator and the scale search,
+  so every island ordered after the bad one came out NaN too. Confirmed
+  with the harness: one injected NaN island among three good ones left all
+  three NaN. Fixed with a floor on non-finite bounds (same MIN_DIM a
+  degenerate point-sized island already got) before sorting or searching,
+  plus a separate finite check on the raw per-vertex UV value itself at the
+  point coordinates are actually written - not just its island's bound -
+  since a NaN bound implies the coordinates it was measured from are
+  themselves NaN. Confirmed with the harness: the same injected NaN island
+  no longer poisons anyone, including itself (it lands as an ordinary point
+  at its slot in the layout).
+
+### What this slice deliberately does not do
+
+Not a general rectangle bin-packer - shelves are not always the tightest
+layout, but density was never the goal (see above). Does not try rotating
+an island 90 degrees for a better fit - an island stays in whatever
+orientation its projection gave it, wide or tall. **The 2D UV editor is
+still entirely unbuilt** (Stage 5 sub-step 5) - there's nowhere yet to nudge
+a seam or an island by hand, only to run Unwrap and get a clean, non-
+overlapping result automatically.
 
 ## UV unwrap: planar and cylindrical projection (2.41)
 
