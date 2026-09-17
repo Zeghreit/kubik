@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~33,500 lines)
-- Version at time of writing: **2.37**
+- Version at time of writing: **2.38**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -51,6 +51,158 @@ fixes** (v1.85 → v1.85a → v1.85b). A change is a letter unless it lets the
 app do something it could not do before. Fixing three broken things is
 still a letter — this was got wrong once, at v1.86, which should have been
 v1.85d.
+
+## An immediate edit has one ending (2.38)
+
+Stage 3 of the UV plan, first slice. Not a feature — the groundwork the
+command layer needs, and it pays for itself immediately.
+
+An "immediate" edit — Delete, Weld, Merge, Collapse, Detach, Target weld, Cap
+holes, Flip normals, Connect, Split, Knife, Dissolve — used to end in one of
+**fourteen** places. Five called `finishMeshEdit`; nine open-coded the same
+tail (`ensureHelpers`, `setActiveObjectHelpersVisible`, `hideRadialMenu`,
+`refreshUI`, `refreshGizmoAttachment`, `pushHistory`, `toast`) in varying
+order, some toasting before the history step and some after.
+
+Now there are **three doors**, in one place:
+
+- `finishSceneEdit(message)` — refresh, gizmo, **the history step**, toast,
+  hide.
+- `finishMeshEdit(obj, message)` — helpers, the winding audit, helper
+  visibility, `refreshElementColors`, then the above.
+- `finishObjectGone(obj, message)` — `dropObject` (see below), then the above.
+
+`dropObject(obj)` is the state surgery, split out because a multi-object
+delete does it N times and ends **once**.
+
+### What it bought, beyond tidiness
+
+- **The winding audit now covers the tools that can break winding.** Under
+  `?debug=1` `finishMeshEdit` audits and appends the result to the toast —
+  "a silent no-op is the worst failure mode in this app". The nine operations
+  that never called it were Delete, Weld, Merge, Collapse, Detach, Target
+  weld, Cap holes and Flip normals, which is *exactly* the list of tools that
+  can break it.
+- **`refreshElementColors` now runs after every one.** The comment inside
+  `setActiveObjectHelpersVisible` says its overlay is "hidden, not torn down:
+  `refreshElementColors` runs right after every path that reaches here". All
+  nine open-coded tails were violating that, so after a Weld or a Merge the
+  old selection colours sat on renumbered dots and edges until some unrelated
+  repaint. Latent bug, fixed by arriving through the door.
+- **The dying object takes only itself.** Four sites did this by hand and one
+  cleared the whole selection, so deleting the last face of one object
+  quietly deselected every other object you had selected.
+- **Nothing is left pointing into a dead mesh.** `dropObject` now clears the
+  element selection and all four pick anchors, the list `outlinerDelete`
+  already kept, for the reason written there: a selection that outlives its
+  object *does not throw, it lies* — the HUD goes on reporting "3 faces" with
+  nothing left to pick. All seven callers used to do that line by hand, which
+  is a door one line short of being a door.
+
+### One real bug fixed, found by the review
+
+**A mirrored edit could write zero history steps.** `runMirrored` runs the
+tool once per side and lets only the LAST pass write the step — and the last
+pass can return before reaching any ending: a Merge that finds nothing within
+its threshold on a mesh that is only approximately symmetric, or a Weld whose
+mirrored pair resolved onto a single vertex. The earlier passes really did
+change the mesh, and that change then sat in the scene **in no step at all** —
+Undo walks straight past it and the next unrelated edit bakes it in. It now
+pushes unconditionally after the loop; a document that has not changed is not
+a step, so it costs nothing when the last pass did write one.
+
+### Deliberately left alone
+
+The **annotation edits** — Mark sharp, Shade smooth/flat, Crease, Clear
+creases — are a different family and stay open-coded. They write a flag
+dictionary and call `applyShading`: they never rebuild geometry, never
+renumber, never remove an object, never invalidate `userData.topo`. The
+winding audit is meaningless for them and `refreshGizmoAttachment` would
+recompute a pivot that cannot have moved. Scene-level edits (group, join,
+separate, rename) are out of scope.
+
+### Probe
+
+`_opchk.py` / `_opchk.js`, 8 sections, real clock, results by POST.
+
+The observable that carries the whole version is the **audit count**:
+`finishMeshEdit`'s `console.log('[winding]', …)` is the only proof it ran, so
+the probe counts those lines rather than believing the code. `finishMeshEdit`
+is deliberately **not exported** — a probe that called the door directly
+would agree with any bug in the corridor, so every section drives the real
+tools.
+
+Two results worth keeping:
+
+- **Section 4: a mirrored weld is `1 step, 2 audits`.** Two passes through the
+  ending, one thing to undo. That is the interaction most likely to break when
+  every tail moves into one place, and it is asserted rather than hoped for.
+- **Section 8 is a running invariant**, checked after *every* edit the probe
+  makes: if the tool changed the scene, a history step holds it. Conditional
+  on purpose — the first version asked "is the top step the scene", which is
+  false whenever a section builds its fixture outside the history (building a
+  cube writes no step), and it flagged an edit that by definition changed
+  nothing.
+
+**The same mistake twice, in the probe, an hour apart:** section 5 undid past
+its own fixture and reported that the app had lost an object it was never
+told about. **A probe that sets up its subject outside the history cannot ask
+the history about it.**
+
+One thing the probe **cannot** see, said out loud rather than quietly
+missing: the door clearing `App.selectedElements` changes nothing observable
+today, because all seven current callers still clear it themselves before
+knocking. The first break aimed there PASSED, and was right to. It is aimed at
+the pick anchors instead, which nothing else clears. The selection line stays
+for the eighth caller.
+
+Six broken builds, all caught, and four of them are states this code was
+actually in before the version: `weldapart` (Weld keeps its own tail, so it
+never audits), `wholeclear` (the dying object clears the whole selection),
+`staleselection` (the door leaves the selection pointing into a dead mesh),
+`nofinish` (the tool does the work and reaches no ending — the zero-step hole,
+in a form a probe can produce), `loudmirror` (the mirrored pass writes its own
+step, so Undo takes back half a symmetric edit), `eagerfinish` (the commit
+tail runs on a mesh that never moved).
+
+### What the map of the code said, and the plan had wrong
+
+Three corrections worth carrying forward:
+
+- **There are no Web Workers in this app.** Zero `new Worker`, zero
+  `postMessage`. "Worker" is this project's *prose* word for the pure `*Op`
+  geometry function as opposed to the op-bar wrapper around it. The plan's
+  "операции с чистым воркером" means ops whose geometry function is pure.
+- **`weldsAcrossSeam` does not exist.** The function that earns `uvsSafe` on
+  Tris-to-quads is **`pairTrisInEditable`**.
+- **`uvsSafe` already has three producers**, not one: `trisToQuadsOp` on the
+  rebuild path, plus `separateObject` and `detachFacesOp` through
+  `createObjectFromEditable`. Treat it as a general op-declared capability.
+
+### What is still inconsistent, ranked, for the next slices
+
+1. **Eight return conventions.** `true`/`false`; count-where-0-means-refused;
+   count-with-`-1`-meaning-the-object-died; `{ok, why, count}`;
+   `{done, skipped}` plus ad-hoc `.torn`/`.closed`; `{part, survived}`;
+   `{cuts, skipped, rimSplits}`; and always-`true`-plus-a-mutated-out-param
+   (`circularizeApply`). ~25 functions, ~40 call sites.
+2. **Failure reported three ways.** The `opRefusal` global (9 ops, 20 sites,
+   read in 5 places), returned `{ok:false, why}` (6 ops), and bare falsy with
+   the *caller* inventing the prose. Bridge is hardcoded out of the general
+   path **by name** (`if (op.kind !== 'bridge')`), a rule nobody can discover.
+3. **`applyPendingOpInner` is a 490-line `if/else if` ladder** on `op.kind`,
+   16 branches, each with bespoke selection recovery, label writing and toast
+   latching — plus `OP_SPECS` and a separate 9-branch toast ladder in
+   `confirmPendingOp`. Three tables that want to be one per-op record.
+4. **Ops reading app state:** `arrayOp`, `revolveOp` and `latheCurveOp` read
+   `App.pivotMode`/`App.pivotPoint`; `mergeByDistanceOp` and `trisToQuadsOp`
+   branch on `App.pendingOp` to choose bin vs dispose; `rebuildFromEditable`
+   reads `App.pendingOp` twice to decide whether to speak. Those three values
+   are the explicit command-context parameters the layer must pass in.
+5. **`mergeByDistanceOp.lastDropped`** — a second return value smuggled out as
+   a static property on the function object, written *after* the rebuild,
+   correct only because one caller remembers to null it first.
+6. **`op.saidWhy` is a string in three branches and a `{}` map in two.**
 
 ## Save under a name holds a real model now (2.37)
 

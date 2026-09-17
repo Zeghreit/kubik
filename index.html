@@ -2412,7 +2412,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.37</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.38</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -10134,6 +10134,14 @@ function runMirrored(obj, fn) {
       fn();
     }
   }
+  /* AND ONCE MORE, UNCONDITIONALLY. The last pass is the one that writes the
+     step for all of them, and the last pass can return before reaching any
+     ending - a merge that finds nothing within its threshold on a mesh that
+     is only approximately symmetric, a weld whose mirrored pair resolved onto
+     a single vertex. The earlier passes really did change the mesh. A
+     document that has not changed is not a step, so this costs nothing when
+     the last pass did write one. */
+  pushHistory();
 }
 
 /* SYMMETRY-AWARE OPS.
@@ -17547,6 +17555,30 @@ function selectionFromPayload(obj, payload) {
   return out;
 }
 
+/* THE END OF AN IMMEDIATE EDIT (v2.38), and there is one of it.
+
+   An edit can finish three ways, so there are three doors - the object is
+   still there, the object went with the edit, or several objects changed at
+   once - and everything past the doors happens exactly once, in one order,
+   including the history step. The one other caller of `pushHistory` on this
+   path is `runMirrored`, which needs it for the passes that end early; it
+   suppresses the doors' own pushes with `symQuietHistory` while it works, so
+   however many sides an edit has, it is one step.
+
+   Nine call sites used to open-code the tail, and all nine skipped the
+   winding audit, which is the one thing here that catches a lie: an op that
+   breaks winding says so under ?debug=1 in the same toast that reports the
+   op. Delete, Weld, Merge, Collapse, Detach, Target weld, Cap holes and Flip
+   normals are exactly the tools that can break it, and they were the ones
+   not asking. */
+function finishSceneEdit(message) {
+  refreshUI();
+  refreshGizmoAttachment();
+  pushHistory();
+  if (message) toast(message);
+  hideRadialMenu();
+}
+
 function finishMeshEdit(obj, message) {
   ensureHelpers(obj);
   // A silent no-op is the worst failure mode: under ?debug=1 an op that
@@ -17554,16 +17586,48 @@ function finishMeshEdit(obj, message) {
   if (PICK_DEBUG) {
     const w = auditWinding(obj);
     console.log('[winding]', JSON.stringify(w));
-    if (!w.ok) message += ' \u00b7 winding: ' + w.reversed + ' reversed, '
+    if (!w.ok) message = (message || '') + ' \u00b7 winding: ' + w.reversed + ' reversed, '
       + w.conflictEdges + ' bad edges, ' + w.nonManifold + ' non-manifold';
   }
   setActiveObjectHelpersVisible(obj, App.mode);
   refreshElementColors(obj);
-  refreshUI();
-  refreshGizmoAttachment();
-  pushHistory();
-  toast(message);
-  hideRadialMenu();
+  finishSceneEdit(message);
+}
+
+/* The edit took the object with it - a weld that collapsed the whole mesh, a
+   delete of the last face. Only THIS object leaves the selection: the four
+   sites that did this by hand disagreed, and one of them cleared the whole
+   set, so deleting the last face of one object also deselected every other
+   object that happened to be selected. */
+/* TAKING ONE OBJECT OUT OF THE SCENE. Separate from the door above it
+   because a multi-object delete does this N times and ends once. */
+function dropObject(obj) {
+  const wasActive = App.activeObjectId === obj.id;
+  disposeObject(obj);
+  App.objects = App.objects.filter(o => o.id !== obj.id);
+  App.selectedObjectIds.delete(obj.id);
+  if (wasActive) {
+    App.activeObjectId = null;
+    detachAllGizmos();
+    /* AND EVERYTHING THAT WAS POINTING INTO THAT MESH - the same list
+       outlinerDelete keeps, and for the reason written there: a selection
+       that outlives its object does not throw, it lies. The root keeps
+       `data-armed` and the HUD goes on reporting "3 faces" with nothing left
+       to pick. Every caller used to do this line by hand, which is a door
+       that is one line short of being a door. */
+    App.selectedElements.clear();
+    App.edgeAnchor = null;
+    App.lastEdgePick = null;
+    App.vertAnchor = null;
+    App.lastVertPick = null;
+    hideAllHelpers();
+  }
+  return wasActive;
+}
+
+function finishObjectGone(obj, message) {
+  dropObject(obj);
+  finishSceneEdit(message);
 }
 
 // Face mode: shrink faces inward. `individually` gives each selected face its
@@ -17587,11 +17651,7 @@ function flipNormalsSelection() {
       if (n) { ensureHelpers(o); done++; faces += n; }
     });
     if (!done) { toast('Nothing to flip'); return; }
-    hideRadialMenu();
-    refreshUI();
-    refreshGizmoAttachment();
-    pushHistory();
-    toast('Flipped ' + faces + ' face(s) on ' + done + ' object(s)');
+    finishSceneEdit('Flipped ' + faces + ' face(s) on ' + done + ' object(s)');
     return;
   }
 
@@ -17676,11 +17736,7 @@ function fillHolesSelection() {
 
   const msg = 'Capped ' + filled + ' hole' + (filled === 1 ? '' : 's');
   if (App.mode !== 'object' && targets.length === 1) { finishMeshEdit(targets[0], msg); return; }
-  hideRadialMenu();
-  refreshUI();
-  refreshGizmoAttachment();
-  pushHistory();
-  toast(msg + (objs > 1 ? ' on ' + objs + ' objects' : ''));
+  finishSceneEdit(msg + (objs > 1 ? ' on ' + objs + ' objects' : ''));
 }
 
 /* Opens the op bar rather than committing on the spot. Both modes are
@@ -25915,18 +25971,15 @@ function deleteSelection() {
   if (App.mode === 'object') {
     const ids = Array.from(App.selectedObjectIds);
     if (!ids.length) { toast('Nothing selected'); return; }
-    ids.forEach(id => {
-      const obj = findObject(id);
-      if (!obj) return;
-      disposeObject(obj);
-      App.objects = App.objects.filter(o => o.id !== id);
-      if (App.activeObjectId === id) App.activeObjectId = null;
-    });
+    /* N objects leave, then the edit ends once. This used to be
+       finishObjectGone's body inlined in a loop followed by a tail that had
+       lost refreshGizmoAttachment - the one ending in the file that differed
+       in WHICH functions it called. Silent, as it always was: in Object mode
+       the objects visibly going is the message. */
+    ids.forEach(id => { const o = findObject(id); if (o) dropObject(o); });
     App.selectedObjectIds.clear();
     detachAllGizmos();
-    hideRadialMenu();
-    refreshUI();
-    pushHistory();
+    finishSceneEdit(null);
     return;
   }
 
@@ -25972,14 +26025,9 @@ function deleteSelection() {
     }
 
     App.selectedElements.clear();
-    setActiveObjectHelpersVisible(obj, App.mode);
-    toast(r.skipped
+    finishMeshEdit(obj, r.skipped
       ? 'Dissolved ' + r.done + ', skipped ' + r.skipped
       : 'Dissolved ' + r.done);
-    hideRadialMenu();
-    refreshUI();
-    refreshGizmoAttachment();
-    pushHistory();
     return;
   }
 
@@ -25987,22 +26035,8 @@ function deleteSelection() {
 
   App.selectedElements.clear();
 
-  if (!survived) {
-    disposeObject(obj);
-    App.objects = App.objects.filter(o => o.id !== obj.id);
-    App.activeObjectId = null;
-    App.selectedObjectIds.clear();
-    detachAllGizmos();
-    toast('That was the last face - removed the object');
-  } else {
-    ensureHelpers(obj);
-    setActiveObjectHelpersVisible(obj, App.mode);
-    toast('Deleted');
-  }
-  hideRadialMenu();
-  refreshUI();
-  refreshGizmoAttachment();
-  pushHistory();
+  if (!survived) finishObjectGone(obj, 'That was the last face - removed the object');
+  else finishMeshEdit(obj, 'Deleted');
 }
 
 function weldSelection() {
@@ -26019,21 +26053,8 @@ function weldSelectionOnce() {
   if (!obj || App.selectedElements.size < 2) return;
   const ok = weldVerticesOp(obj, App.selectedElements);
   App.selectedElements.clear();
-  if (!ok) {
-    disposeObject(obj);
-    App.objects = App.objects.filter(o => o.id !== obj.id);
-    App.activeObjectId = null;
-    detachAllGizmos();
-    toast('Welding collapsed the whole mesh - removed the object');
-  } else {
-    ensureHelpers(obj);
-    setActiveObjectHelpersVisible(obj, App.mode);
-    toast('Welded');
-  }
-  hideRadialMenu();
-  refreshUI();
-  refreshGizmoAttachment();
-  pushHistory();
+  if (!ok) finishObjectGone(obj, 'Welding collapsed the whole mesh - removed the object');
+  else finishMeshEdit(obj, 'Welded');
 }
 
 /* TARGET WELD, by gesture: tap a vertex, then double-tap the one you want
@@ -26086,15 +26107,8 @@ function targetWeld(obj, sources, target) {
   const objId = obj.id;
   const first = targetWeldOnce(obj, src, target);
   if (!first.ok) {
-    disposeObject(obj);
-    App.objects = App.objects.filter(o => o.id !== objId);
-    App.activeObjectId = null;
     App.selectedElements.clear();
-    detachAllGizmos();
-    refreshUI();
-    refreshGizmoAttachment();
-    pushHistory();
-    toast('Welding collapsed the whole mesh - removed the object');
+    finishObjectGone(obj, 'Welding collapsed the whole mesh - removed the object');
     return true;
   }
 
@@ -26107,15 +26121,8 @@ function targetWeld(obj, sources, target) {
     if (tl >= 0 && sl.length) {
       const second = targetWeldOnce(o2, sl, tl);
       if (!second.ok) {
-        disposeObject(o2);
-        App.objects = App.objects.filter(o => o.id !== objId);
-        App.activeObjectId = null;
         App.selectedElements.clear();
-        detachAllGizmos();
-        refreshUI();
-        refreshGizmoAttachment();
-        pushHistory();
-        toast('Welding collapsed the whole mesh - removed the object');
+        finishObjectGone(o2, 'Welding collapsed the whole mesh - removed the object');
         return true;
       }
       total += second.moved;
@@ -26125,20 +26132,18 @@ function targetWeld(obj, sources, target) {
     }
   }
 
+  const said = total > 1 ? 'Welded ' + total + ' vertices onto that one'
+                         : 'Welded onto that vertex';
+  App.vertAnchor = null;
   if (o2) {
     ensureHelpers(o2);
     // The survivor is wherever the target was: it never moved.
     const landed = findLogicalByPosition(o2, first.at);
     App.selectedElements = landed >= 0 ? new Set([landed]) : new Set();
-    setActiveObjectHelpersVisible(o2, App.mode);
-    refreshElementColors(o2);
+    finishMeshEdit(o2, said);
+  } else {
+    finishSceneEdit(said);
   }
-  App.vertAnchor = null;
-  hideRadialMenu();
-  refreshUI();
-  refreshGizmoAttachment();
-  pushHistory();
-  toast(total > 1 ? 'Welded ' + total + ' vertices onto that one' : 'Welded onto that vertex');
   return true;
 }
 
@@ -26157,21 +26162,8 @@ function mergeSelectionOnce() {
   const n = mergeVerticesOp(obj, App.selectedElements);
   if (n === 0) { toast('Nothing shares a spot (within ' + MERGE_EPS + ')'); return; }
   App.selectedElements.clear();
-  if (n === -1) {
-    disposeObject(obj);
-    App.objects = App.objects.filter(o => o.id !== obj.id);
-    App.activeObjectId = null;
-    detachAllGizmos();
-    toast('Merging collapsed the whole mesh - removed the object');
-  } else {
-    ensureHelpers(obj);
-    setActiveObjectHelpersVisible(obj, App.mode);
-    toast(n === 1 ? 'Merged 1 spot' : 'Merged ' + n + ' spots');
-  }
-  hideRadialMenu();
-  refreshUI();
-  refreshGizmoAttachment();
-  pushHistory();
+  if (n === -1) finishObjectGone(obj, 'Merging collapsed the whole mesh - removed the object');
+  else finishMeshEdit(obj, n === 1 ? 'Merged 1 spot' : 'Merged ' + n + ' spots');
 }
 
 function collapseSelection() {
@@ -26190,21 +26182,8 @@ function collapseSelectionOnce() {
   const n = collapseEdgesOp(obj, App.selectedElements);
   if (n === 0) { toast('Nothing to collapse there'); return; }
   App.selectedElements.clear();
-  if (n === -1) {
-    disposeObject(obj);
-    App.objects = App.objects.filter(o => o.id !== obj.id);
-    App.activeObjectId = null;
-    detachAllGizmos();
-    toast('Collapsing took the whole mesh - removed the object');
-  } else {
-    ensureHelpers(obj);
-    setActiveObjectHelpersVisible(obj, App.mode);
-    toast(n === 1 ? 'Collapsed to 1 point' : 'Collapsed to ' + n + ' points');
-  }
-  hideRadialMenu();
-  refreshUI();
-  refreshGizmoAttachment();
-  pushHistory();
+  if (n === -1) finishObjectGone(obj, 'Collapsing took the whole mesh - removed the object');
+  else finishMeshEdit(obj, n === 1 ? 'Collapsed to 1 point' : 'Collapsed to ' + n + ' points');
 }
 
 function detachFacesSelection() {
@@ -26216,21 +26195,9 @@ function detachFacesSelection() {
   const r = detachFacesOp(obj, Array.from(App.selectedElements));
   if (!r) { toast('Nothing to detach'); return; }
   App.selectedElements.clear();
-  if (!r.survived) {
-    // Guarded against above; belt and braces if the source lost its last face.
-    disposeObject(obj);
-    App.objects = App.objects.filter(o => o.id !== obj.id);
-    App.activeObjectId = null;
-    detachAllGizmos();
-  } else {
-    ensureHelpers(obj);
-    setActiveObjectHelpersVisible(obj, App.mode);
-  }
-  hideRadialMenu();
-  refreshUI();
-  refreshGizmoAttachment();
-  pushHistory();
-  toast('Detached into ' + r.part.name);
+  // Guarded against above; belt and braces if the source lost its last face.
+  if (!r.survived) finishObjectGone(obj, 'Detached into ' + r.part.name);
+  else finishMeshEdit(obj, 'Detached into ' + r.part.name);
 }
 
 function duplicateSelection() {
