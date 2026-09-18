@@ -2602,7 +2602,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.60</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.61</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -38638,6 +38638,17 @@ function setUvCompMode(mode) {
   if (uvVDrag) endUvVertexDrag(false);
   clearUvEdgeHold();
   clearUvEmptyHoldTimer();
+  /* The VIEW's own gestures go too (review finding, v2.61). closeUvView and
+     reconcileUvViewTarget have always dropped these; this path had not
+     needed to, because before v2.61 a pan or a view pinch could only be
+     live if the finger had landed on empty background, where a mode switch
+     was not reachable. Now either can be live in any mode, and the mode
+     button is one finger away while two are still down. uvPointers is
+     deliberately NOT cleared: those fingers are still on the glass, and the
+     next one to land should still read as a second finger. */
+  uvPan = null;
+  uvPinchView = null;
+  uvEmptyTapClear = null;
   uvCompMode = mode;
   uvSel.clear();
   uvEdgeSel.clear();
@@ -38784,8 +38795,17 @@ function endUvDrag(commit) {
      drag starting on an unselected island carries it, and a tap that was
      only ever a tap takes that add back out. */
   if (!translated && !rotated && !scaled) {
-    if (tapWasSelected) uvIslandSel.delete(tapId); else uvIslandSel.add(tapId);
-    paintUvCompSelection();
+    /* ...but only a ONE-FINGER one (review finding, v2.61). A pinch that
+       turned less than a degree and scaled less than 2% is a pinch that did
+       nothing, not a tap: reading it as one took the island the fingers were
+       resting on straight back OUT of the selection - and since v2.61 the
+       island pinch is reached only from an ALREADY-selected island, that is
+       the headline gesture of this whole slice losing the very selection it
+       was invoked on. Committing nothing is right; toggling is not. */
+    if (mode === 'translate') {
+      if (tapWasSelected) uvIslandSel.delete(tapId); else uvIslandSel.add(tapId);
+      paintUvCompSelection();
+    }
     return;
   }
   commitUvIslandTransform(islandIds, dx, dy, mode === 'translate' ? 0 : angleDeg,
@@ -38881,6 +38901,11 @@ function reconcileUvViewTarget() {
   clearUvEmptyHoldTimer();
   uvPan = null;
   uvPinchView = null;
+  uvPointers.clear();   // v2.61 - the hand belonged to the previous object
+  /* And the armed empty-space clear with it (review finding, v2.61): it names
+     a pointer that is still down but now hovers a DIFFERENT object's layout,
+     so its eventual pointerup would clear a selection made on the new one. */
+  uvEmptyTapClear = null;
   uvSel.clear();
   uvEdgeSel.clear();
   uvIslandSel.clear();
@@ -38904,6 +38929,8 @@ function closeUvView() {
   uvPan = null;
   uvPinchView = null;
   uvEmptyTapClear = null;
+  // No finger belongs to a view that no longer exists (v2.61).
+  uvPointers.clear();
   resetUvViewBox();
   // Always reopens in Island mode with nothing selected (v2.48) - a
   // vertex or edge selection has no meaning once the card is gone, and
@@ -38950,15 +38977,10 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
   // accident underneath one.
   if (uvCompMode !== 'island') return;
   if (ev.pointerType === 'mouse' && ev.button !== 0) return;
-  // A second finger while the first already holds an island starts the
-  // pinch (v2.47), checked first and unconditionally - Chromium marks only
-  // the first touch of a multi-touch sequence as primary, and this second
-  // finger is deliberately never that one.
-  if (uvDrag && uvDrag.mode === 'translate' && ev.pointerId !== uvDrag.pointerId) {
-    startUvPinch(ev);
-    return;
-  }
-  if (uvDrag) return; // already pinching, or an unexpected third pointer - ignore
+  /* WHO GETS THE SECOND FINGER is one decision now (v2.61), taken in
+     uvSecondPointer below for every mode this view has - including the
+     island pinch that used to be decided right here. */
+  if (uvSecondPointer(ev)) return;
   // No isPrimary check (removed, review finding v2.47): it silently
   // dropped a legitimate fresh single-finger drag whenever another finger
   // happened to be touching the screen anywhere on the page - including a
@@ -38971,21 +38993,12 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
   // again, and an island selection that survives a tap on nothing would be
   // the one selection in this view that cannot be let go.
   if (!g) { uvEmptyTapClear = ev.pointerId; armUvEmptyHold(ev); return; }
-  // A finger already panning or pinch-zooming the VIEW (v2.51, review
-  // finding, fixed after this exact guard first broke pinch-start itself by
-  // sitting ABOVE the empty-space check above: that swallowed every second
-  // finger while a pan was live, content or not, so it never reached
-  // armUvEmptyHold and the pinch-promotion just above never ran either -
-  // caught live, testing the pinch-during-pan repro this same review
-  // finding describes) must not also start dragging an ISLAND underneath a
-  // second finger: uvDrag's own coordinates are read through uvViewPoint at
-  // the CURRENT viewBox, which the pan/pinch is actively rewriting every
-  // move, so the island would jump by however far the view has moved and
-  // commit that jump to the mesh on release. A second finger on EMPTY
-  // background during a pan is the normal, intended way to start the pinch
-  // above, so this only ever needs to reject a second finger that landed ON
-  // content instead.
-  if (uvPan || uvPinchView) return;
+  /* No "is the view already panning?" guard here any more (v2.61). v2.51
+     needed one because a second finger landing on an island mid-pan reads
+     uvViewPoint against a viewBox the pan is actively rewriting, and would
+     commit that jump to the mesh on release. uvSecondPointer has taken
+     that finger for the VIEW before this line is reached, so nothing below
+     it can run with a pan or a view pinch live. */
   const p = uvViewPoint(ev);
   /* THE WHOLE SELECTION MOVES (v2.55), not just the island under the
      finger - the same rule the vertex drag has followed since v2.48, and
@@ -39292,7 +39305,10 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
   // must not be left for the browser to interpret as anything else while
   // the first finger's drag is still live under pointer capture.
   ev.preventDefault();
-  if (uvVDrag) return; // an unexpected second pointer - ignore, single-finger only
+  // Two fingers are the view (v2.61) - see uvSecondPointer. This replaces
+  // the flat "ignore a second pointer" this mode had: ignoring it is what
+  // left a full-screen layout with no way to zoom or pan at all.
+  if (uvSecondPointer(ev)) return;
   /* THE SAME GESTURE SERVES FACES (v2.55). A face IS its attribute
      vertices, so tapping one puts the union of every selected face's
      vertices into the same uvVDrag a vertex tap builds - which means the
@@ -39309,15 +39325,8 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
     armUvEmptyHold(ev);
     return;
   }
-  // Same view-gesture-owns-both-fingers rule as island mode above (v2.51,
-  // review finding - moved below the empty-space check for the same reason
-  // that one was: sitting above it here would swallow a second finger
-  // landing on EMPTY background during a pan too, which is the normal way
-  // to promote into the pinch inside armUvEmptyHold, not something to
-  // reject). Only a second finger landing ON a vertex dot while the view is
-  // panning/pinching needs to be refused - it would read moving-target
-  // coordinates and commit a bogus UV edit.
-  if (uvPan || uvPinchView) return;
+  /* Same as island mode's (v2.61): the v2.51 pan guard that stood here is
+     uvSecondPointer's job now, and it promotes rather than refuses. */
   const tapId = isFace ? +c.dataset.fg : +c.dataset.ai;
   const tapWasSelected = sel.has(tapId);
   if (!tapWasSelected) sel.add(tapId); // provisional - see endUvVertexDrag's tap branch
@@ -39590,6 +39599,24 @@ function updateUvPan(ev) {
 // pointer while the first already holds or pans empty space - the same
 // "second finger promotes the gesture" shape, aimed at uvViewBox instead
 // of an island's transform.
+/* EVERY POINTER CURRENTLY DOWN ON THIS VIEW, and where it last was (v2.61).
+   Not a gesture record - the gesture records above are each about one thing
+   being edited or moved, and this is about the hand: uvSecondPointer needs
+   to know that a finger is still down even when no gesture owns it any
+   more, which is exactly the state a lifted pinch finger leaves behind.
+   Filled by uvSecondPointer (called first by every pointerdown this view
+   has), kept current and emptied by the unconditional move/up/cancel trio,
+   and cleared outright when the view stops existing. */
+const uvPointers = new Map();   // pointerId -> { x, y }
+/* THE VIEW PINCH'S OWN MINIMUM SEPARATION, in client pixels (v2.61, review
+   finding). The island pinch has had UV_PINCH_MIN_DIST since v2.47 for the
+   same reason, in the card's own units; this one measures fingers, so it is
+   said in pixels and set at about a fingertip. Without it, `|| 1` was the
+   only floor: two fingers resting 5px apart - the commonest way to add a
+   finger by accident while dragging - then spread to a normal 200px gives a
+   ratio of 0.025, which clamps the view to UV_ZOOM_MIN in one frame and
+   cannot come back until the fingers return to touching. */
+const UV_VIEW_PINCH_MIN_PX = 24;
 let uvPinchView = null;   // { id1, id2, startDist, startMidClientX, startMidClientY, startBox, anchorX, anchorY, rectWidth, lastP1, lastP2 }
 function startUvPinchView(ev, firstClientX, firstClientY, firstPointerId) {
   const rect = uvViewSvgEl.getBoundingClientRect();
@@ -39603,7 +39630,8 @@ function startUvPinchView(ev, firstClientX, firstClientY, firstPointerId) {
   const anchor = uvViewPoint({ clientX: midX, clientY: midY });
   uvPinchView = {
     id1: firstPointerId, id2: ev.pointerId,
-    startDist: Math.hypot(ev.clientX - firstClientX, ev.clientY - firstClientY) || 1,
+    startDist: Math.max(Math.hypot(ev.clientX - firstClientX, ev.clientY - firstClientY),
+                        UV_VIEW_PINCH_MIN_PX),
     startMidClientX: midX, startMidClientY: midY,
     startBox: { x: uvViewBox.x, y: uvViewBox.y, w: uvViewBox.w, h: uvViewBox.h },
     anchorX: anchor.x, anchorY: anchor.y,
@@ -39618,7 +39646,9 @@ function updateUvPinchView(ev) {
   else if (ev.pointerId === uvPinchView.id2) uvPinchView.lastP2 = { x: ev.clientX, y: ev.clientY };
   else return;
   const { lastP1, lastP2, startDist, startBox, anchorX, anchorY, rectWidth } = uvPinchView;
-  const dist = Math.hypot(lastP2.x - lastP1.x, lastP2.y - lastP1.y) || 1;
+  // Clamped to the same floor startUvPinchView seeds with, so the ratio
+  // below stays finite and symmetric at both ends of the gesture.
+  const dist = Math.max(Math.hypot(lastP2.x - lastP1.x, lastP2.y - lastP1.y), UV_VIEW_PINCH_MIN_PX);
   const midX = (lastP1.x + lastP2.x) / 2, midY = (lastP1.y + lastP2.y) / 2;
   // Fingers spreading (dist grows past startDist) should zoom IN, which
   // means the box shrinks - so the ratio is startDist/dist, not the other
@@ -39640,33 +39670,167 @@ function updateUvPinchView(ev) {
   applyUvViewBox();
 }
 
+/* TWO FINGERS ARE THE VIEW (v2.61), and this is the one place that says so.
+
+   Until now each component mode answered the second finger for itself, and
+   three of the four answered "nobody": a second pointer during a vertex,
+   face or edge gesture was dropped on the floor, and a second pointer that
+   landed ON content while the view was panning was dropped too. Only truly
+   empty background could start a view pinch - and v2.53 made this view
+   full-screen, so on any real layout there is hardly any empty background
+   left to land on. That is what "2D editing is impossible" meant: the
+   layout could not be zoomed or moved, so anything past the first
+   screenful could not be reached at all.
+
+   Zeghreit's rule, and now the only rule: two fingers pan and zoom the
+   VIEW, wherever they land, EXCEPT the one gesture that already means
+   something else - a pinch on an island that was ALREADY selected before
+   this gesture began, which rotates and scales it (v2.47/v2.55). An island
+   the first finger picked up by itself (the provisional add in the island
+   pointerdown) is deliberately NOT selected for this purpose: the first
+   finger only just chose it, so the second cannot have meant "transform
+   that one".
+
+   Whatever one-finger gesture was live when the second finger lands is
+   CANCELLED rather than committed - the edit is abandoned, its provisional
+   selection change backed out, and the island/vertex/face springs home.
+   Two fingers were never a request to edit, and committing half of one
+   would write a history step nobody asked for.
+
+   Returns true when it has consumed the event; every pointerdown inside
+   this view calls it first and returns on true. */
+function uvSecondPointer(ev) {
+  /* A RING IS OPEN, SO THIS PRESS IS NOT THE VIEW'S (review finding, v2.61).
+     bloomToolRing takes the gesture's pointer capture onto
+     renderer.domElement and drives the ring from the canvas's own handlers,
+     so while one is up the view must neither start an edit under it nor
+     take a finger onto its books - and must not capture, which would fight
+     the ring for the very pointer it is aiming with. Consumed, not
+     recorded. */
+  if (toolRingActive) return true;
+  /* WHICH OTHER FINGER IS STILL DOWN, read before this one is recorded - the
+     fallback at the bottom needs it. */
+  const orphan = uvOtherPointer(ev.pointerId);
+  uvPointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+  /* Captured here, for EVERY press this view sees, so that its pointerup or
+     pointercancel is guaranteed to reach the unconditional trio below and
+     take it back out of uvPointers again (review finding, v2.61). Without
+     this, a press consumed by one of the bare `return true` branches got no
+     capture at all, and lifting it over the letterboxed strip - which is
+     not inside the SVG - never reached the trio. A leaked entry is worse
+     than the bug it guards: every later first finger would read as a
+     second one and the view would refuse to edit at all. Every gesture
+     that starts below captures the same pointer again, which is a no-op. */
+  try { uvViewSvgEl.setPointerCapture(ev.pointerId); } catch (e) {}
+  /* Island mode's own pinch, the exception - tested first and
+     unconditionally, because Chromium marks only the FIRST touch of a
+     multi-touch sequence as primary and this second finger is never it. */
+  if (uvDrag && uvDrag.mode === 'translate' && ev.pointerId !== uvDrag.pointerId) {
+    if (uvDrag.tapWasSelected) { startUvPinch(ev); return true; }
+    const fx = uvDrag.lastClientX, fy = uvDrag.lastClientY, fid = uvDrag.pointerId;
+    endUvDrag(false);
+    takeUvViewPinch(ev, fx, fy, fid);
+    return true;
+  }
+  // Already pinching an island, or a third finger during one: ignored,
+  // exactly as before this slice.
+  if (uvDrag) return true;
+  if (uvVDrag && ev.pointerId !== uvVDrag.pointerId) {
+    const fx = uvVDrag.lastClientX, fy = uvVDrag.lastClientY, fid = uvVDrag.pointerId;
+    endUvVertexDrag(false);
+    takeUvViewPinch(ev, fx, fy, fid);
+    return true;
+  }
+  if (uvVDrag) return true;
+  if (uvEdgeHold && ev.pointerId !== uvEdgeHold.pointerId) {
+    const { key, wasSelected } = uvEdgeHold;
+    /* lastClientX/Y, not startClientX/Y (review finding, v2.61): edge mode's
+       hold deliberately survives an unbounded drift - its pointermove only
+       kills the ring timer past RING_MOVE_CANCEL_PX and keeps the record so
+       pointerup can still resolve the tap - so the press point can be a
+       whole screen away from the finger. Seeding the pinch with it made
+       startDist and the zoom anchor fiction, and a second finger landing
+       near the ORIGINAL press point gave a near-zero startDist that pinned
+       the view at maximum zoom for the rest of the gesture. */
+    const fx = uvEdgeHold.lastClientX, fy = uvEdgeHold.lastClientY, fid = uvEdgeHold.pointerId;
+    clearUvEdgeHold();
+    // The same back-out edge mode's own pointercancel does: the tap never
+    // got to resolve, so the provisional add goes back out.
+    if (!wasSelected) { uvEdgeSel.delete(key); paintUvEdgeSelection(); }
+    takeUvViewPinch(ev, fx, fy, fid);
+    return true;
+  }
+  if (uvEdgeHold) return true;
+  /* A THIRD FINGER DURING A VIEW PINCH IS NOT A NEW GESTURE - and before
+     this slice it armed one: landing on empty background while uvPinchView
+     was live fell through to armUvEmptyHold with uvPan already nulled and
+     uvEmptyHoldOrigin already cleared, which armed a fresh hold timer and
+     bloomed the "3D" ring in the middle of a two-finger zoom. */
+  if (uvPinchView) return true;
+  if (promoteUvViewPinch(ev)) return true;
+  /* A FINGER IS STILL DOWN AND OWNS NOTHING (review finding, v2.61). The
+     commonest route there is the most natural motion after a zoom: lift one
+     finger of a view pinch - which ends the whole pinch, by design, the
+     same rule the island pinch has - and put it back down to carry on. The
+     finger that never lifted has no record at that point, so without this
+     the returning finger read as a FIRST finger and started an island,
+     vertex, face or edge edit with two fingers on the glass, committing a
+     history step for it on release. A third finger during a pinch, consumed
+     above, leaves the same state once the original two lift.
+
+     Two fingers are the view, so the honest answer is to resume the view
+     pinch from where that finger actually is - uvPointers has been tracking
+     it since it landed. */
+  if (orphan) { takeUvViewPinch(ev, orphan.x, orphan.y, orphan.id); return true; }
+  return false;
+}
+/* Any pointer down on this view other than `id`, and where it last was. One
+   is all the pinch can use, and a third finger has nothing to add to a
+   gesture two already define. */
+function uvOtherPointer(id) {
+  for (const [pid, p] of uvPointers) {
+    if (pid !== id) return { id: pid, x: p.x, y: p.y };
+  }
+  return null;
+}
+/* The half of the old armUvEmptyHold that turns an existing ONE-finger view
+   gesture - a pan, or an empty-space hold that has not moved yet - into the
+   two-finger view pinch. Split out (v2.61) so uvSecondPointer can reach it
+   for a finger that landed on CONTENT, which never went through
+   armUvEmptyHold at all. */
+function promoteUvViewPinch(ev) {
+  if (uvPan && uvPan.pointerId !== ev.pointerId) {
+    takeUvViewPinch(ev, uvPan.lastClientX, uvPan.lastClientY, uvPan.pointerId);
+    return true;
+  }
+  if (uvEmptyHoldOrigin && uvEmptyHoldOrigin.pointerId !== ev.pointerId) {
+    const first = uvEmptyHoldOrigin;   // read before the clear inside takeUvViewPinch
+    takeUvViewPinch(ev, first.x, first.y, first.pointerId);
+    return true;
+  }
+  return false;
+}
+/* Hands both fingers to the view, from whatever they were doing before.
+   uvPan is nulled HERE rather than left for pointerup (review finding,
+   v2.51): pointerup only clears uvPan when the LIFTING finger's id matches
+   it, so if the second (pinch) finger lifts first, uvPan would still hold
+   the pre-pinch viewBox/scale snapshot while the first finger is still
+   down. That finger's next pointermove checks uvPinchView first (now null)
+   and falls through to updateUvPan with the stale snapshot, snapping the
+   view back toward the pre-pinch origin and then panning at the wrong
+   scale. Every caller reads what it needs out of uvPan before calling. */
+function takeUvViewPinch(ev, firstClientX, firstClientY, firstPointerId) {
+  clearUvEmptyHoldTimer();
+  uvEmptyTapClear = null;   // this press is a pinch, never a tap
+  uvPan = null;
+  startUvPinchView(ev, firstClientX, firstClientY, firstPointerId);
+}
 function armUvEmptyHold(ev) {
   // A second finger landing on empty space while the first already holds
   // or pans it promotes the gesture to a pinch-zoom of the view instead of
-  // arming an unrelated second hold-timer (v2.51) - see uvPinchView above.
-  if (uvPan && uvPan.pointerId !== ev.pointerId) {
-    clearUvEmptyHoldTimer();
-    uvEmptyTapClear = null;   // this press is a pinch, not a tap
-    startUvPinchView(ev, uvPan.lastClientX, uvPan.lastClientY, uvPan.pointerId);
-    // Must be nulled here, not just left for pointerup to clear later
-    // (review finding): pointerup only clears uvPan when the LIFTING
-    // finger's id matches it, so if the second (pinch) finger lifts first,
-    // uvPan would still hold the pre-pinch viewBox/scale snapshot while the
-    // first finger is still down. That finger's next pointermove checks
-    // uvPinchView first (now null) and falls through to updateUvPan with
-    // that stale snapshot, snapping the view back toward the pre-pinch
-    // origin and then panning at the wrong scale. The pinch already reads
-    // everything it needs from uvPan above before this line runs.
-    uvPan = null;
-    return;
-  }
-  if (uvEmptyHoldOrigin && uvEmptyHoldOrigin.pointerId !== ev.pointerId) {
-    const first = uvEmptyHoldOrigin;
-    clearUvEmptyHoldTimer();
-    uvEmptyTapClear = null;   // two fingers on empty space is a pinch, not a tap
-    startUvPinchView(ev, first.x, first.y, first.pointerId);
-    return;
-  }
+  // arming an unrelated second hold-timer (v2.51, shared with
+  // uvSecondPointer since v2.61).
+  if (promoteUvViewPinch(ev)) return;
   clearUvEmptyHoldTimer();
   const px = ev.clientX, py = ev.clientY, pid = ev.pointerId;
   uvEmptyHoldOrigin = { x: px, y: py, pointerId: pid };
@@ -39685,6 +39849,14 @@ function armUvEmptyHold(ev) {
   uvEmptyHoldTimer = setTimeout(() => {
     uvEmptyHoldTimer = null; uvEmptyHoldOrigin = null;
     uvEmptyTapClear = null;   // a hold that opened the ring was never a tap
+    /* AND THE VIEW FORGETS THE FINGER (review finding, v2.61). bloomToolRing
+       moves this pointer's capture to renderer.domElement, so its pointerup
+       lands on the canvas and the trio below never deletes it - the v2.50
+       comment above says exactly that about this call. A leaked entry is not
+       a small bug: every later first finger reads as a second one, so the
+       view stops selecting, stops editing, and stops being able to open
+       this very ring, which since v2.53 is the only way out of it. */
+    uvPointers.delete(pid);
     bloomToolRing(px, py, HUB_TOOLS_UV2D_WORLD, pid, { x: px, y: py });
   }, WORLD_RING_HOLD_MS);
 }
@@ -39703,15 +39875,42 @@ function armUvEmptyHold(ev) {
    on a third of the screen. The press arms the same empty-space hold the
    square's own "nothing under the finger" branches arm, and the capture
    inside armUvEmptyHold hands the rest of the gesture to the SVG's
-   listeners below. Guarded on the target being the card or the view
-   itself, so a press on the square (which bubbles here too) is left to the
-   component-mode handlers that already own it. */
+   listeners below.
+
+   IT NAMED THE WRONG ELEMENTS (review finding, v2.61), which made every
+   line of this listener dead and left that third of the screen with no
+   hold, no ring and no way out of the view at all - precisely the hole
+   v2.53 wrote it to close. #uvViewCard is a full-size flex column and
+   #uvViewSvgWrap is its flex:1 child, so both the card and #uvView are
+   covered edge to edge and neither is ever the target; the strips beside
+   the square ARE the wrap. Naming what this listener must not have - the
+   square itself - is both correct and one thing fewer to keep in step with
+   the markup. It also covers the object-with-no-UV state, where the svg is
+   display:none and the wrap has the screen to itself (review finding, v2.61:
+   an earlier draft of this comment credited that to #uvViewEmpty, which is
+   in fact just a padded line of text below the wrap) - that was the one
+   state where the way out was missing even in principle. */
 uvViewCardEl.addEventListener('pointerdown', (ev) => {
-  if (ev.target !== uvViewCardEl && ev.target !== uvViewEl) return;
+  if (uvViewSvgEl.contains(ev.target)) return;
   if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+  /* A second finger parked on the strip while the first is mid-gesture is
+     still a second finger (v2.61) - armUvEmptyHold alone would only have
+     promoted a pan or another empty-space hold, never a live island,
+     vertex, face or edge gesture. */
+  if (uvSecondPointer(ev)) return;
+  /* The strip's tap clears the selection too (review finding, v2.61). All
+     four in-square "nothing under the finger" branches arm this; leaving it
+     out here made a tap two pixels outside the square mean something
+     different from one two pixels inside it, which is the opposite of what
+     this listener exists to say. */
+  uvEmptyTapClear = ev.pointerId;
   armUvEmptyHold(ev);
 });
 uvViewSvgEl.addEventListener('pointermove', (ev) => {
+  // Before any of the early returns below: a finger that owns no gesture
+  // still has to be tracked, since it may own the NEXT one (v2.61).
+  const lp = uvPointers.get(ev.pointerId);
+  if (lp) { lp.x = ev.clientX; lp.y = ev.clientY; }
   if (uvPinchView && (ev.pointerId === uvPinchView.id1 || ev.pointerId === uvPinchView.id2)) {
     updateUvPinchView(ev);
     return;
@@ -39728,6 +39927,7 @@ uvViewSvgEl.addEventListener('pointermove', (ev) => {
   }
 });
 uvViewSvgEl.addEventListener('pointerup', (ev) => {
+  uvPointers.delete(ev.pointerId);
   if (uvEmptyHoldOrigin && ev.pointerId === uvEmptyHoldOrigin.pointerId) clearUvEmptyHoldTimer();
   // Nothing claimed this press, so it really was a tap on empty space: put
   // the selection down (v2.55). Read before uvPan/uvPinchView are nulled
@@ -39736,7 +39936,17 @@ uvViewSvgEl.addEventListener('pointerup', (ev) => {
   if (uvPan && ev.pointerId === uvPan.pointerId) uvPan = null;
   if (uvPinchView && (ev.pointerId === uvPinchView.id1 || ev.pointerId === uvPinchView.id2)) uvPinchView = null;
 });
+/* WHATEVER TAKES A POINTER AWAY FROM THIS VIEW, THE VIEW FORGETS IT (v2.61).
+   The two ring calls above delete their own finger explicitly, because that
+   is the route we know about and the one a probe can drive. This is the net
+   under all of them: lostpointercapture fires whenever the capture moves to
+   another element or is released, which is precisely the moment the trio
+   below stops being able to hear that pointer. Deleting twice is free. */
+uvViewSvgEl.addEventListener('lostpointercapture', (ev) => {
+  uvPointers.delete(ev.pointerId);
+});
 uvViewSvgEl.addEventListener('pointercancel', (ev) => {
+  uvPointers.delete(ev.pointerId);
   if (uvEmptyHoldOrigin && ev.pointerId === uvEmptyHoldOrigin.pointerId) clearUvEmptyHoldTimer();
   // A cancelled press clears nothing - it never finished being a tap.
   if (uvEmptyTapClear === ev.pointerId) uvEmptyTapClear = null;
@@ -39763,7 +39973,7 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
   if (uvCompMode !== 'edge') return;
   if (ev.pointerType === 'mouse' && ev.button !== 0) return;
   ev.preventDefault();
-  if (uvEdgeHold) return;   // an unexpected second pointer - ignore, single-finger only
+  if (uvSecondPointer(ev)) return;   // v2.61 - two fingers are the view
   const el = ev.target.closest && ev.target.closest('.uv-edge');
   if (!el) {
     uvEmptyTapClear = ev.pointerId;
@@ -39776,9 +39986,13 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
   const px = ev.clientX, py = ev.clientY, pid = ev.pointerId;
   uvEdgeHold = {
     key, pointerId: pid, startClientX: px, startClientY: py, wasSelected,
+    // Where the finger actually is now (v2.61) - see the pinch hand-off in
+    // uvSecondPointer, which cannot use the press point.
+    lastClientX: px, lastClientY: py,
     timer: setTimeout(() => {
       if (!uvEdgeHold) return;
       uvEdgeHold = null;
+      uvPointers.delete(pid);   // see the same line in armUvEmptyHold (v2.61)
       bloomToolRing(px, py, HUB_TOOLS_UV, pid, { x: px, y: py });
     }, TOOL_RING_HOLD_MS)
   };
@@ -39794,6 +40008,7 @@ uvViewSvgEl.addEventListener('pointermove', (ev) => {
   // {key, wasSelected} to resolve this as a tap even after some drift,
   // the same way vertex mode's own move handler leaves its drag state
   // alone for pointerup.
+  uvEdgeHold.lastClientX = ev.clientX; uvEdgeHold.lastClientY = ev.clientY;
   if (uvEdgeHold.timer && Math.hypot(ev.clientX - uvEdgeHold.startClientX, ev.clientY - uvEdgeHold.startClientY) > RING_MOVE_CANCEL_PX) {
     clearTimeout(uvEdgeHold.timer);
     uvEdgeHold.timer = null;
@@ -43993,6 +44208,20 @@ if (PICK_DEBUG) {
     computeUVIslands, syncIslandOverlay, islandColorHex,
     // v2.60: the 2D dot's radius, which follows the zoom.
     uvDotR, UV_DOT_R, zoomUvViewBoxAt, resetUvViewBox,
+    /* v2.61: the one gatekeeper that decides who gets the second finger,
+       plus read-only views of the gesture records a probe has to watch it
+       move between - live flags rather than the records themselves, so a
+       probe cannot reach in and steer a gesture it is meant to observe. */
+    uvSecondPointer, promoteUvViewPinch, uvOtherPointer, UV_VIEW_PINCH_MIN_PX,
+    // How many fingers this view thinks are on the glass - the number a
+    // leaked entry would quietly inflate until nothing could be edited.
+    get uvPointerCount() { return uvPointers.size; },
+    get uvDragMode() { return uvDrag ? uvDrag.mode : null; },
+    get uvVDragLive() { return !!uvVDrag; },
+    get uvEdgeHoldLive() { return !!uvEdgeHold; },
+    get uvPanLive() { return !!uvPan; },
+    get uvPinchViewLive() { return !!uvPinchView; },
+    get uvViewBoxNow() { return { x: uvViewBox.x, y: uvViewBox.y, w: uvViewBox.w, h: uvViewBox.h }; },
     // v2.59: the seams' own thick layer.
     syncSeamOverlay, SEAM_EDGE_PX,
     uvIslandFaceIds, toggleUvIslandElements,

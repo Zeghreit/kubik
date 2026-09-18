@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
-- Version at time of writing: **2.60**
+- Version at time of writing: **2.61**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,106 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## Two fingers are the view (2.61)
+
+Zeghreit: "in 2D mode there has to be a way to zoom and move around the
+canvas - editing is impossible right now". It was literally impossible. The
+pan and the pinch-zoom of the view have existed since v2.51, but they could
+only be STARTED on genuinely empty background - and v2.53 made this view
+full-screen, so on any real layout there is hardly any empty background left
+to land a finger on. Everything past the first screenful was unreachable.
+
+**The rule, his words: two fingers are the view, except on the selected
+one.** A second pointer anywhere hands both pointers to the view's
+pinch-zoom-and-pan and CANCELS whatever one-finger edit was live. The single
+exception is the gesture that already meant something else: a pinch on an
+island that was ALREADY selected before the gesture started still rotates and
+scales that island (v2.47/v2.55). An island the first finger picked up by
+itself does not count - it was chosen a moment ago, so the second finger
+cannot have meant "transform that one". One finger still edits, everywhere,
+exactly as before.
+
+A cancelled edit is cancelled, not committed: the provisional selection add
+goes back out, the island or vertex springs home, and nothing reaches
+history. Two fingers were never a request to edit.
+
+**Shape: one gatekeeper.** `uvSecondPointer(ev)` is called first by every
+pointerdown this view has - the four component modes' own listeners and the
+card's - and returns true when it has consumed the press. Before this, each
+mode answered the second finger for itself and three of the four answered
+"nobody". Two helpers split out of `armUvEmptyHold` for it:
+`promoteUvViewPinch` (turn a live one-finger view gesture into the pinch) and
+`takeUvViewPinch` (hand both fingers over, from whatever they were doing).
+
+**`uvPointers`** is a Map of every pointer currently down on this view and
+where it last was. It is not a gesture record - the others are each about a
+thing being moved; this one is about the hand. It exists because ending a
+pinch on the first lifted finger (the rule both pinches follow) leaves the
+OTHER finger owning nothing, and without it the returning finger read as a
+first finger and started an edit with two fingers on the glass. Now it
+resumes the pinch. Every press is captured on the SVG so its up or cancel is
+guaranteed to reach the trio that deletes it, `lostpointercapture` is the net
+under that, and both hold rings delete their own finger before blooming,
+because `bloomToolRing` moves the capture to the canvas and the up never
+comes back. **A leaked entry is the worst failure this view has: every later
+first finger reads as a second one, so nothing can be selected, nothing
+edited, and the "3D" ring - the only way out since v2.53 - cannot be opened
+either.** If the 2D view ever goes inert, that Map is the first place to
+look; `__kubik.uvPointerCount` reads it.
+
+**A press while a ring is open belongs to the ring**, not to the view: it is
+consumed without being recorded and without taking a capture the ring is
+aiming with.
+
+### Fixed on the way, all found by cold review
+
+- **The letterboxed strips beside the square did nothing at all** - and had
+  not since v2.53, which wrote them precisely to stop that. Their listener
+  guarded on the target being `#uvViewCard` or `#uvView`, and neither is ever
+  the target: the card is a full-size flex column and `#uvViewSvgWrap` is its
+  `flex:1` child, so the wrap owns every pixel that is not the square. On a
+  tall phone that is about a third of the screen with no hold, no ring and no
+  way out. The guard names what it must NOT have now - `if
+  (uvViewSvgEl.contains(ev.target)) return;` - which also covers the
+  no-UV-on-this-object state, where the svg is `display:none` and the wrap
+  has the screen to itself.
+- **Edge mode handed the pinch the press point, not the finger.** Its hold
+  deliberately survives an unbounded drift (v2.50), so those can be a screen
+  apart; a second finger landing near the original press gave a near-zero
+  `startDist` and pinned the view at maximum zoom for the rest of the
+  gesture. It carries `lastClientX/Y` now, like every other record here.
+- **The view pinch had no minimum finger separation** - only `|| 1`. Two
+  fingers resting 5px apart, which is how a finger joins a drag by accident,
+  then spreading to a normal 200px gave a ratio of 0.025 and slammed the view
+  to full zoom in one frame. `UV_VIEW_PINCH_MIN_PX = 24` floors both
+  `startDist` and `dist`, so the sub-24px band is a symmetric dead zone
+  rather than a trap. (The island pinch has had `UV_PINCH_MIN_DIST` since
+  v2.47 for the same reason, in the card's own units; this one measures
+  fingers, so it is said in pixels.)
+- **Two fingers laid on a selected island and lifted deselected it.** A pinch
+  that turned less than a degree and scaled less than 2% fell into
+  `endUvDrag`'s tap branch, which toggles - so the headline gesture of this
+  whole slice lost the very selection it was invoked on. That branch is
+  one-finger-only now. Committing nothing was right; toggling was not.
+- **A third finger during a view pinch armed a new hold** and bloomed the
+  "3D" ring in the middle of a zoom.
+- `setUvCompMode` now drops the view's own gestures too, and
+  `reconcileUvViewTarget` the armed empty-space clear - the three teardown
+  paths had drifted apart, and before this slice a pan could only be live in
+  a state where the mode button was not reachable.
+
+### Stand lesson: never gate a probe on `window.load`
+
+`_uv61chk` reported "boot timeout - __kubik never appeared" twice in a row on
+a file that was fine. `__kubik` was there, complete, with every symbol the
+probe waits for - a five-line `_err61chk` proved it in one run. The probe
+booted from `window.addEventListener('load', boot)`, and the load event never
+fired because some subresource was still hanging. The app's own module runs
+BEFORE load, so the event buys a probe nothing and costs it this: a report
+whose first word is the same word a genuinely broken file would produce. Call
+`boot()` directly - it already polls for `__kubik`. Worth doing to the other
+probes the next time one of them lies.
 
 ## The 2D dots get their size from the 3D ones (2.60)
 

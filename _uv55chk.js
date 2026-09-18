@@ -247,6 +247,7 @@
       setTimeout(w, 100);
     })();
   }
-  if (document.readyState === 'complete') setTimeout(boot, 500);
-  else window.addEventListener('load', () => setTimeout(boot, 500));
+  // Без window.load (урок v2.61): событие ждёт подресурсы, а __kubik их не
+  // ждёт, и boot() всё равно опрашивает его сам.
+  setTimeout(boot, 500);
 })();
