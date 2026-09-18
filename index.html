@@ -2079,16 +2079,28 @@
      can give it. padding shrinks with it - the original 20px here plus the
      card's own 16px was a comfortable margin around a phone-width card and
      a wasteful one around a screen-filling one. */
+  /* A VIEW, NOT A CARD (v2.53). It was a modal over a dimmed viewport: its
+     own panel, its own border, its own close button, and a backdrop that
+     put every control in the app behind glass. It now REPLACES the 3D
+     viewport - opaque, no dim, no border - and sits at z-index 12: above
+     the canvas and the vignette (11), below Undo/Redo and the tool chip
+     (13), the header (15), the mode button and the inspector (16) and the
+     tool rings (20). 14 was the first try (review finding): it put the
+     undo/redo pair UNDER the view, which is the one control a UV drag most
+     wants right after it. The view cube is 12 as well but earlier in the
+     document, so this paints over it regardless - and it is hidden
+     outright in openUvView anyway, being a control for a camera that is
+     not currently drawing. */
   #uvView {
-    position: fixed; inset: 0; z-index: 41; display: none;
-    align-items: center; justify-content: center; padding: 4px;
-    background: rgb(var(--shadow) / .6);
+    position: fixed; inset: 0; z-index: 12; display: none;
+    align-items: center; justify-content: center; padding: 0;
+    background: var(--bg);
   }
   #uvView.show { display: flex; }
   #uvViewCard {
-    background: var(--panel); border: var(--rule) solid var(--line); border-radius: var(--r-md);
-    padding: 10px; width: 100%; height: 100%; max-width: 1400px;
-    display: flex; flex-direction: column; gap: 8px;
+    background: none; border: 0; border-radius: 0;
+    padding: 0; width: 100%; height: 100%;
+    display: flex; flex-direction: column;
   }
   /* The largest square that fits BOTH axes, centred - not just width:100%
      (v2.43's own rule, fine for a card capped at 560px wide, wrong once the
@@ -2138,16 +2150,10 @@
   #uvViewSvg .uv-fill { stroke: none; fill-opacity: 0.35; }
   #uvViewSvg .uv-island { cursor: grab; }
   #uvViewSvg .uv-island.dragging { cursor: grabbing; }
-  /* Component mode toggle (v2.48), same base button look .insp-head already
-     uses elsewhere, just smaller - a segmented pair fits the card's own
-     header row (.insp-head is space-between with a gap, so a middle child
-     lands centred between the label and the close button for free). */
-  .uv-mode-toggle { display: flex; gap: 4px; }
-  .uv-mode-btn {
-    min-height: 26px; padding: 2px 10px; font-size: 11px; font-family: var(--mono);
-    font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
-  }
-  .uv-mode-btn.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  /* The card's own Island/Vertex/Edge toggle is gone (v2.53) along with the
+     header row it sat in. The app's own mode button is the component switch
+     now - tap to cycle, hold for the ring - which is the same control every
+     other mode is switched with, and it costs the view no pixels. */
   /* Per-attribute-vertex hit target (v2.48) - deliberately a large, mostly
      transparent disc rather than a small precise dot, the same reasoning
      the per-island fill above already spells out: an outline (or a dot
@@ -2503,15 +2509,10 @@
 
     <div id="uvView">
       <div id="uvViewCard">
-        <div class="insp-head">
-          <span>UV</span>
-          <div id="uvModeToggle" class="uv-mode-toggle" role="group" aria-label="UV edit mode">
-            <button id="uvModeIslandBtn" class="uv-mode-btn active" data-mode="island" aria-pressed="true">Island</button>
-            <button id="uvModeVertexBtn" class="uv-mode-btn" data-mode="vertex" aria-pressed="false">Vertex</button>
-            <button id="uvModeEdgeBtn" class="uv-mode-btn" data-mode="edge" aria-pressed="false">Edge</button>
-          </div>
-          <button id="uvViewClose" title="Close"></button>
-        </div>
+        <!-- No header row since v2.53: no label, no toggle, no close button.
+             The mode button switches the component kind and the empty-space
+             hold ring ("3D") is the way out, the same two controls the 3D
+             viewport is driven with. -->
         <div id="uvViewSvgWrap">
           <svg id="uvViewSvg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet"></svg>
         </div>
@@ -2545,7 +2546,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.52</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.53</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -35789,8 +35790,9 @@ const HUB_TOOLS_UV = [
 /* The 2D UV editor's own empty-space door (v2.50) - the only way back to
    the 3D viewport from inside #uvView now that entering UV mode no longer
    closes the card for you the way the pre-v2.49 mode-hold ring's UV seat
-   used to. A ring with one seat rather than a bare button on the card's
-   own tap-to-close backdrop (which still exists and still works) because
+   used to. A ring with one seat rather than a bare button, and since v2.53
+   the ONLY way out of the 2D view at all - the backdrop that used to close
+   it on a tap is gone with the card itself - because
    Zeghreit's own request named the empty-space bloom menu specifically,
    matching the world ring's shape in the 3D viewport - so a future seat
    has somewhere to go without inventing a second mechanism. See
@@ -36980,6 +36982,7 @@ function closeToolRing(run) {
    Moving a single UV and editing a seam from here are both still further
    out. */
 const uvViewEl = document.getElementById('uvView');
+const uvViewCardEl = document.getElementById('uvViewCard');
 const uvViewSvgEl = document.getElementById('uvViewSvg');
 const uvViewEmptyEl = document.getElementById('uvViewEmpty');
 
@@ -37259,22 +37262,34 @@ function setUvCompMode(mode) {
   uvCompMode = mode;
   uvSel.clear();
   uvEdgeSel.clear();
-  paintUvModeButtons(mode);
+  refreshObjComponentBtn();   // the mode button's own word carries the kind now
   if (uvViewObj) refreshUvView(uvViewObj);
 }
-// class AND aria-pressed together (review finding) - class alone left a
-// screen reader unable to tell which of the pair is on, since role=group
-// plus two plain buttons reads identically either way.
-function paintUvModeButtons(mode) {
-  const isl = document.getElementById('uvModeIslandBtn'), vtx = document.getElementById('uvModeVertexBtn'),
-        edg = document.getElementById('uvModeEdgeBtn');
-  isl.classList.toggle('active', mode === 'island'); isl.setAttribute('aria-pressed', String(mode === 'island'));
-  vtx.classList.toggle('active', mode === 'vertex'); vtx.setAttribute('aria-pressed', String(mode === 'vertex'));
-  edg.classList.toggle('active', mode === 'edge'); edg.setAttribute('aria-pressed', String(mode === 'edge'));
+
+/* THE KINDS, AND THE ORDER THE MODE BUTTON WALKS THEM (v2.53). The card's
+   own three buttons are gone with its header row; the app's mode button is
+   the switch now - tap to step, hold for the ring - which is the same
+   control every other mode in the app is switched with, and it gives the
+   view back the strip of screen the toggle sat in. One list feeds both the
+   tap and the ring, so they cannot drift. */
+const UV_COMP_MODES = ['island', 'vertex', 'edge'];
+function cycleUvCompMode() {
+  const i = UV_COMP_MODES.indexOf(uvCompMode);
+  const next = UV_COMP_MODES[(i + 1) % UV_COMP_MODES.length];
+  setUvCompMode(next);
+  toast('UV: ' + next);
 }
-document.getElementById('uvModeIslandBtn').addEventListener('click', () => setUvCompMode('island'));
-document.getElementById('uvModeVertexBtn').addEventListener('click', () => setUvCompMode('vertex'));
-document.getElementById('uvModeEdgeBtn').addEventListener('click', () => setUvCompMode('edge'));
+/* Same shape as HUB_TOOLS_MODE below - a corner line of seats, one lit -
+   because it opens from the same two buttons and has to read as the same
+   control doing a different job while the 2D view is up. No 'exit' seat:
+   the way out is the empty-space hold ring's "3D" (HUB_TOOLS_UV2D_WORLD,
+   v2.50), which is Zeghreit's own answer on where the exit belongs. */
+const HUB_TOOLS_UV2D_MODE = UV_COMP_MODES.map((k, i) => ({
+  key: 'uvcomp-' + k, label: k.charAt(0).toUpperCase() + k.slice(1), seat: i,
+  on: () => uvCompMode === k,
+  run: () => setUvCompMode(k)
+}));
+HUB_TOOLS_UV2D_MODE.cornerLine = true;
 
 function openUvView() {
   const obj = findObject(App.activeObjectId);
@@ -37293,8 +37308,33 @@ function openUvView() {
   try { ed = toEditable(obj.mesh); }
   catch (e) { console.warn('openUvView: toEditable failed', e); toast('Could not read this object’s UV'); return; }
   uvViewObj = obj;
-  resetUvViewBox();   // v2.51: never opens already zoomed/panned from the last object
-  const res = renderUvView(obj, ed);
+  /* THE 3D VIEW STOPS BEING DRAWN (v2.53, Zeghreit's own call). stepFrame
+     skips the render outright while this is set - it is behind an opaque
+     element, so every frame of it is heat and battery for a picture nobody
+     can see. The cube goes with it because the brief asked for it and
+     because it is a control for a camera that is not drawing. It is belt
+     and braces rather than the mechanism: its own render call sits inside
+     stepFrame, after the skip, so the skip already stops it repainting -
+     an earlier version of this comment claimed the opposite (review
+     finding), on the grounds that the cube has its own renderer, which is
+     true and beside the point. */
+  viewCubeEl.style.display = 'none';
+  /* AND FROM HERE IT CANNOT BE ALLOWED TO THROW (review finding, v2.53).
+     uvViewObj is set, which is what stops stepFrame drawing the 3D scene,
+     and the cube is hidden - while `.show` is still a tick away. A throw in
+     between (a damaged topo, a huge SVG string, out of memory) used to be
+     harmless; now it would leave a black screen with no way out at all,
+     because the only exit is a hold INSIDE a view that never appeared. */
+  let res;
+  try {
+    resetUvViewBox();   // v2.51: never opens already zoomed/panned from the last object
+    res = renderUvView(obj, ed);
+  } catch (e) {
+    console.warn('openUvView: renderUvView failed', e);
+    closeUvView();      // puts the cube and the frames back
+    toast('Could not draw this UV layout');
+    return;
+  }
   uvViewSvgEl.style.display = res.ok ? '' : 'none';
   uvViewEmptyEl.style.display = res.ok ? 'none' : '';
   if (!res.ok) {
@@ -37405,6 +37445,46 @@ function commitUvIslandTransform(islandId, dxSvg, dySvg, angleDeg, scale, cxSvg,
   refreshUvView(obj);
 }
 
+/* THE 2D VIEW SHOWS THE ACTIVE OBJECT (v2.53), whichever way the active
+   object changed - a tap in the outliner, a tap in the 3D viewport before
+   the view was opened, a delete, an undo. There are twenty-odd places that
+   assign App.activeObjectId and hooking each of them is how one gets
+   missed, so this is a sweep called from refreshUI - the same shape
+   refreshXrayMode and applyIsolation already use, and just as cheap: an id
+   compare on every call, work only when it differs.
+
+   Switching object drops the selections and the zoom outright. They are
+   indices into the object that WAS open - keeping them would point them at
+   whatever happens to carry those numbers on the new one, which is the
+   exact failure v2.51's uvSelKind guard exists to prevent elsewhere. */
+function reconcileUvViewTarget() {
+  if (!uvViewObj) return;
+  /* THE 2D VIEW BELONGS TO UV MODE (review finding, v2.53). The drawer and
+     the header sit above this view and stay usable, so Add Cube, an import
+     and Draw curve can all reach setMode('object') with it still open -
+     and this sweep, watching only the active OBJECT, kept it up: the header
+     then read "Object" while a tap on that same button still cycled the UV
+     component kind, and the geo bar opened over a shape you could not see.
+     Leaving the mode is leaving the view. */
+  if (App.mode !== 'uv') { closeUvView(); return; }
+  const want = findObject(App.activeObjectId);
+  // The object it was showing is gone, or nothing is active any more: there
+  // is no such thing as a UV view of nothing, so step back to the 3D view.
+  if (!want) { closeUvView(); return; }
+  if (want === uvViewObj) return;
+  if (uvDrag) endUvDrag(false);
+  if (uvVDrag) endUvVertexDrag(false);
+  clearUvEdgeHold();
+  clearUvEmptyHoldTimer();
+  uvPan = null;
+  uvPinchView = null;
+  uvSel.clear();
+  uvEdgeSel.clear();
+  uvViewObj = want;
+  resetUvViewBox();
+  refreshUvView(want);
+}
+
 function closeUvView() {
   // A drag left open mid-gesture (the view closed some other way than its
   // own pointerup - devtools, a resize, anything unforeseen) is cancelled,
@@ -37426,11 +37506,16 @@ function closeUvView() {
   uvCompMode = 'island';
   uvSel.clear();
   uvEdgeSel.clear();
-  paintUvModeButtons('island');
   uvViewEl.classList.remove('show');
   uvViewObj = null;
+  /* THE 3D VIEW COMES BACK (v2.53): the cube, and the frames. stepFrame
+     draws nothing while uvViewObj is set, so the first frame after this
+     has to be asked for - nothing else here would. */
+  viewCubeEl.style.display = '';
+  cubeDirty = true;       // its canvas has been sitting hidden; repaint it
+  refreshObjComponentBtn();
+  invalidate();
 }
-document.getElementById('uvViewClose').addEventListener('click', closeUvView);
 // Tapping the dimmed backdrop dismisses it too, the same guard helpOverlay
 // uses so a tap inside the card is never mistaken for one outside it. Not
 // while a drag or pinch is live, though (review finding, v2.47): a stray
@@ -37438,7 +37523,10 @@ document.getElementById('uvViewClose').addEventListener('click', closeUvView);
 // can start and end on the backdrop without ever registering as a drag,
 // synthesizing a click that would otherwise silently throw the gesture
 // away with no commit and no feedback.
-uvViewEl.addEventListener('click', (ev) => { if (ev.target === uvViewEl && !uvDrag && !uvVDrag && !uvPan && !uvPinchView) closeUvView(); });
+/* The tap-the-backdrop-to-close listener is gone (v2.53). There is no
+   backdrop any more - this element IS the view, and the letterboxed strip
+   beside a square on a tall screen is part of it, not a way out. Closing is
+   the empty-space hold ring's "3D" seat, the same hold every mode uses. */
 
 /* DRAGGING AN ISLAND (v2.45), PINCHING ONE (v2.47). One finger translates;
    a second finger, arriving while the first is already holding an island,
@@ -38038,6 +38126,11 @@ function armUvEmptyHold(ev) {
   // clear entirely, leaving the timer to fire a ring nobody can close
   // (review finding, caught before ship). Every other hold/drag in this
   // card already captures for the same reason.
+  /* Capture on the SVG even when the press landed on the letterboxed strip
+     BESIDE it (v2.53): setPointerCapture retargets every later event for
+     this pointer to that element, which is where this card's own move/up/
+     cancel listeners live - so one capture makes the strip behave exactly
+     like the square without a second set of handlers. */
   try { uvViewSvgEl.setPointerCapture(pid); } catch (e) {}
   uvEmptyHoldTimer = setTimeout(() => {
     uvEmptyHoldTimer = null; uvEmptyHoldOrigin = null;
@@ -38051,6 +38144,22 @@ function armUvEmptyHold(ev) {
 // for "the finger moved away" (v2.51: which starts a pan, or hands off to
 // the pinch above once a second finger is already live) or "the finger
 // lifted before the hold fired".
+/* THE STRIPS BESIDE THE SQUARE ARE PART OF THE VIEW (review finding,
+   v2.53). The SVG is the largest square that fits, so on a tall phone
+   roughly a third of the screen is card, not square. Until v2.53 a tap
+   there closed the card (it was the backdrop); now the backdrop is gone,
+   and without this those strips did nothing at all - no hold, no way out,
+   on a third of the screen. The press arms the same empty-space hold the
+   square's own "nothing under the finger" branches arm, and the capture
+   inside armUvEmptyHold hands the rest of the gesture to the SVG's
+   listeners below. Guarded on the target being the card or the view
+   itself, so a press on the square (which bubbles here too) is left to the
+   component-mode handlers that already own it. */
+uvViewCardEl.addEventListener('pointerdown', (ev) => {
+  if (ev.target !== uvViewCardEl && ev.target !== uvViewEl) return;
+  if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+  armUvEmptyHold(ev);
+});
 uvViewSvgEl.addEventListener('pointermove', (ev) => {
   if (uvPinchView && (ev.pointerId === uvPinchView.id1 || ev.pointerId === uvPinchView.id2)) {
     updateUvPinchView(ev);
@@ -38182,11 +38291,12 @@ const HUB_TOOLS_MODE = [
       setSoft(true);
     } },
   // v2.49: UV used to open #uvView (the 2D editor) directly, which is why
-  // this seat had no `on` - #uvView sits above the hub in z-index, so a lit
-  // state could never be seen while it showed. Now it enters the new 'uv'
-  // 3D mode instead (seams/islands on the model itself); the 2D editor is
-  // reached from there via the world ring's "Open 2D UV" seat, so the old
-  // z-index concern no longer applies and `on` can reflect the mode.
+  // this seat had no `on` - back then #uvView was a modal ABOVE the hub, so
+  // a lit state could never be seen while it showed. Now it enters the new
+  // 'uv' 3D mode instead (seams/islands on the model itself); the 2D editor
+  // is reached from there via the world ring's "Open 2D UV" seat, and since
+  // v2.53 it sits BELOW the hub anyway (z-index 12), so `on` reflects the
+  // mode and the button stays readable either way.
   { key: 'mode-uv', label: 'UV', on: () => App.mode === 'uv', run: () => setMode('uv') }
 ];
 // Both buttons this ring opens from (#hubBtn, #hdrMode) sit in a screen
@@ -38220,7 +38330,10 @@ function armModeHold(ev) {
   modeHoldTimer = setTimeout(() => {
     modeHoldTimer = null;
     modeHoldFired = true;
-    bloomToolRing(px, py, HUB_TOOLS_MODE, pid, { x: px, y: py });
+    /* The same button, a different ring while the 2D UV view is up
+       (v2.53): there it switches the component kind INSIDE that view, and
+       object/component/soft have nothing to mean on a UV layout. */
+    bloomToolRing(px, py, uvViewObj ? HUB_TOOLS_UV2D_MODE : HUB_TOOLS_MODE, pid, { x: px, y: py });
   }, TOOL_RING_HOLD_MS);
 }
 // Called on pointerup/pointercancel/pointerleave - every way the press can
@@ -38253,12 +38366,19 @@ hubBtnEl.addEventListener('pointermove', modeHoldTravelCancel);
 hubBtnEl.addEventListener('pointerup', disarmModeHold);
 hubBtnEl.addEventListener('pointercancel', disarmModeHold);
 hubBtnEl.addEventListener('pointerleave', disarmModeHold);
+/* One tap, two meanings, told apart by which view is on screen (v2.53) -
+   the same rule the ring above follows, kept in one function so the two
+   buttons below cannot answer it differently. */
+function modeButtonTap() {
+  if (uvViewObj) { cycleUvCompMode(); return; }
+  cycleEditMode();
+}
 hubBtnEl.addEventListener('click', (ev) => {
   ev.stopPropagation();
   // The click that follows a hold is the same press finishing, not a
   // second tap - the hold already made its own pick.
   if (modeHoldFired) { modeHoldFired = false; return; }
-  cycleEditMode();
+  modeButtonTap();
 });
 // The header's slab is the same control at the other end of the screen.
 const hdrModeEl = document.getElementById('hdrMode');
@@ -38270,7 +38390,7 @@ hdrModeEl.addEventListener('pointerleave', disarmModeHold);
 hdrModeEl.addEventListener('click', (ev) => {
   ev.stopPropagation();
   if (modeHoldFired) { modeHoldFired = false; return; }
-  cycleEditMode();
+  modeButtonTap();
 });
 
 /* ---------------- Drawer ---------------- */
@@ -41058,6 +41178,7 @@ function refreshUI() {
      anything restored from a save - are built DoubleSide, so culling has to
      be re-asserted here rather than only when the button is pressed. */
   refreshXrayMode();
+  reconcileUvViewTarget();
   /* Each axis wears its own state, and several can be lit at once. There is
      nothing else to light: the lit letters ARE symmetry being on. */
   document.querySelectorAll('#symAxes button').forEach(b =>
@@ -41699,6 +41820,15 @@ function stepFrame(now) {
      second of a wrong picture instead of a session of one. onResize returns
      on its first line when nothing moved, which is every time but one. */
   if (now - lastSizeCheck >= RENDER_HEARTBEAT_MS) { lastSizeCheck = now; onResize(); }
+  /* NOTHING TO DRAW BEHIND THE 2D UV VIEW (v2.53). It is opaque and covers
+     the canvas, so every frame under it is pure heat. Returning here rather
+     than guarding the render call alone also skips orbit.update and the
+     drag flush, neither of which has anything to do while the 3D viewport
+     is not on screen; the loop itself keeps its heartbeat, so the first
+     frame after closeUvView (which calls invalidate) draws normally.
+     lastRenderAt is deliberately NOT moved: the gap grows while the view is
+     open, so that first frame back is never held off by the cap. */
+  if (uvViewObj) return;
 
   if (camAnim) {
     const t = Math.min(1, (performance.now() - camAnim.start) / camAnim.duration);
@@ -41776,8 +41906,7 @@ let lastFrameTime = performance.now();
 function paintStaticIcons() {
   const map = {
     btnMenu: ['menu', 20], btnUndo: ['undo', 20], btnRedo: ['redo', 20],
-    drawerClose: ['close', 16], inspClose: ['close', 16], opCancel: ['close', 16], helpClose: ['close', 16],
-    uvViewClose: ['close', 16]
+    drawerClose: ['close', 16], inspClose: ['close', 16], opCancel: ['close', 16], helpClose: ['close', 16]
   };
   Object.entries(map).forEach(([id, [name, size]]) => {
     const el = document.getElementById(id);
@@ -41797,7 +41926,11 @@ function refreshObjComponentBtn() {
     hubBtnEl.innerHTML = icon(isObj ? 'object' : App.mode, 24);
     // The header's slab says the same thing in a word (a2.100).
     const hn = document.getElementById('hdrModeName');
-    if (hn) hn.textContent = isObj ? 'Object' : App.mode;
+    /* While the 2D UV view is up the word carries the COMPONENT KIND too
+       (v2.53). The mode button is that view's component switch now, and the
+       card's own toggle - the only place the kind was ever written down -
+       went with the header row it sat in. */
+    if (hn) hn.textContent = isObj ? 'Object' : (uvViewObj ? 'uv \u00b7 ' + uvCompMode : App.mode);
     // Soft is the glyph gaining a hollow centre (a2.106), not a longer
     // word - the block must not grow with the state it reports.
     const hc = document.querySelector('#hdrMode .hdr-glyph');
@@ -42321,10 +42454,15 @@ if (PICK_DEBUG) {
     openUvView, closeUvView, renderUvView, HUB_TOOLS_MODE,
     refreshUvView, islandVertexMap, commitUvIslandTransform,
     startUvPinch, updateUvPinchTransform,
-    setUvCompMode, commitUvVertexDrag,
+    setUvCompMode, cycleUvCompMode, HUB_TOOLS_UV2D_MODE, reconcileUvViewTarget,
+    modeButtonTap, commitUvVertexDrag,
     get uvCompMode() { return uvCompMode; },
     get uvSel() { return Array.from(uvSel); },
     get uvViewOpen() { return uvViewEl.classList.contains('show'); },
+    // WHICH object the view is pointed at (v2.53) - the id, not the object,
+    // so a probe can compare it without holding a reference that the next
+    // rebuild would make stale.
+    get uvViewTarget() { return uvViewObj ? uvViewObj.id : null; },
     // v2.50: edge mode, its own seam ops, and the two rings that open from
     // inside #uvView - exported the same way the rest of this block is,
     // so a probe can drive and inspect them without waiting on a real

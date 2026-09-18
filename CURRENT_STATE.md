@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
-- Version at time of writing: **2.52**
+- Version at time of writing: **2.53**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,90 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## The 2D UV editor stops being a card and becomes a view (2.53)
+
+The second half of the same brief 2.52 opened, and Zeghreit's own two
+answers decided the shape of it: the 3D render is stopped while the 2D view
+is up, and the way out is a long press on empty space rather than a fifth
+seat in the mode ring.
+
+**It replaces the viewport instead of covering it.** `#uvView` was a modal:
+z-index 41, a dimmed backdrop, its own panel, border, header row, and a ✕.
+It is now z-index 12 - above the canvas and the vignette, below Undo/Redo
+and the tool chip (13), the header (15), the mode button and the inspector
+(16), and the tool rings (20) - opaque, with no card chrome at all. 14 was
+the first number tried and it was wrong (review finding): it put the
+undo/redo pair *under* the view, which is the one control a UV drag wants
+most, immediately.
+
+**The view cube is hidden and the 3D scene stops being drawn.** `stepFrame`
+returns early while `uvViewObj` is set, so nothing behind the opaque view is
+rendered - `lastRenderAt` is deliberately not advanced, so the first frame
+after closing is never held off by the frame cap, and `closeUvView` asks for
+it with `invalidate()`. The cube is hidden outright as well: belt and braces,
+since its own render call sits inside `stepFrame` after the skip, but the
+brief asked for it and a control for a camera that is not drawing has no
+business on screen.
+
+**The app's own mode button is the component switch.** The card's
+Island/Vertex/Edge toggle went with the header row. A tap on `#hubBtn` or
+`#hdrMode` cycles the kinds through `modeButtonTap` while the view is open
+(and still cycles the app's modes when it is not); a hold blooms
+`HUB_TOOLS_UV2D_MODE` instead of `HUB_TOOLS_MODE`, built by mapping one
+`UV_COMP_MODES` list so the tap and the ring cannot drift. The header's word
+carries the kind - "uv · edge" - because that toggle was the only place the
+kind was ever written down. There is no exit seat in that ring: the way back
+is the empty-space hold ring's "3D" seat, which has existed since v2.50.
+
+**The view follows the outliner's active object.** `reconcileUvViewTarget`
+is a sweep called from `refreshUI`, not a hook on the twenty-odd places that
+assign `App.activeObjectId` - the same shape `refreshXrayMode` and
+`applyIsolation` already use, and just as cheap: an id compare per call.
+Switching object drops the selections and the zoom, because they are indices
+into the object that was open. It also closes the view when the active
+object is gone, and - after review - when `App.mode` leaves `'uv'` at all.
+
+### What review found
+
+Opus, cold, on the working-tree diff. Six findings, all real, all fixed
+before shipping:
+
+- **A throw inside `openUvView` could strand the app with no way out.**
+  `uvViewObj` is assigned and the cube hidden *before* `renderUvView` runs
+  and a tick before `.show` is added. Before this slice a throw there was
+  harmless; with the render skip keyed on `uvViewObj` it would have left a
+  black screen whose only exit is a hold inside a view that never appeared.
+  Now the render is inside a try/catch that closes the view and says so.
+- **`App.mode` could leave `'uv'` with the view still up.** The drawer and
+  header stay above the view and keep working, so Add Cube, an import or
+  Draw curve all reach `setMode('object')` from there. The sweep watched
+  only the active object, so the view stayed open while the header read
+  "Object" and a tap on that same button still cycled a UV component kind.
+- **The letterboxed strips beside the square did nothing.** The SVG is the
+  largest square that fits; on a tall phone about a third of the screen is
+  card. That area used to close the card on a tap (it was the backdrop) and
+  after this slice had no gesture at all. It now arms the same empty-space
+  hold, and `armUvEmptyHold`'s capture hands the rest of the gesture to the
+  SVG's own listeners, so one capture covers both without a second set of
+  handlers.
+- Undo/Redo under the view (the z-index above), and two comments left
+  claiming things that stopped being true - the tap-to-close backdrop, and
+  `#uvView` sitting *above* the hub - plus this slice's own new comment
+  claiming the cube had to be hidden because it renders through its own
+  renderer, which is true and beside the point.
+
+Cleared on inspection: no temporal-dead-zone path (init runs after the
+declarations), no `refreshUI` re-entrancy through `closeUvView`, and the
+frame loop restarts correctly on every close path.
+
+### What this slice deliberately does not do
+
+No Face kind in the 2D view, and island/face selection there still has no
+selected state - only a drag. Those are the rest of Zeghreit's list and the
+next slice. Merge islands is unchanged from 2.52. The camera flight and the
+cube's own swing freeze while the view is open and snap to their end on
+close, which is accepted rather than fixed.
 
 ## Seams you can see, a selection that wins, and a Merge that merges (2.52)
 
