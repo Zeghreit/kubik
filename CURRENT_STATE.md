@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~40,938 lines)
-- Version at time of writing: **2.45**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~40,943 lines)
+- Version at time of writing: **2.46**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -589,6 +589,30 @@ moved (4 of 4 correct picks at both corners, aiming at each seat's true
 on-screen position). Its two real findings - the overhang and the
 fallback's lost margin - are the fixes described above, both re-verified
 live afterward rather than taken on the review's numbers alone.
+
+## Unwrap moved to Object mode (2.46)
+
+Zeghreit, after v2.45 shipped: the UV commands' menu placement "isn't very
+logical" and Unwrap probably belongs in Object mode's menu. Right call -
+`unwrapSelection()` (stage 5, slice 3) always worked on the WHOLE active
+object regardless of what was selected, but it lived in Face mode's Surface
+door, so reaching it meant switching to face selection for no reason the
+tool itself needed. Show islands stayed in Face mode (Zeghreit's own choice,
+confirmed via AskUserQuestion) since it is a face-mode reading of the
+surface, same family as Shade/Flip normals there; Mark seam/Clear seams
+stayed in Edge mode, since marking a seam genuinely needs an edge selected.
+
+**Mechanical move, no change to `unwrapSelection()` itself.** The `unwrap`
+entry left `HUB_TOOLS_FACE`'s Surface door and landed in
+`HUB_TOOLS_OBJECT_BASE`'s Finish door (seat 3, one of three seats that door
+had free) - the same "how the object reads" door that already holds Shade,
+Smooth by angle, Flip normals, Clean up and Centre. Both help-overlay
+entries (`HELP_SECTIONS`, Face tools / Object tools) moved with it. Verified
+live: Unwrap present in Object mode's Finish door, absent from Face mode's
+Surface door, no seat collision in Finish door (`0,1,2,3,6,7`, one gap left
+at 4/5), and running it on the app's own default cube (no UV before) writes
+a UV layout with no console errors - all confirmed via `window.__kubik`,
+not just read off the diff.
 
 ## Drag an island in the 2D UV view (2.45)
 

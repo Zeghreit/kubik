@@ -2466,7 +2466,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.45</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.46</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -33463,14 +33463,12 @@ const HUB_TOOLS_FACE = [
     // UV islands preview (uv-commands-maps-plan.md stage 5, slice 2): which
     // faces the current seams would cut apart, colour-coded. A reading of
     // the surface, same family as Shade and Flip normals, so it lives here
-    // rather than earning a seat of its own on the outer ring.
+    // rather than earning a seat of its own on the outer ring. Unwrap itself
+    // moved out to Object mode's Finish door in v2.46 - it writes UV for the
+    // whole object regardless of what is selected here, so Face mode was
+    // never the right place for it, just where it landed first.
     { key: 'islands', icon: 'islands', label: 'Show islands', seat: 3,
-      on: () => App.showIslands, run: toggleShowIslands },
-    // The unwrap itself (uv-commands-maps-plan.md stage 5, slice 3): writes
-    // real UV coordinates over the whole object from its current islands -
-    // best-fit-plane by default, cylindrical for a tube-shaped island.
-    // Same door as the preview it follows, one seat over.
-    { key: 'unwrap', icon: 'unwrap', label: 'Unwrap', seat: 4, run: unwrapSelection }
+      on: () => App.showIslands, run: toggleShowIslands }
   ] }
 ];
 
@@ -33515,7 +33513,15 @@ const HUB_TOOLS_OBJECT_BASE = [
     { key: 'autosmooth', icon: 'smoothangle', label: 'Smooth by angle', seat: 1, run: autoSmoothSelection },
     { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 7, run: flipNormalsSelection },
     { key: 'cleanup', icon: 'cleanup', label: 'Clean up', seat: 2, run: cleanupSelection },
-    { key: 'centre', icon: 'centre', label: 'Centre', seat: 6, run: centreSelectionToOrigin }
+    { key: 'centre', icon: 'centre', label: 'Centre', seat: 6, run: centreSelectionToOrigin },
+    /* Moved here from Face mode's Surface door in v2.46 (Zeghreit: burying a
+       whole-object op behind a face-selection mode was never logical - the
+       op ignores whatever is selected, same as everything else in this
+       door). Writes real UV coordinates over the whole active object from
+       its current islands - best-fit-plane by default, cylindrical for a
+       tube-shaped island. Same "how the object reads" family as Shade and
+       Flip normals above it. */
+    { key: 'unwrap', icon: 'unwrap', label: 'Unwrap', seat: 3, run: unwrapSelection }
   ] }
 ];
 // Join rode a seat of its own, appended live for selections of two or more,
@@ -39119,11 +39125,10 @@ HELP_SECTIONS.push(
       ['del', 'Delete', 'Cuts the faces away and leaves a hole. This is how you make one — every other mode’s Delete closes the gap instead.'],
       ['bridge', 'Bridge', 'Joins two selections with new faces.'],
       ['detach', 'Detach', 'The selected faces leave as their own object.'],
-      [null, 'SURFACE — a door', 'Shade, Flip normals, Set flow, Circularize, Show islands, Unwrap.'],
+      [null, 'SURFACE — a door', 'Shade, Flip normals, Set flow, Circularize, Show islands.'],
       ['smooth', 'Shade', 'Flat or smooth, on the selected faces. In Edge mode use Mark Sharp instead — it is the same idea, said once.'],
       ['flipnorm', 'Flip normals', 'Turns the selected faces inside out.'],
-      ['islands', 'Show islands', 'Colours the faces by which UV island they would fall into once cut along the current seams.'],
-      ['unwrap', 'Unwrap', 'Lays out the whole object’s UV from its current islands — flat for a panel, wrapped around for a tube-shaped one.']
+      ['islands', 'Show islands', 'Colours the faces by which UV island they would fall into once cut along the current seams.']
     ]
   },
   {
@@ -39141,10 +39146,11 @@ HELP_SECTIONS.push(
       ['join', 'Join', 'Merges the selected objects into one.'],
       ['separate', 'Separate', 'One object per loose piece.'],
       ['boolop', 'Boolean', 'The other answer to “these become one mesh”: Union keeps both, Difference cuts the second out of the first, Intersect keeps only the overlap. Needs two objects selected, and sits one seat in from Join.'],
-      [null, 'FINISH — a door', 'Shade, Smooth by angle, Flip normals, Clean up, Centre.'],
+      [null, 'FINISH — a door', 'Shade, Smooth by angle, Flip normals, Clean up, Centre, Unwrap.'],
       ['smoothangle', 'Smooth by angle', 'One threshold for the whole object: edges sharper than it stay hard, the rest blend. It keeps deciding for geometry you have not made yet.'],
       ['cleanup', 'Clean up', 'Tris to quads pairs triangles back into faces — the fix for an imported model that will not loop cut. Merge by distance welds points that are almost touching.'],
-      ['centre', 'Centre', 'Back to the middle, resting on the floor.']
+      ['centre', 'Centre', 'Back to the middle, resting on the floor.'],
+      ['unwrap', 'Unwrap', 'Lays out the whole object’s UV from its current islands — flat for a panel, wrapped around for a tube-shaped one. Mark seam (Edge mode) decides where it cuts; Show islands (Face mode) previews the cuts first.']
     ]
   },
   {
