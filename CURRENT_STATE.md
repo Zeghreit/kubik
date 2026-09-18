@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
-- Version at time of writing: **2.51**
+- Version at time of writing: **2.52**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,98 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## Seams you can see, a selection that wins, and a Merge that merges (2.52)
+
+First slice after the whole UV plan closed, and all of it came from Zeghreit
+opening v2.51 and listing what was wrong with what he saw. Three complaints,
+three different causes, none of them where the words pointed.
+
+**"Stitched islands should become one colour."** Merge islands had been a
+literal alias for Clear seam since v2.49, which is right on an EDGE selection
+and does nothing at all on the island selection v2.51 taught the viewport to
+make: `markSeamSelection` refuses outright when `App.uvSelKind === 'face'`
+(its own "a seam lives on an edge, so tap one" guard). So tapping two islands
+and picking Merge islands silently did nothing - measured on the stand before
+the fix: six islands before, six after, no toast. `mergeUvIslandsSelection`
+is the real op: with two or more islands selected it clears every seam on an
+edge whose two face groups sit in two DIFFERENT selected islands, then
+reselects the island they became (leaving the old selection would say "one
+island" in the tint and "two" in the selection, and the next Merge would
+refuse). A chain A-B-C where A and C do not touch still lands as one island,
+through B, because the union-find does that on its own once B's seams go.
+`computeUVIslands` now hands back the `edgeFaces` map it already builds -
+a second copy of that walk is how two copies of one rule start disagreeing.
+Nothing MOVES in UV space: the two halves keep their coordinates until the
+next Unwrap. The rigid align-along-the-shared-edge operation is still the
+deferred one, and still wants its Fable review when it exists.
+
+**"Seams should be a different colour."** They were teal, and Zeghreit could
+not see them at all - which is the part the sentence did not say and the
+stand did. The seam colour was correct in the line buffer, `edgeLines.visible`
+was true, and none of it reached the screen. What hides it is the island tint:
+a DoubleSide, depth-ignoring sheet over the whole mesh. Two things had to
+change, both load-bearing. The tint went 0.55 -> 0.32: the real per-frame
+order, printed from `onBeforeRender`, is mesh -> lines -> island -> dots,
+because an opaque wireframe is drawn in the opaque queue BEFORE every
+transparent object no matter what renderOrder it carries - so the tint lands
+on the wireframe three times a frame, leaving about 9% of the line at 0.55
+and about 31% at 0.32. And the wireframe stopped depth-testing in UV mode,
+without which it was not drawn at all. The colour itself is now magenta
+(`THEME.seam` 0xff3bd0, and the literal in `.uv-edge.seamed` that has to be
+changed with it). Plain red was declined on Zeghreit's own answer to the
+question: a selected edge is already 0xff5230.
+
+**"Selected faces should stand out."** They did not, for the same reason the
+seams did not: at 0.55 the island tint owned the surface, and a 0.55 selection
+tint over it read as one more pastel. The selection overlay goes to 0.8 while
+in UV mode and stays 0.55 everywhere else, and both overlays stopped writing
+depth - a tint is not geometry, and with it writing depth the wireframe and
+the dots over a selected face were hidden by the very thing marking it.
+
+### What review found
+
+Opus, cold, on the working-tree diff. One finding was the slice's whole
+result: **the UV depthTest rule was dead on arrival.** It had been written in
+`refreshElementColors`, and `refreshXrayMode` - which sweeps every object and
+runs from `refreshUI`, after `refreshElementColors` on every path - wrote the
+flag straight back. My own stand had "confirmed" the fix only because the
+probe called `refreshElementColors` LAST, which is the "a worker function is
+not a tool" lesson arriving by a new door: the probe drove the functions in an
+order no real path produces. The rule now lives in `refreshXrayMode`, the
+single owner of that flag, which also means it cannot get stuck - leaving UV
+mode and re-targeting the active object from the Scene list both reach that
+sweep even when nothing repaints the colours.
+
+Three more, all fixed: two v2.52 comments contradicted each other about the
+cause (one claimed `depthWrite: false` was "the one line that decides", which
+the 0.001-opacity measurement had already ruled out); **`App.uvSelKind` did
+not travel with the history snapshot**, so an undo put edge indices back while
+the kind still said 'face' and `syncFaceOverlay` lit whichever faces shared
+those numbers - a v2.51 hole that v2.52 is the first path to make reachable,
+since it is the first op that forces the kind to 'face' and then pushes
+history (`restoreDoc`'s element-count limit got its own 'uv' arm at the same
+time, for the same reason: the two kinds count against different lists); and
+`edgeFaces` was being kept alive for the life of the island cache, which on a
+heavy mesh pins one Map entry and one array per logical edge for a map the
+overlay never reads.
+
+Checked and found sound: no `symExpand` in the merge is correct rather than
+missing (`mirrorViaMap` has no UV branch, so it would only have emitted a
+misleading toast); the reselect ordering is safe because a seam-only edit
+leaves face-group ids valid; hitting the seat twice is a polite refusal; and
+`depthWrite: false` on the face overlay fixes Face mode rather than breaking
+it.
+
+### What this slice deliberately does not do
+
+The 2D editor is untouched apart from the seam colour. Island selection inside
+`#uvView` (it still has no selected state at all - only a drag), a Face mode
+there, switching the 2D component kind from the app's own mode button and its
+bloom ring, the card becoming a real view INSTEAD of the 3D viewport with the
+view cube gone, and the 2D view following the outliner's active object are all
+Zeghreit's same brief and all belong to the next slice, by his own choice of
+order ("сначала цвета, потом перестройка").
 
 ## Seams: the first cut for the UV unwrap (2.39)
 

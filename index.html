@@ -2175,12 +2175,13 @@
     stroke: var(--text-dim); stroke-opacity: 0.55; stroke-width: 1.8;
     stroke-linecap: round; cursor: pointer;
   }
-  /* Cyan/teal, matching SEAM_COLOR (0x3ad1c9) in the 3D viewport - a literal
-     hex rather than a computed one, the same tradeoff .uv-square and
-     .uv-edges above already made: nothing re-themes this card live today,
-     and a seam is a property of the MESH, not of whichever mode opened
-     this view. */
-  #uvViewSvg .uv-edge.seamed { stroke: #3ad1c9; stroke-opacity: 0.95; stroke-width: 2.2; }
+  /* Magenta since v2.52, matching SEAM_COLOR (0xff3bd0) in the 3D viewport -
+     a literal hex rather than a computed one, the same tradeoff .uv-square
+     and .uv-edges above already made: nothing re-themes this card live
+     today, and a seam is a property of the MESH, not of whichever mode
+     opened this view. The two hexes have to be changed together; that is
+     the price of the literal, and it has been paid once now. */
+  #uvViewSvg .uv-edge.seamed { stroke: #ff3bd0; stroke-opacity: 0.95; stroke-width: 2.2; }
   #uvViewSvg .uv-edge.selected { stroke: var(--accent); stroke-opacity: 1; stroke-width: 2.6; }
   #uvViewEmpty { padding: 24px 8px; text-align: center; color: var(--text-dim); }
   #helpCard {
@@ -2544,7 +2545,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.51</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.52</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -4355,7 +4356,7 @@ const THEME = {
      crease keeps its own warmer orange: it marks a PROPERTY of the mesh,
      not a state of the app, and it has to stay separable from select. */
   select: 0xff5230, vert: 0x8b939c, edge: 0x5a626b, crease: 0xff7a45,
-  seam: 0x3ad1c9,
+  seam: 0xff3bd0,
   material: 0x303338
 };
 
@@ -4390,11 +4391,19 @@ let CREASE_COLOR = THEME.crease;
    cannot see a normal, only its effect. Warm against the crease colour so
    the two marks never read as the same thing on one mesh. */
 const SHARP_COLOR = 0xff8a3d;
-/* Seam is a cyan/teal, deliberately outside the orange cluster that select,
-   crease and sharp already occupy - a seamed edge must never be mistaken
-   for any of the other three marks at a glance. Read from THEME and
-   reassigned in applyTheme(), same as CREASE_COLOR - one definition, not
-   a claim that anything actually re-themes at runtime today. */
+/* Seam is a MAGENTA since v2.52, and it was a cyan/teal before that. The
+   rule it has to satisfy has not changed - a seamed edge must never be
+   mistaken for select, crease or sharp, which are the orange-to-red
+   cluster - but the old cyan had a second job it was failing: it also has
+   to read against the ISLAND TINT, and that tint is a golden-angle sweep
+   through every hue there is, cyan included. Magenta is no safer against a
+   full hue sweep than cyan was, so what actually makes the seam legible is
+   that the island tint got quieter and stopped writing depth (see
+   syncIslandOverlay); the colour move is the second half of it, and plain
+   red was declined on Zeghreit's own question because a selected edge is
+   already 0xff5230. Read from THEME and reassigned in applyTheme(), same
+   as CREASE_COLOR - one definition, not a claim that anything actually
+   re-themes at runtime today. */
 let SEAM_COLOR = THEME.seam;
 
 // Objects already in the scene keep whatever colour they were given - only the
@@ -9009,6 +9018,9 @@ function ensureHelpers(obj) {
   const eGeo = new THREE.BufferGeometry();
   eGeo.setAttribute('position', new THREE.BufferAttribute(ePos, 3));
   eGeo.setAttribute('color', new THREE.BufferAttribute(eCol, 3));
+  /* depthTest here is the INITIAL value only: refreshElementColors sets it
+     per mode from v2.52 (see the uvWire block there), because UV mode needs
+     the wireframe to ignore depth and this material is shared across modes. */
   const eMat = new THREE.LineBasicMaterial({ vertexColors: true, depthTest: !App.xraySelection, linewidth: 1, fog: false });
   const lines = new THREE.LineSegments(eGeo, eMat);
   lines.renderOrder = 9;
@@ -9067,9 +9079,13 @@ function syncFaceOverlay(obj) {
 
   if (!ud.faceOverlay) {
     const g = new THREE.BufferGeometry();
+    /* depthWrite OFF for the same reason the island tint above turned it
+       off (v2.52): this overlay is a tint, and with it writing depth the
+       wireframe and dots over a SELECTED face were being hidden by the
+       very thing marking that face as selected. */
     const m = new THREE.MeshBasicMaterial({
       color: SELECT_COLOR, transparent: true, opacity: 0.55,
-      depthTest: false, side: THREE.DoubleSide, fog: false
+      depthTest: false, depthWrite: false, side: THREE.DoubleSide, fog: false
     });
     const mesh = new THREE.Mesh(g, m);
     /* NOT CULLED. The geometry borrows a position attribute that a drag
@@ -9086,6 +9102,12 @@ function syncFaceOverlay(obj) {
   const mesh = ud.faceOverlay;
   mesh.visible = true;
   mesh.material.color.setHex(SELECT_COLOR);
+  /* LOUDER IN UV MODE (v2.52). Everywhere else this tint lands on the bare
+     material; in UV mode it lands on the island tint, and two 0.55 layers
+     of different hues read as one pastel rather than as "this one is
+     selected". Set per sync rather than at creation because the same
+     overlay object serves both modes. */
+  mesh.material.opacity = (App.mode === 'uv') ? 0.8 : 0.55;
   // A rebuild installs a new attribute; the borrow has to follow it.
   if (mesh.geometry.attributes.position !== geo.attributes.position) {
     mesh.geometry.setAttribute('position', geo.attributes.position);
@@ -9212,7 +9234,12 @@ function computeUVIslands(obj) {
     if (id === undefined) { id = count++; idOf.set(r, id); }
     islandOf[gi] = id;
   }
-  return { islandOf, count };
+  /* edgeFaces travels out with the answer since v2.52. mergeUvIslandsSelection
+     needs exactly this map - which face groups sit either side of a logical
+     edge - and building a second copy of the walk above is how two copies of
+     one rule start disagreeing. It is already built here; handing it back
+     costs nothing and every existing caller destructures. */
+  return { islandOf, count, edgeFaces };
 }
 
 // Every face-group id sharing fgIndex's island (v2.51) - what a 3D UV-mode
@@ -9295,14 +9322,35 @@ function syncIslandOverlay(obj) {
   const geo = obj.mesh.geometry;
   const ver = ud.islandsVersion || 0;
   if (!ud.islandCache || ud.islandCache.topo !== topo || ud.islandCache.ver !== ver) {
-    ud.islandCache = { topo, ver, data: computeUVIslands(obj) };
+    /* Only the two fields the overlay actually paints from. computeUVIslands
+       also hands back its edgeFaces map since v2.52 (mergeUvIslandsSelection
+       needs it), and keeping THAT alive for the life of the cache would pin
+       one Map entry plus one array per logical edge on the active object -
+       tens of thousands on the meshes heavy-mesh-plan.md worries about, for
+       a map this overlay never reads. */
+    const isl = computeUVIslands(obj);
+    ud.islandCache = { topo, ver, data: { islandOf: isl.islandOf, count: isl.count } };
   }
 
   if (!ud.islandOverlay) {
     const g = new THREE.BufferGeometry();
+    /* depthWrite OFF (v2.52) on the principle that a tint is not geometry
+       and has no business writing depth - NOT because it is what made the
+       seam visible again. It isn't: the tint hid the wireframe by PAINT,
+       not by depth, which was settled by dropping its opacity to 0.001
+       without moving it in the draw order and watching the seams come
+       back. What fixes that is in refreshXrayMode; this line only stops a
+       second, quieter version of the same problem, where the vertex dots
+       and the selection overlay fail a depth test against a tint sitting
+       at the same surface as the mesh.
+
+       0.32 rather than 0.55 for the same reason the selection below got
+       louder: at 0.55 the tint owned the surface, and both the island
+       colours and the selection on top of them came out as the same family
+       of pastels. */
     const m = new THREE.MeshBasicMaterial({
-      vertexColors: true, transparent: true, opacity: 0.55,
-      depthTest: false, side: THREE.DoubleSide, fog: false
+      vertexColors: true, transparent: true, opacity: 0.32,
+      depthTest: false, depthWrite: false, side: THREE.DoubleSide, fog: false
     });
     const mesh = new THREE.Mesh(g, m);
     mesh.frustumCulled = false;
@@ -9960,7 +10008,39 @@ function refreshXrayMode() {
     if (!o || !o.mesh) return;
     const p = o.mesh.userData.vertexPoints, l = o.mesh.userData.edgeLines;
     if (p && p.material && p.material.depthTest !== wantDepth) p.material.depthTest = wantDepth;
-    if (l && l.material && l.material.depthTest !== wantDepth) l.material.depthTest = wantDepth;
+    /* THE WIREFRAME IGNORES DEPTH IN UV MODE (v2.52), on the active object,
+       and is drawn last. The island tint is a DoubleSide, depth-ignoring
+       sheet over the whole mesh, and it lands on the wireframe several
+       times per frame - enough to swallow a seam completely. Measured, in
+       this order: the seam colour was correct in the line buffer with
+       nothing of it on screen; hiding the tint brought it back; dropping
+       the tint's opacity to 0.001 without moving it in the draw order
+       brought it back too. Printing the real per-frame order from
+       onBeforeRender then showed why renderOrder cannot help: an opaque
+       wireframe is drawn in the opaque queue, before every transparent
+       object, so it is mesh -> lines -> island -> dots and the tint lands
+       on the wireframe three times a frame whatever number the lines
+       carry. At 0.55 that leaves about 9% of the line (1 - 0.45^3); at
+       0.32, about 31% - which is the difference between the before and
+       after screenshots. So TWO things had to change and both are load-
+       bearing: the tint got quieter, and the wireframe stopped depth-
+       testing here, without which it was not being drawn at all. The cost
+       is an x-ray wireframe in this one mode - the mode where a seam on
+       the far side of the model is worth seeing anyway.
+
+       It lives HERE rather than in refreshElementColors (where it was
+       first written, and where it was dead on arrival) because this
+       function is the single owner of that flag: it sweeps every object
+       from refreshUI, which runs after refreshElementColors on every path,
+       so anything written there is overwritten a moment later. Keeping it
+       here also means the flag cannot get stuck: leaving UV mode, or
+       re-targeting the active object from the Scene list, both reach this
+       sweep even when nothing repaints the colours. */
+    const uvWire = App.mode === 'uv' && o.id === App.activeObjectId;
+    const lineDepth = wantDepth && !uvWire;
+    const lineOrder = uvWire ? 12 : 9;
+    if (l && l.material && l.material.depthTest !== lineDepth) l.material.depthTest = lineDepth;
+    if (l && l.renderOrder !== lineOrder) l.renderOrder = lineOrder;
     /* A negative-scale object (what Mirror produces) has reversed winding,
        so culling front faces would hide exactly the half you want to see.
        Those stay DoubleSide regardless of the toggle - correctness first,
@@ -18972,6 +19052,72 @@ function markSeamSelectionUv(on) {
   toast(want ? changed + ' edge(s) seamed' : changed + ' seam(s) cleared');
 }
 
+/* MERGE ISLANDS, for real (v2.52). This seat used to be a literal alias for
+   Clear seam, which does the right thing on an EDGE selection and NOTHING
+   AT ALL on the island selection v2.51 taught the 3D viewport to make:
+   markSeamSelection refuses outright when App.uvSelKind is 'face' (its own
+   "a seam lives on an edge, so tap one" guard), so tapping two islands and
+   picking Merge islands silently did nothing. Measured on the stand before
+   the fix: six islands before, six after, no toast.
+
+   What "merge" means for two islands is the seams BETWEEN them: clear those
+   and computeUVIslands' union-find puts both in one bucket, which is what
+   makes them one colour in the viewport and one unit in the 2D editor.
+   Nothing moves in UV space - the two halves keep the coordinates they
+   already had until the next Unwrap. That is still short of the rigid
+   align-along-the-shared-edge operation v2.49 and v2.51 deferred (and which
+   still wants its Fable review when it exists), and it is the whole of what
+   the word can honestly mean before those coordinates are recomputed. */
+function mergeUvIslandsSelection() {
+  /* An edge selection, or a call from inside the 2D editor, still means
+     "clear the seam under it" - that is the only merge those two selections
+     can name, and it is exactly what this seat has always done there. */
+  if (uvViewObj || App.uvSelKind !== 'face') { markSeamSelection(false); return; }
+  const obj = findObject(App.activeObjectId);
+  if (!obj) { toast('Select an object first'); return; }
+  ensureHelpers(obj);
+  const { islandOf, edgeFaces } = computeUVIslands(obj);
+  const picked = new Set();
+  App.selectedElements.forEach(gi => {
+    if (gi >= 0 && gi < islandOf.length) picked.add(islandOf[gi]);
+  });
+  if (picked.size < 2) { toast('Tap a second island to merge with'); return; }
+  /* Every seamed edge with one PICKED island on each side. A chain A-B-C
+     where A and C do not touch still ends up as one island, through B - the
+     union-find does that on its own once both of B's seams are gone. */
+  const keys = new Set();
+  edgeFaces.forEach((gis, key) => {
+    if (gis.length !== 2) return;   // boundary or non-manifold: a cut no seam made, and none can close
+    const ia = islandOf[gis[0]], ib = islandOf[gis[1]];
+    if (ia === ib || !picked.has(ia) || !picked.has(ib)) return;
+    const us = key.split('_');
+    const k = creaseKeyFor(logicalPos(obj, +us[0]), logicalPos(obj, +us[1]));
+    if (k) keys.add(k);
+  });
+  if (!keys.size) { toast('Those islands do not touch'); return; }
+  const { changed } = toggleSeamKeys(obj, Array.from(keys), false);
+  if (!changed) { toast('Nothing to merge there'); return; }
+  /* Re-select the island they BECAME, not the face groups they were. The
+     point of the op is that these are now one island; leaving the old
+     selection alone would say so in the tint and deny it in the selection,
+     and the next Merge would then see one island and refuse. */
+  const after = computeUVIslands(obj);
+  const mergedIds = new Set();
+  App.selectedElements.forEach(gi => {
+    if (gi >= 0 && gi < after.islandOf.length) mergedIds.add(after.islandOf[gi]);
+  });
+  App.selectedElements.clear();
+  for (let gi = 0; gi < after.islandOf.length; gi++) {
+    if (mergedIds.has(after.islandOf[gi])) App.selectedElements.add(gi);
+  }
+  App.uvSelKind = 'face';
+  refreshElementColors(obj);
+  hideRadialMenu();
+  refreshUI();
+  pushHistory();
+  toast(changed + ' seam(s) cleared - islands merged');
+}
+
 function clearAllSeams() {
   const obj = findObject(App.activeObjectId) ||
     findObject(Array.from(App.selectedObjectIds)[0]);
@@ -19689,6 +19835,10 @@ function refreshElementColors(obj) {
     points.geometry.attributes.color.needsUpdate = true;
   }
   if (lines) {
+    /* The wireframe's depthTest and renderOrder are NOT set here - see
+       refreshXrayMode, which owns that flag and would overwrite anything
+       written here anyway (it runs from refreshUI, which every path runs
+       after this function). */
     const col = lines.geometry.attributes.color.array;
     const creases = obj.mesh.userData.creases || {};
     const shade = obj.mesh.userData.edgeShade || {};
@@ -30013,7 +30163,15 @@ function serializeDocBody() {
       mode: App.mode,
       activeObjectId: App.activeObjectId,
       objects: Array.from(App.selectedObjectIds),
-      elements: Array.from(App.selectedElements)
+      elements: Array.from(App.selectedElements),
+      /* WHAT THE ELEMENT NUMBERS MEAN, in UV mode (v2.52). They are edge
+         indices when the kind is 'edge' and face-GROUP ids when it is
+         'face', and nothing else in this block says which. Without it an
+         undo put edge indices back while App.uvSelKind still said 'face',
+         and syncFaceOverlay lit whichever faces happened to share those
+         numbers - a confident wrong answer, and one Merge islands would
+         then act on. */
+      uvSelKind: App.uvSelKind
     }
   };
 }
@@ -30474,6 +30632,9 @@ function restoreDoc(doc, opts = {}) {
   // objects or components it pointed at are gone.
   const sel = keepSel ? liveSel : doc.selection;
   App.mode = (sel && sel.mode) || App.mode || 'object';
+  // Older snapshots (and every non-UV one) carry no kind; 'edge' is the
+  // same default App starts with and the same one setMode resets to.
+  App.uvSelKind = (sel && sel.uvSelKind) || 'edge';
   App.activeObjectId = (sel && findObject(sel.activeObjectId)) ? sel.activeObjectId : null;
   /* NOT on undo. Toggling symmetry pushes no history and is deliberately
      excluded from pushHistory's dedupe signature, so what a step carries is
@@ -30507,9 +30668,14 @@ function restoreDoc(doc, opts = {}) {
   if (App.mode !== 'object' && active) {
     ensureHelpers(active);
     const topo = active.mesh.userData.topo;
+    /* UV mode counts by its own kind (v2.52): its element numbers are edge
+       indices for seam marking and face-group ids for an island selection,
+       and the two lists have different lengths - filtering one against the
+       other silently drops real selections or keeps impossible ones. */
     const limit = App.mode === 'vertex' ? topo.logicalCount
       : App.mode === 'edge' ? topo.edges.length
-        : topo.faceGroups.length;
+        : App.mode === 'uv' ? (App.uvSelKind === 'face' ? topo.faceGroups.length : topo.edges.length)
+          : topo.faceGroups.length;
     App.selectedElements = new Set(((sel && sel.elements) || []).filter(i => i < limit));
     setActiveObjectHelpersVisible(active, App.mode);
     refreshElementColors(active);
@@ -35603,20 +35769,19 @@ const HUB_TOOLS_WORLD = [
 // border replaced it with a real picker; see the Materials fly-out below.
 
 /* UV mode's own door (v2.49). Four flat seats, no sub-doors: mark/clear a
-   seam on the selected edges, merge two islands into one, and unwrap.
-   'merge' is provisional - real island-tap selection (picking a whole UV
-   island by tapping one of its faces) is planned as a fast-follow slice;
-   until then it acts exactly like 'unseam' on the current edge selection,
-   which is an honest enough approximation of "these two islands become one"
-   since clearing the seam between them is what actually merges them when
-   the model is next unwrapped. */
+   seam on the selected edges, merge the selected islands into one, and
+   unwrap. 'merge' stopped being an alias for 'unseam' in v2.52 - with two
+   or more islands selected it clears every seam BETWEEN them and reselects
+   the island they became; with an edge selected, or from inside the 2D
+   editor, it still means clear-the-seam-under-it, which is the only merge
+   those selections can name. See mergeUvIslandsSelection. */
 const HUB_TOOLS_UV = [
   { key: 'seam', icon: 'seam', label: 'Mark seam', seat: 0,
     run: () => markSeamSelection(true) },
   { key: 'unseam', icon: 'unseam', label: 'Clear seam', seat: 1,
     run: () => markSeamSelection(false) },
   { key: 'merge', icon: 'unseam', label: 'Merge islands', seat: 2,
-    run: () => markSeamSelection(false) },
+    run: mergeUvIslandsSelection },
   { key: 'unwrap', icon: 'unwrap', label: 'Unwrap', seat: 3,
     run: unwrapSelection }
 ];
@@ -42121,7 +42286,7 @@ if (PICK_DEBUG) {
     bridgeSelection, mirrorSelectedObjects,
     // Seams (uv-commands-maps-plan.md stage 5) - same reason creaseSelection
     // and markSharpSelection are here: let a harness drive the real toggle.
-    markSeamSelection, clearAllSeams, seamSet,
+    markSeamSelection, clearAllSeams, seamSet, mergeUvIslandsSelection,
     // UV islands preview (uv-commands-maps-plan.md stage 5, slice 2) - lets a
     // harness compute islands directly and inspect the overlay without
     // pretending to be a finger on the ring. toggleShowIslands is gone
