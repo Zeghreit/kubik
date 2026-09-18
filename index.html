@@ -2139,6 +2139,22 @@
   }
   #uvViewSvg .uv-vertex.selected { fill: var(--accent); fill-opacity: 0.95; }
   #uvViewSvg .uv-vertex.dragging { cursor: grabbing; }
+  /* Edge mode (v2.50) - the same generous-hit-target reasoning as .uv-vertex
+     above, spent as stroke-width instead of a disc radius: an edge is a
+     line, and a line is already easier to land a tap on along its length
+     than a point is, so it does not need nearly as much padding to reach a
+     comfortable touch target. */
+  #uvViewSvg .uv-edge {
+    stroke: var(--text-dim); stroke-opacity: 0.55; stroke-width: 1.8;
+    stroke-linecap: round; cursor: pointer;
+  }
+  /* Cyan/teal, matching SEAM_COLOR (0x3ad1c9) in the 3D viewport - a literal
+     hex rather than a computed one, the same tradeoff .uv-square and
+     .uv-edges above already made: nothing re-themes this card live today,
+     and a seam is a property of the MESH, not of whichever mode opened
+     this view. */
+  #uvViewSvg .uv-edge.seamed { stroke: #3ad1c9; stroke-opacity: 0.95; stroke-width: 2.2; }
+  #uvViewSvg .uv-edge.selected { stroke: var(--accent); stroke-opacity: 1; stroke-width: 2.6; }
   #uvViewEmpty { padding: 24px 8px; text-align: center; color: var(--text-dim); }
   #helpCard {
     background: var(--panel); border: var(--rule) solid var(--line); border-radius: var(--r-md);
@@ -2464,6 +2480,7 @@
           <div id="uvModeToggle" class="uv-mode-toggle" role="group" aria-label="UV edit mode">
             <button id="uvModeIslandBtn" class="uv-mode-btn active" data-mode="island" aria-pressed="true">Island</button>
             <button id="uvModeVertexBtn" class="uv-mode-btn" data-mode="vertex" aria-pressed="false">Vertex</button>
+            <button id="uvModeEdgeBtn" class="uv-mode-btn" data-mode="edge" aria-pressed="false">Edge</button>
           </div>
           <button id="uvViewClose" title="Close"></button>
         </div>
@@ -2498,7 +2515,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.49</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.50</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -9861,6 +9878,10 @@ function unwrapSelection() {
   ed.uvs = Array.from(uv);
   rebuildFromEditable(obj, ed);
   finishMeshEdit(obj, 'Unwrapped');
+  // Unwrap is now reachable from inside #uvView itself, via the shared
+  // HUB_TOOLS_UV door (v2.50) - redraw in place rather than leaving the
+  // card showing the pre-unwrap layout until the next open.
+  if (uvViewObj) refreshUvView(uvViewObj);
 }
 
 // ensureHelpers only builds these materials once per object, guarded by its
@@ -18792,18 +18813,17 @@ function clearAllCreases() {
 // seam has to survive drags and rebuilds the identical way a crease does.
 // v2.49: also callable from the new 'uv' mode, whose own door is the main
 // way to reach it now - Edge mode keeps it too, unchanged.
-function markSeamSelection(on) {
-  if (App.mode !== 'edge' && App.mode !== 'uv') { toast('Seam works in Edge or UV mode'); return; }
-  const obj = findObject(App.activeObjectId);
-  if (!obj || !App.selectedElements.size) { toast('Select an edge first'); return; }
-
-  ensureHelpers(obj);
-  symExpand(obj);   // a flag per edge - per-element, so the union is right
+// The toggle-and-count core, shared between the 3D viewport's edge/UV-mode
+// seam command and the 2D editor's own (v2.50) - both build a `keys` array
+// of position-keyed seam-map entries, from entirely different selection
+// spaces (App.selectedElements' edge indices vs. the 2D editor's
+// attribute-vertex-pair edges), and everything past that point - the
+// toggle logic, the change count, the islandsVersion bump - is identical.
+// A seam has no say in shading or Subdivide - unlike crease and sharp it
+// marks nothing applyShading needs to redo, only a future cut for the
+// unwrap - so neither caller runs applyShading.
+function toggleSeamKeys(obj, keys, on) {
   const seams = seamSet(obj);
-  const keys = [];
-  App.selectedElements.forEach(ei => { const k = edgeKeyAt(obj, ei); if (k) keys.push(k); });
-  if (!keys.length) { toast('Nothing to seam there'); return; }
-
   // A toggle, like Crease and Mark Sharp: seaming an already-seamed edge
   // clears it. `on` is honoured when a caller asks for a specific state.
   const allSeamed = keys.every(k => !!seams[k]);
@@ -18813,21 +18833,78 @@ function markSeamSelection(on) {
     if (want) { if (!seams[k]) { seams[k] = true; changed++; } }
     else if (seams[k]) { delete seams[k]; changed++; }
   });
+  // markSeamSelection/markSeamSelectionUv both mutate the existing seams
+  // object rather than replacing it, so syncIslandOverlay's cache (keyed
+  // on topo + this counter) needs an explicit bump to notice the edit.
+  if (changed) obj.mesh.userData.islandsVersion = (obj.mesh.userData.islandsVersion || 0) + 1;
+  return { changed, want };
+}
+
+function markSeamSelection(on) {
+  // The 2D editor has its own edge selection, in attribute-vertex-pair
+  // space rather than App.selectedElements' 3D edge indices (v2.50) -
+  // HUB_TOOLS_UV's seam/unseam/merge seats are shared between the 3D
+  // viewport and #uvView's own edge-mode hold rather than forked into a
+  // second array, so this is where the two paths split. uvViewObj alone
+  // decides which one a call means: only one of the two views is ever the
+  // one actually on screen.
+  if (uvViewObj) { markSeamSelectionUv(on); return; }
+  if (App.mode !== 'edge' && App.mode !== 'uv') { toast('Seam works in Edge or UV mode'); return; }
+  const obj = findObject(App.activeObjectId);
+  if (!obj || !App.selectedElements.size) { toast('Select an edge first'); return; }
+
+  ensureHelpers(obj);
+  symExpand(obj);   // a flag per edge - per-element, so the union is right
+  const keys = [];
+  App.selectedElements.forEach(ei => { const k = edgeKeyAt(obj, ei); if (k) keys.push(k); });
+  if (!keys.length) { toast('Nothing to seam there'); return; }
+
+  const { changed, want } = toggleSeamKeys(obj, keys, on);
   if (!changed) {
     toast(want ? 'Already seamed' : 'No seams on that edge');
     return;
   }
-
-  // A seam has no say in shading or Subdivide - unlike crease and sharp it
-  // marks nothing applyShading needs to redo, only a future cut for the
-  // unwrap - so there is no applyShading call here.
-  // islandsVersion: markSeamSelection mutates the existing seams object
-  // rather than replacing it, so syncIslandOverlay's cache (keyed on
-  // topo + this counter) needs an explicit bump to notice the edit.
-  obj.mesh.userData.islandsVersion = (obj.mesh.userData.islandsVersion || 0) + 1;
   refreshElementColors(obj);
   hideRadialMenu();
   refreshUI();
+  pushHistory();
+  toast(want ? changed + ' edge(s) seamed' : changed + ' seam(s) cleared');
+}
+
+// The 2D editor's own seam ops (v2.50), run from inside #uvView via the
+// shared HUB_TOOLS_UV door. uvEdgeSel holds attribute-vertex-pair keys, one
+// call's worth of which can map to the SAME logical edge more than once at
+// a seam boundary - the whole reason attribute identity was chosen for 2D
+// selection in the first place (v2.48) - so the logical keys are deduped
+// into a Set before the shared toggle runs, or a boundary edge selected
+// from both sides would count twice. Deliberately does not call symExpand:
+// the 2D editor's other selections (island drag, vertex drag) do not
+// mirror across symmetry either, and this stays consistent with them
+// rather than being the one 2D operation that does.
+function markSeamSelectionUv(on) {
+  const obj = uvViewObj;
+  if (!obj || !obj.mesh || !obj.mesh.geometry) return;
+  if (!uvEdgeSel.size) { toast('Select an edge first'); return; }
+  const topo = obj.mesh.userData.topo;
+  if (!topo) { toast('Select an edge first'); return; }
+  const keySet = new Set();
+  uvEdgeSel.forEach(pairKey => {
+    const [a, b] = pairKey.split('_').map(Number);
+    const la = topo.logicalOf[a], lb = topo.logicalOf[b];
+    if (la === undefined || lb === undefined) return;
+    const k = creaseKeyFor(logicalPos(obj, la), logicalPos(obj, lb));
+    if (k) keySet.add(k);
+  });
+  const keys = Array.from(keySet);
+  if (!keys.length) { toast('Nothing to seam there'); return; }
+
+  const { changed, want } = toggleSeamKeys(obj, keys, on);
+  if (!changed) {
+    toast(want ? 'Already seamed' : 'No seams on that edge');
+    return;
+  }
+  refreshElementColors(obj);   // keeps the 3D wireframe in sync for later
+  refreshUvView(obj);
   pushHistory();
   toast(want ? changed + ' edge(s) seamed' : changed + ' seam(s) cleared');
 }
@@ -35317,6 +35394,23 @@ const HUB_TOOLS_UV = [
     run: unwrapSelection }
 ];
 
+/* The 2D UV editor's own empty-space door (v2.50) - the only way back to
+   the 3D viewport from inside #uvView now that entering UV mode no longer
+   closes the card for you the way the pre-v2.49 mode-hold ring's UV seat
+   used to. A ring with one seat rather than a bare button on the card's
+   own tap-to-close backdrop (which still exists and still works) because
+   Zeghreit's own request named the empty-space bloom menu specifically,
+   matching the world ring's shape in the 3D viewport - so a future seat
+   has somewhere to go without inventing a second mechanism. See
+   armUvEmptyHold, just above the edge-mode pointer handlers, for the
+   timer that opens it. HUB_TOOLS_UV itself (above) needs no 2D-specific
+   twin: it is reachable from #uvView's own edge-selection hold (see those
+   same handlers), and its seam ops already branch on uvViewObj - see
+   markSeamSelection. */
+const HUB_TOOLS_UV2D_WORLD = [
+  { key: 'to3d', icon: 'object', label: '3D', seat: 0, run: closeUvView }
+];
+
 function currentHubTools() {
   if (App.mode === 'object') {
     if (App.selectedObjectIds.size === 0) return HUB_TOOLS_EMPTY;
@@ -36630,6 +36724,48 @@ function renderUvView(obj, ed) {
       uvViewSvgEl.appendChild(c);
     })));
   }
+
+  // One <line> per unique triangle edge, edge mode only (v2.50) - deduped
+  // by edgeKey2D (attribute-vertex pair), the same identity vertex mode
+  // chose in v2.48. An edge INTERNAL to one island is shared by exactly two
+  // triangles using the SAME attribute-vertex pair (nothing duplicates
+  // there), so this dedup draws a seam boundary - where the pair on one
+  // side is not the pair on the other - as two separate edges, which is
+  // exactly the cut a seam is for.
+  if (uvCompMode === 'edge') {
+    const topo = obj.mesh.userData.topo;
+    const seams = obj.mesh.userData.seams;
+    const seen = new Set();
+    ed.groups.forEach(g => g.triangles.forEach(t => {
+      for (let i = 0; i < 3; i++) {
+        const a = t[i], b = t[(i + 1) % 3];
+        const key = edgeKey2D(a, b);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const ua = ed.uvs[a * 2], va = ed.uvs[a * 2 + 1];
+        const ub = ed.uvs[b * 2], vb = ed.uvs[b * 2 + 1];
+        if (![ua, va, ub, vb].every(Number.isFinite)) continue;
+        let seamed = false;
+        if (topo && seams) {
+          const la = topo.logicalOf[a], lb = topo.logicalOf[b];
+          // A stale/short topo can hand back undefined here (review
+          // finding, caught before ship) - logicalPos would throw on
+          // that, taking the whole redraw down with it, so skip the
+          // lookup rather than trust the index.
+          if (la !== undefined && lb !== undefined) {
+            seamed = !!seams[creaseKeyFor(logicalPos(obj, la), logicalPos(obj, lb))];
+          }
+        }
+        const line = document.createElementNS(NS, 'line');
+        line.setAttribute('class', 'uv-edge' + (seamed ? ' seamed' : '') +
+          (uvEdgeSel.has(key) ? ' selected' : ''));
+        line.setAttribute('x1', r2(toX(ua))); line.setAttribute('y1', r2(toY(va)));
+        line.setAttribute('x2', r2(toX(ub))); line.setAttribute('y2', r2(toY(vb)));
+        line.dataset.a = String(a); line.dataset.b = String(b); line.dataset.key = key;
+        uvViewSvgEl.appendChild(line);
+      }
+    }));
+  }
   return { ok: true };
 }
 
@@ -36708,18 +36844,29 @@ let uvSel = new Set();
 //   pointerId, tapAi, tapWasSelected }
 let uvVDrag = null;
 
-// Switches between the whole-island gesture (v2.45/v2.47) and per-vertex
-// editing (v2.48), and always drops whatever selection/gesture the OTHER
-// mode had - a selection or a live drag carried across a mode switch would
-// either mean nothing (vertex ids in island mode) or point at attribute
-// vertices the user never chose (an island's worth of them, suddenly "in
-// vertex mode selected" just because vertex mode is now on).
+// Selected UV edges in edge mode (v2.50), keyed by edgeKey2D(a,b) - two
+// ATTRIBUTE vertices, not the 3D viewport's logical edge index, for the
+// identical reason vertex mode chose attribute identity in v2.48: a seam
+// is precisely the boundary where the attribute-vertex pair on one side of
+// a cut is NOT the pair on the other, and a logical-edge selection would
+// silently treat both sides as "the same edge" again.
+let uvEdgeSel = new Set();
+function edgeKey2D(a, b) { return a < b ? a + '_' + b : b + '_' + a; }
+
+// Switches between the whole-island gesture (v2.45/v2.47), per-vertex
+// editing (v2.48) and per-edge selection (v2.50), and always drops whatever
+// selection/gesture the OTHER mode had - a selection or a live drag carried
+// across a mode switch would either mean nothing (vertex ids in island
+// mode) or point at attribute vertices/edges the user never chose.
 function setUvCompMode(mode) {
   if (uvCompMode === mode) return;
   if (uvDrag) endUvDrag(false);
   if (uvVDrag) endUvVertexDrag(false);
+  clearUvEdgeHold();
+  clearUvEmptyHoldTimer();
   uvCompMode = mode;
   uvSel.clear();
+  uvEdgeSel.clear();
   paintUvModeButtons(mode);
   if (uvViewObj) refreshUvView(uvViewObj);
 }
@@ -36727,12 +36874,15 @@ function setUvCompMode(mode) {
 // screen reader unable to tell which of the pair is on, since role=group
 // plus two plain buttons reads identically either way.
 function paintUvModeButtons(mode) {
-  const isl = document.getElementById('uvModeIslandBtn'), vtx = document.getElementById('uvModeVertexBtn');
+  const isl = document.getElementById('uvModeIslandBtn'), vtx = document.getElementById('uvModeVertexBtn'),
+        edg = document.getElementById('uvModeEdgeBtn');
   isl.classList.toggle('active', mode === 'island'); isl.setAttribute('aria-pressed', String(mode === 'island'));
   vtx.classList.toggle('active', mode === 'vertex'); vtx.setAttribute('aria-pressed', String(mode === 'vertex'));
+  edg.classList.toggle('active', mode === 'edge'); edg.setAttribute('aria-pressed', String(mode === 'edge'));
 }
 document.getElementById('uvModeIslandBtn').addEventListener('click', () => setUvCompMode('island'));
 document.getElementById('uvModeVertexBtn').addEventListener('click', () => setUvCompMode('vertex'));
+document.getElementById('uvModeEdgeBtn').addEventListener('click', () => setUvCompMode('edge'));
 
 function openUvView() {
   const obj = findObject(App.activeObjectId);
@@ -36868,12 +37018,15 @@ function closeUvView() {
   // not committed: closing was never a gesture aimed at this island.
   if (uvDrag) endUvDrag(false);
   if (uvVDrag) endUvVertexDrag(false);
+  clearUvEdgeHold();
+  clearUvEmptyHoldTimer();
   // Always reopens in Island mode with nothing selected (v2.48) - a
-  // vertex selection has no meaning once the card is gone, and starting
-  // fresh next time is one less thing to explain than "remembers where
-  // you left it".
+  // vertex or edge selection has no meaning once the card is gone, and
+  // starting fresh next time is one less thing to explain than "remembers
+  // where you left it".
   uvCompMode = 'island';
   uvSel.clear();
+  uvEdgeSel.clear();
   paintUvModeButtons('island');
   uvViewEl.classList.remove('show');
   uvViewObj = null;
@@ -36918,7 +37071,7 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
   // pointerup comment below explicitly promises works. The uvDrag guard
   // above already rules out a second pointer competing for the SAME drag.
   const g = ev.target.closest && ev.target.closest('.uv-island');
-  if (!g) return;
+  if (!g) { armUvEmptyHold(ev); return; }
   const p = uvViewPoint(ev);
   const fillBB = g.querySelector('.uv-fill').getBBox();
   uvDrag = {
@@ -37164,6 +37317,7 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
   if (!c) {
     // Empty-space tap: clear the selection, same as the island backdrop.
     if (uvSel.size) { uvSel.clear(); paintUvVertexSelection(); }
+    armUvEmptyHold(ev);
     return;
   }
   const ai = +c.dataset.ai;
@@ -37233,6 +37387,144 @@ uvViewSvgEl.addEventListener('pointerup', (ev) => {
 uvViewSvgEl.addEventListener('pointercancel', (ev) => {
   if (!uvVDrag || ev.pointerId !== uvVDrag.pointerId) return;
   endUvVertexDrag(false);
+});
+
+/* THE 2D EDITOR'S OWN LONG-PRESS RINGS (v2.50). Two of them, both reached
+   from any of the three component modes above:
+
+   - Truly empty space (no island/vertex/edge under the finger) blooms a
+     ring with one seat, "3D" - the only way back to the 3D viewport now
+     that opening this card no longer means the mode-hold ring already
+     closed it for you (that closed with v2.49: UV became a real mode, and
+     this card is reached from ITS OWN door instead). armUvEmptyHold is
+     called from each mode's own "nothing under the pointer" branch above
+     and below, since that is where "empty" is already decided.
+   - A press on the current EDGE selection (edge mode only - see the
+     handlers right after this comment) blooms HUB_TOOLS_UV, the exact
+     same door array the 3D viewport's own UV mode already uses: seam ops
+     read App.selectedElements there and uvEdgeSel here, and
+     markSeamSelection below is what tells the two apart.
+
+   Neither reuses bloomToolRing's usual trigger - the canvas's own
+   pointerdown, entangled with orbit, box/lasso and App.pendingOp - since
+   none of that exists inside this card. bloomToolRing itself does not
+   care: it takes screen coordinates and a tools array, not an event, and
+   redirects pointer capture to renderer.domElement on its own the moment
+   it blooms (see its own setPointerCapture call), so this card's own
+   listeners simply stop receiving the gesture from that point on - no
+   guard needed here for "a ring is now open". */
+let uvEmptyHoldTimer = null;
+let uvEmptyHoldOrigin = null;   // { x, y, pointerId }
+function clearUvEmptyHoldTimer() {
+  if (uvEmptyHoldTimer) clearTimeout(uvEmptyHoldTimer);
+  uvEmptyHoldTimer = null;
+  uvEmptyHoldOrigin = null;
+}
+function armUvEmptyHold(ev) {
+  clearUvEmptyHoldTimer();
+  const px = ev.clientX, py = ev.clientY, pid = ev.pointerId;
+  uvEmptyHoldOrigin = { x: px, y: py, pointerId: pid };
+  // Mouse gets no implicit capture (unlike touch) - without this, moving
+  // off the SVG before the hold fires would skip our own pointermove's
+  // 8px-cancel check, and releasing off-card would skip pointerup's
+  // clear entirely, leaving the timer to fire a ring nobody can close
+  // (review finding, caught before ship). Every other hold/drag in this
+  // card already captures for the same reason.
+  try { uvViewSvgEl.setPointerCapture(pid); } catch (e) {}
+  uvEmptyHoldTimer = setTimeout(() => {
+    uvEmptyHoldTimer = null; uvEmptyHoldOrigin = null;
+    bloomToolRing(px, py, HUB_TOOLS_UV2D_WORLD, pid, { x: px, y: py });
+  }, WORLD_RING_HOLD_MS);
+}
+// None of island/vertex/edge mode's own pointermove/up/cancel listeners
+// above and below ever see this timer - they are all gated on their own
+// live drag state (uvDrag/uvVDrag/uvEdgeHold), none of which exists during
+// an empty-space hold. This unconditional trio is the only thing watching
+// for "the finger moved away" or "the finger lifted before the hold fired".
+uvViewSvgEl.addEventListener('pointermove', (ev) => {
+  if (!uvEmptyHoldTimer || !uvEmptyHoldOrigin || ev.pointerId !== uvEmptyHoldOrigin.pointerId) return;
+  if (Math.hypot(ev.clientX - uvEmptyHoldOrigin.x, ev.clientY - uvEmptyHoldOrigin.y) > RING_MOVE_CANCEL_PX) {
+    clearUvEmptyHoldTimer();
+  }
+});
+uvViewSvgEl.addEventListener('pointerup', (ev) => {
+  if (uvEmptyHoldOrigin && ev.pointerId === uvEmptyHoldOrigin.pointerId) clearUvEmptyHoldTimer();
+});
+uvViewSvgEl.addEventListener('pointercancel', (ev) => {
+  if (uvEmptyHoldOrigin && ev.pointerId === uvEmptyHoldOrigin.pointerId) clearUvEmptyHoldTimer();
+});
+
+// EDGE MODE (v2.50): select edges for the UV door's seam ops. No drag of
+// its own - an edge has no position independent of the two vertices that
+// already move in Vertex mode - so the only gesture here is tap-to-select
+// and hold-on-the-selection to bloom the door, the same shape every
+// component door in the 3D viewport already has.
+let uvEdgeHold = null;   // { key, pointerId, startClientX, startClientY, wasSelected, timer }
+function clearUvEdgeHold() {
+  if (uvEdgeHold && uvEdgeHold.timer) clearTimeout(uvEdgeHold.timer);
+  uvEdgeHold = null;
+}
+function paintUvEdgeSelection() {
+  uvViewSvgEl.querySelectorAll('.uv-edge').forEach(el => {
+    el.classList.toggle('selected', uvEdgeSel.has(el.dataset.key));
+  });
+}
+uvViewSvgEl.addEventListener('pointerdown', (ev) => {
+  if (uvCompMode !== 'edge') return;
+  if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+  ev.preventDefault();
+  if (uvEdgeHold) return;   // an unexpected second pointer - ignore, single-finger only
+  const el = ev.target.closest && ev.target.closest('.uv-edge');
+  if (!el) {
+    if (uvEdgeSel.size) { uvEdgeSel.clear(); paintUvEdgeSelection(); }
+    armUvEmptyHold(ev);
+    return;
+  }
+  const key = el.dataset.key;
+  const wasSelected = uvEdgeSel.has(key);
+  if (!wasSelected) { uvEdgeSel.add(key); paintUvEdgeSelection(); }   // provisional, see the tap branch below
+  const px = ev.clientX, py = ev.clientY, pid = ev.pointerId;
+  uvEdgeHold = {
+    key, pointerId: pid, startClientX: px, startClientY: py, wasSelected,
+    timer: setTimeout(() => {
+      if (!uvEdgeHold) return;
+      uvEdgeHold = null;
+      bloomToolRing(px, py, HUB_TOOLS_UV, pid, { x: px, y: py });
+    }, TOOL_RING_HOLD_MS)
+  };
+  try { uvViewSvgEl.setPointerCapture(pid); } catch (e) {}
+});
+uvViewSvgEl.addEventListener('pointermove', (ev) => {
+  if (!uvEdgeHold || ev.pointerId !== uvEdgeHold.pointerId) return;
+  // Cancel only the HOLD TIMER past the drift threshold, not the whole
+  // record (review finding, caught before ship) - calling
+  // clearUvEdgeHold() here used to null uvEdgeHold outright, so pointerup
+  // below found nothing to resolve and a tap that drifted more than 8px
+  // landed neither as a toggle nor a back-out. pointerup still needs
+  // {key, wasSelected} to resolve this as a tap even after some drift,
+  // the same way vertex mode's own move handler leaves its drag state
+  // alone for pointerup.
+  if (uvEdgeHold.timer && Math.hypot(ev.clientX - uvEdgeHold.startClientX, ev.clientY - uvEdgeHold.startClientY) > RING_MOVE_CANCEL_PX) {
+    clearTimeout(uvEdgeHold.timer);
+    uvEdgeHold.timer = null;
+  }
+});
+uvViewSvgEl.addEventListener('pointerup', (ev) => {
+  if (!uvEdgeHold || ev.pointerId !== uvEdgeHold.pointerId) return;
+  // A tap, not a hold: resolve the toggle exactly like vertex mode's own
+  // tap branch (endUvVertexDrag) - back out the provisional add if the
+  // edge was already selected before this tap landed, keep it otherwise.
+  const { key, wasSelected } = uvEdgeHold;
+  clearUvEdgeHold();
+  if (wasSelected) uvEdgeSel.delete(key);
+  paintUvEdgeSelection();
+});
+uvViewSvgEl.addEventListener('pointercancel', (ev) => {
+  if (!uvEdgeHold || ev.pointerId !== uvEdgeHold.pointerId) return;
+  const { key, wasSelected } = uvEdgeHold;
+  clearUvEdgeHold();
+  if (!wasSelected) uvEdgeSel.delete(key);
+  paintUvEdgeSelection();
 });
 
 /* HOLD FOR THE FOUR (v2.43). A tap still cycles Object -> Component -> Soft
@@ -41413,6 +41705,14 @@ if (PICK_DEBUG) {
     get uvCompMode() { return uvCompMode; },
     get uvSel() { return Array.from(uvSel); },
     get uvViewOpen() { return uvViewEl.classList.contains('show'); },
+    // v2.50: edge mode, its own seam ops, and the two rings that open from
+    // inside #uvView - exported the same way the rest of this block is,
+    // so a probe can drive and inspect them without waiting on a real
+    // pointer sequence or a hold timer.
+    get uvEdgeSel() { return Array.from(uvEdgeSel); },
+    edgeKey2D, markSeamSelectionUv, toggleSeamKeys,
+    HUB_TOOLS_UV, HUB_TOOLS_UV2D_WORLD,
+    get toolRingActive() { return toolRingActive; },
     enterIsolation, exitIsolation, reconcileIsolation, applyIsolation, objectPickable,
     unhideObject, isolationOn,
     snapTargetAt, snapSkipSet, updateSnapTarget, clearSnapTarget, refreshSnapMarker,

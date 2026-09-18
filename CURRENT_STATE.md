@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~41,500 lines)
-- Version at time of writing: **2.49**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~41,800 lines)
+- Version at time of writing: **2.50**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -1158,6 +1158,137 @@ modes, is its own slice. The real geometric "Merge islands" operation for
 the 2D editor (rigid rotate+translate alignment of one island onto another
 along their shared edge) - flagged for a dedicated Fable review given its
 numerical sensitivity, once it exists to review.
+
+## The 2D editor gets a bloom ring of its own: Edge mode (2.50)
+
+Closes the two pieces 2.49 deferred in one slice, per Zeghreit's own
+scoping (three AskUserQuestion prompts before any code): continue the UV
+plan rather than the Loose-ends list ("Продолжить UV-срезы"), ship both
+deferred pieces together rather than split across versions ("Оба сразу,
+одной версией"), and - once it became clear mid-exploration that the UV
+door's seam ops need an edge selection the 2D editor didn't have - add a
+real third Edge mode rather than scope down to Unwrap-only or defer the
+whole thing ("Добавить и режим Edge", the fullest of three offered
+options).
+
+**Two additions, one door.** `#uvView` gains a third selection mode -
+Island / Vertex / **Edge** - alongside a new minimal empty-space ring
+(`HUB_TOOLS_UV2D_WORLD`, one seat: "3D", `closeUvView`) that is now the
+only way back to the 3D viewport from inside the card. `HUB_TOOLS_UV` -
+2.49's own Mark seam / Clear seam / Merge islands / Unwrap door - needed
+no 2D-specific twin: `App.mode` is always `'uv'` while `#uvView` is open
+(confirmed by reading every call site that changes it - nothing does,
+while the card is open), so `currentHubTools()` already resolves to
+`HUB_TOOLS_UV` there, and `markSeamSelection` itself now branches on
+`uvViewObj` at its own top (`if (uvViewObj) { markSeamSelectionUv(on);
+return; }`) to tell 2D-context calls from 3D ones - the door array is
+identical either way, only which selection and which key-space it reads
+differs.
+
+**Edge identity follows Vertex mode's own precedent, not the 3D
+viewport's.** 2.48 already established that a UV vertex is identified by
+ATTRIBUTE-vertex index, not logical/3D identity, because a seam's whole
+purpose is two attribute vertices welded at the same 3D point carrying
+different UV - selecting by logical identity would silently weld them
+back together. Edge mode inherits the same reasoning: `edgeKey2D(a,b) =>
+a<b ? a+'_'+b : b+'_'+a` keys an edge by its two ATTRIBUTE vertices. An
+edge internal to one island shares the same attribute pair on both
+triangles that border it and dedupes to one line; a seam boundary edge
+does not (the vertices were duplicated across the cut), so deduping by
+attribute pair - not by the 3D viewport's logical edge index - is what
+correctly draws a seam as two separate edges either side of the cut
+rather than silently welding them back into one.
+
+**Marking a seam from inside 2D translates key-spaces once, at the
+seam-map boundary.** `markSeamSelectionUv` walks `uvEdgeSel`'s
+attribute-pairs through `topo.logicalOf[a]`/`[b]` (attribute → logical)
+into `creaseKeyFor(logicalPos(obj, la), logicalPos(obj, lb))` - the exact
+key space `obj.mesh.userData.seams` already uses, the same one the 3D
+path's `edgeKeyAt` produces. Both paths now share a single extracted
+`toggleSeamKeys(obj, keys, on)` for the actual toggle-and-count, so the
+3D and 2D paths cannot drift on toggle semantics (mixed
+selected/unseamed → seam all; all already seamed → clear all) even though
+they build `keys` from two different selection spaces.
+
+**Gestures follow the tap-vs-hold shape every component door in the app
+already has:** tap toggles the provisional add/remove, a hold on the
+current selection blooms `HUB_TOOLS_UV`, movement past
+`RING_MOVE_CANCEL_PX` (8px) cancels the hold. Edge mode has no drag of its
+own - an edge has no position independent of the two vertices Vertex mode
+already moves - so tap-select and hold-the-door are its only two gestures.
+The empty-space "3D" ring reuses the same shared `bloomToolRing` the 3D
+canvas's own rings use, called directly from inside `#uvView` with
+explicit screen coordinates rather than through the canvas's own
+pointerdown - confirmed safe to call this way by reading `bloomToolRing`
+closely first: it takes coordinates and a tools array, not an event, and
+redirects further pointer events for that pointerId to
+`renderer.domElement` on its own the moment it blooms, so `#uvView`'s own
+listeners simply stop receiving that gesture with no guard code needed
+here.
+
+### What review found
+
+Opus review (cold, repo access, told specifically to hunt for what the
+happy-path Playwright tests could not have covered - pointer-capture
+edge cases, multi-touch, and the drift-cancel path) found three real bugs,
+all fixed and re-verified live before shipping:
+
+- **`armUvEmptyHold` took no pointer capture**, unlike every other
+  hold/drag in this card. On mouse (which gets no implicit capture,
+  unlike touch): moving off `#uvViewSvg` before the 480ms hold fired
+  skipped the 8px-cancel check entirely (the ring still bloomed, at the
+  stale press point), and releasing off-card within the hold window
+  skipped `pointerup`'s clear too, leaving the timer to bloom a ring
+  nobody could close - stuck over the card with orbit disabled until the
+  card was closed and the canvas tapped. The exact same class of bug
+  2.49's own mode-hold ring hit and fixed for the same reason (see that
+  section above) - missed here because this is a second, independent
+  hold site, not a copy of that one. Fixed by capturing in
+  `armUvEmptyHold`, matching every sibling handler in the card.
+- **Edge mode's drift-past-8px path lost the tap resolution entirely.**
+  `pointermove` called `clearUvEdgeHold()` on drift, which nulled
+  `uvEdgeHold` outright; `pointerup` then found nothing to resolve and
+  did neither the toggle nor the back-out. Concretely: tapping an
+  already-selected edge with more than 8px of finger drift silently
+  failed to deselect it. Fixed by having `pointermove` clear only the
+  timer on drift, leaving `{key, wasSelected}` alone for `pointerup` to
+  still resolve as a tap - the same shape Vertex mode's own move handler
+  already uses.
+- **`renderUvView`'s edge-mode seam lookup had no guard** for
+  `topo.logicalOf[a]`/`[b]` coming back `undefined` (a stale or short
+  topo), unlike `markSeamSelectionUv`, which already checked this.
+  `logicalPos` throws on an undefined index, which would have taken the
+  whole 2D redraw down with it rather than just skipping one edge's seam
+  state. Fixed with the same guard `markSeamSelectionUv` already had.
+
+A fourth finding - the rendered `.uv-edge` hit target (`stroke-width:
+0.9` in the card's 0..100 viewBox) measuring roughly 3px on a phone-width
+card, well under both this app's own touch-target reasoning and
+`.uv-vertex`'s own disc - was real and addressed by widening the stroke
+(0.9 → 1.8 base, 1.1 → 2.2 seamed, 1.3 → 2.6 selected), trading a
+somewhat bolder line for a meaningfully larger tap target while keeping
+the seamed/selected visual hierarchy intact. A full generous-invisible-
+hit-path treatment (the technique `.uv-vertex` uses, a mostly-transparent
+disc well past its visible size) was considered and set aside for this
+slice as more DOM/code than the gain justifies here - an edge, unlike a
+point, is already easier to land a tap on along its length.
+
+### What this slice deliberately does not do
+
+Two minor review findings, both real but left unfixed as out of
+proportion for a single-finger-first card: the empty-space hold timer is
+a single, un-keyed-by-pointerId variable, so a second pointer starting a
+real drag while a first pointer's empty-hold is still pending is not
+specially guarded - consistent with every other gesture in `#uvView`
+already being commented "single-finger only," not a new gap this slice
+introduced. And tapping an island's interior in Edge mode (where there is
+no edge under the finger, only a face) resolves as "empty space" -
+clearing `uvEdgeSel` and arming the "3D" hold - the same way tapping
+truly empty space does; this is the existing "no target under an edge-
+only mode" behavior working as designed, not a bug, though the touch-
+target widening above makes a near-miss into an interior less likely.
+Real island-tap selection and the real geometric Merge islands operation
+remain deferred exactly as 2.49 left them - untouched by this slice.
 
 ## UV packing: islands into the 0..1 square (2.42)
 
