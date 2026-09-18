@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~40,704 lines)
-- Version at time of writing: **2.44a**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~40,938 lines)
+- Version at time of writing: **2.45**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -589,6 +589,81 @@ moved (4 of 4 correct picks at both corners, aiming at each seat's true
 on-screen position). Its two real findings - the overhang and the
 fallback's lost margin - are the fixes described above, both re-verified
 live afterward rather than taken on the review's numbers alone.
+
+## Drag an island in the 2D UV view (2.45)
+
+Stage 5's read-only 2D UV view (2.43) got its first editing capability:
+press-and-drag an island to move it. Scope was asked, not assumed - I
+offered three slices via AskUserQuestion (translate only; translate +
+rotate + scale; per-vertex UV editing) and the user picked the first,
+explicitly: whole-island translate only. No rotate, no scale, no
+per-vertex editing, no seam editing in this slice - those stay future
+work, same as the intro comment above `renderUvView` now says.
+
+**Knowing which vertices belong to an island, cheaply.** The view
+already had `computeUVIslands` (topology-only, union-find over
+`topo.faceGroups` respecting seams) and `computeIslandUVs` (the
+expensive PCA-projection pass that also groups by island internally,
+then throws the grouping away once `packIslandUVs` has used it). Neither
+answers "which island does attribute vertex N belong to, right now" -
+the actual question a drag handler needs, once per pointer move, without
+re-running PCA. New `islandVertexMap(obj)` answers exactly that: it
+calls `computeUVIslands` for the island-per-face-group array, then walks
+`topo.faceGroups` once to stamp every attribute vertex (via
+`geometry.index`) with its island id into an `Int32Array`. Cheap,
+topology-only, matches the file's convention of building the narrow
+answer instead of reusing a heavier calculation for its side effect.
+
+**Rendering changed from one path to one group per island.**
+`renderUvView` used to emit a single SVG path for every triangle in the
+mesh. It now emits one `<g class="uv-island" data-island="N">` per
+island, each holding a `.uv-fill` (a semi-transparent fill in that
+island's `islandColorHex` color, the same golden-angle palette the 3D
+"Show islands" overlay uses, so the two views read consistently) and a
+`.uv-edges` stroke path. This is what makes an island both visually
+identifiable and a single hit-testable, transformable unit for dragging.
+`UV_VIEW_PAD` moved from a local constant inside the render function to
+module scope so the new pointer-math functions can invert the same
+`toX`/`toY` mapping.
+
+**Drag mechanics.** Pointer-capture pattern, same as the v2.43 mode-hold
+button: `setPointerCapture` on pointerdown (mice never get implicit
+capture), tracked by `pointerId`, `pointercancel` as the clean-abort
+path. During the drag, the island's `<g>` gets a live CSS `transform`
+for immediate visual feedback with no mesh writes. On pointerup, if the
+drag passed the tap-vs-drag threshold, `commitUvIslandDrag(islandId, dx,
+dy)` converts the SVG-unit delta to a UV delta (`du = dx/span, dv =
+-dy/span` - the V-up/Y-down flip `toY` already applies), reads the mesh
+via `toEditable`, adds the delta to every UV belonging to that island
+(via `islandVertexMap`), and writes back through
+`rebuildFromEditable` + `finishMeshEdit` - one Undo step per completed
+drag, nothing written for an aborted or cancelled one.
+
+**Review (opus) reproduced two real bugs before shipping**, both fixed
+and re-verified live afterward rather than taken on the review's numbers
+alone:
+
+- The tap-vs-drag threshold compared movement in the wrong coordinate
+  space - SVG viewBox units (0..100), not screen pixels. Since the card
+  can render at 500+ CSS px wide, 1 SVG unit is several real pixels, so
+  the "threshold" (`> 0.01` SVG units) was crossed by ordinary tap
+  jitter. Reviewer reproduced it: a synthetic 1px mouse move during a
+  tap wrote a real UV change and a spurious history step. Fixed by
+  tracking real client-pixel movement and gating the commit on
+  `Math.hypot(...) > RING_MOVE_CANCEL_PX` (the file's existing 8px
+  hold-gesture-cancel constant) instead. Re-verified: 1px jitter no
+  longer commits; a real 20px drag still does.
+- An island dragged far enough off the card became unreachable. Nothing
+  clamped the live drag transform, so an island's rendered center could
+  end up outside the visible SVG, where a later tap aimed at it instead
+  hit the dimmed backdrop and closed the whole view - only Undo could
+  recover it. Reviewer reproduced it precisely. Fixed with a new
+  `UV_VIEW_CENTER_MARGIN = 2` clamp on the drag delta, keeping the
+  island's own bounding-box center (measured at drag start) inside
+  `[2, 98]` on both axes - deliberately not a full "stay inside the UV
+  square" clamp, since letting islands overlap or spill outside 0..1 is
+  the existing v1 design, not a bug. Re-verified: an island dragged far
+  off-screen now lands clamped, stays visible, and stays clickable.
 
 ## Mode-hold bloom menu + read-only 2D UV view (2.43)
 

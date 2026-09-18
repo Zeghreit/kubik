@@ -2088,6 +2088,11 @@
   #uvViewSvg {
     width: 100%; height: auto; aspect-ratio: 1 / 1; background: var(--panel2);
     border: var(--rule) solid var(--line);
+    /* Own gesture from here down (v2.45: dragging an island), not the
+       browser's - without this, the first pointer move on touch starts a
+       page scroll instead of a drag, the same reason the canvas itself
+       needs it. */
+    touch-action: none;
   }
   /* Classes rather than the var()-in-attribute the file uses nowhere else
      (review finding, v2.43a): a stylesheet rule is the house pattern
@@ -2097,6 +2102,15 @@
      from. */
   #uvViewSvg .uv-square { fill: none; stroke: var(--text-dim); stroke-width: 0.4; stroke-dasharray: 2,1.5; }
   #uvViewSvg .uv-edges { fill: none; stroke: var(--text); stroke-width: 0.3; }
+  /* Translucent per-island fill (v2.45) - islandColorHex, the same
+     golden-angle palette "Show islands" already paints the 3D mesh with,
+     so an island reads as one colour in both views. Low opacity so the
+     wireframe painted on top of it (see renderUvView's paint order) stays
+     the thing actually read, not the tint - and it doubles as the pointer
+     target for dragging, since an outline alone is hard to grab by touch. */
+  #uvViewSvg .uv-fill { stroke: none; fill-opacity: 0.35; }
+  #uvViewSvg .uv-island { cursor: grab; }
+  #uvViewSvg .uv-island.dragging { cursor: grabbing; }
   #uvViewEmpty { padding: 24px 8px; text-align: center; color: var(--text-dim); }
   #helpCard {
     background: var(--panel); border: var(--rule) solid var(--line); border-radius: var(--r-md);
@@ -2452,7 +2466,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.44a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.45</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -9111,6 +9125,32 @@ function computeUVIslands(obj) {
     islandOf[gi] = id;
   }
   return { islandOf, count };
+}
+
+// Attribute-vertex id -> island id, straight from CURRENT seams/topology -
+// no projection, unlike computeIslandUVs, which needs this exact same
+// grouping internally but only as a stepping stone toward new UV values.
+// The 2D view's islands (v2.43a: which triangles get grouped and drawn
+// together; from v2.45, which ones drag together) are this same grouping
+// and nothing else, so the view earns its own small walk rather than
+// reusing computeIslandUVs' internal one, which the PCA/projection math
+// wrapped around it would make expensive and pointless to run just to
+// throw the actual UVs away. ensureHelpers up front, unwrapSelection's own
+// pattern: the UV view can be opened for an object nothing else has built
+// a topo for yet.
+function islandVertexMap(obj) {
+  ensureHelpers(obj);
+  const topo = obj.mesh.userData.topo;
+  if (!topo || !topo.faceGroups.length) return { attrIsland: new Int32Array(0), count: 0 };
+  const { islandOf, count } = computeUVIslands(obj);
+  const index = obj.mesh.geometry.index;
+  const attrIsland = new Int32Array(obj.mesh.geometry.attributes.position.count).fill(-1);
+  topo.faceGroups.forEach((fg, gi) => {
+    const id = islandOf[gi];
+    const end = (fg.triStart + fg.triCount) * 3;
+    for (let i = fg.triStart * 3; i < end; i++) attrIsland[index.getX(i)] = id;
+  });
+  return { attrIsland, count };
 }
 
 // Golden-angle hue step: well spread for any island count without knowing
@@ -36346,12 +36386,14 @@ function closeToolRing(run) {
    same and costs one seat instead of two. Symmetry was the last thing using
    it - #hubBtn cycles three states and never did. */
 
-/* ---------------- 2D UV view (v2.43) ----------------
-   View only, for now (uv-commands-maps-plan.md stage 5, slice 5). Shows the
-   active object's UV layout - every triangle's edges in UV space, plus the
-   0..1 square packIslandUVs packs into - so an unwrap can be checked by eye
-   without exporting a texture to see it on. Nothing here moves; dragging an
-   island or a seam is the next slice, once this one has been used for real. */
+/* ---------------- 2D UV view (v2.43, dragging an island from v2.45) ----------------
+   Shows the active object's UV layout - every triangle's edges in UV space,
+   grouped one island at a time, plus the 0..1 square packIslandUVs packs
+   into - so an unwrap can be checked by eye without exporting a texture to
+   see it on. v2.45 adds the first edit (uv-commands-maps-plan.md stage 5,
+   next slice after 5): drag a whole island by its fill to translate it.
+   Rotating or scaling an island, moving a single UV, and editing a seam
+   from here are all still further out. */
 const uvViewEl = document.getElementById('uvView');
 const uvViewSvgEl = document.getElementById('uvViewSvg');
 const uvViewEmptyEl = document.getElementById('uvViewEmpty');
@@ -36363,16 +36405,36 @@ const uvViewEmptyEl = document.getElementById('uvViewEmpty');
    edge case - the cap just turns "the tab freezes" into a toast. */
 const UV_VIEW_TRI_CAP = 20000;
 
-function renderUvView(ed) {
+// A little padding so an island packed right up to the gutter (as
+// packIslandUVs runs them) doesn't visually touch the card's own edge.
+// Module-level (v2.45), not local to renderUvView any more: the drag code
+// below has to invert this exact u/v <-> SVG-unit mapping to turn a
+// pointer's on-screen movement back into a UV delta, and a second copy of
+// the same number would just be one more place for the two to drift apart.
+const UV_VIEW_PAD = 4;
+// How close a dragged island's own centre may come to the card's edge
+// (review finding, v2.45) - past this, its element sits fully behind the
+// dimmed backdrop, so a tap meant to grab it again instead closes the
+// whole view, and nothing short of Undo gets it back. Small on purpose:
+// this only stops an island from being LOST, it is not the 0..1 clamp
+// v2.43's own "what this doesn't do" list already declined to add.
+const UV_VIEW_CENTER_MARGIN = 2;
+
+/* One <g class="uv-island"> per island instead of the single all-triangles
+   path v2.43 drew: a translucent fill (islandColorHex - the same
+   golden-angle palette "Show islands" already paints the 3D mesh with, so
+   an island reads as the same colour in both places) gives each island a
+   pointer target across its whole area, not just its outline, and groups
+   its triangles under one element the drag code below can pick up and
+   translate as a unit. */
+function renderUvView(obj, ed) {
   const NS = 'http://www.w3.org/2000/svg';
   uvViewSvgEl.innerHTML = '';
   if (!ed.uvs || !ed.uvs.length) return { ok: false };
   const triCount = ed.groups.reduce((n, g) => n + g.triangles.length, 0);
   if (triCount > UV_VIEW_TRI_CAP) return { ok: false, tooHeavy: true };
 
-  // A little padding so an island packed right up to the gutter (as
-  // packIslandUVs runs them) doesn't visually touch the card's own edge.
-  const PAD = 4;
+  const PAD = UV_VIEW_PAD;
   const toX = (u) => PAD + u * (100 - 2 * PAD);
   const toY = (v) => PAD + (1 - v) * (100 - 2 * PAD); // UV's V points up; SVG's Y points down.
   // 2dp is already finer than a device pixel at the card's own on-screen
@@ -36391,28 +36453,69 @@ function renderUvView(ed) {
   square.setAttribute('height', r2(toY(0) - toY(1)));
   uvViewSvgEl.appendChild(square);
 
-  // Every triangle edge, in one path - a shared edge between two triangles
-  // is drawn twice on top of itself, which costs nothing to look at and
-  // saves the bookkeeping a dedup pass would need for a read-only view.
-  let segs = '';
+  const { attrIsland, count } = islandVertexMap(obj);
+  const segsByIsland = new Array(count).fill('');
+  const fillsByIsland = new Array(count).fill('');
   ed.groups.forEach(g => {
     g.triangles.forEach(t => {
+      const island = attrIsland[t[0]]; // a triangle's 3 corners share one face group, so one island
+      if (island < 0 || island >= count) return; // topo/ed disagree: skip rather than guess
+      const sp = t.map(ai => [ed.uvs[ai * 2], ed.uvs[ai * 2 + 1]]);
+      if (!sp.every(([u, v]) => Number.isFinite(u) && Number.isFinite(v))) return;
+      const scr = sp.map(([u, v]) => [r2(toX(u)), r2(toY(v))]);
+      // Every triangle edge - a shared edge between two triangles is drawn
+      // twice on top of itself, which costs nothing to look at and saves
+      // the bookkeeping a dedup pass would need for a read-only outline.
       for (let i = 0; i < 3; i++) {
-        const a = t[i], b = t[(i + 1) % 3];
-        const ax = ed.uvs[a * 2], ay = ed.uvs[a * 2 + 1];
-        const bx = ed.uvs[b * 2], by = ed.uvs[b * 2 + 1];
-        if (!Number.isFinite(ax) || !Number.isFinite(ay) ||
-            !Number.isFinite(bx) || !Number.isFinite(by)) continue;
-        segs += `M${r2(toX(ax))},${r2(toY(ay))}L${r2(toX(bx))},${r2(toY(by))}`;
+        const a = scr[i], b = scr[(i + 1) % 3];
+        segsByIsland[island] += `M${a[0]},${a[1]}L${b[0]},${b[1]}`;
       }
+      fillsByIsland[island] += `M${scr[0][0]},${scr[0][1]}L${scr[1][0]},${scr[1][1]}L${scr[2][0]},${scr[2][1]}Z`;
     });
   });
-  const path = document.createElementNS(NS, 'path');
-  path.setAttribute('class', 'uv-edges');
-  path.setAttribute('d', segs);
-  uvViewSvgEl.appendChild(path);
+
+  for (let i = 0; i < count; i++) {
+    if (!fillsByIsland[i]) continue; // no finite-UV triangle landed in this island
+    const g = document.createElementNS(NS, 'g');
+    g.setAttribute('class', 'uv-island');
+    g.dataset.island = String(i);
+    const fill = document.createElementNS(NS, 'path');
+    fill.setAttribute('class', 'uv-fill');
+    fill.setAttribute('fill', '#' + islandColorHex(i).toString(16).padStart(6, '0'));
+    fill.setAttribute('d', fillsByIsland[i]);
+    g.appendChild(fill);
+    const edges = document.createElementNS(NS, 'path');
+    edges.setAttribute('class', 'uv-edges');
+    edges.setAttribute('d', segsByIsland[i]);
+    g.appendChild(edges);
+    uvViewSvgEl.appendChild(g);
+  }
   return { ok: true };
 }
+
+// Re-reads the object and redraws, without touching whether the card itself
+// is showing - shared by the initial open and by every drag commit below,
+// since a committed move has to be seen at its real, settled coordinates
+// rather than left showing the temporary drag transform.
+function refreshUvView(obj) {
+  let ed;
+  try { ed = toEditable(obj.mesh); }
+  catch (e) { console.warn('refreshUvView: toEditable failed', e); return; }
+  const res = renderUvView(obj, ed);
+  uvViewSvgEl.style.display = res.ok ? '' : 'none';
+  uvViewEmptyEl.style.display = res.ok ? 'none' : '';
+  if (!res.ok) {
+    uvViewEmptyEl.textContent = res.tooHeavy
+      ? 'Too many triangles to preview here.'
+      : 'No UV yet on this object — run Unwrap first.';
+  }
+}
+
+// The object the view is currently open for, and the in-progress drag if
+// any - both module-level since the pointer handlers below fire well after
+// openUvView returns, on their own event ticks.
+let uvViewObj = null;
+let uvDrag = null; // { islandId, pointerId, startX, startY, dx, dy, gEl }
 
 function openUvView() {
   const obj = findObject(App.activeObjectId);
@@ -36430,7 +36533,8 @@ function openUvView() {
   let ed;
   try { ed = toEditable(obj.mesh); }
   catch (e) { console.warn('openUvView: toEditable failed', e); toast('Could not read this object’s UV'); return; }
-  const res = renderUvView(ed);
+  uvViewObj = obj;
+  const res = renderUvView(obj, ed);
   uvViewSvgEl.style.display = res.ok ? '' : 'none';
   uvViewEmptyEl.style.display = res.ok ? 'none' : '';
   if (!res.ok) {
@@ -36446,11 +36550,138 @@ function openUvView() {
      opened; a tick later, the gesture is over. */
   setTimeout(() => uvViewEl.classList.add('show'), 0);
 }
-function closeUvView() { uvViewEl.classList.remove('show'); }
+
+// Client coordinates -> the SVG's own 0..100 viewBox space, through the
+// screen CTM rather than a hand-rolled pixel-to-viewBox ratio - this keeps
+// working the same whether the card renders at 200px or 560px, which a
+// manual scale factor would have to be told about by hand on every resize.
+function uvViewPoint(ev) {
+  const pt = uvViewSvgEl.createSVGPoint();
+  pt.x = ev.clientX; pt.y = ev.clientY;
+  const ctm = uvViewSvgEl.getScreenCTM();
+  if (!ctm) return { x: 0, y: 0 };
+  const p = pt.matrixTransform(ctm.inverse());
+  return { x: p.x, y: p.y };
+}
+
+// commit=false is a plain cancel (pointercancel, or the view closing mid-
+// drag): the transform is dropped and nothing is written. commit=true
+// still skips writing history for a drag that never actually moved - a tap
+// that happened to land on an island - measured in real screen pixels
+// against RING_MOVE_CANCEL_PX, the same threshold every hold-gesture in
+// this file already cancels a stray movement by (review finding, v2.45:
+// the SVG-space dx/dy this function also carries are a few hundredths of
+// a unit for an ordinary touch, in the card's own 0..100 viewBox - comparing
+// THEM against a small threshold let almost any tap through as a real,
+// history-writing edit).
+function endUvDrag(commit) {
+  if (!uvDrag) return;
+  const { islandId, dx, dy, gEl, startClientX, startClientY, lastClientX, lastClientY } = uvDrag;
+  gEl.classList.remove('dragging');
+  gEl.removeAttribute('transform');
+  uvDrag = null;
+  const movedPx = Math.hypot(lastClientX - startClientX, lastClientY - startClientY);
+  if (commit && movedPx > RING_MOVE_CANCEL_PX) commitUvIslandDrag(islandId, dx, dy);
+}
+
+function commitUvIslandDrag(islandId, dxSvg, dySvg) {
+  const obj = uvViewObj;
+  if (!obj || !obj.mesh || !obj.mesh.geometry) return;
+  const span = 100 - 2 * UV_VIEW_PAD;
+  const du = dxSvg / span, dv = -dySvg / span; // SVG Y-down -> UV V-up, same flip renderUvView's toY uses
+  let ed;
+  try { ed = toEditable(obj.mesh); }
+  catch (e) { console.warn('commitUvIslandDrag: toEditable failed', e); return; }
+  if (!ed.uvs || !ed.uvs.length) return;
+  const { attrIsland } = islandVertexMap(obj);
+  let moved = 0;
+  for (let ai = 0; ai < attrIsland.length; ai++) {
+    if (attrIsland[ai] !== islandId) continue;
+    ed.uvs[ai * 2] += du;
+    ed.uvs[ai * 2 + 1] += dv;
+    moved++;
+  }
+  if (!moved) return;
+  rebuildFromEditable(obj, ed);
+  finishMeshEdit(obj, 'Moved UV island');
+  refreshUvView(obj);
+}
+
+function closeUvView() {
+  // A drag left open mid-gesture (the view closed some other way than its
+  // own pointerup - devtools, a resize, anything unforeseen) is cancelled,
+  // not committed: closing was never a gesture aimed at this island.
+  if (uvDrag) endUvDrag(false);
+  uvViewEl.classList.remove('show');
+  uvViewObj = null;
+}
 document.getElementById('uvViewClose').addEventListener('click', closeUvView);
 // Tapping the dimmed backdrop dismisses it too, the same guard helpOverlay
 // uses so a tap inside the card is never mistaken for one outside it.
 uvViewEl.addEventListener('click', (ev) => { if (ev.target === uvViewEl) closeUvView(); });
+
+/* DRAGGING AN ISLAND (v2.45). Whole-island translate only - no rotate, no
+   scale, no per-vertex editing - the first of the "further out" items the
+   comment at the top of this section now lists, the same staged-ambition
+   pattern every other part of stage 5 has followed. Direct dragging, not a
+   hold-to-arm gesture: this is a 2D editing surface, not the mode ring, and
+   the app's own headline principle for the 3D viewport - move by DIRECT
+   DRAGGING - applies here just as much. */
+uvViewSvgEl.addEventListener('pointerdown', (ev) => {
+  if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+  if (ev.isPrimary === false) return;
+  const g = ev.target.closest && ev.target.closest('.uv-island');
+  if (!g) return;
+  const p = uvViewPoint(ev);
+  const fillBB = g.querySelector('.uv-fill').getBBox();
+  uvDrag = {
+    islandId: +g.dataset.island, pointerId: ev.pointerId, gEl: g,
+    startX: p.x, startY: p.y, dx: 0, dy: 0,
+    // The island's own centre, untransformed - clamped against in
+    // pointermove (review finding, v2.45) so a fast or far drag can never
+    // push it fully off the 0..100 card: past the edge its element sits
+    // behind the dimmed backdrop, so a tap meant to grab it again instead
+    // closes the whole view, and nothing short of Undo gets it back.
+    centerX: fillBB.x + fillBB.width / 2, centerY: fillBB.y + fillBB.height / 2,
+    // Client-pixel start, kept alongside the SVG-space one above: the
+    // tap-vs-drag decision in endUvDrag has to compare against a REAL
+    // pixel distance, not the SVG viewBox's own 0..100 units (see that
+    // function's own comment).
+    startClientX: ev.clientX, startClientY: ev.clientY,
+    lastClientX: ev.clientX, lastClientY: ev.clientY,
+  };
+  // Explicit capture, not the implicit one touch gets for free - the same
+  // MUST-FIX class the mode-hold button hit in v2.43: a mouse never gets an
+  // implicit capture at all, so without this, dragging off the island with
+  // the mouse button still down would strand the gesture with no pointerup
+  // ever arriving for it.
+  try { uvViewSvgEl.setPointerCapture(ev.pointerId); } catch (e) {}
+  g.classList.add('dragging');
+  ev.preventDefault();
+});
+uvViewSvgEl.addEventListener('pointermove', (ev) => {
+  if (!uvDrag || ev.pointerId !== uvDrag.pointerId) return;
+  const p = uvViewPoint(ev);
+  let dx = p.x - uvDrag.startX, dy = p.y - uvDrag.startY;
+  // Clamp on the delta, not on the rendered transform, so the value
+  // actually committed on release is the exact one shown live during the
+  // drag - see the centerX/centerY comment in pointerdown above.
+  const M = UV_VIEW_CENTER_MARGIN;
+  dx = Math.min(Math.max(dx, M - uvDrag.centerX), 100 - M - uvDrag.centerX);
+  dy = Math.min(Math.max(dy, M - uvDrag.centerY), 100 - M - uvDrag.centerY);
+  uvDrag.dx = dx; uvDrag.dy = dy;
+  uvDrag.lastClientX = ev.clientX; uvDrag.lastClientY = ev.clientY;
+  uvDrag.gEl.setAttribute('transform', `translate(${dx.toFixed(2)},${dy.toFixed(2)})`);
+});
+uvViewSvgEl.addEventListener('pointerup', (ev) => {
+  if (!uvDrag || ev.pointerId !== uvDrag.pointerId) return;
+  uvDrag.lastClientX = ev.clientX; uvDrag.lastClientY = ev.clientY;
+  endUvDrag(true);
+});
+uvViewSvgEl.addEventListener('pointercancel', (ev) => {
+  if (!uvDrag || ev.pointerId !== uvDrag.pointerId) return;
+  endUvDrag(false);
+});
 
 /* HOLD FOR THE FOUR (v2.43). A tap still cycles Object -> Component -> Soft
    the way it always has; a HOLD now blooms the same kind of ring every other
@@ -40616,7 +40847,9 @@ if (PICK_DEBUG) {
     transformAxes, scaleAlongDir,
     setSoft, cycleEditMode, engageSoftSlide, softSlideMove, endSoftSlide, refreshSoftHud,
     // v2.43: the mode-hold bloom menu and the read-only 2D UV view it opens.
+    // v2.45: dragging an island in that view.
     openUvView, closeUvView, renderUvView, HUB_TOOLS_MODE,
+    refreshUvView, islandVertexMap, commitUvIslandDrag,
     get uvViewOpen() { return uvViewEl.classList.contains('show'); },
     enterIsolation, exitIsolation, reconcileIsolation, applyIsolation, objectPickable,
     unhideObject, isolationOn,
