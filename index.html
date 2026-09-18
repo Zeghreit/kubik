@@ -2569,7 +2569,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.57</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.58</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -4699,7 +4699,21 @@ const MODE_VIEW = {
      shade darker than Object as a result, which is the honest trade for
      panels that read as regions rather than as a lit solid. The wireframe
      below 1 draws the seams between them. */
-  face:   { hemi: 1.95, key: 0.28, env: 0.40, frame: 0.35, dot: 1.0, flat: true }
+  face:   { hemi: 1.95, key: 0.28, env: 0.40, frame: 0.35, dot: 1.0, flat: true },
+  /* UV HAD NO ENTRY AT ALL until v2.58, so modeView() fell through to
+     MODE_VIEW.object for it - and object mode's frame multiplier is 2.00
+     against Edge mode's 3.40. The one mode whose whole job is marking EDGES
+     was drawing them at two thirds of the weight the mode for marking edges
+     uses, underneath an island tint painting over them. That is most of
+     "the edges are hard to see" on its own.
+
+     Lit like Edge mode rather than flattened like Face mode, and that is a
+     deliberate reversal of what you might expect from a mode about regions:
+     since v2.58 the island tint is opaque, so the ISLAND's own colour is
+     what carries the region and the light is left to carry the form -
+     without it a merged island is a flat silhouette whose shape you cannot
+     read. */
+  uv:     { hemi: 0.95, key: 0.80, env: 0.80, frame: 3.40, dot: 1.0 }
 };
 let modeViewSuspended = false;
 function modeView() {
@@ -9148,7 +9162,17 @@ function syncFaceOverlay(obj) {
   // App.uvSelKind is 'face', so the tint that already exists for Face mode's
   // own multi-select is the right one to reuse rather than building a
   // second overlay for what is visually identical.
-  const showFaceSel = App.mode === 'face' || (App.mode === 'uv' && App.uvSelKind === 'face');
+  /* FACE MODE ALONE AGAIN (v2.58). v2.51 reused this wash for a UV island
+     selection on the grounds that the two are visually identical, and they
+     were - both were a flat accent sheet with depth off and both sides drawn.
+     That is the thing being fixed: an opaque accent wash over an opaque island
+     tint takes away the island's own colour, which is the one thing saying
+     WHICH island it is, exactly when you are working with it. A UV island
+     selection is drawn by brightening the island's own colour (below) and
+     outlining it (syncSelectionOverlay) instead - the same two moves
+     .uv-island.selected makes in the 2D card, which is the point: one idea,
+     both views. */
+  const showFaceSel = App.mode === 'face';
   if (showFaceSel && index && obj.id === App.activeObjectId) {
     App.selectedElements.forEach(gi => { if (topo.faceGroups[gi]) want.push(gi); });
     // Sorted, so "the same groups" is a list comparison rather than a set one.
@@ -9367,6 +9391,43 @@ function islandVertexMap(obj) {
   return { attrIsland, count };
 }
 
+/* WHAT SEE-THROUGH MEANS FOR A UV OVERLAY (v2.58), in one place because two
+   overlays and the wireframe all have to agree on it.
+
+   OFF (the default): the overlay is opaque, front faces only, and reads
+   depth - so it is a skin on the model, hidden wherever the model itself is
+   in front of it, and you are looking at a solid object with coloured
+   islands painted on it.
+
+   ON: the v2.51 behaviour, which is what See-through has always meant
+   everywhere else in the app - translucent, both sides, depth ignored, so
+   the far side shows through and a seam behind a fold is still a seam you
+   can see and tap.
+
+   `transparent` is the field that decides which QUEUE a thing is drawn in,
+   so it is also what decides whether renderOrder can sort it against the
+   wireframe at all. Guarded per field: this runs from refreshElementColors,
+   which fires on every selection change, and `transparent` and `side` are
+   both program-affecting, so an unguarded write would recompile the
+   material on every tap - the same reasoning refreshXrayMode's own guards
+   were given. */
+function applyUvOverlayDepth(obj, mat, xrayOpacity) {
+  const see = !!App.xraySelection;
+  /* A MIRRORED OBJECT STAYS DOUBLE-SIDED (review finding), the same exception
+     refreshXrayMode makes for the mesh itself and for the same reason: a
+     negative scale reverses the winding, so culling one side would hide the
+     half you are looking at. The mesh going DoubleSide while its tint stayed
+     FrontSide left an untinted patch in the middle of a tinted model. */
+  obj.mesh.updateMatrixWorld();
+  const mirrored = obj.mesh.matrixWorld.determinant() < 0;
+  const wantSide = (see || mirrored) ? THREE.DoubleSide : THREE.FrontSide;
+  const wantOpacity = see ? xrayOpacity : 1;
+  if (mat.transparent !== see) { mat.transparent = see; mat.needsUpdate = true; }
+  if (mat.side !== wantSide) { mat.side = wantSide; mat.needsUpdate = true; }
+  if (mat.opacity !== wantOpacity) mat.opacity = wantOpacity;
+  if (mat.depthTest !== !see) mat.depthTest = !see;
+}
+
 // Golden-angle hue step: well spread for any island count without knowing
 // the count in advance, so island 3 keeps its colour when island 9 shows up
 // a moment later from one more seam edit. Not for anything document-facing -
@@ -9431,9 +9492,42 @@ function syncIslandOverlay(obj) {
        louder: at 0.55 the tint owned the surface, and both the island
        colours and the selection on top of them came out as the same family
        of pastels. */
-    const m = new THREE.MeshBasicMaterial({
-      vertexColors: true, transparent: true, opacity: 0.32,
-      depthTest: false, depthWrite: false, side: THREE.DoubleSide, fog: false
+    /* LAMBERT, NOT BASIC (v2.58), and opaque. Both follow from the same
+       request: UV mode was see-through and had no business being, and
+       See-through is the toggle that decides that everywhere else in the
+       app. An opaque tint hides the material under it completely, so with
+       MeshBasicMaterial the model would come back as flat coloured
+       silhouettes with no form at all - an island colour has to be LIT to
+       stay a surface. The lights are already there; this is one material
+       class, not a second rig.
+
+       And opaque fixes the v2.52 paint-order problem honestly instead of
+       working around it. An opaque material is drawn in the OPAQUE queue,
+       where renderOrder actually sorts - island 7, selection 8, wireframe 9
+       - so the seams land on top of the tint by the numbers they already
+       carry. That is exactly what v2.52's note in refreshXrayMode says it
+       could not do while the tint was transparent, and why it made the
+       wireframe ignore depth instead. It does not have to any more.
+
+       depthWrite stays OFF. The tint sits at exactly the mesh's own surface,
+       and writing depth there would make the wireframe and the dots fight
+       the very sheet meant to sit under them. Reading depth is what was
+       missing: with depthTest ON it is hidden wherever another part of the
+       model is in front, which - with FrontSide - is the whole of "does
+       backface culling work in UV mode". It did not. The mesh itself has
+       been culled since v2.8; these two overlays never were. */
+    /* polygonOffset, because the tint is COPLANAR with the mesh (review
+       finding). Equal depth passes under the default LessEqualDepth, so this
+       works without it - but only while both programs compute a bit-identical
+       gl_Position, which GLSL guarantees only for an `invariant` declaration
+       that three does not make. Two different materials, two different
+       optimisation contexts, and a mobile GL compiler: the cheap insurance is
+       a depth bias. It still biases the value used for the TEST with
+       depthWrite off. */
+    const m = new THREE.MeshLambertMaterial({
+      vertexColors: true, transparent: false, opacity: 1,
+      depthTest: true, depthWrite: false, side: THREE.FrontSide, fog: false,
+      polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
     });
     const mesh = new THREE.Mesh(g, m);
     mesh.frustumCulled = false;
@@ -9446,6 +9540,14 @@ function syncIslandOverlay(obj) {
   }
   const mesh = ud.islandOverlay;
   mesh.visible = true;
+  /* Called here AND from refreshXrayMode, and that is deliberate (review
+     finding). refreshXrayMode is the owner - it is the one that runs when
+     See-through is toggled, which is not a selection change and so never
+     reaches this function; without it there, flipping the toggle left the
+     tint in its old state until the next tap. This call only covers the
+     frame in which the material is first CREATED, before any refreshUI has
+     swept it. Both are guarded per field, so the second one is free. */
+  applyUvOverlayDepth(obj, mesh.material, 0.32);
   // Shares position AND index with the real mesh - islands cover every face,
   // never a subset, so there is no selective index to build the way
   // syncFaceOverlay's is. Only the colour attribute is this overlay's own.
@@ -9453,19 +9555,90 @@ function syncIslandOverlay(obj) {
   if (mesh.geometry.attributes.position !== geo.attributes.position) {
     mesh.geometry.setAttribute('position', geo.attributes.position);
   }
+  /* AND THE NORMAL, which this overlay never borrowed because until v2.58 it
+     was a MeshBasicMaterial and never read one (review finding - it would
+     have rendered the whole model BLACK, and a headless material-flag stand
+     cannot see that). A lit material with no normal attribute gets the
+     generic default (0,0,0,1), normalize(vec3(0)) is NaN, and every lit
+     fragment is NaN.
 
-  if (mesh.userData.builtFor === ud.islandCache) return;
-  mesh.userData.builtFor = ud.islandCache;
+     Borrowed rather than computed, the same way position is: applyShading
+     maintains this attribute per edge-sharpness on the mesh itself, so
+     sharing it means the tint breaks exactly where the model's own shading
+     breaks. Re-checked every sync because applyShading REPLACES the
+     attribute when its shape is wrong, not only when it is missing. */
+  if (geo.attributes.normal && mesh.geometry.attributes.normal !== geo.attributes.normal) {
+    mesh.geometry.setAttribute('normal', geo.attributes.normal);
+  }
 
+  /* THE CACHE KEY GREW A SECOND HALF (v2.58). It used to be the island
+     computation alone, which was right while the colours depended on nothing
+     else - but a selected island is drawn brighter now, so the selection is
+     part of what these colours SAY and a selection change has to rebuild them.
+     A sorted join of the selected face groups rather than the Set itself:
+     Sets compare by identity, and this one is mutated in place. */
+  /* WHICH ISLANDS ARE LIT, not which face groups are selected, and the key is
+     built from THAT (review finding). Tapping an island selects every face
+     group in it, so keying on the face groups meant a 20k-face selection
+     built a 20k array, a numeric sort and a ~120 KB string on every sync -
+     including the syncs that then early-return because nothing changed. The
+     lit set is a handful of ids and answers the same question exactly: these
+     colours depend on which ISLANDS are lit and on nothing else. */
   const { islandOf } = ud.islandCache.data;
+  const litIslands = new Set();
+  if (App.mode === 'uv' && App.uvSelKind === 'face' && obj.id === App.activeObjectId) {
+    App.selectedElements.forEach(gi => {
+      if (gi >= 0 && gi < islandOf.length) litIslands.add(islandOf[gi]);
+    });
+  }
+  const selKey = Array.from(litIslands).sort((a, b) => a - b).join(',');
+  if (mesh.userData.builtFor === ud.islandCache && mesh.userData.builtSel === selKey) return;
+  mesh.userData.builtFor = ud.islandCache;
+  mesh.userData.builtSel = selKey;
+
   const index = geo.index;
-  const col = new Float32Array(geo.attributes.position.count * 3);
+  const count = geo.attributes.position.count;
+  /* THE ATTRIBUTE IS REUSED (review finding). While this was keyed on the
+     island split alone it was rebuilt rarely and a fresh BufferAttribute each
+     time cost nothing. Keyed on the selection as well it is every tap - and
+     setAttribute with a new one ORPHANS the old GL buffer, because
+     WebGLAttributes only deletes on geometry dispose and an attribute that
+     was replaced is never handed to it. 1.4 MB per tap on a 20k-face mesh,
+     never reclaimed. Reallocated only when the vertex count itself changes,
+     which is a rebuild, not a selection. */
+  let attr = mesh.geometry.attributes.color;
+  if (!attr || attr.count !== count) {
+    attr = new THREE.BufferAttribute(new Float32Array(count * 3), 3);
+    mesh.geometry.setAttribute('color', attr);
+  }
+  const col = attr.array;
+  /* LERPED TOWARD WHITE, NOT MULTIPLIED (review finding). multiplyScalar
+     works in LINEAR space and getHex re-encodes to sRGB with a per-channel
+     CLAMP, so on a saturated palette colour the brightest channel pinned at
+     255 while the others scaled - a hue shift dressed as a highlight, and two
+     selected islands of nearby hue drifting to the same pastel. A lerp cannot
+     clamp: every channel moves the same fraction of the way to white, so the
+     hue survives and the island stays recognisably ITS colour, which is the
+     whole reason the accent wash was dropped above.
+
+     And memoised per ISLAND. setHex/getHex are six Math.pow colour-space
+     conversions apiece, and this loop is per FACE GROUP - a quarter of a
+     million pow calls on a mesh with 20k of them, to produce a few dozen
+     distinct answers. */
+  const lift = new THREE.Color(), white = new THREE.Color(0xffffff);
+  const hexOf = new Map();
   topo.faceGroups.forEach((fg, gi) => {
-    const hex = islandColorHex(islandOf[gi]);
+    const id = islandOf[gi];
+    let hex = hexOf.get(id);
+    if (hex === undefined) {
+      hex = islandColorHex(id);
+      if (litIslands.has(id)) hex = lift.setHex(hex).lerp(white, 0.55).getHex();
+      hexOf.set(id, hex);
+    }
     const end = (fg.triStart + fg.triCount) * 3;
     for (let i = fg.triStart * 3; i < end; i++) setCol(col, index.getX(i), hex);
   });
-  mesh.geometry.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  attr.needsUpdate = true;
 }
 
 /* UV UNWRAP (uv-commands-maps-plan.md stage 5, slice 3): turns the islands
@@ -10148,7 +10321,28 @@ function refreshXrayMode() {
        here also means the flag cannot get stuck: leaving UV mode, or
        re-targeting the active object from the Scene list, both reach this
        sweep even when nothing repaints the colours. */
-    const uvWire = App.mode === 'uv' && o.id === App.activeObjectId;
+    /* AND SINCE v2.58 IT ONLY APPLIES UNDER SEE-THROUGH. Everything the note
+       above describes was true of a TRANSPARENT island tint: an opaque
+       wireframe is drawn in the opaque queue, before every transparent
+       object, so the tint landed on it three times a frame whatever
+       renderOrder the lines carried, and ignoring depth was the only way to
+       get a seam back on screen. The tint is opaque now (see
+       syncIslandOverlay), which puts it in the SAME queue as the lines,
+       where renderOrder does sort - island 7, wireframe 9 - so the seams sit
+       on top of it by the numbers and the wireframe can read depth again
+       like every other mode's. Which is what "UV mode was see-through and
+       should not be" asked for: the x-ray is See-through's to give, and
+       under See-through the tint goes transparent again and every word of
+       the note above applies once more. */
+    /* THE ISLAND TINT IS SWEPT HERE TOO (review finding). This function runs
+       from refreshUI, which is what a See-through toggle reaches;
+       syncIslandOverlay runs from refreshElementColors, which it does not.
+       The tint was being left half-switched - solid while the wireframe
+       x-rayed, or washed out after See-through was turned off - until
+       something unrelated repainted the colours. */
+    const io = o.mesh.userData.islandOverlay;
+    if (io && io.material) applyUvOverlayDepth(o, io.material, 0.32);
+    const uvWire = App.mode === 'uv' && o.id === App.activeObjectId && App.xraySelection;
     const lineDepth = wantDepth && !uvWire;
     const lineOrder = uvWire ? 12 : 9;
     if (l && l.material && l.material.depthTest !== lineDepth) l.material.depthTest = lineDepth;
@@ -20756,6 +20950,11 @@ function syncSelectionOverlay(obj) {
      latch the rebuild on for ever: the cost of a2.52 back, silently, on
      exactly the model that is already in trouble. */
   obj.mesh.userData.selOverlayMode = App.mode;
+  /* UV's TWO KINDS are one App.mode (v2.58). Without this, switching between
+     edges and islands inside UV mode leaves selOverlayMode matching and the
+     nudge path happily moving a line list built from the other kind's
+     numbers. */
+  obj.mesh.userData.selOverlayUvKind = App.mode === 'uv' ? App.uvSelKind : null;
   obj.mesh.userData.selOverlayCount = App.selectedElements.size;
   const topo = obj.mesh.userData.topo;
   const pa = obj.mesh.geometry.attributes.position;
@@ -20796,7 +20995,16 @@ function syncSelectionOverlay(obj) {
     }
   }
 
-  if (App.mode === 'edge' && App.selectedElements.size) {
+  /* UV MODE'S EDGE SELECTION IS AN EDGE SELECTION (v2.58). It holds the same
+     numbers Edge mode's does and it is what seam marking is done with, and
+     until now this branch refused it - so the only thing saying which edges
+     were selected in UV mode was a colour on the 1px shared wireframe, under
+     an island tint painting over it. A 3.5px accent line is what Edge mode
+     has had since a2.52 for exactly this reason: "the base helpers are
+     deliberately quiet, making the SELECTED few loud is what restores
+     readability". UV mode was simply left out. */
+  const uvEdgeSelKind = App.mode === 'uv' && App.uvSelKind !== 'face';
+  if ((App.mode === 'edge' || uvEdgeSelKind) && App.selectedElements.size) {
     const pos = [], edIds = [];
     App.selectedElements.forEach(i => {
       const e = topo.edges[i];
@@ -20822,6 +21030,87 @@ function syncSelectionOverlay(obj) {
       gizmoStrokes.push(seg);
     }
   }
+
+  /* A SELECTED ISLAND GETS AN OUTLINE (v2.58), not a wash. The wash it used
+     to get - syncFaceOverlay's accent sheet - covered the island's own
+     colour, which is the one thing saying which island it IS. An outline
+     says the same thing and takes nothing away, and it is the move
+     .uv-island.selected already makes in the 2D card.
+
+     THE OUTLINE IS THE ODD EDGES OUT. Walk every selected face group's own
+     loop and count each logical edge: an edge shared by two selected faces
+     is counted twice and is interior to the selection, an edge counted once
+     is on its border. The standard trick, and the reason it is done from
+     groupLogicalLoop rather than from computeUVIslands' edgeFaces map is
+     that the selection is face GROUPS - it can be half an island mid-merge,
+     or two islands at once - and the outline has to describe what is
+     actually selected rather than what the seams say. */
+  if (App.mode === 'uv' && App.uvSelKind === 'face' && App.selectedElements.size) {
+    const seen = new Map();
+    App.selectedElements.forEach(gi => {
+      if (!topo.faceGroups[gi]) return;
+      const lp = groupLogicalLoop(obj, gi);
+      // A group whose loop cannot be resolved - mid-op leftovers, a malformed
+      // face - would throw inside a forEach inside refreshElementColors, and
+      // take every sync after it down with it on every refresh from then on.
+      if (!lp || lp.length < 2) return;
+      for (let i = 0; i < lp.length; i++) {
+        const a = lp[i], b = lp[(i + 1) % lp.length];
+        if (a === b) continue;
+        const k = (a < b ? a : b) + '_' + (a < b ? b : a);
+        const rec = seen.get(k);
+        if (rec) rec.n++;
+        else seen.set(k, { a: a, b: b, n: 1 });
+      }
+    });
+    /* AND THE SEAMS INSIDE IT (review finding). The odd-edges-out rule draws
+       the outline of the UNION of what is selected, which drops exactly the
+       edge the mode is about: a seam between two islands that are BOTH
+       selected is shared by two selected faces, counts twice, and disappears
+       - so two adjacent islands came out as one blob with no line between
+       them, and Select all on a closed mesh produced no outline at all,
+       because every edge on it is shared. A seam is kept whatever its count,
+       which turns Select all into a drawing of the seam network - the most
+       useful picture that selection has. */
+    const seams = obj.mesh.userData.seams;
+    const hasSeams = !!seams && Object.keys(seams).length > 0;
+    const pa2 = obj.mesh.geometry.attributes.position;
+    const _sa = new THREE.Vector3(), _sb = new THREE.Vector3();
+    function edgeIsSeam(la, lb) {
+      if (!hasSeams) return false;
+      const ga = topo.logicalGroups[la], gb = topo.logicalGroups[lb];
+      if (!ga || !gb) return false;
+      _sa.set(pa2.getX(ga[0]), pa2.getY(ga[0]), pa2.getZ(ga[0]));
+      _sb.set(pa2.getX(gb[0]), pa2.getY(gb[0]), pa2.getZ(gb[0]));
+      const k = creaseKeyFor(_sa, _sb);
+      return !!(k && seams[k]);
+    }
+    const pos = [];
+    seen.forEach(rec => {
+      if (rec.n !== 1 && !edgeIsSeam(rec.a, rec.b)) return;
+      const a = at(rec.a), b = at(rec.b);
+      if (a && b) pos.push(a[0], a[1], a[2], b[0], b[1], b[2]);
+    });
+    if (pos.length) {
+      const geo = new LineSegmentsGeometry();
+      geo.setPositions(pos);
+      const mat = new LineMaterial({
+        color: SELECT_COLOR, linewidth: SEL_EDGE_PX, worldUnits: false,
+        transparent: true, depthTest: false, depthWrite: false
+      });
+      mat.resolution.set(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
+      const seg = new LineSegments2(geo, mat);
+      seg.renderOrder = 11;
+      seg.frustumCulled = false;
+      obj.mesh.add(seg);
+      obj.mesh.userData.selLines = seg;
+      /* NO id list on purpose: these positions are an outline, not one
+         segment per selected element, so there is nothing for the nudge path
+         to walk. selOverlayFits refuses to nudge this kind at all. */
+      obj.mesh.userData.selLineIds = null;
+      gizmoStrokes.push(seg);
+    }
+  }
 }
 
 /* DOES THE OVERLAY STILL DESCRIBE THE SELECTION? (a2.53)
@@ -20834,9 +21123,17 @@ function syncSelectionOverlay(obj) {
 function selOverlayFits(obj) {
   const ud = obj.mesh.userData;
   if (ud.selOverlayMode !== App.mode) return false;
+  if (App.mode === 'uv') {
+    // One App.mode, two kinds, two different layers (v2.58).
+    if (ud.selOverlayUvKind !== App.uvSelKind) return false;
+    // An island outline is not a list of elements, so there is nothing to
+    // check it against and nothing to nudge: always rebuild. It is the size
+    // of the selection's border, not of the mesh.
+    if (App.uvSelKind === 'face') return false;
+  }
   // Face and Object mode draw none of this, so an overlay built for them is
   // trivially still right.
-  if (App.mode !== 'vertex' && App.mode !== 'edge') return true;
+  if (App.mode !== 'vertex' && App.mode !== 'edge' && App.mode !== 'uv') return true;
   const ids = App.mode === 'vertex' ? ud.selPointIds : ud.selLineIds;
   const n = App.selectedElements.size;
   // Nothing drawn is the correct picture of nothing selected, and of nothing

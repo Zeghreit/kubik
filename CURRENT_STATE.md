@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
-- Version at time of writing: **2.57**
+- Version at time of writing: **2.58**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,121 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## UV mode stops being an x-ray (2.58)
+
+Zeghreit, on v2.57: the edges in UV mode are hard to see, island selection is
+hard to see, the whole mode looks see-through and should only be see-through
+through See-through, and — check whether backface culling works in there.
+
+It did not, and that last question turned out to be the answer to the other
+three. Four separate things were wrong, all of them found by reading rather
+than guessing:
+
+- **`MODE_VIEW` had no `uv` row at all**, so `modeView()` fell through to
+  `MODE_VIEW.object` — whose wireframe multiplier is 2.00 against Edge mode's
+  3.40. The one mode whose whole job is marking EDGES was drawing them at two
+  thirds of the weight the mode for marking edges uses.
+- **Neither overlay was culled or depth-tested.** The island tint and the
+  selection wash were both `depthTest: false, side: DoubleSide` — so the far
+  side of the model showed through the near side and the colours mixed. The
+  mesh itself has been `FrontSide` since v2.8; these two never were. That is
+  the whole of "it looks see-through", and the whole of the backface question.
+- **`syncSelectionOverlay` refused UV mode.** The layer that draws the
+  selected few LOUD — 7px dots, a 3.5px accent line — ran for Vertex and Edge
+  only. In UV mode the only thing marking a selected edge was a colour in the
+  shared 1px wireframe buffer, underneath a tint painting over it.
+- **The v2.52 wireframe workaround was load-bearing for the wrong reason.**
+  A transparent tint is drawn in the TRANSPARENT queue, after every opaque
+  object, so it landed on the opaque wireframe whatever renderOrder the lines
+  carried; ignoring depth was the only way to get a seam back on screen.
+
+So the tint is opaque now, which fixes the paint order honestly rather than
+working around it: an opaque material is drawn in the opaque queue, where
+renderOrder does sort — island 7, wireframe 9 — and the seams land on top by
+the numbers they already carry. The wireframe reads depth again like every
+other mode's. See-through puts all of it back exactly as it was: translucent,
+both sides, no depth. Which is what was asked for — the x-ray is
+See-through's to give.
+
+Opaque means the tint hides the material under it completely, so it is a
+`MeshLambertMaterial` rather than a `MeshBasicMaterial`: an island colour has
+to be LIT or the model comes back as flat silhouettes with no form. And a
+selected island is no longer covered by an accent wash — it keeps its own
+colour, lifted toward white, and gets a thick accent OUTLINE. The colour is
+the one thing saying which island it IS, and taking it away exactly when you
+are working with it was backwards. Same two moves `.uv-island.selected`
+already makes in the 2D card.
+
+### What review found
+
+Opus, cold, and it read the three.js r184 source rather than working from
+memory. Twelve findings; the ones that were real, in the order they would
+have hurt:
+
+- **The overlay had no `normal` attribute, and a lit material needs one.**
+  It borrows the mesh's position and index; nobody had needed normals while
+  it was a `MeshBasicMaterial`. `normalize(vec3(0))` is NaN, every lit
+  fragment is NaN, and the whole model would have rendered BLACK — in the one
+  mode this change exists to improve, on the first real GPU it met. A
+  headless material-flag stand structurally cannot see it. It borrows the
+  normal too now, which also means the tint breaks exactly where the model's
+  own shading breaks, because `applyShading` is what maintains it.
+- **Flipping See-through did not reach the tint.** `applyUvOverlayDepth` was
+  called from `syncIslandOverlay`, which runs from `refreshElementColors`,
+  which runs on a SELECTION change. A toggle is not a selection change, so
+  the wireframe flipped and the tint did not — half-applied either way, and
+  the washed-out look survived the fix until the next tap. `refreshXrayMode`
+  owns it now, which is the function that already called itself the single
+  owner of per-object depth flags.
+- **The colour buffer was reallocated on every tap.** Keying the rebuild on
+  the selection turned a rare event into a per-tap one, and `setAttribute`
+  with a fresh `BufferAttribute` ORPHANS the old GL buffer —
+  `WebGLAttributes` only deletes on geometry dispose. 1.4 MB per tap on a
+  20k-face mesh, never reclaimed. The attribute is reused now, and the key is
+  the set of LIT ISLANDS rather than of selected face groups, which is a
+  handful of ids instead of a 20k array, a sort and a 120 KB string.
+- **`multiplyScalar` clamps and shifts hue.** It works in linear space and
+  `getHex` re-encodes to sRGB with a per-channel clamp, so a saturated
+  palette colour pinned its brightest channel at 255 while the others scaled
+  — a hue shift dressed up as a highlight, and two selected islands of nearby
+  hue drifting to the same pastel. A lerp toward white cannot clamp. Measured
+  after: 0.82/0.28/0.28 goes to 0.92/0.67/0.67, nothing pinned.
+- **The outline dropped the seam between two selected islands.** Odd-edges-out
+  draws the border of the UNION, so a seam with a selected face on both sides
+  counts twice and disappears — two adjacent islands came out as one blob,
+  and Select all on a closed mesh produced no outline at all. A seam is kept
+  whatever its count, which turns Select all into a drawing of the seam
+  network: measured, a seamed cube goes from 0 segments to 12.
+- **A mirrored object would have had an untinted patch.** The mesh goes
+  `DoubleSide` on a negative scale — correctness first, since the winding is
+  reversed — and the tint did not follow it.
+- Plus `polygonOffset` on the coplanar tint (equal depth passes under
+  `LessEqualDepth`, but only while both programs compute a bit-identical
+  `gl_Position`, which GLSL guarantees only for an `invariant` declaration
+  three does not make), a null guard on `groupLogicalLoop`, and the UV row's
+  lighting raised — it had been written like Edge mode's, and Edge mode has
+  no large lit surface to read.
+
+Opus also confirmed the queue reasoning against the r184 source, and found
+one thing worth knowing that is not a defect: **renderOrder cannot sort
+across queues**, so the v2.52 "renderOrder 12" never did anything by itself.
+Under See-through the tint is transparent again and still paints over the 1px
+wireframe; what rescues the visibility there is the new thick line overlay,
+which is transparent and at renderOrder 11. Unselected edges under
+See-through are still quiet. That is now a known, named limit rather than an
+accident.
+
+`_uv58chk` is 43 checks.
+
+### What this deliberately does not do
+
+The thick selection line ignores depth, so a selected edge or an island
+outline on the far side of the model shows through even with See-through off.
+That is what Edge mode has always done and it is kept on purpose: the
+selection is the one thing you must never lose track of. And nothing here
+gives UV mode a way to MOVE a selection — transforming an island is the 2D
+view's job, and that is the next piece of work.
 
 ## Auto seams - Unwrap earns its one tap (2.57)
 
