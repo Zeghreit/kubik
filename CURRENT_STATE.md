@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
-- Version at time of writing: **2.56**
+- Version at time of writing: **2.57**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,121 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## Auto seams - Unwrap earns its one tap (2.57)
+
+Unwrap on a model nobody had marked produced one island and one planar
+projection of the whole object. That is not a layout, it is a shadow, and
+the missing step was never the projection: somebody had to sit and tap
+twelve edges of a cube before Unwrap had anything to work with.
+
+**The rule is not a new one, and that is the point.** An edge is cut exactly
+where `applyShading` already treats it as sharp - a hand mark first, the
+object's own smooth angle second - so the seams land on the lines the person
+is already looking at. A cube reads crisp because its edges are hard; those
+same edges are where its faces have to come apart to lie flat. Inventing a
+second threshold would have meant two numbers that disagree and an object
+whose shading says one thing while its seams say another. `effectiveSmoothAngle`
+is the one place that knows what the angle is, including the per-object
+override Smooth by angle writes, so an object dialled to 5 degrees gets a cut
+at every facet and one dialled to 80 gets almost none - which is the control
+this seat would otherwise have had to grow for itself.
+
+Measured on the stand: a cube gives 12 cuts and 6 islands. A twelve-sided
+cylinder gives 24 - the two cap rings only - and three islands, because its
+side facets meet at 30 degrees, under the 33-degree threshold. That is the
+exact case SHARP_ANGLE's own comment says 33 was chosen for, so the side
+stays a tube and `computeIslandUVs` projects it cylindrically, which is
+right. A 16x8 sphere has 240 interior edges and gets none of them.
+
+**Two doors.** A new seat on the UV ring (bearing 4 of eight, the first this
+ring had free), and Unwrap itself, which derives the seams when the object
+has none - so the one tap is a tap on Unwrap, as it should be. A model that
+already carries a seam is left alone: one hand-marked cut is a statement that
+the cuts are being chosen, and adding to them uninvited would be the tool
+arguing.
+
+### What review found
+
+Opus, cold. Five real findings, all fixed, and four of them in places the
+29 checks could not see because they are about messages and about the 2D
+view rather than about the seam set.
+
+- **The toast lied on the commonest repeat action.** `added === 0` has two
+  causes - nothing qualified, and everything qualified and was already a
+  seam - and both said "nothing hard enough to cut, lower the smooth angle".
+  Pressing Auto seams twice on a cube therefore told the person to lower a
+  threshold that was already cutting every edge it could. The walk reports
+  `found` as well as `added` now, and the three nothings have three
+  sentences.
+- **Unwrap's trigger was fooled by litter.** It asked whether the seam
+  DICTIONARY was empty, and seam keys are position-derived: any edit that
+  moves a marked vertex orphans its entry. A model cut once and then
+  extruded carried a non-empty map of keys naming edges it no longer had, so
+  auto-derivation was skipped for ever and Unwrap went on producing the
+  one-island projection with nothing to explain it. The walk counts seams
+  that name a LIVE edge, and `onlyWhenUnmarked` reads that instead. Same fix
+  covers a live tube, whose regeneration orphans every key it is given.
+- **The case the feature exists for was silently unimproved.** A smooth
+  closed surface has no hard edge anywhere, so nothing is cut and the answer
+  is the same useless single projection - arriving with the plain
+  'Unwrapped' and no hint that anything was attempted. It says so now, and
+  `bent` - edges whose faces turn at all, asked with `IMPORT_COPLANAR_DOT`,
+  the number this file already uses for flat-versus-not - is what separates
+  that from a flat sheet, where one island is simply correct and a hint
+  would be noise.
+- **The seat did not refresh the 2D UV view**, which is one of the two
+  places it can be reached from and draws the islands it had just changed.
+- **A degenerate face silently sprayed seams.** Leaving the un-normalised
+  sum in place gave a zero-area face a normal of magnitude 1e-15, whose dot
+  with anything is about zero - which reads as a ninety-degree turn. Zeroed
+  explicitly instead, so "degenerate is a discontinuity, cut round it" is a
+  decision rather than an accident, and the same branch catches a NaN
+  position, which would otherwise have failed the comparison the other way
+  and reported a whole mesh smooth.
+
+Opus also confirmed the normal accumulation is right - summing un-normalised
+triangle cross products is the area-weighted face normal, and a fan
+triangulation of a non-convex polygon telescopes correctly because the
+overlapping triangles carry opposite signs - and that the two spellings of
+"the key for this edge" agree, because `logicalPos` reads the same
+representative attribute vertex the shading pass reads.
+
+**One mistake of my own, caught by the stand on the next run:** the island
+count for Unwrap's new message was taken after `rebuildFromEditable`, which
+nulls topo - `finishMeshEdit` is what puts it back. It is asked before the
+rebuild now, where the answer is the same, because Unwrap moves coordinates
+and not seams.
+
+**And a probe lesson.** The first run reported a cylinder with nine edges.
+`primParams` falls back to `hMin`/`vMin` for a missing field, not to
+`PRIM_SPECS.def` - `num(a, lo)` inside `clampInt` - so `{}` builds a
+three-sided cylinder and a six-faced sphere. On a cube, where `hMin` and
+`def` are both 1, the mistake is invisible. `_uv57chk` passes divisions
+explicitly now and asserts the face and edge counts before asserting
+anything about seams.
+
+`_uv57chk` is 39 checks.
+
+### What this deliberately does not do
+
+**Nothing is recorded on boundary or non-manifold edges.** Those are already
+cuts as far as `computeUVIslands` is concerned - its union-find joins face
+groups only across edges with exactly two faces - so a seam there would be a
+magenta line that changes nothing. The cost is that the result is not
+durable in one case: cap an uncapped cylinder afterwards and those ring
+edges become two-face and unseamed, so the caps merge into the tube. The
+answer there is one more tap of Auto seams, which is cheaper than drawing
+seams that do nothing on every open rim in the scene.
+
+**And it only cuts where something is already hard.** A smooth closed
+surface needs the mesh segmented into charts, which is a different and much
+larger piece of work; until that exists, saying nothing was found is more
+honest than cutting somewhere arbitrary and calling it automatic.
+
+It ADDS rather than replaces, so re-running is idempotent and a model cut by
+hand can be given the obvious edges as well. Clear all seams is next door
+for the other intent.
 
 ## Merge islands now moves the UVs (2.56)
 

@@ -2569,7 +2569,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.56</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.57</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -10062,11 +10062,40 @@ function unwrapSelection() {
   // exported to window.__kubik, which can reach it with any active object.
   const topo = obj.mesh.userData.topo;
   if (!topo || !topo.faceGroups.length) { toast('Nothing to unwrap'); return; }
+  /* AN UNMARKED MODEL CUTS ITSELF FIRST (v2.57). With no seams at all there
+     is exactly one island and computeIslandUVs projects the whole object onto
+     one plane - a shadow, not a layout - and the person has no way to know
+     that the missing step was theirs. Only when the seam set is EMPTY: one
+     hand-marked seam is a statement that the cuts are being chosen, and
+     adding to them uninvited would be the tool arguing. The same pass the
+     Auto seams seat runs, so the two cannot drift, and it happens inside this
+     op's single history step. */
+  /* `onlyWhenUnmarked` rather than a test of the seam dictionary here: the
+     dictionary is keyed by position, so an edit that moved a marked vertex
+     leaves entries behind that name no edge this mesh still has. Counting
+     them as "marked" is how a model that was edited after being cut once
+     could never be auto-cut again - it would go on producing the one-island
+     projection for ever, with a non-empty seam map as the only reason. */
+  const r = autoSeamEdges(obj, { onlyWhenUnmarked: true });
+  /* ASKED HERE, while there is still a topo to ask. rebuildFromEditable below
+     nulls it and finishMeshEdit is what puts it back, so this question cannot
+     wait until the message is being built - and the answer would not change
+     anyway: Unwrap moves coordinates, not seams, so the island count after is
+     the island count now. */
+  const solo = !r.added && r.bent && computeUVIslands(obj).count === 1;
   const uv = computeIslandUVs(obj);
   const ed = toEditable(obj.mesh);
   ed.uvs = Array.from(uv);
   rebuildFromEditable(obj, ed);
-  finishMeshEdit(obj, 'Unwrapped');
+  /* AND IT SAYS WHEN IT COULD NOT HELP (review finding). A smooth closed
+     surface has no hard edge anywhere, so nothing is cut, the whole object
+     stays one island, and what comes back is a single projection of the
+     whole thing - the exact useless answer this feature exists to remove,
+     arriving silently. `bent` is what separates that from a flat sheet,
+     where one island is simply the right answer and a hint would be noise. */
+  finishMeshEdit(obj, r.added ? 'Unwrapped \u00b7 ' + r.added + ' auto seam(s)'
+    : solo ? 'Unwrapped \u00b7 one island - nothing sharp to cut on, mark seams by hand'
+           : 'Unwrapped');
   // Unwrap is now reachable from inside #uvView itself, via the shared
   // HUB_TOOLS_UV door (v2.50) - redraw in place rather than leaving the
   // card showing the pre-unwrap layout until the next open.
@@ -19059,6 +19088,168 @@ function toggleSeamKeys(obj, keys, on) {
   // on topo + this counter) needs an explicit bump to notice the edit.
   if (changed) obj.mesh.userData.islandsVersion = (obj.mesh.userData.islandsVersion || 0) + 1;
   return { changed, want };
+}
+
+/* AUTO SEAMS - CUT WHERE THE SHADING ALREADY BREAKS (v2.57).
+
+   Unwrap on a model nobody has marked produced one island and one planar
+   projection of the whole thing, which is not a layout, it is a shadow. The
+   missing step was never the projection: it was that somebody had to sit and
+   tap twelve edges of a cube before Unwrap had anything to work with.
+
+   THE RULE IS NOT A NEW ONE, and that is the point. An edge is cut exactly
+   when applyShading already treats it as SHARP - a hand mark first, the
+   object's own smooth angle second - so the seams land on the lines the
+   person is already looking at. A cube reads crisp because its edges are
+   hard; those same edges are where its faces have to come apart to lie flat.
+   Inventing a second threshold would have meant two numbers that disagree,
+   and an object whose shading says one thing while its seams say another.
+
+   `effectiveSmoothAngle` is the one place that knows what the angle IS,
+   including the per-object override Smooth by angle writes, so an object
+   dialled to 5 degrees gets a cut at every facet and one dialled to 80 gets
+   almost none - which is the control this seat would otherwise have had to
+   grow for itself.
+
+   EDGES WITH ANYTHING OTHER THAN TWO FACES ARE SKIPPED. An open rim or a
+   non-manifold junction is ALREADY a cut as far as computeUVIslands is
+   concerned - its union-find joins face groups only across edges with
+   exactly two - so marking a seam there would change nothing and leave a
+   magenta line across a rim that was never joined in the first place.
+
+   IT ADDS, IT DOES NOT REPLACE. Seams already there are kept: re-running is
+   then idempotent, and a person who cut a model by hand and wants the
+   obvious edges as well gets both. Clear all seams is next door for the
+   other intent.
+
+   WHAT IT CANNOT DO, said plainly because the toast says it too: a smooth
+   closed surface - a subdivided sphere, a lathe with no hard edge on it -
+   has no sharp edge anywhere, so this finds nothing and the model stays one
+   island. Cutting THAT well means segmenting the surface into charts, which
+   is a different and much larger piece of work; until it exists, the honest
+   answer is to say nothing was found rather than to cut somewhere arbitrary
+   and call it automatic. */
+function autoSeamEdges(obj, opts) {
+  const geo = obj.mesh.geometry;
+  const topo = obj.mesh.userData.topo;
+  if (!topo || !topo.faceGroups.length || !geo.index) return { added: 0, edges: 0 };
+  const index = geo.index;
+  const posAttr = geo.attributes.position;
+  const fgCount = topo.faceGroups.length;
+
+  /* One normal per FACE GROUP, accumulated from its triangles' cross
+     products - the same summed-then-normalised accumulation applyShading
+     does, and for the same reason: a face is an n-gon, and the normal that
+     matters is the polygon's, not whichever triangle the walk reached
+     first. Deliberately its own small pass rather than a reach into
+     applyShading's shadeTopo, which is drag-scoped and would have to be
+     built and thrown away to answer one question. */
+  const nx = new Float64Array(fgCount), ny = new Float64Array(fgCount), nz = new Float64Array(fgCount);
+  const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3();
+  const eU = new THREE.Vector3(), eV = new THREE.Vector3(), cr = new THREE.Vector3();
+  for (let gi = 0; gi < fgCount; gi++) {
+    const fg = topo.faceGroups[gi];
+    const end = (fg.triStart + fg.triCount) * 3;
+    for (let i = fg.triStart * 3; i < end; i += 3) {
+      vA.fromBufferAttribute(posAttr, index.getX(i));
+      vB.fromBufferAttribute(posAttr, index.getX(i + 1));
+      vC.fromBufferAttribute(posAttr, index.getX(i + 2));
+      cr.crossVectors(eU.subVectors(vB, vA), eV.subVectors(vC, vA));
+      nx[gi] += cr.x; ny[gi] += cr.y; nz[gi] += cr.z;
+    }
+    const l = Math.sqrt(nx[gi] * nx[gi] + ny[gi] * ny[gi] + nz[gi] * nz[gi]);
+    /* ZEROED RATHER THAN LEFT AS IT IS (review finding). A face with no area
+       has no normal, and leaving the raw sum there left a vector of magnitude
+       1e-15 whose dot with anything is ~0 - which reads as "turns by ninety
+       degrees" and sprayed seams round every collapsed face, by accident
+       rather than on purpose. Zero reads the same way, deliberately: a
+       degenerate face IS a discontinuity and cutting round it is the honest
+       answer. The same branch catches a NaN position, which would otherwise
+       fail the comparison the other way and report the whole mesh smooth. */
+    if (l > 1e-12) { nx[gi] /= l; ny[gi] /= l; nz[gi] /= l; }
+    else { nx[gi] = 0; ny[gi] = 0; nz[gi] = 0; }
+  }
+
+  const marks = obj.mesh.userData.edgeShade || {};
+  const seams = obj.mesh.userData.seams || {};
+  const cosLimit = Math.cos(effectiveSmoothAngle(obj.mesh));
+  /* THE SAME edge->faces map the islands are built from, so "what counts as
+     one edge" cannot disagree between the cut and what the cut produces. And
+     the key is spelled the way every other seam op in this file spells it -
+     creaseKeyFor over logicalPos, which reads position attribute
+     logicalGroups[l][0], the same representative applyShading reads for its
+     own marks lookup. The two spellings have to agree or a hand mark would be
+     invisible here; they agree because they are the same vertex. */
+  const { edgeFaces } = computeUVIslands(obj);
+  const keys = [];
+  let manifold = 0, bent = 0, live = 0;
+  edgeFaces.forEach((gis, key) => {
+    if (gis.length !== 2) return;
+    manifold++;
+    const us = key.split('_');
+    const k = creaseKeyFor(logicalPos(obj, +us[0]), logicalPos(obj, +us[1]));
+    if (!k) return;
+    // A seam that names an edge this mesh ACTUALLY HAS. The dictionary is
+    // keyed by position, so any edit that moves a marked vertex orphans its
+    // entry - and a dictionary full of orphans is not a marked model, it is
+    // an unmarked one carrying litter.
+    if (seams[k]) live++;
+    const a = gis[0], b = gis[1];
+    const dot = nx[a] * nx[b] + ny[a] * ny[b] + nz[a] * nz[b];
+    // Does this mesh turn AT ALL here - the flat-versus-not question, asked
+    // with the number this file already uses for it rather than a new one.
+    if (dot < IMPORT_COPLANAR_DOT) bent++;
+    const mark = marks[k] || null;
+    let sharp;
+    if (mark === 'sharp') sharp = true;
+    else if (mark === 'smooth') sharp = false;
+    else sharp = dot < cosLimit - SHARP_EPS;
+    if (sharp) keys.push(k);
+  });
+  const out = { added: 0, found: keys.length, edges: manifold, bent: bent, live: live };
+  /* THE CALLER THAT ONLY WANTS TO HELP AN UNMARKED MODEL says so here rather
+     than testing the seam dictionary for itself: only this walk knows which
+     of its entries still name a real edge. */
+  if (opts && opts.onlyWhenUnmarked && live) return out;
+  if (!keys.length) return out;
+  // `true`, not a toggle: this is "make these seams", and an edge that was
+  // already one must stay one rather than be cleared by being found again.
+  out.added = toggleSeamKeys(obj, keys, true).changed;
+  return out;
+}
+
+// The seat. Whole object regardless of selection, the same scope Unwrap and
+// the island preview use, because a seam layout is a property of the mesh
+// rather than of whatever happens to be selected right now.
+function autoSeamSelection() {
+  if (refuseCurves('Auto seams')) return;
+  const obj = findObject(App.activeObjectId);
+  if (!obj) { toast('Select an object first'); return; }
+  ensureHelpers(obj);
+  const topo = obj.mesh.userData.topo;
+  if (!topo || !topo.faceGroups.length) { toast('Nothing to seam'); return; }
+  const r = autoSeamEdges(obj);
+  if (!r.added) {
+    /* THREE different nothings, and they are not the same news (review
+       finding). Pressing this twice on a cube found all twelve edges and
+       added none of them, because they were already seams - and saying
+       "nothing hard enough to cut" there tells the person to go and lower a
+       threshold that is already cutting everything it can. */
+    hideRadialMenu();
+    toast(r.found ? 'Already cut \u00b7 ' + computeUVIslands(obj).count + ' island(s)'
+        : r.edges ? 'Nothing hard enough to cut - mark seams by hand, or lower the smooth angle'
+                  : 'No interior edges to cut');
+    return;
+  }
+  const after = computeUVIslands(obj);
+  refreshElementColors(obj);
+  hideRadialMenu();
+  refreshUI();
+  pushHistory();
+  // The 2D view is one of the two places this seat can be reached from, and
+  // it draws the islands this just changed (review finding).
+  if (uvViewObj) refreshUvView(uvViewObj);
+  toast(r.added + ' seam(s) added \u00b7 ' + after.count + ' island(s)');
 }
 
 function markSeamSelection(on) {
@@ -36388,7 +36579,13 @@ const HUB_TOOLS_UV = [
   { key: 'merge', icon: 'unseam', label: 'Merge islands', seat: 2,
     run: mergeUvIslandsSelection },
   { key: 'unwrap', icon: 'unwrap', label: 'Unwrap', seat: 3,
-    run: unwrapSelection }
+    run: unwrapSelection },
+  /* v2.57. Bearing 4 - this ring had four of its eight free, and this is the
+     one seat that belongs beside Unwrap rather than behind it: it is what you
+     reach for BEFORE unwrapping, and the only way to re-derive the cuts after
+     Clear all seams without unwrapping too. */
+  { key: 'autoseam', icon: 'seam', label: 'Auto seams', seat: 4,
+    run: autoSeamSelection }
 ];
 
 /* The 2D UV editor's own empty-space door (v2.50) - the only way back to
@@ -43239,6 +43436,8 @@ if (PICK_DEBUG) {
     // Seams (uv-commands-maps-plan.md stage 5) - same reason creaseSelection
     // and markSharpSelection are here: let a harness drive the real toggle.
     markSeamSelection, clearAllSeams, seamSet, mergeUvIslandsSelection,
+    // v2.57: the derivation on its own, and the seat that runs it.
+    autoSeamEdges, autoSeamSelection,
     // v2.56: the fit on its own, so a probe can check the transform it
     // returns against a known answer without driving the whole seat.
     alignUvIslands,
