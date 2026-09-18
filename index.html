@@ -2466,7 +2466,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.46</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.47</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -36392,14 +36392,16 @@ function closeToolRing(run) {
    same and costs one seat instead of two. Symmetry was the last thing using
    it - #hubBtn cycles three states and never did. */
 
-/* ---------------- 2D UV view (v2.43, dragging an island from v2.45) ----------------
+/* ---------------- 2D UV view (v2.43, editing an island from v2.45) ----------------
    Shows the active object's UV layout - every triangle's edges in UV space,
    grouped one island at a time, plus the 0..1 square packIslandUVs packs
    into - so an unwrap can be checked by eye without exporting a texture to
    see it on. v2.45 adds the first edit (uv-commands-maps-plan.md stage 5,
    next slice after 5): drag a whole island by its fill to translate it.
-   Rotating or scaling an island, moving a single UV, and editing a seam
-   from here are all still further out. */
+   v2.47 adds the second: a two-finger pinch on the same island rotates and
+   scales it around its own centre, live alongside the one-finger drag.
+   Moving a single UV and editing a seam from here are both still further
+   out. */
 const uvViewEl = document.getElementById('uvView');
 const uvViewSvgEl = document.getElementById('uvViewSvg');
 const uvViewEmptyEl = document.getElementById('uvViewEmpty');
@@ -36425,6 +36427,23 @@ const UV_VIEW_PAD = 4;
 // this only stops an island from being LOST, it is not the 0..1 clamp
 // v2.43's own "what this doesn't do" list already declined to add.
 const UV_VIEW_CENTER_MARGIN = 2;
+
+/* Pinch tuning (v2.47). MIN_DIST floors the two fingers' starting
+   separation before it becomes a scale ratio's denominator - without it, a
+   pinch that starts with both fingers nearly on top of each other could
+   turn a tiny, accidental gap into a wild multiplier the moment they
+   spread apart. MIN_SCALE/MAX_SCALE are a generous outer fence on the
+   result, not a working range - most real pinches never get near either
+   end. MIN_ANGLE_DEG/MIN_SCALE_DELTA are the pinch's own version of
+   RING_MOVE_CANCEL_PX below: how far a two-finger touch has to actually
+   turn or spread before it counts as a gesture rather than an accidental
+   graze, so a two-finger tap on an island cannot write a no-op history
+   step. */
+const UV_PINCH_MIN_DIST = 3;
+const UV_PINCH_MIN_SCALE = 0.05;
+const UV_PINCH_MAX_SCALE = 20;
+const UV_PINCH_MIN_ANGLE_DEG = 1;
+const UV_PINCH_MIN_SCALE_DELTA = 0.02;
 
 /* One <g class="uv-island"> per island instead of the single all-triangles
    path v2.43 drew: a translucent fill (islandColorHex - the same
@@ -36517,11 +36536,21 @@ function refreshUvView(obj) {
   }
 }
 
-// The object the view is currently open for, and the in-progress drag if
+// The object the view is currently open for, and the in-progress gesture if
 // any - both module-level since the pointer handlers below fire well after
-// openUvView returns, on their own event ticks.
+// openUvView returns, on their own event ticks. uvDrag.mode starts
+// 'translate' (one finger/pointer, the v2.45 gesture) and becomes 'pinch'
+// the moment a second pointer arrives while it is still 'translate' (v2.47)
+// - see startUvPinch. Once in 'pinch', dx/dy are frozen at whatever the
+// first finger had already moved the island by, and rotate/scale layer on
+// top of that same fixed offset; a third pointer, or the state this object
+// is in when neither branch applies, is simply ignored.
 let uvViewObj = null;
-let uvDrag = null; // { islandId, pointerId, startX, startY, dx, dy, gEl }
+let uvDrag = null;
+// { mode, islandId, gEl, centerX, centerY,
+//   pointerId, startX, startY, lastSvgX, lastSvgY, dx, dy,
+//   startClientX, startClientY, lastClientX, lastClientY,
+//   pointerId2, p1, p2, startAngle, startDist, angleDeg, scale }
 
 function openUvView() {
   const obj = findObject(App.activeObjectId);
@@ -36571,45 +36600,83 @@ function uvViewPoint(ev) {
 }
 
 // commit=false is a plain cancel (pointercancel, or the view closing mid-
-// drag): the transform is dropped and nothing is written. commit=true
-// still skips writing history for a drag that never actually moved - a tap
-// that happened to land on an island - measured in real screen pixels
-// against RING_MOVE_CANCEL_PX, the same threshold every hold-gesture in
-// this file already cancels a stray movement by (review finding, v2.45:
-// the SVG-space dx/dy this function also carries are a few hundredths of
-// a unit for an ordinary touch, in the card's own 0..100 viewBox - comparing
+// gesture): the transform is dropped and nothing is written. commit=true
+// still skips writing history for a gesture that never actually did
+// anything - a tap, or a two-finger graze, that happened to land on an
+// island. Translate is measured in real screen pixels against
+// RING_MOVE_CANCEL_PX, the same threshold every hold-gesture in this file
+// already cancels a stray movement by (review finding, v2.45: the
+// SVG-space dx/dy this function also carries are a few hundredths of a
+// unit for an ordinary touch, in the card's own 0..100 viewBox - comparing
 // THEM against a small threshold let almost any tap through as a real,
-// history-writing edit).
+// history-writing edit); rotate and scale get their own thresholds
+// (v2.47), in their own units, for the identical reason.
 function endUvDrag(commit) {
   if (!uvDrag) return;
-  const { islandId, dx, dy, gEl, startClientX, startClientY, lastClientX, lastClientY } = uvDrag;
+  const { islandId, dx, dy, gEl, centerX, centerY,
+    startClientX, startClientY, lastClientX, lastClientY,
+    mode, angleDeg, scale } = uvDrag;
   gEl.classList.remove('dragging');
   gEl.removeAttribute('transform');
   uvDrag = null;
+  if (!commit) return;
   const movedPx = Math.hypot(lastClientX - startClientX, lastClientY - startClientY);
-  if (commit && movedPx > RING_MOVE_CANCEL_PX) commitUvIslandDrag(islandId, dx, dy);
+  const translated = movedPx > RING_MOVE_CANCEL_PX;
+  if (mode === 'translate') {
+    if (translated) commitUvIslandTransform(islandId, dx, dy, 0, 1, centerX, centerY);
+    return;
+  }
+  const rotated = Math.abs(angleDeg) > UV_PINCH_MIN_ANGLE_DEG;
+  const scaled = Math.abs(scale - 1) > UV_PINCH_MIN_SCALE_DELTA;
+  if (rotated || scaled || translated) {
+    commitUvIslandTransform(islandId, dx, dy, angleDeg, scale, centerX, centerY);
+  }
 }
 
-function commitUvIslandDrag(islandId, dxSvg, dySvg) {
+// Translate, rotate and scale in one write, all pivoting on (cxSvg, cySvg)
+// - the island's own untransformed centre - so the plain v2.45 drag is just
+// this called with angleDeg 0 and scale 1: rotating and scaling by nothing
+// leaves every point exactly where the translate alone would have put it,
+// which is why endUvDrag's translate branch above can route through the
+// same function instead of keeping the old one beside it.
+function commitUvIslandTransform(islandId, dxSvg, dySvg, angleDeg, scale, cxSvg, cySvg) {
   const obj = uvViewObj;
   if (!obj || !obj.mesh || !obj.mesh.geometry) return;
   const span = 100 - 2 * UV_VIEW_PAD;
   const du = dxSvg / span, dv = -dySvg / span; // SVG Y-down -> UV V-up, same flip renderUvView's toY uses
+  // The pivot in UV space is the same island-centre point cxSvg/cySvg was
+  // measured at (pointerdown's fillBB centre), inverted through the exact
+  // toX/toY mapping renderUvView paints with.
+  const pivotU = (cxSvg - UV_VIEW_PAD) / span;
+  const pivotV = 1 - (cySvg - UV_VIEW_PAD) / span;
+  // A rotation that turns clockwise ON SCREEN (SVG's Y-down convention,
+  // which is what angleDeg was measured in, in updateUvPinchTransform) turns
+  // COUNTER-clockwise in UV space, because V is the flipped axis - so the
+  // angle is negated once, here, rather than carried as a sign the pinch
+  // code above would otherwise have to reason about in screen terms.
+  // Worked example that pinned the sign down: a screen vector pointing
+  // right, turned 90° by SVG's own rotate() (clockwise on screen), lands
+  // pointing down on screen - which is -V, not +U rotated the "obvious"
+  // way - confirming the flip has to happen, not just the axis swap.
+  const rad = -angleDeg * Math.PI / 180;
+  const cosA = Math.cos(rad), sinA = Math.sin(rad);
   let ed;
   try { ed = toEditable(obj.mesh); }
-  catch (e) { console.warn('commitUvIslandDrag: toEditable failed', e); return; }
+  catch (e) { console.warn('commitUvIslandTransform: toEditable failed', e); return; }
   if (!ed.uvs || !ed.uvs.length) return;
   const { attrIsland } = islandVertexMap(obj);
   let moved = 0;
   for (let ai = 0; ai < attrIsland.length; ai++) {
     if (attrIsland[ai] !== islandId) continue;
-    ed.uvs[ai * 2] += du;
-    ed.uvs[ai * 2 + 1] += dv;
+    const ru = (ed.uvs[ai * 2] - pivotU) * scale;
+    const rv = (ed.uvs[ai * 2 + 1] - pivotV) * scale;
+    ed.uvs[ai * 2] = pivotU + (ru * cosA - rv * sinA) + du;
+    ed.uvs[ai * 2 + 1] = pivotV + (ru * sinA + rv * cosA) + dv;
     moved++;
   }
   if (!moved) return;
   rebuildFromEditable(obj, ed);
-  finishMeshEdit(obj, 'Moved UV island');
+  finishMeshEdit(obj, (angleDeg || scale !== 1) ? 'Transformed UV island' : 'Moved UV island');
   refreshUvView(obj);
 }
 
@@ -36623,31 +36690,57 @@ function closeUvView() {
 }
 document.getElementById('uvViewClose').addEventListener('click', closeUvView);
 // Tapping the dimmed backdrop dismisses it too, the same guard helpOverlay
-// uses so a tap inside the card is never mistaken for one outside it.
-uvViewEl.addEventListener('click', (ev) => { if (ev.target === uvViewEl) closeUvView(); });
+// uses so a tap inside the card is never mistaken for one outside it. Not
+// while a drag or pinch is live, though (review finding, v2.47): a stray
+// touch - a palm, the hand steadying the phone during a two-finger pinch -
+// can start and end on the backdrop without ever registering as a drag,
+// synthesizing a click that would otherwise silently throw the gesture
+// away with no commit and no feedback.
+uvViewEl.addEventListener('click', (ev) => { if (ev.target === uvViewEl && !uvDrag) closeUvView(); });
 
-/* DRAGGING AN ISLAND (v2.45). Whole-island translate only - no rotate, no
-   scale, no per-vertex editing - the first of the "further out" items the
-   comment at the top of this section now lists, the same staged-ambition
-   pattern every other part of stage 5 has followed. Direct dragging, not a
-   hold-to-arm gesture: this is a 2D editing surface, not the mode ring, and
-   the app's own headline principle for the 3D viewport - move by DIRECT
-   DRAGGING - applies here just as much. */
+/* DRAGGING AN ISLAND (v2.45), PINCHING ONE (v2.47). One finger translates;
+   a second finger, arriving while the first is already holding an island,
+   turns the same gesture into a pinch that rotates and scales it - both
+   direct manipulation, no gizmo and no hold-to-arm step, the app's own
+   headline principle for the 3D viewport applying here just as much. */
 uvViewSvgEl.addEventListener('pointerdown', (ev) => {
   if (ev.pointerType === 'mouse' && ev.button !== 0) return;
-  if (ev.isPrimary === false) return;
+  // A second finger while the first already holds an island starts the
+  // pinch (v2.47), checked first and unconditionally - Chromium marks only
+  // the first touch of a multi-touch sequence as primary, and this second
+  // finger is deliberately never that one.
+  if (uvDrag && uvDrag.mode === 'translate' && ev.pointerId !== uvDrag.pointerId) {
+    startUvPinch(ev);
+    return;
+  }
+  if (uvDrag) return; // already pinching, or an unexpected third pointer - ignore
+  // No isPrimary check (removed, review finding v2.47): it silently
+  // dropped a legitimate fresh single-finger drag whenever another finger
+  // happened to be touching the screen anywhere on the page - including a
+  // finger put back down after a pinch to start another one, which the
+  // pointerup comment below explicitly promises works. The uvDrag guard
+  // above already rules out a second pointer competing for the SAME drag.
   const g = ev.target.closest && ev.target.closest('.uv-island');
   if (!g) return;
   const p = uvViewPoint(ev);
   const fillBB = g.querySelector('.uv-fill').getBBox();
   uvDrag = {
+    mode: 'translate',
     islandId: +g.dataset.island, pointerId: ev.pointerId, gEl: g,
     startX: p.x, startY: p.y, dx: 0, dy: 0,
+    // The primary pointer's own live position, kept up to date every move
+    // (v2.47) - startUvPinch reads it to seed the second finger's starting
+    // vector, since by the time that finger touches down the first one has
+    // usually already moved away from startX/startY.
+    lastSvgX: p.x, lastSvgY: p.y,
     // The island's own centre, untransformed - clamped against in
     // pointermove (review finding, v2.45) so a fast or far drag can never
     // push it fully off the 0..100 card: past the edge its element sits
     // behind the dimmed backdrop, so a tap meant to grab it again instead
-    // closes the whole view, and nothing short of Undo gets it back.
+    // closes the whole view, and nothing short of Undo gets it back. Also
+    // the pinch's own pivot (v2.47): rotate and scale turn the island
+    // around this same point rather than around wherever the two fingers
+    // happen to be.
     centerX: fillBB.x + fillBB.width / 2, centerY: fillBB.y + fillBB.height / 2,
     // Client-pixel start, kept alongside the SVG-space one above: the
     // tap-vs-drag decision in endUvDrag has to compare against a REAL
@@ -36655,6 +36748,8 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
     // function's own comment).
     startClientX: ev.clientX, startClientY: ev.clientY,
     lastClientX: ev.clientX, lastClientY: ev.clientY,
+    pointerId2: null, p1: null, p2: null,
+    startAngle: 0, angleSeeded: false, startDist: 0, angleDeg: 0, scale: 1,
   };
   // Explicit capture, not the implicit one touch gets for free - the same
   // MUST-FIX class the mode-hold button hit in v2.43: a mouse never gets an
@@ -36665,27 +36760,120 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
   g.classList.add('dragging');
   ev.preventDefault();
 });
+// Turns an in-progress one-finger drag into a two-finger pinch (v2.47).
+// dx/dy stay exactly what they were the instant this fires - the island
+// does not jump back to its start position, it simply stops translating
+// and starts rotating/scaling from wherever the first finger had already
+// carried it.
+function startUvPinch(ev) {
+  const p1 = { x: uvDrag.lastSvgX, y: uvDrag.lastSvgY };
+  const p2 = uvViewPoint(ev);
+  const rawDist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+  uvDrag.mode = 'pinch';
+  uvDrag.pointerId2 = ev.pointerId;
+  uvDrag.p1 = p1; uvDrag.p2 = p2;
+  uvDrag.startDist = Math.max(rawDist, UV_PINCH_MIN_DIST);
+  uvDrag.angleDeg = 0;
+  uvDrag.scale = 1;
+  // A real two-finger pinch very often STARTS with the fingers close
+  // together (spreading apart to zoom in is the classic gesture), which is
+  // exactly when atan2 is least trustworthy - a pixel of jitter on a
+  // near-zero vector swings the angle by tens of degrees (review finding,
+  // v2.47). So the starting angle isn't seeded here when the fingers are
+  // this close; angleSeeded stays false and updateUvPinchTransform seeds it
+  // itself from the first move where the separation is wide enough to mean
+  // something, rather than baking a noisy baseline into the whole gesture.
+  uvDrag.angleSeeded = rawDist >= UV_PINCH_MIN_DIST;
+  uvDrag.startAngle = uvDrag.angleSeeded ? Math.atan2(p2.y - p1.y, p2.x - p1.x) : 0;
+  try { uvViewSvgEl.setPointerCapture(ev.pointerId); } catch (e) {}
+  ev.preventDefault();
+}
+// Recomputes rotate/scale from the two fingers' current positions and
+// repaints the live transform - called from pointermove for whichever
+// finger just moved, since either one changes the vector between them.
+function updateUvPinchTransform() {
+  const { p1, p2 } = uvDrag;
+  const dxv = p2.x - p1.x, dyv = p2.y - p1.y;
+  const rawDist = Math.hypot(dxv, dyv);
+  const dist = Math.max(rawDist, UV_PINCH_MIN_DIST);
+  uvDrag.scale = Math.min(Math.max(dist / uvDrag.startDist, UV_PINCH_MIN_SCALE), UV_PINCH_MAX_SCALE);
+  // Angle only means something once the fingers have spread past the same
+  // floor the distance is clamped to (review finding, v2.47) - below that,
+  // this frame just keeps whatever angle the gesture already had, rather
+  // than repaint with noise. The first frame that clears the floor seeds
+  // startAngle instead of measuring against it, matching startUvPinch's own
+  // deferral when the pinch began close together. Wrapped into (-180, 180]
+  // before storing: raw atan2 output straddles the branch cut for an
+  // ordinary horizontal pinch with the second finger to the left of the
+  // first, so a sub-degree wobble there would otherwise read as a ~360deg
+  // turn and wrongly clear UV_PINCH_MIN_ANGLE_DEG on a gesture that did
+  // nothing.
+  if (rawDist >= UV_PINCH_MIN_DIST) {
+    const angle = Math.atan2(dyv, dxv);
+    if (!uvDrag.angleSeeded) {
+      uvDrag.startAngle = angle;
+      uvDrag.angleSeeded = true;
+      uvDrag.angleDeg = 0;
+    } else {
+      const a = (angle - uvDrag.startAngle) * 180 / Math.PI;
+      uvDrag.angleDeg = ((a + 180) % 360 + 360) % 360 - 180;
+    }
+  }
+  const { dx, dy, centerX: cx, centerY: cy, angleDeg, scale } = uvDrag;
+  // Same three-step "rotate/scale about a point" recipe v2.43a's icon
+  // spacing and every other pivoted transform in this file uses: move the
+  // pivot to the origin, apply, move it back - then the frozen dx/dy from
+  // the translate phase rides on top, applied last, exactly as
+  // commitUvIslandTransform below has to reproduce it in UV space.
+  uvDrag.gEl.setAttribute('transform',
+    `translate(${dx.toFixed(2)},${dy.toFixed(2)}) translate(${cx.toFixed(2)},${cy.toFixed(2)}) ` +
+    `rotate(${angleDeg.toFixed(2)}) scale(${scale.toFixed(4)}) translate(${(-cx).toFixed(2)},${(-cy).toFixed(2)})`);
+}
 uvViewSvgEl.addEventListener('pointermove', (ev) => {
-  if (!uvDrag || ev.pointerId !== uvDrag.pointerId) return;
-  const p = uvViewPoint(ev);
-  let dx = p.x - uvDrag.startX, dy = p.y - uvDrag.startY;
-  // Clamp on the delta, not on the rendered transform, so the value
-  // actually committed on release is the exact one shown live during the
-  // drag - see the centerX/centerY comment in pointerdown above.
-  const M = UV_VIEW_CENTER_MARGIN;
-  dx = Math.min(Math.max(dx, M - uvDrag.centerX), 100 - M - uvDrag.centerX);
-  dy = Math.min(Math.max(dy, M - uvDrag.centerY), 100 - M - uvDrag.centerY);
-  uvDrag.dx = dx; uvDrag.dy = dy;
-  uvDrag.lastClientX = ev.clientX; uvDrag.lastClientY = ev.clientY;
-  uvDrag.gEl.setAttribute('transform', `translate(${dx.toFixed(2)},${dy.toFixed(2)})`);
+  if (!uvDrag) return;
+  if (uvDrag.mode === 'translate') {
+    if (ev.pointerId !== uvDrag.pointerId) return;
+    const p = uvViewPoint(ev);
+    uvDrag.lastSvgX = p.x; uvDrag.lastSvgY = p.y;
+    let dx = p.x - uvDrag.startX, dy = p.y - uvDrag.startY;
+    // Clamp on the delta, not on the rendered transform, so the value
+    // actually committed on release is the exact one shown live during the
+    // drag - see the centerX/centerY comment in pointerdown above.
+    const M = UV_VIEW_CENTER_MARGIN;
+    dx = Math.min(Math.max(dx, M - uvDrag.centerX), 100 - M - uvDrag.centerX);
+    dy = Math.min(Math.max(dy, M - uvDrag.centerY), 100 - M - uvDrag.centerY);
+    uvDrag.dx = dx; uvDrag.dy = dy;
+    uvDrag.lastClientX = ev.clientX; uvDrag.lastClientY = ev.clientY;
+    uvDrag.gEl.setAttribute('transform', `translate(${dx.toFixed(2)},${dy.toFixed(2)})`);
+    return;
+  }
+  // Pinch: either finger moving updates that finger's own point and
+  // recomputes the pair, so a still finger with the other one circling it
+  // still reads as a turn.
+  if (ev.pointerId === uvDrag.pointerId) uvDrag.p1 = uvViewPoint(ev);
+  else if (ev.pointerId === uvDrag.pointerId2) uvDrag.p2 = uvViewPoint(ev);
+  else return;
+  updateUvPinchTransform();
 });
 uvViewSvgEl.addEventListener('pointerup', (ev) => {
-  if (!uvDrag || ev.pointerId !== uvDrag.pointerId) return;
-  uvDrag.lastClientX = ev.clientX; uvDrag.lastClientY = ev.clientY;
+  if (!uvDrag) return;
+  if (uvDrag.mode === 'translate') {
+    if (ev.pointerId !== uvDrag.pointerId) return;
+    uvDrag.lastClientX = ev.clientX; uvDrag.lastClientY = ev.clientY;
+    endUvDrag(true);
+    return;
+  }
+  // Pinch: lifting EITHER finger ends the whole gesture and commits - no
+  // falling back to a one-finger translate with the finger that is still
+  // down. Simpler to reason about and to test than a second state
+  // transition, and a lifted finger is easy to put back down for another
+  // pinch if that is what was meant.
+  if (ev.pointerId !== uvDrag.pointerId && ev.pointerId !== uvDrag.pointerId2) return;
   endUvDrag(true);
 });
 uvViewSvgEl.addEventListener('pointercancel', (ev) => {
-  if (!uvDrag || ev.pointerId !== uvDrag.pointerId) return;
+  if (!uvDrag) return;
+  if (ev.pointerId !== uvDrag.pointerId && ev.pointerId !== uvDrag.pointerId2) return;
   endUvDrag(false);
 });
 
@@ -40853,9 +41041,10 @@ if (PICK_DEBUG) {
     transformAxes, scaleAlongDir,
     setSoft, cycleEditMode, engageSoftSlide, softSlideMove, endSoftSlide, refreshSoftHud,
     // v2.43: the mode-hold bloom menu and the read-only 2D UV view it opens.
-    // v2.45: dragging an island in that view.
+    // v2.45: dragging an island in that view. v2.47: pinch to rotate/scale it.
     openUvView, closeUvView, renderUvView, HUB_TOOLS_MODE,
-    refreshUvView, islandVertexMap, commitUvIslandDrag,
+    refreshUvView, islandVertexMap, commitUvIslandTransform,
+    startUvPinch, updateUvPinchTransform,
     get uvViewOpen() { return uvViewEl.classList.contains('show'); },
     enterIsolation, exitIsolation, reconcileIsolation, applyIsolation, objectPickable,
     unhideObject, isolationOn,

@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~40,943 lines)
-- Version at time of writing: **2.46**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~41,133 lines)
+- Version at time of writing: **2.47**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -589,6 +589,109 @@ moved (4 of 4 correct picks at both corners, aiming at each seat's true
 on-screen position). Its two real findings - the overhang and the
 fallback's lost margin - are the fixes described above, both re-verified
 live afterward rather than taken on the review's numbers alone.
+
+## Pinch to rotate/scale a UV island (2.47)
+
+Stage 5's island drag (2.45, translate only) gets its second gesture: a
+two-finger pinch, on top of the same one-finger drag, rotates and scales
+the island around its own centre. Scope was asked, not assumed - offered
+three interaction options via AskUserQuestion (a slider; a rotate handle
+plus a scale handle; two-finger pinch) and the user picked pinch,
+explicitly: one finger still translates exactly as in 2.45; a second
+finger arriving mid-drag turns the same gesture into a pinch, angle
+between the fingers driving rotation, distance driving scale, both
+pivoting on the island's own untransformed centre (its `.uv-fill`
+bounding-box centre, the same point 2.45 already measured at pointerdown
+for the off-canvas clamp). Lifting EITHER finger ends and commits the
+WHOLE gesture - no falling back to one-finger translate with whichever
+finger is still down. Simpler to build, reason about and test than a
+second state transition, and stated as a deliberate choice in the code's
+own comment.
+
+**The sign that took the most care.** The SVG view is screen space (Y
+down); UV data is V-up. A screen-space pinch angle, measured with
+`Math.atan2` on SVG pointer coordinates the same way SVG's own `rotate()`
+transform reads it (positive = clockwise on screen), has to be NEGATED
+before it is applied to the underlying UV coordinates - `radUV =
+-angleDegScreen * Math.PI/180`. Derived two ways before trusting it: an
+explicit 2x2 matrix derivation (`M = diag(1,-1)` models the V-flip;
+`q' = M^-1 R(th) M q` reduces to `q' = R(-th) q`), and a worked example
+(a screen vector pointing right, turned 90 degrees by SVG's own visual
+`rotate()`, lands pointing down on screen - which is -V, not +U rotated
+the "obvious" way). Then verified against real, dispatched touch input
+(Chromium's own `Input.dispatchTouchEvent`, not synthetic DOM events -
+this file's usual `dispatchEvent` cannot drive `setPointerCapture`
+correctly for a genuine two-pointer sequence): a 40-degree screen pinch,
+committed to real mesh UVs, landed within floating-point rounding of
+`pivot + scale * R(-40deg) * (originalUV - pivot)` computed independently
+by hand - five-plus decimal places, first try.
+
+**`commitUvIslandTransform` replaces 2.45's `commitUvIslandDrag`.**
+Translate, rotate and scale in one write, all pivoting on the island's
+own centre - 2.45's pure translate is just this function called with
+`angleDeg=0, scale=1`, which is algebraically identical to the old
+dedicated function (rotating and scaling by nothing leaves every point
+exactly where the translate alone would have), so `endUvDrag`'s translate
+branch now routes through the same code instead of keeping the old one
+beside it.
+
+**Review (opus) caught two real correctness bugs in the pinch math and
+two real robustness gaps, all fixed and re-verified live:**
+- The rotation angle was computed as a raw `atan2` difference with no
+  wraparound. Two fingers held near-horizontal, with the second to the
+  LEFT of the first - an entirely ordinary pinch pose - sit right at
+  atan2's +-180 degree branch cut, so a sub-degree wobble there read as a
+  ~360 degree swing: visually a no-op (rotation is modular, so the SVG
+  preview looked identical), but numerically it cleared
+  `UV_PINCH_MIN_ANGLE_DEG` and wrote a spurious "Transformed UV island"
+  undo step for a gesture that did nothing. Fixed by wrapping the angle
+  into `(-180, 180]` before storing it. Verified with a real touch
+  sequence built to straddle the exact branch cut: before the fix the raw
+  delta was -358.49 degrees on a gesture that physically rotated the
+  island by about 0.6 degrees; after the fix the stored value is 0.61
+  degrees and no history step is written, while a similarly-shaped
+  gesture that legitimately crosses the 1-degree floor (1.51 degrees, same
+  branch, larger wobble) still commits correctly.
+- The angle came from the raw, unfloored finger-to-finger vector, while
+  only the scale distance was floored against `UV_PINCH_MIN_DIST`. A
+  pinch that starts with the fingers close together - the normal way to
+  begin "spread to zoom in" - has exactly that noisy near-zero vector,
+  so `atan2` could swing wildly on the very first frame and bake a bad
+  baseline into the whole gesture. Fixed by deferring the angle entirely
+  (both the pinch's own start angle in `startUvPinch`, and the running
+  update in `updateUvPinchTransform`) until the fingers clear the same
+  `UV_PINCH_MIN_DIST` floor the scale already respects - the first frame
+  that clears it seeds the baseline instead of measuring against a bad
+  one. Verified live: a pinch starting 1-2 screen px apart, then spread
+  and turned, shows a small seed-frame angle (matching the single big
+  jump used to test it) and then accumulates correctly from there - a
+  20-degree follow-up turn reads as exactly 20 degrees more.
+- `pointerdown`'s `if (ev.isPrimary === false) return` silently dropped a
+  legitimate fresh single-finger drag start whenever ANY other pointer was
+  active anywhere on the page - including, contrary to the code's own
+  comment, a finger put back down after ending a pinch to start another
+  one (that finger is never primary while the other is still down). The
+  `if (uvDrag) return` check just above it already rules out a second
+  pointer competing for the same drag, making the isPrimary check both
+  wrong and redundant. Removed. Verified live: a second, unrelated finger
+  resting elsewhere on the card no longer blocks a fresh drag starting on
+  the island.
+- The dimmed backdrop's dismiss-on-click handler could silently discard a
+  live drag or pinch with no commit and no feedback: a stray touch (a
+  palm, the hand steadying a phone during a two-finger pinch) that starts
+  and ends on the backdrop synthesizes a click there without ever
+  registering as a drag. Fixed by skipping the dismiss while `uvDrag` is
+  set. Verified live both ways: a synthesized backdrop click during an
+  active drag no longer closes the view, and the same click with no
+  active drag still dismisses it normally, as before.
+
+Not fixed, deliberately: two lower-severity findings (sub-threshold
+rotate/scale noise riding along on a translate-only commit; an extreme
+pinch-down shrinking an island below a grabbable size) were left as-is -
+both low severity by the review's own assessment, both recoverable via
+Undo, and fixing them would have added scope for a slice this
+narrow. Worth a look if a future slice adds a "reset transform" or
+similar affordance that makes Undo not the only way back.
 
 ## Unwrap moved to Object mode (2.46)
 
