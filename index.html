@@ -2150,6 +2150,29 @@
   #uvViewSvg .uv-fill { stroke: none; fill-opacity: 0.35; }
   #uvViewSvg .uv-island { cursor: grab; }
   #uvViewSvg .uv-island.dragging { cursor: grabbing; }
+  /* SELECTED (v2.55). The island keeps its own colour - that colour is what
+     says which island it IS, and swapping it for the accent would throw
+     that away exactly when you are working with it. What changes is how
+     solid it reads and that its outline goes to the accent, the same two
+     moves .uv-vertex.selected already makes. */
+  #uvViewSvg .uv-island.selected .uv-fill { fill-opacity: 0.8; }
+  #uvViewSvg .uv-island.selected .uv-edges { stroke: var(--accent); stroke-width: 0.5; }
+  /* FACE MODE (v2.55). One path per face group, invisible until selected -
+     it is a hit target first and a highlight second, which is why it needs
+     `pointer-events: fill` said out loud: a fill-opacity of 0 is still
+     painted for hit-testing under the default `visiblePainted`, but saying
+     it here means a later change to the fill cannot quietly take the
+     target away. */
+  #uvViewSvg .uv-face { fill: var(--accent); fill-opacity: 0; stroke: none;
+    pointer-events: fill; cursor: grab; }
+  /* An outline as well as the wash (found on the stand, not in review): the
+     wash alone lands on top of whatever colour the island underneath
+     happens to be, so the same 0.55 of accent reads clearly over a dark
+     island and barely at all over a pale one. A stroke is the same colour
+     against every one of them. */
+  #uvViewSvg .uv-face.selected { fill-opacity: 0.5; stroke: var(--accent); stroke-width: 0.9;
+    stroke-linejoin: round; }
+  #uvViewSvg .uv-face.dragging { cursor: grabbing; }
   /* The card's own Island/Vertex/Edge toggle is gone (v2.53) along with the
      header row it sat in. The app's own mode button is the component switch
      now - tap to cycle, hold for the ring - which is the same control every
@@ -2546,7 +2569,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.54</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.55</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -37120,8 +37143,16 @@ function renderUvView(obj, ed) {
   const { attrIsland, count } = islandVertexMap(obj);
   const segsByIsland = new Array(count).fill('');
   const fillsByIsland = new Array(count).fill('');
-  ed.groups.forEach(g => {
+  // Per FACE GROUP, for Face mode (v2.55) - built in the same walk rather
+  // than a second one, and kept even when the mode is island/vertex/edge so
+  // switching modes never has to redraw to have them.
+  const fillsByGroup = new Array(ed.groups.length).fill('');
+  uvFaceVerts = new Array(ed.groups.length);
+  ed.groups.forEach((g, gi) => {
+    const seenV = new Set();
+    uvFaceVerts[gi] = seenV;
     g.triangles.forEach(t => {
+      t.forEach(ai => seenV.add(ai));
       const island = attrIsland[t[0]]; // a triangle's 3 corners share one face group, so one island
       if (island < 0 || island >= count) return; // topo/ed disagree: skip rather than guess
       const sp = t.map(ai => [ed.uvs[ai * 2], ed.uvs[ai * 2 + 1]]);
@@ -37135,13 +37166,14 @@ function renderUvView(obj, ed) {
         segsByIsland[island] += `M${a[0]},${a[1]}L${b[0]},${b[1]}`;
       }
       fillsByIsland[island] += `M${scr[0][0]},${scr[0][1]}L${scr[1][0]},${scr[1][1]}L${scr[2][0]},${scr[2][1]}Z`;
+      fillsByGroup[gi] += `M${scr[0][0]},${scr[0][1]}L${scr[1][0]},${scr[1][1]}L${scr[2][0]},${scr[2][1]}Z`;
     });
   });
 
   for (let i = 0; i < count; i++) {
     if (!fillsByIsland[i]) continue; // no finite-UV triangle landed in this island
     const g = document.createElementNS(NS, 'g');
-    g.setAttribute('class', 'uv-island');
+    g.setAttribute('class', 'uv-island' + (uvIslandSel.has(i) ? ' selected' : ''));
     g.dataset.island = String(i);
     const fill = document.createElementNS(NS, 'path');
     fill.setAttribute('class', 'uv-fill');
@@ -37153,6 +37185,23 @@ function renderUvView(obj, ed) {
     edges.setAttribute('d', segsByIsland[i]);
     g.appendChild(edges);
     uvViewSvgEl.appendChild(g);
+  }
+
+  /* One path per face group, face mode only (v2.55). Drawn AFTER the
+     islands so it sits on top and a tap reaches it rather than the island
+     underneath - the same paint-order rule the vertex dots below rely on -
+     and skipped entirely in the other three modes, where a face has no
+     meaning and an invisible path over everything would only be one more
+     thing for a tap to land on. */
+  if (uvCompMode === 'face') {
+    for (let gi = 0; gi < fillsByGroup.length; gi++) {
+      if (!fillsByGroup[gi]) continue;
+      const p = document.createElementNS(NS, 'path');
+      p.setAttribute('class', 'uv-face' + (uvFaceSel.has(gi) ? ' selected' : ''));
+      p.setAttribute('d', fillsByGroup[gi]);
+      p.dataset.fg = String(gi);
+      uvViewSvgEl.appendChild(p);
+    }
   }
 
   // One hit-target circle per attribute vertex with a finite UV (v2.48),
@@ -37243,6 +37292,22 @@ function refreshUvView(obj) {
     const n = ed.uvs.length / 2;
     uvSel.forEach(ai => { if (ai < 0 || ai >= n) uvSel.delete(ai); });
   }
+  /* A BOUNDS CHECK for the two v2.55 selections, and no more than that
+     (review finding: an earlier comment here claimed it survived island
+     RENUMBERING, which it does not - clearing a seam can leave the same
+     number meaning a different island and nothing here would notice). What
+     keeps that from biting today is that the seam ops are reachable only
+     from Edge mode's own door, and switching modes clears both sets. If a
+     seam op ever becomes reachable while an island selection is live, this
+     has to become a real identity check, not a longer comment. */
+  if (uvFaceSel.size) {
+    const gn = ed.groups.length;
+    uvFaceSel.forEach(gi => { if (gi < 0 || gi >= gn) uvFaceSel.delete(gi); });
+  }
+  if (uvIslandSel.size) {
+    const islands = islandVertexMap(obj).count;
+    uvIslandSel.forEach(i => { if (i < 0 || i >= islands) uvIslandSel.delete(i); });
+  }
   const res = renderUvView(obj, ed);
   uvViewSvgEl.style.display = res.ok ? '' : 'none';
   uvViewEmptyEl.style.display = res.ok ? 'none' : '';
@@ -37307,6 +37372,24 @@ let uvVDrag = null;
 let uvEdgeSel = new Set();
 function edgeKey2D(a, b) { return a < b ? a + '_' + b : b + '_' + a; }
 
+/* ISLAND MODE GETS A SELECTION (v2.55). Until now it had a drag and nothing
+   else: the one kind of component in this view that could not be picked,
+   which also meant it could not be picked in twos - and dragging two
+   islands into place together is most of what laying out a UV is. Island
+   ids are the same union-find ids computeUVIslands hands out, so they are
+   only valid for the seam layout that produced them - refreshUvView prunes
+   them on every redraw for exactly that reason. */
+let uvIslandSel = new Set();
+/* FACE MODE (v2.55): indices into ed.groups, the same order topo.faceGroups
+   carries, and the same numbers a 3D face selection uses. Kept apart from
+   uvSel rather than folded into it because the two answer different
+   questions - which attribute vertices move, and which faces are lit. */
+let uvFaceSel = new Set();
+/* face group -> its attribute vertices, filled by renderUvView while it is
+   already walking every triangle. A face drag needs this list the instant
+   it starts, and deriving it there would mean a toEditable per gesture. */
+let uvFaceVerts = [];
+
 // Switches between the whole-island gesture (v2.45/v2.47), per-vertex
 // editing (v2.48) and per-edge selection (v2.50), and always drops whatever
 // selection/gesture the OTHER mode had - a selection or a live drag carried
@@ -37321,6 +37404,8 @@ function setUvCompMode(mode) {
   uvCompMode = mode;
   uvSel.clear();
   uvEdgeSel.clear();
+  uvIslandSel.clear();
+  uvFaceSel.clear();
   refreshObjComponentBtn();   // the mode button's own word carries the kind now
   if (uvViewObj) refreshUvView(uvViewObj);
 }
@@ -37331,7 +37416,7 @@ function setUvCompMode(mode) {
    control every other mode in the app is switched with, and it gives the
    view back the strip of screen the toggle sat in. One list feeds both the
    tap and the ring, so they cannot drift. */
-const UV_COMP_MODES = ['island', 'vertex', 'edge'];
+const UV_COMP_MODES = ['island', 'vertex', 'edge', 'face'];
 function cycleUvCompMode() {
   const i = UV_COMP_MODES.indexOf(uvCompMode);
   const next = UV_COMP_MODES[(i + 1) % UV_COMP_MODES.length];
@@ -37437,24 +37522,37 @@ function uvViewPoint(ev) {
 // (v2.47), in their own units, for the identical reason.
 function endUvDrag(commit) {
   if (!uvDrag) return;
-  const { islandId, dx, dy, gEl, centerX, centerY,
+  const { islandIds, dx, dy, gEls, centerX, centerY,
     startClientX, startClientY, lastClientX, lastClientY,
-    mode, angleDeg, scale } = uvDrag;
-  gEl.classList.remove('dragging');
-  gEl.removeAttribute('transform');
+    mode, angleDeg, scale, tapId, tapWasSelected } = uvDrag;
+  gEls.forEach(el => { el.classList.remove('dragging'); el.removeAttribute('transform'); });
   uvDrag = null;
-  if (!commit) return;
-  const movedPx = Math.hypot(lastClientX - startClientX, lastClientY - startClientY);
-  const translated = movedPx > RING_MOVE_CANCEL_PX;
-  if (mode === 'translate') {
-    if (translated) commitUvIslandTransform(islandId, dx, dy, 0, 1, centerX, centerY);
+  if (!commit) {
+    // Cancelled: undo pointerdown's provisional add, so an aborted gesture
+    // leaves the selection exactly as it found it - the same rule
+    // endUvVertexDrag has followed since v2.48.
+    if (!tapWasSelected) uvIslandSel.delete(tapId);
+    paintUvCompSelection();
     return;
   }
+  const movedPx = Math.hypot(lastClientX - startClientX, lastClientY - startClientY);
+  const translated = movedPx > RING_MOVE_CANCEL_PX;
   const rotated = Math.abs(angleDeg) > UV_PINCH_MIN_ANGLE_DEG;
   const scaled = Math.abs(scale - 1) > UV_PINCH_MIN_SCALE_DELTA;
-  if (rotated || scaled || translated) {
-    commitUvIslandTransform(islandId, dx, dy, angleDeg, scale, centerX, centerY);
+  /* A TAP, NOT A DRAG (v2.55), and this is the branch that gives island
+     mode a selection at all. It reads the same three thresholds the commit
+     below does - so anything that would have been committed as a move is
+     never also read as a tap - and then toggles, exactly as the vertex
+     tap does: pointerdown has already added the island provisionally so a
+     drag starting on an unselected island carries it, and a tap that was
+     only ever a tap takes that add back out. */
+  if (!translated && !rotated && !scaled) {
+    if (tapWasSelected) uvIslandSel.delete(tapId); else uvIslandSel.add(tapId);
+    paintUvCompSelection();
+    return;
   }
+  commitUvIslandTransform(islandIds, dx, dy, mode === 'translate' ? 0 : angleDeg,
+    mode === 'translate' ? 1 : scale, centerX, centerY);
 }
 
 // Translate, rotate and scale in one write, all pivoting on (cxSvg, cySvg)
@@ -37463,7 +37561,7 @@ function endUvDrag(commit) {
 // leaves every point exactly where the translate alone would have put it,
 // which is why endUvDrag's translate branch above can route through the
 // same function instead of keeping the old one beside it.
-function commitUvIslandTransform(islandId, dxSvg, dySvg, angleDeg, scale, cxSvg, cySvg) {
+function commitUvIslandTransform(islandIds, dxSvg, dySvg, angleDeg, scale, cxSvg, cySvg) {
   const obj = uvViewObj;
   if (!obj || !obj.mesh || !obj.mesh.geometry) return;
   const span = 100 - 2 * UV_VIEW_PAD;
@@ -37488,10 +37586,17 @@ function commitUvIslandTransform(islandId, dxSvg, dySvg, angleDeg, scale, cxSvg,
   try { ed = toEditable(obj.mesh); }
   catch (e) { console.warn('commitUvIslandTransform: toEditable failed', e); return; }
   if (!ed.uvs || !ed.uvs.length) return;
+  /* One island or several, around ONE shared pivot (v2.55) - the centre of
+     the whole selection's box, not each island's own. Per-island pivots
+     would rotate every island about itself and slide them through each
+     other, which is not what two fingers on a group of islands mean.
+     A bare number is still accepted: every caller before this slice passed
+     one, and so does anything that finds this function later. */
+  const want = new Set(Array.isArray(islandIds) ? islandIds : [islandIds]);
   const { attrIsland } = islandVertexMap(obj);
   let moved = 0;
   for (let ai = 0; ai < attrIsland.length; ai++) {
-    if (attrIsland[ai] !== islandId) continue;
+    if (!want.has(attrIsland[ai])) continue;
     const ru = (ed.uvs[ai * 2] - pivotU) * scale;
     const rv = (ed.uvs[ai * 2 + 1] - pivotV) * scale;
     ed.uvs[ai * 2] = pivotU + (ru * cosA - rv * sinA) + du;
@@ -37500,7 +37605,9 @@ function commitUvIslandTransform(islandId, dxSvg, dySvg, angleDeg, scale, cxSvg,
   }
   if (!moved) return;
   rebuildFromEditable(obj, ed);
-  finishMeshEdit(obj, (angleDeg || scale !== 1) ? 'Transformed UV island' : 'Moved UV island');
+  const many = want.size > 1 ? ' islands' : ' island';
+  finishMeshEdit(obj, ((angleDeg || scale !== 1) ? 'Transformed UV' : 'Moved UV') +
+    (want.size > 1 ? ' ' + want.size : '') + many);
   refreshUvView(obj);
 }
 
@@ -37539,6 +37646,8 @@ function reconcileUvViewTarget() {
   uvPinchView = null;
   uvSel.clear();
   uvEdgeSel.clear();
+  uvIslandSel.clear();
+  uvFaceSel.clear();
   uvViewObj = want;
   resetUvViewBox();
   refreshUvView(want);
@@ -37557,6 +37666,7 @@ function closeUvView() {
   // there is nothing for either to commit.
   uvPan = null;
   uvPinchView = null;
+  uvEmptyTapClear = null;
   resetUvViewBox();
   // Always reopens in Island mode with nothing selected (v2.48) - a
   // vertex or edge selection has no meaning once the card is gone, and
@@ -37565,6 +37675,8 @@ function closeUvView() {
   uvCompMode = 'island';
   uvSel.clear();
   uvEdgeSel.clear();
+  uvIslandSel.clear();
+  uvFaceSel.clear();
   uvViewEl.classList.remove('show');
   uvViewObj = null;
   /* THE 3D VIEW COMES BACK (v2.53): the cube, and the frames. stepFrame
@@ -37617,7 +37729,11 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
   // pointerup comment below explicitly promises works. The uvDrag guard
   // above already rules out a second pointer competing for the SAME drag.
   const g = ev.target.closest && ev.target.closest('.uv-island');
-  if (!g) { armUvEmptyHold(ev); return; }
+  // Empty-space tap clears the island selection (v2.55), the same rule
+  // Vertex and Face mode have - it is the only way to put a group down
+  // again, and an island selection that survives a tap on nothing would be
+  // the one selection in this view that cannot be let go.
+  if (!g) { uvEmptyTapClear = ev.pointerId; armUvEmptyHold(ev); return; }
   // A finger already panning or pinch-zooming the VIEW (v2.51, review
   // finding, fixed after this exact guard first broke pinch-start itself by
   // sitting ABOVE the empty-space check above: that swallowed every second
@@ -37634,10 +37750,40 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
   // content instead.
   if (uvPan || uvPinchView) return;
   const p = uvViewPoint(ev);
-  const fillBB = g.querySelector('.uv-fill').getBBox();
+  /* THE WHOLE SELECTION MOVES (v2.55), not just the island under the
+     finger - the same rule the vertex drag has followed since v2.48, and
+     the reason island mode needed a selection in the first place. A fresh
+     tap-drag on an unselected island adds it first, so one continuous
+     gesture can pick up an extra island and carry the group on. */
+  const tapId = +g.dataset.island;
+  const tapWasSelected = uvIslandSel.has(tapId);
+  if (!tapWasSelected) uvIslandSel.add(tapId);
+  const islandIds = Array.from(uvIslandSel);
+  const gEls = [];
+  // The union box of every selected island, which is both the pinch pivot
+  // and what pointermove clamps against - one box for the group, so the
+  // group keeps its shape as it hits the card's edge.
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  islandIds.forEach(id => {
+    const el = uvViewSvgEl.querySelector('.uv-island[data-island="' + id + '"]');
+    if (!el) return;
+    const fill = el.querySelector('.uv-fill');
+    if (!fill) return;
+    gEls.push(el);
+    el.classList.add('dragging', 'selected');
+    const bb = fill.getBBox();
+    if (bb.x < minX) minX = bb.x;
+    if (bb.y < minY) minY = bb.y;
+    if (bb.x + bb.width > maxX) maxX = bb.x + bb.width;
+    if (bb.y + bb.height > maxY) maxY = bb.y + bb.height;
+  });
+  // Nothing on screen answers to the selection (a redraw between the tap
+  // and here): put the provisional add back and let it be, rather than
+  // starting a drag that moves nothing and commits a history step for it.
+  if (!gEls.length) { if (!tapWasSelected) uvIslandSel.delete(tapId); return; }
   uvDrag = {
     mode: 'translate',
-    islandId: +g.dataset.island, pointerId: ev.pointerId, gEl: g,
+    islandIds, tapId, tapWasSelected, pointerId: ev.pointerId, gEls,
     startX: p.x, startY: p.y, dx: 0, dy: 0,
     // The primary pointer's own live position, kept up to date every move
     // (v2.47) - startUvPinch reads it to seed the second finger's starting
@@ -37652,7 +37798,17 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
     // the pinch's own pivot (v2.47): rotate and scale turn the island
     // around this same point rather than around wherever the two fingers
     // happen to be.
-    centerX: fillBB.x + fillBB.width / 2, centerY: fillBB.y + fillBB.height / 2,
+    centerX: (minX + maxX) / 2, centerY: (minY + maxY) / 2,
+    /* The union box's EDGES, kept alongside its centre (review finding,
+       v2.55). The clamp below used to hold the centre inside the card,
+       which is the same thing as holding the island inside it only while
+       the selection IS one island - v2.45's case. Two islands at opposite
+       ends make a box as wide as the layout, and clamping its centre lets
+       the far one travel well past the card with nothing able to reach it
+       again. The vertex drag has clamped the extremes since v2.48; this is
+       the same arithmetic, and the centre stays for what it is actually
+       for - the pinch pivot. */
+    minX, minY, maxX, maxY,
     // Client-pixel start, kept alongside the SVG-space one above: the
     // tap-vs-drag decision in endUvDrag has to compare against a REAL
     // pixel distance, not the SVG viewBox's own 0..100 units (see that
@@ -37668,7 +37824,6 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
   // the mouse button still down would strand the gesture with no pointerup
   // ever arriving for it.
   try { uvViewSvgEl.setPointerCapture(ev.pointerId); } catch (e) {}
-  g.classList.add('dragging');
   ev.preventDefault();
 });
 // Turns an in-progress one-finger drag into a two-finger pinch (v2.47).
@@ -37736,9 +37891,9 @@ function updateUvPinchTransform() {
   // pivot to the origin, apply, move it back - then the frozen dx/dy from
   // the translate phase rides on top, applied last, exactly as
   // commitUvIslandTransform below has to reproduce it in UV space.
-  uvDrag.gEl.setAttribute('transform',
-    `translate(${dx.toFixed(2)},${dy.toFixed(2)}) translate(${cx.toFixed(2)},${cy.toFixed(2)}) ` +
-    `rotate(${angleDeg.toFixed(2)}) scale(${scale.toFixed(4)}) translate(${(-cx).toFixed(2)},${(-cy).toFixed(2)})`);
+  const tr = `translate(${dx.toFixed(2)},${dy.toFixed(2)}) translate(${cx.toFixed(2)},${cy.toFixed(2)}) ` +
+    `rotate(${angleDeg.toFixed(2)}) scale(${scale.toFixed(4)}) translate(${(-cx).toFixed(2)},${(-cy).toFixed(2)})`;
+  uvDrag.gEls.forEach(el => el.setAttribute('transform', tr));
 }
 uvViewSvgEl.addEventListener('pointermove', (ev) => {
   if (!uvDrag) return;
@@ -37747,15 +37902,24 @@ uvViewSvgEl.addEventListener('pointermove', (ev) => {
     const p = uvViewPoint(ev);
     uvDrag.lastSvgX = p.x; uvDrag.lastSvgY = p.y;
     let dx = p.x - uvDrag.startX, dy = p.y - uvDrag.startY;
-    // Clamp on the delta, not on the rendered transform, so the value
-    // actually committed on release is the exact one shown live during the
-    // drag - see the centerX/centerY comment in pointerdown above.
+    /* Clamp on the delta, not on the rendered transform, so the value
+       actually committed on release is the exact one shown live during the
+       drag - and on the selection's EDGES rather than its centre (review
+       finding, v2.55: see the minX/maxX note in pointerdown). Guarded per
+       axis exactly as the vertex drag's own clamp is: a selection already
+       wider than the margin band makes the lower bound exceed the upper
+       one, and min(max()) over an inverted range silently pins the value
+       to one end - the group would teleport once and then refuse to move
+       at all. */
     const M = UV_VIEW_CENTER_MARGIN;
-    dx = Math.min(Math.max(dx, M - uvDrag.centerX), 100 - M - uvDrag.centerX);
-    dy = Math.min(Math.max(dy, M - uvDrag.centerY), 100 - M - uvDrag.centerY);
+    const loX = M - uvDrag.minX, hiX = (100 - M) - uvDrag.maxX;
+    const loY = M - uvDrag.minY, hiY = (100 - M) - uvDrag.maxY;
+    if (loX <= hiX) dx = Math.min(Math.max(dx, loX), hiX);
+    if (loY <= hiY) dy = Math.min(Math.max(dy, loY), hiY);
     uvDrag.dx = dx; uvDrag.dy = dy;
     uvDrag.lastClientX = ev.clientX; uvDrag.lastClientY = ev.clientY;
-    uvDrag.gEl.setAttribute('transform', `translate(${dx.toFixed(2)},${dy.toFixed(2)})`);
+    const tr = `translate(${dx.toFixed(2)},${dy.toFixed(2)})`;
+    uvDrag.gEls.forEach(el => el.setAttribute('transform', tr));
     return;
   }
   // Pinch: either finger moving updates that finger's own point and
@@ -37799,15 +37963,28 @@ uvViewSvgEl.addEventListener('pointercancel', (ev) => {
    direct drag - a fresh tap-drag on an unselected vertex adds it to
    whatever was already held first, so one continuous gesture can pick up
    an extra vertex and carry the group on in the same motion. */
-function paintUvVertexSelection() {
+/* Every kind of selection this view can hold, repainted from the sets that
+   own it (v2.55: was vertices only). Cheap enough to do all three: the
+   querySelectorAll walks elements that are already in the document, and
+   only the current mode has any of two of these on screen at all. */
+function paintUvCompSelection() {
   uvViewSvgEl.querySelectorAll('.uv-vertex').forEach(c => {
     c.classList.toggle('selected', uvSel.has(+c.dataset.ai));
+  });
+  uvViewSvgEl.querySelectorAll('.uv-face').forEach(p => {
+    p.classList.toggle('selected', uvFaceSel.has(+p.dataset.fg));
+  });
+  uvViewSvgEl.querySelectorAll('.uv-island').forEach(g => {
+    g.classList.toggle('selected', uvIslandSel.has(+g.dataset.island));
   });
 }
 function endUvVertexDrag(commit) {
   if (!uvVDrag) return;
   const { ids, els, dx, dy, startClientX, startClientY, lastClientX, lastClientY,
-    tapAi, tapWasSelected } = uvVDrag;
+    tapAi, tapWasSelected, tapFace } = uvVDrag;
+  // Which set this gesture's tap belongs to (v2.55) - faces and vertices
+  // share every line below this one.
+  const sel = tapFace ? uvFaceSel : uvSel;
   els.forEach(el => { el.classList.remove('dragging'); el.removeAttribute('transform'); });
   uvVDrag = null;
   if (!commit) {
@@ -37815,7 +37992,7 @@ function endUvVertexDrag(commit) {
     // aborted gesture never changes the selection (review finding): a tap
     // that never got to decide tap-vs-drag should leave things exactly as
     // they were, the same as commit=false already does for the island.
-    if (!tapWasSelected) uvSel.delete(tapAi);
+    if (!tapWasSelected) { sel.delete(tapAi); paintUvCompSelection(); }
     return;
   }
   const movedPx = Math.hypot(lastClientX - startClientX, lastClientY - startClientY);
@@ -37831,18 +38008,19 @@ function endUvVertexDrag(commit) {
     // uvSel so a drag starting on it would carry it - undo that add if the
     // vertex was not actually selected before this tap landed, exactly
     // mirroring toggleElement's own has-and-additive check.
-    if (tapWasSelected) uvSel.delete(tapAi); else uvSel.add(tapAi);
-    paintUvVertexSelection();
+    if (tapWasSelected) sel.delete(tapAi); else sel.add(tapAi);
+    paintUvCompSelection();
     return;
   }
   if (clampedAway) return;
-  commitUvVertexDrag(ids, dx, dy);
+  commitUvVertexDrag(ids, dx, dy,
+    tapFace ? (els.size === 1 ? 'Moved UV face' : 'Moved ' + els.size + ' UV faces') : undefined);
 }
 // Same translate-only math commitUvIslandTransform uses for dx/dy, minus
 // the pivot/rotate/scale terms a single vertex or a loose group of them
 // has no meaningful centre to rotate around (see the CLAUDE.md scope note
 // - rotate/scale on a component selection is a later slice, not this one).
-function commitUvVertexDrag(ids, dxSvg, dySvg) {
+function commitUvVertexDrag(ids, dxSvg, dySvg, what) {
   const obj = uvViewObj;
   if (!obj || !obj.mesh || !obj.mesh.geometry) return;
   const span = 100 - 2 * UV_VIEW_PAD;
@@ -37860,11 +38038,15 @@ function commitUvVertexDrag(ids, dxSvg, dySvg) {
   });
   if (!moved) return;
   rebuildFromEditable(obj, ed);
-  finishMeshEdit(obj, moved === 1 ? 'Moved UV vertex' : `Moved ${moved} UV vertices`);
+  // `what` names the gesture when the caller knows better than the vertex
+  // count does - a face drag moves dozens of vertices and is one face.
+  finishMeshEdit(obj, what || (moved === 1 ? 'Moved UV vertex' : `Moved ${moved} UV vertices`));
   refreshUvView(obj);
 }
 uvViewSvgEl.addEventListener('pointerdown', (ev) => {
-  if (uvCompMode !== 'vertex') return;
+  // Face mode rides this same handler (v2.55) - see the comment where the
+  // hit target is chosen, just below.
+  if (uvCompMode !== 'vertex' && uvCompMode !== 'face') return;
   if (ev.pointerType === 'mouse' && ev.button !== 0) return;
   // Claimed even when this turns out to be an ignored second finger or an
   // empty-space tap (review finding) - #uvViewSvg already carries
@@ -37874,10 +38056,19 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
   // the first finger's drag is still live under pointer capture.
   ev.preventDefault();
   if (uvVDrag) return; // an unexpected second pointer - ignore, single-finger only
-  const c = ev.target.closest && ev.target.closest('.uv-vertex');
+  /* THE SAME GESTURE SERVES FACES (v2.55). A face IS its attribute
+     vertices, so tapping one puts the union of every selected face's
+     vertices into the same uvVDrag a vertex tap builds - which means the
+     drag, the edge clamp, the live transform and the commit are all code
+     Vertex mode already had and this slice did not have to write again.
+     Exactly two things differ: what a tap hits, and which set remembers
+     the pick. */
+  const isFace = uvCompMode === 'face';
+  const sel = isFace ? uvFaceSel : uvSel;
+  const c = ev.target.closest && ev.target.closest(isFace ? '.uv-face' : '.uv-vertex');
   if (!c) {
-    // Empty-space tap: clear the selection, same as the island backdrop.
-    if (uvSel.size) { uvSel.clear(); paintUvVertexSelection(); }
+    // Empty space: arm the clear, do not perform it - see uvEmptyTapClear.
+    uvEmptyTapClear = ev.pointerId;
     armUvEmptyHold(ev);
     return;
   }
@@ -37890,11 +38081,16 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
   // panning/pinching needs to be refused - it would read moving-target
   // coordinates and commit a bogus UV edit.
   if (uvPan || uvPinchView) return;
-  const ai = +c.dataset.ai;
-  const tapWasSelected = uvSel.has(ai);
-  if (!tapWasSelected) uvSel.add(ai); // provisional - see endUvVertexDrag's tap branch
+  const tapId = isFace ? +c.dataset.fg : +c.dataset.ai;
+  const tapWasSelected = sel.has(tapId);
+  if (!tapWasSelected) sel.add(tapId); // provisional - see endUvVertexDrag's tap branch
   const p = uvViewPoint(ev);
   const els = new Map();
+  // The attribute vertices this gesture will actually move. For vertices it
+  // is the selection itself; for faces it is every vertex those faces own,
+  // deduped - two faces sharing an edge must not move their shared corner
+  // twice.
+  const ids = new Set();
   // The screen-space box every selected dot's own centre sits in right
   // now, so pointermove below can clamp the shared dx/dy against it - the
   // same UV_VIEW_CENTER_MARGIN safeguard the island drag already has
@@ -37904,22 +38100,34 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
   // be - can reach it again. Found live in this slice's own testing (a
   // vertex dragged just past u=1 already vanished), not by a review pass.
   let minCx = Infinity, maxCx = -Infinity, minCy = Infinity, maxCy = -Infinity;
-  uvSel.forEach(id => {
-    const el = uvViewSvgEl.querySelector(`.uv-vertex[data-ai="${id}"]`);
+  const grow = (x0, y0, x1, y1) => {
+    if (x0 < minCx) minCx = x0; if (x1 > maxCx) maxCx = x1;
+    if (y0 < minCy) minCy = y0; if (y1 > maxCy) maxCy = y1;
+  };
+  sel.forEach(id => {
+    const el = uvViewSvgEl.querySelector(isFace ? `.uv-face[data-fg="${id}"]`
+                                               : `.uv-vertex[data-ai="${id}"]`);
     if (!el) return;
     els.set(id, el);
     el.classList.add('dragging', 'selected');
-    const cx = parseFloat(el.getAttribute('cx')), cy = parseFloat(el.getAttribute('cy'));
-    if (cx < minCx) minCx = cx; if (cx > maxCx) maxCx = cx;
-    if (cy < minCy) minCy = cy; if (cy > maxCy) maxCy = cy;
+    if (isFace) {
+      const verts = uvFaceVerts[id];
+      if (verts) verts.forEach(ai => ids.add(ai));
+      const bb = el.getBBox();
+      grow(bb.x, bb.y, bb.x + bb.width, bb.y + bb.height);
+    } else {
+      ids.add(id);
+      const cx = parseFloat(el.getAttribute('cx')), cy = parseFloat(el.getAttribute('cy'));
+      grow(cx, cy, cx, cy);
+    }
   });
   uvVDrag = {
-    ids: Array.from(uvSel), els,
+    ids: Array.from(ids), els,
     pointerId: ev.pointerId, startX: p.x, startY: p.y, dx: 0, dy: 0,
     minCx, maxCx, minCy, maxCy,
     startClientX: ev.clientX, startClientY: ev.clientY,
     lastClientX: ev.clientX, lastClientY: ev.clientY,
-    tapAi: ai, tapWasSelected,
+    tapAi: tapId, tapWasSelected, tapFace: isFace,
   };
   try { uvViewSvgEl.setPointerCapture(ev.pointerId); } catch (e) {}
   ev.preventDefault();
@@ -37985,6 +38193,25 @@ uvViewSvgEl.addEventListener('pointercancel', (ev) => {
    guard needed here for "a ring is now open". */
 let uvEmptyHoldTimer = null;
 let uvEmptyHoldOrigin = null;   // { x, y, pointerId }
+/* THE POINTER WHOSE PRESS ON EMPTY SPACE MIGHT STILL TURN OUT TO BE A TAP
+   (review finding, v2.55). Clearing the selection on pointerDOWN is wrong
+   the moment empty space also means "pan the view" and "second finger of a
+   pinch": reaching for a far island with a one-finger pan, on a zoomed
+   layout, wiped the group you were assembling - which is the one thing
+   this slice exists to make possible. So the press only ARMS a clear; the
+   pan, the pinch and the hold ring each disarm it, and pointerup performs
+   it if nothing else claimed the gesture. */
+let uvEmptyTapClear = null;
+// Whichever selection the current component mode owns. Edge mode repaints
+// through its own function; the other three share paintUvCompSelection.
+function clearUvModeSelection() {
+  if (uvCompMode === 'edge') {
+    if (uvEdgeSel.size) { uvEdgeSel.clear(); paintUvEdgeSelection(); }
+    return;
+  }
+  const sel = uvCompMode === 'face' ? uvFaceSel : uvCompMode === 'vertex' ? uvSel : uvIslandSel;
+  if (sel.size) { sel.clear(); paintUvCompSelection(); }
+}
 function clearUvEmptyHoldTimer() {
   if (uvEmptyHoldTimer) clearTimeout(uvEmptyHoldTimer);
   uvEmptyHoldTimer = null;
@@ -38157,6 +38384,7 @@ function armUvEmptyHold(ev) {
   // arming an unrelated second hold-timer (v2.51) - see uvPinchView above.
   if (uvPan && uvPan.pointerId !== ev.pointerId) {
     clearUvEmptyHoldTimer();
+    uvEmptyTapClear = null;   // this press is a pinch, not a tap
     startUvPinchView(ev, uvPan.lastClientX, uvPan.lastClientY, uvPan.pointerId);
     // Must be nulled here, not just left for pointerup to clear later
     // (review finding): pointerup only clears uvPan when the LIFTING
@@ -38173,6 +38401,7 @@ function armUvEmptyHold(ev) {
   if (uvEmptyHoldOrigin && uvEmptyHoldOrigin.pointerId !== ev.pointerId) {
     const first = uvEmptyHoldOrigin;
     clearUvEmptyHoldTimer();
+    uvEmptyTapClear = null;   // two fingers on empty space is a pinch, not a tap
     startUvPinchView(ev, first.x, first.y, first.pointerId);
     return;
   }
@@ -38193,6 +38422,7 @@ function armUvEmptyHold(ev) {
   try { uvViewSvgEl.setPointerCapture(pid); } catch (e) {}
   uvEmptyHoldTimer = setTimeout(() => {
     uvEmptyHoldTimer = null; uvEmptyHoldOrigin = null;
+    uvEmptyTapClear = null;   // a hold that opened the ring was never a tap
     bloomToolRing(px, py, HUB_TOOLS_UV2D_WORLD, pid, { x: px, y: py });
   }, WORLD_RING_HOLD_MS);
 }
@@ -38231,16 +38461,23 @@ uvViewSvgEl.addEventListener('pointermove', (ev) => {
   if (!uvEmptyHoldTimer || !uvEmptyHoldOrigin || ev.pointerId !== uvEmptyHoldOrigin.pointerId) return;
   if (Math.hypot(ev.clientX - uvEmptyHoldOrigin.x, ev.clientY - uvEmptyHoldOrigin.y) > RING_MOVE_CANCEL_PX) {
     clearUvEmptyHoldTimer();
+    uvEmptyTapClear = null;   // it became a pan, so it was never a tap
     startUvPan(ev);
   }
 });
 uvViewSvgEl.addEventListener('pointerup', (ev) => {
   if (uvEmptyHoldOrigin && ev.pointerId === uvEmptyHoldOrigin.pointerId) clearUvEmptyHoldTimer();
+  // Nothing claimed this press, so it really was a tap on empty space: put
+  // the selection down (v2.55). Read before uvPan/uvPinchView are nulled
+  // below only for tidiness - both of them disarmed it when they started.
+  if (uvEmptyTapClear === ev.pointerId) { uvEmptyTapClear = null; clearUvModeSelection(); }
   if (uvPan && ev.pointerId === uvPan.pointerId) uvPan = null;
   if (uvPinchView && (ev.pointerId === uvPinchView.id1 || ev.pointerId === uvPinchView.id2)) uvPinchView = null;
 });
 uvViewSvgEl.addEventListener('pointercancel', (ev) => {
   if (uvEmptyHoldOrigin && ev.pointerId === uvEmptyHoldOrigin.pointerId) clearUvEmptyHoldTimer();
+  // A cancelled press clears nothing - it never finished being a tap.
+  if (uvEmptyTapClear === ev.pointerId) uvEmptyTapClear = null;
   if (uvPan && ev.pointerId === uvPan.pointerId) uvPan = null;
   if (uvPinchView && (ev.pointerId === uvPinchView.id1 || ev.pointerId === uvPinchView.id2)) uvPinchView = null;
 });
@@ -38267,7 +38504,7 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
   if (uvEdgeHold) return;   // an unexpected second pointer - ignore, single-finger only
   const el = ev.target.closest && ev.target.closest('.uv-edge');
   if (!el) {
-    if (uvEdgeSel.size) { uvEdgeSel.clear(); paintUvEdgeSelection(); }
+    uvEmptyTapClear = ev.pointerId;
     armUvEmptyHold(ev);
     return;
   }
@@ -42528,6 +42765,10 @@ if (PICK_DEBUG) {
     // so a probe can drive and inspect them without waiting on a real
     // pointer sequence or a hold timer.
     get uvEdgeSel() { return Array.from(uvEdgeSel); },
+    // v2.55: the two selections this slice added, same shape as the two above.
+    get uvIslandSel() { return Array.from(uvIslandSel); },
+    get uvFaceSel() { return Array.from(uvFaceSel); },
+    paintUvCompSelection,
     edgeKey2D, markSeamSelectionUv, toggleSeamKeys,
     HUB_TOOLS_UV, HUB_TOOLS_UV2D_WORLD,
     get toolRingActive() { return toolRingActive; },

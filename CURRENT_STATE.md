@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
-- Version at time of writing: **2.54**
+- Version at time of writing: **2.55**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,83 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## Faces in the 2D view, and islands you can actually pick (2.55)
+
+The last of the list Zeghreit opened v2.52 with: four kinds of component in
+the 2D view - vertices, edges, faces and islands. Faces did not exist at
+all, and islands had a drag and nothing else, which made them the one kind
+that could not be selected, and therefore the one kind you could not pick
+two of. Laying out a UV is mostly moving two or three islands together, so
+that gap was most of the work.
+
+**Face mode is not a third drag.** A face IS its attribute vertices, so
+tapping one puts the union of every selected face's vertices into the same
+`uvVDrag` a vertex tap builds - which means the drag, the edge clamp, the
+live transform and the commit are all code Vertex mode has had since v2.48.
+Exactly two things differ: what a tap hits (`.uv-face` instead of
+`.uv-vertex`) and which Set remembers the pick. `renderUvView` builds one
+path per `ed.groups` entry, in the same walk that already builds the island
+fills, and fills a `uvFaceVerts` map while it is there so a drag never has
+to run `toEditable` to find out what it is moving. Two selected faces
+sharing a corner move it once: the id list is a Set.
+
+**Island selection follows the vertex rules exactly**, because they were
+already right: a tap toggles, a pointerdown provisionally adds so a drag
+that starts on an unselected island carries it, a cancel takes that add
+back, and a drag moves the whole selection. The pinch pivots on the union
+box's centre rather than each island's own - per-island pivots would spin
+every island about itself and slide them through each other, which is not
+what two fingers on a group mean.
+
+### What review found
+
+Opus, cold, on the working-tree diff. Four findings, all real, all fixed:
+
+- **The off-card safeguard was still clamping the CENTRE.** That clamp
+  dates from v2.45, when the selection was one island and the centre was a
+  fair proxy for it. Two islands at opposite ends of the layout make a box
+  as wide as the square, and clamping its centre lets the far one travel
+  well past the card's edge with nothing able to reach it again - the exact
+  failure the v2.45 comment says the clamp exists to prevent. It clamps the
+  box's EDGES now, per axis and guarded, which is what the vertex drag has
+  done since v2.48.
+- **Clearing the selection on pointerDOWN over empty space** meant a
+  one-finger pan to reach a far island, or the second finger of a view
+  pinch, wiped the group being assembled - on a zoomed layout, which is
+  precisely when you need both. The press now only ARMS a clear; the pan,
+  the pinch and the hold ring each disarm it, and `pointerup` performs it
+  only if nothing else claimed the gesture. All four component modes went
+  through this door, so all four got the fix.
+- **A cancelled tap left a phantom highlight**: the provisional id came out
+  of the Set but nothing repainted, so a face stayed washed while not being
+  selected - and the next empty tap was a no-op because the Set was already
+  empty. Pre-existing for a vertex dot since v2.48, newly loud for a face.
+- A comment claiming the selection pruning survived island RENUMBERING,
+  which it does not - it is a bounds check. Rewritten to say what it does,
+  and to name the condition (seam ops reachable only from Edge mode, plus
+  the mode switch clearing both sets) that keeps that from mattering today.
+
+The two fixes with a behaviour to check got their own probe sections:
+a pan over empty space must not clear a group, and a cancelled face tap
+must leave neither a selection nor a highlight. `_uv55chk` is 19 checks,
+all driven through real pointer events on real elements.
+
+**One harness lesson, again.** The pan test passed first time - against a
+stale `NodeList`. The taps that were supposed to build the group were being
+dispatched on elements `renderUvView` had already replaced after the drag in
+the previous section, so they never bubbled and the assertion compared 0 to
+0. Re-queried, and given an explicit "the group is assembled" assertion
+before the one that matters, which is the shape that would have caught it.
+
+### What this slice deliberately does not do
+
+No rotate/scale for a face or vertex selection - they translate, as they
+have since v2.48; the pinch belongs to islands, which have a centre worth
+turning about. Face mode paints the wash and the outline on the face path,
+so during a face drag the island tint underneath stays put until the commit
+redraws it. And the 3D viewport's UV mode still knows only edges and
+islands: the four kinds are the 2D view's.
 
 ## A checker that actually reads the UV (2.54)
 
