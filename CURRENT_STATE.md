@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~41,800 lines)
-- Version at time of writing: **2.50**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
+- Version at time of writing: **2.51**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -1158,6 +1158,154 @@ modes, is its own slice. The real geometric "Merge islands" operation for
 the 2D editor (rigid rotate+translate alignment of one island onto another
 along their shared edge) - flagged for a dedicated Fable review given its
 numerical sensitivity, once it exists to review.
+
+## Island selection in 3D, an automatic overlay, and a real 2D view (2.51)
+
+Closes the two pieces 2.49 itself deferred - real island-tap selection in
+the 3D viewport, and a usable 2D editor - per Zeghreit's own scoping (four
+AskUserQuestion prompts before any code): island selection stays
+selection-only this slice, Merge islands keeps its existing Clear-seam
+alias rather than becoming the real geometric op ("Только выбор острова
+сейчас"); the Face-mode "Show islands" toggle is removed outright, not
+kept as a second manual switch alongside the new automatic-in-UV-mode
+display ("Убрать полностью из Face-режима"); Unwrap replaces Snap in the
+World ring's empty-space seat while in UV mode, since Snap has no meaning
+on a UV layout and the ring needed a way to reach Unwrap with nothing
+selected ("поместить в блум меню пустого места вместо снэпа"); and the 2D
+editor's fullscreen-plus-zoom/pan gets done as one slice, not split
+("Всё сразу в этом срезе").
+
+**A face tap now selects the whole island, in 3D.** `App.selectedElements`
+is a single untyped `Set<number>` that UV mode's edge selection (seam
+marking) already used - adding a second selectable kind (face-group ids,
+for an island) into the same untyped Set is the entire risk surface of
+this slice. `App.uvSelKind` (`'edge' | 'face'`) tracks which kind is
+currently held, the same "locked only once something is picked" rule the
+Vertex/Edge/Face type-lock already uses; a new `uvIslandFaceIds(obj,
+fgIndex)` resolves a tapped face to every face-group id sharing its
+island (via the existing `computeUVIslands` union-find), and
+`toggleUvIslandElements` toggles that whole array as one unit, mirroring
+how `selectObjectClick` already treats a tap on one grouped member as a
+tap on the group. `pickComponentOnActiveInner`'s UV branch now probes
+edge-then-face (or face-then-edge, once a kind is locked), and every
+consumer of `App.selectedElements` reachable in UV mode -
+`refreshElementColors`, `markSeamSelection`, `grownElements`,
+`shrunkElements`, `performRegionSelect`, `syncFaceOverlay`,
+`handleDoubleTap`'s edge-join anchor, and `selectionScreenShape` (see
+review below) - was checked and, where it assumed every member was an
+edge index, given an `App.uvSelKind`-aware guard.
+
+**Islands show automatically now; there is no more toggle.** The old
+`App.showIslands` boolean and its Face-mode "Show islands" button are
+gone. `syncIslandOverlay` gates on `App.mode === 'uv'` alone, so the
+island tint appears the moment you enter UV mode and disappears the
+moment you leave it - one less button, and no way to be looking at stale
+island colours from a toggle left on in Face mode.
+
+**The World ring's Snap seat becomes Unwrap in UV mode**, the same
+"label/action switches with `App.mode`" trick the same ring's Add-geo
+seat already used to become "Open 2D UV" - this is what makes Unwrap
+reachable with nothing selected, since holding on a selection (see next
+paragraph) only works once something is already picked.
+
+**The 2D `#uvView` editor is fullscreen, with wheel-zoom and touch
+pan/pinch.** The card now fills the viewport (a `container-type: size`
+wrapper sizing the SVG to `min(100cqw, 100cqh)`, the largest square
+fitting both axes - see review below for why the first attempt at this
+wasn't actually square). `uvViewBox` mutates the SVG's own live `viewBox`
+attribute rather than a copy, so every existing coordinate path (island
+drag, vertex drag, edge tap - all routed through `uvViewPoint`'s
+`getScreenCTM()`) keeps working unchanged; only the viewing window moves,
+never the content coordinates. Wheel zoom anchors under the cursor.
+One-finger drag on EMPTY background pans; a second finger landing on
+empty background while the first already pans or holds promotes the
+gesture into a pinch-zoom-and-pan of the view, layered through
+`armUvEmptyHold` (the one shared "nothing hit" entry point all three
+component modes' own pointerdown handlers already call into, so no
+per-mode gesture code was needed). View gestures and content drags
+(island/vertex) are mutually exclusive - a content pointerdown now
+refuses to start while a view pan/pinch is live, and vice versa.
+
+### What review found
+
+Opus review (cold, told to hunt specifically for the kind-safety risk
+this slice's own design note above calls out, plus gesture-conflict and
+CSS-sizing bugs) found six real defects, all fixed and re-verified live
+(synthetic pointer/wheel events through the actual pick/gesture code, not
+just unit calls) before shipping:
+
+- **`shrunkElements` was missed** - the one call site out of eight that
+  didn't get the `App.uvSelKind !== 'face'` guard `grownElements` got.
+  Shrinking an island selection would read face-group ids as
+  `topo.edges[ei]`, either throwing or silently wiping the selection.
+  Fixed the same way `grownElements` was: the branch simply doesn't match
+  for a face-kind selection.
+- **`handleDoubleTap`'s edge/UV branch had no kind guard either**, and it
+  *adds* to `App.selectedElements` without clearing first
+  (`mergeRunIntoSelection`) - double-tapping an edge while an island was
+  selected would leave the Set holding both face-group ids and edge
+  indices at once, with `uvSelKind` still saying `'face'`. Fixed by
+  skipping the branch entirely for a face-kind selection (falls through
+  to camera focus, same as any mode with nothing edge-shaped to
+  double-tap).
+- **A second finger landing on empty background while the first already
+  panned did not clear `uvPan`** before promoting to a pinch. If that
+  second (pinch) finger lifted before the first, the first finger's next
+  move fell through to `updateUvPan` with the pre-pinch viewBox/scale
+  snapshot, snapping the view back and then panning at the wrong scale.
+  Fixed by nulling `uvPan` at the point of promotion, once its two fields
+  `startUvPinchView` needs have been read.
+- **Wheel zoom read `deltaY` as pixels unconditionally.** Firefox on a
+  plain mouse reports line-mode deltas (`deltaMode === 1`, `deltaY` of
+  about ±3 per notch) - fed straight into the zoom curve that is a ~0.4%
+  step per notch, making wheel-zoom on Firefox effectively dead. Fixed
+  with a `deltaMode` normalisation (×16 for line mode, ×`innerHeight` for
+  page mode) that nothing else in the file needed before.
+- **The fullscreen SVG was not square on a narrow/portrait card.**
+  `width: auto; height: 100%; max-width: 100%; aspect-ratio: 1/1` looks
+  right but isn't: with `height: 100%` definite, `aspect-ratio` only
+  computes width, and `max-width`'s clamp of that computed width does not
+  feed back into height (CSS Sizing 4). On a phone-width card this
+  letterboxed a genuinely square UV square inside a tall rectangle.
+  Fixed with `container-type: size` on the wrapper and `width/height:
+  min(100cqw, 100cqh)` on the SVG - the direct expression of "largest
+  square fitting both axes" instead of a one-axis-then-clamp
+  approximation of it.
+- **A view pan and a content drag could be live at once.** One finger
+  panning empty background, a second finger landing ON an island, had no
+  guard against starting an island drag under that second finger -
+  `uvDrag`'s own coordinates read through the CURRENT (pan-shifting)
+  viewBox, so the island would jump by however far the view had moved and
+  commit that jump to the mesh on release. Fixed with a mutual-exclusion
+  guard in both the island- and vertex-mode pointerdown handlers -
+  **caught wrong on the first attempt**: the guard initially sat above
+  the empty-vs-content check, which silently swallowed every second
+  finger during a pan (content OR empty), breaking the pinch-promotion
+  path above along with it. Moved below the check, so it only ever
+  refuses a second finger that landed ON content; a second finger on
+  empty background during a pan still reaches `armUvEmptyHold` and
+  promotes normally. Found live, testing the exact pinch-during-pan
+  sequence the review's own report was flagging.
+
+A seventh item, pre-existing rather than introduced by this slice but
+found while reviewing it: `selectionScreenShape` had no `'uv'` branch at
+all, so `pointerOnSelection` could never say a hold landed on a UV
+selection, and `HUB_TOOLS_UV` (Mark seam / Clear seam / Merge islands /
+Unwrap) could never bloom from the 3D viewport - selected edge or not -
+contradicting this slice's own new comment on the World ring's Unwrap
+seat. Given the whole point of this slice is making UV selection useful
+in 3D, this was fixed rather than deferred: `selectionScreenShape` now
+has a `'uv'` branch (edge-shape or island-ring-shape, by `uvSelKind`),
+verified live - holding on a freshly tapped island in the 3D viewport now
+blooms `HUB_TOOLS_UV` correctly.
+
+### What this slice deliberately does not do
+
+Merge islands remains the Clear-seam alias 2.49 left it as, not a real
+rigid-align geometric operation - by Zeghreit's own choice this slice
+("Только выбор острова сейчас"), not a review finding. It still needs the
+dedicated Fable review flagged in the 2.42 section above, once it exists
+to review.
 
 ## The 2D editor gets a bloom ring of its own: Edge mode (2.50)
 

@@ -2074,24 +2074,51 @@
      dismiss and a card that holds the real content, so it costs nothing
      new to learn. The card here is the SVG itself rather than a scrollable
      list - the UV square is the whole point of the screen. */
+  /* FULLSCREEN, NOT A BIGGER CARD (v2.51). 560px was sized for a read-only
+     preview; precise vertex/edge work wants the largest square the screen
+     can give it. padding shrinks with it - the original 20px here plus the
+     card's own 16px was a comfortable margin around a phone-width card and
+     a wasteful one around a screen-filling one. */
   #uvView {
     position: fixed; inset: 0; z-index: 41; display: none;
-    align-items: center; justify-content: center; padding: 20px;
+    align-items: center; justify-content: center; padding: 4px;
     background: rgb(var(--shadow) / .6);
   }
   #uvView.show { display: flex; }
   #uvViewCard {
     background: var(--panel); border: var(--rule) solid var(--line); border-radius: var(--r-md);
-    padding: 16px; width: min(560px, 100%); max-height: 90vh;
-    display: flex; flex-direction: column; gap: 10px;
+    padding: 10px; width: 100%; height: 100%; max-width: 1400px;
+    display: flex; flex-direction: column; gap: 8px;
   }
+  /* The largest square that fits BOTH axes, centred - not just width:100%
+     (v2.43's own rule, fine for a card capped at 560px wide, wrong once the
+     card can be wider than it is tall). A flex:1 wrapper hands this its
+     available box; min-height:0 is the standard fix for a flex child that
+     would otherwise refuse to shrink below its content's natural size.
+     container-type:size turns that box into a query container so the svg
+     below can size itself off it in BOTH axes at once. */
+  #uvViewSvgWrap {
+    flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+    container-type: size;
+  }
+  /* width/height:auto + aspect-ratio (the v2.51 original here, review
+     finding) is NOT the same rule as the comment above promises: with
+     height:100% definite, aspect-ratio only computes width, and once
+     max-width:100% clamps that computed width back down - the only case
+     that actually mattered, a portrait/narrow card - CSS Sizing 4 does not
+     feed the clamp back into height. The svg came out tall and narrow
+     instead of square, letterboxing the actual UV square inside it. min()
+     of both container-query axes is the direct expression of "largest
+     square fitting both" instead of a one-axis-then-clamp approximation of
+     it, and needs no aspect-ratio at all since both sides are computed the
+     same way. */
   #uvViewSvg {
-    width: 100%; height: auto; aspect-ratio: 1 / 1; background: var(--panel2);
+    width: min(100cqw, 100cqh); height: min(100cqw, 100cqh); background: var(--panel2);
     border: var(--rule) solid var(--line);
-    /* Own gesture from here down (v2.45: dragging an island), not the
-       browser's - without this, the first pointer move on touch starts a
-       page scroll instead of a drag, the same reason the canvas itself
-       needs it. */
+    /* Own gesture from here down (v2.45: dragging an island; v2.51: panning
+       and pinch-zooming the view itself), not the browser's - without this,
+       the first pointer move on touch starts a page scroll instead, the
+       same reason the canvas itself needs it. */
     touch-action: none;
   }
   /* Classes rather than the var()-in-attribute the file uses nowhere else
@@ -2484,7 +2511,9 @@
           </div>
           <button id="uvViewClose" title="Close"></button>
         </div>
-        <svg id="uvViewSvg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet"></svg>
+        <div id="uvViewSvgWrap">
+          <svg id="uvViewSvg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet"></svg>
+        </div>
         <div id="uvViewEmpty" style="display:none;">No UV yet on this object — run Unwrap first.</div>
       </div>
     </div>
@@ -2515,7 +2544,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.50</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.51</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -4238,11 +4267,15 @@ const App = {
   // side too, which is what made a selected object look transparent before
   // this was a choice rather than the only behaviour.
   xraySelection: false,
-  // A Face-mode preview, not document data: which faces the current seams
-  // would cut into separate UV islands, colour-coded, before there is any
-  // actual unwrap to check it against. Same transience as xraySelection -
-  // a view choice, never serialized, reset by nothing but the button.
-  showIslands: false,
+  /* Which kind of 3D UV-mode tap-selection is currently locked in (v2.51) -
+     'edge' for seam marking, 'face' for island selection (see
+     pickComponentOnActiveInner's uv branch and toggleUvIslandElements).
+     Only meaningful while App.selectedElements is non-empty and
+     App.mode === 'uv': an empty selection is free to become either kind on
+     the next tap, the same "locked only once something is picked" rule
+     the vertex/edge/face type lock already uses. Reset to 'edge' by
+     setMode whenever the mode changes, same as edgeAnchor and vertAnchor. */
+  uvSelKind: 'edge',
   pendingOp: null,
   // The knife's points while a cut is being placed. Not a pendingOp: it
   // changes no geometry until OK, so there is nothing to re-run.
@@ -9015,7 +9048,13 @@ function syncFaceOverlay(obj) {
      reaches every object at once; before this guard, changing theme in Face
      mode tinted a face on every model in the scene. */
   const want = [];
-  if (App.mode === 'face' && index && obj.id === App.activeObjectId) {
+  // Also the highlight for an island selection in 3D UV mode (v2.51):
+  // App.selectedElements holds the SAME thing there - face-group ids - once
+  // App.uvSelKind is 'face', so the tint that already exists for Face mode's
+  // own multi-select is the right one to reuse rather than building a
+  // second overlay for what is visually identical.
+  const showFaceSel = App.mode === 'face' || (App.mode === 'uv' && App.uvSelKind === 'face');
+  if (showFaceSel && index && obj.id === App.activeObjectId) {
     App.selectedElements.forEach(gi => { if (topo.faceGroups[gi]) want.push(gi); });
     // Sorted, so "the same groups" is a list comparison rather than a set one.
     want.sort((a, b) => a - b);
@@ -9176,6 +9215,22 @@ function computeUVIslands(obj) {
   return { islandOf, count };
 }
 
+// Every face-group id sharing fgIndex's island (v2.51) - what a 3D UV-mode
+// face TAP resolves to, since "select an island" means the whole bucket
+// computeUVIslands' union-find put fgIndex in, not just the one triangle
+// group under the finger. A plain linear scan of islandOf rather than a
+// second map built alongside it in computeUVIslands itself: this is read
+// once per tap, never per frame, and computeUVIslands is already cheap
+// enough to call fresh here the same way islandVertexMap does below.
+function uvIslandFaceIds(obj, fgIndex) {
+  const { islandOf } = computeUVIslands(obj);
+  if (fgIndex < 0 || fgIndex >= islandOf.length) return [];
+  const id = islandOf[fgIndex];
+  const ids = [];
+  for (let gi = 0; gi < islandOf.length; gi++) if (islandOf[gi] === id) ids.push(gi);
+  return ids;
+}
+
 // Attribute-vertex id -> island id, straight from CURRENT seams/topology -
 // no projection, unlike computeIslandUVs, which needs this exact same
 // grouping internally but only as a stepping stone toward new UV values.
@@ -9213,12 +9268,12 @@ function islandColorHex(id) {
   return _islandColorScratch.getHex();
 }
 
-/* The Face-mode "Show islands" preview (uv-commands-maps-plan.md stage 5,
-   slice 2). Same active-object-only guard as syncFaceOverlay and the same
-   reason: App.showIslands is global, every object keeps its own topo once
-   touched, and without the guard toggling it on while editing one object
-   would light up whichever face groups happen to share its indices on
-   every other object in the scene. */
+/* The UV-mode island preview (uv-commands-maps-plan.md stage 5, slice 2;
+   automatic rather than a manual toggle since v2.51). Same active-object-only
+   guard as syncFaceOverlay and the same reason: App.mode is global, every
+   object keeps its own topo once touched, and without the guard entering UV
+   mode while editing one object would light up whichever face groups happen
+   to share its indices on every other object in the scene. */
 function syncIslandOverlay(obj) {
   const ud = obj.mesh.userData;
   const topo = ud.topo;
@@ -9228,7 +9283,10 @@ function syncIslandOverlay(obj) {
   // without this it would redo the full edge-map/union-find/recolour pass
   // on every single frame of a bevel or inset slider. The preview reappears,
   // correctly recomputed, the moment the op commits and topo stops changing.
-  const show = App.showIslands && App.mode === 'face' && obj.id === App.activeObjectId && !App.pendingOp;
+  // Automatic in UV mode (v2.51), not a Face-mode toggle any more: islands
+  // are what UV mode is FOR, so there is no reason to ask for them by hand
+  // every session - see uv-commands-maps-plan.md's v2.51 note.
+  const show = App.mode === 'uv' && obj.id === App.activeObjectId && !App.pendingOp;
   if (!show) {
     if (ud.islandOverlay) ud.islandOverlay.visible = false;
     return;
@@ -18850,6 +18908,11 @@ function markSeamSelection(on) {
   // one actually on screen.
   if (uvViewObj) { markSeamSelectionUv(on); return; }
   if (App.mode !== 'edge' && App.mode !== 'uv') { toast('Seam works in Edge or UV mode'); return; }
+  // A 3D UV-mode island selection holds face-group ids in App.selectedElements,
+  // not edge indices (v2.51) - edgeKeyAt below would read them as edges and
+  // either miss or, worse, seam the wrong edge entirely. Refuse instead of
+  // guessing: a seam lives on an edge, so tap one.
+  if (App.mode === 'uv' && App.uvSelKind === 'face') { toast('Seam works on edges - tap an edge, not an island'); return; }
   const obj = findObject(App.activeObjectId);
   if (!obj || !App.selectedElements.size) { toast('Select an edge first'); return; }
 
@@ -19633,7 +19696,13 @@ function refreshElementColors(obj) {
     const hasCreases = Object.keys(creases).length > 0;
     const hasShade = Object.keys(shade).length > 0;
     const hasSeams = Object.keys(seams).length > 0;
-    const showSel = App.mode === 'edge' || App.mode === 'uv';
+    // uvSelKind guard (v2.51): once a UV-mode selection is a face/island
+    // pick, App.selectedElements holds face-GROUP ids, not edge indices -
+    // painting THIS loop from it would light up whichever edges happen to
+    // share a number with the selected islands, which is nonsense the
+    // moment the two counts differ. syncFaceOverlay is what island
+    // selection actually paints; see its own uvSelKind guard just above.
+    const showSel = App.mode === 'edge' || (App.mode === 'uv' && App.uvSelKind !== 'face');
     /* THE MODE'S MULTIPLIER BELONGS TO THE PLAIN WIREFRAME ALONE (a2.62a).
        It used to be a scalar on the whole material, and this one buffer
        carries four different things: the plain edge, the crease mark, the
@@ -20404,6 +20473,7 @@ function setMode(mode) {
   App.mode = mode;
   if (mode !== 'object' && mode !== 'uv') App.lastComponentMode = mode;
   App.selectedElements.clear();
+  App.uvSelKind = 'edge';
   App.edgeAnchor = null;
   App.lastEdgePick = null;
   App.vertAnchor = null;
@@ -20440,6 +20510,14 @@ function setMode(mode) {
       toast('Tap an object to edit its ' + mode + 's');
     }
   }
+  /* Explicit sweep (v2.51), not left to applyModeSelectColor's own one a few
+     lines into refreshUI: that one only walks every object when SELECT_COLOR
+     actually changed value between the old and new mode, and UV's accent can
+     land on the same hue Edge already uses - which would skip the only
+     repaint left to turn this object's island overlay back on after
+     hideAllHelpers just hid it above. syncIslandOverlay's own guard decides
+     per object whether anything should actually show. */
+  App.objects.forEach(o => syncIslandOverlay(o));
   refreshUI();
   refreshGizmoAttachment();
 }
@@ -20743,6 +20821,29 @@ function toggleElement(idx, additive) {
   if (App.selectedElements.has(idx) && additive) App.selectedElements.delete(idx);
   else App.selectedElements.add(idx);
   // Same sentence, same flag: it is one lesson, not two.
+  if (was === 1 && App.selectedElements.size === 2) {
+    sayOnce('taps-add', 'Taps add up - tap empty space to clear');
+  }
+  const obj = findObject(App.activeObjectId);
+  if (obj) refreshElementColors(obj);
+  refreshUI();
+  refreshGizmoAttachment();
+}
+
+// The island equivalent of toggleElement (v2.51): every face group the
+// island contains moves together - "a tap on one member takes the whole
+// group" (selectObjectClick's own comment, for object groups), just found
+// by union-find instead of built by hand. additive && every id already
+// selected is what lets a second tap on the SAME island take it back out
+// rather than being a no-op that only ever adds.
+function toggleUvIslandElements(ids, additive) {
+  const was = App.selectedElements.size;
+  if (!additive) App.selectedElements.clear();
+  if (additive && ids.every(id => App.selectedElements.has(id))) {
+    ids.forEach(id => App.selectedElements.delete(id));
+  } else {
+    ids.forEach(id => App.selectedElements.add(id));
+  }
   if (was === 1 && App.selectedElements.size === 2) {
     sayOnce('taps-add', 'Taps add up - tap empty space to clear');
   }
@@ -23949,6 +24050,32 @@ function selectionScreenShape() {
       groupLogicalLoop(obj, gi).forEach(l => { const s = at(l); if (s) { pts.push(s); ring.push(s); } });
       for (let i = 0; i < ring.length; i++) segs.push([ring[i], ring[(i + 1) % ring.length]]);
     });
+  } else if (App.mode === 'uv') {
+    // Missing entirely until now (v2.51, review finding): without a 'uv'
+    // branch here this always returned null in UV mode, so pointerOnSelection
+    // (below) could never say a hold landed on the selection, directCandidate
+    // never armed, and HUB_TOOLS_UV's own door - the one the comment on the
+    // World ring's Unwrap seat claims is reachable "on an already-selected
+    // edge" - could in fact never bloom from the 3D viewport at all, selected
+    // edge or not. Reuses the edge branch's shape for an edge-kind selection,
+    // and the face branch's ring shape (same face-group indices Face mode
+    // itself uses) for a face-kind island selection.
+    if (App.uvSelKind === 'face') {
+      App.selectedElements.forEach(gi => {
+        const ring = [];
+        groupLogicalLoop(obj, gi).forEach(l => { const s = at(l); if (s) { pts.push(s); ring.push(s); } });
+        for (let i = 0; i < ring.length; i++) segs.push([ring[i], ring[(i + 1) % ring.length]]);
+      });
+    } else {
+      App.selectedElements.forEach(i => {
+        const e = topo.edges[i];
+        if (!e) return;
+        const a = at(e[0]), b = at(e[1]);
+        if (a) pts.push(a);
+        if (b) pts.push(b);
+        if (a && b) segs.push([a, b]);
+      });
+    }
   }
   return pts.length ? { pts, segs } : null;
 }
@@ -25485,9 +25612,40 @@ function pickComponentOnActiveInner(ev) {
      tap fell does NOT work; see the measured note above. */
   const hasSelection = App.selectedElements.size > 0;
   if (hasSelection) {
+    // UV mode's own lock (v2.51): which of its two selectable kinds - edges
+    // for seams or faces for islands - App.uvSelKind says is held, since
+    // App.mode alone can no longer tell "probe edges" from "probe faces and
+    // resolve the island" the way every other mode's single component type
+    // can. Handled entirely on its own rather than folded into the idx/
+    // pickBlockedBy race below: an island pick returns more than an index
+    // (the whole island's face-group ids), which that shared shape has no
+    // room for.
+    if (App.mode === 'uv') {
+      if (App.uvSelKind === 'face') {
+        const f = pickFaceOnActive(ev);
+        if (f >= 0) {
+          const obj = findObject(App.activeObjectId);
+          const island = obj ? uvIslandFaceIds(obj, f) : [];
+          if (island.length) return { type: 'uv', kind: 'face', index: f, island };
+        }
+      } else {
+        const e = pickEdgeOnActive(ev);
+        if (e >= 0) return { type: 'uv', kind: 'edge', index: e };
+      }
+      // Same "wrong type is the more specific finding" reasoning as the
+      // block below, just between UV's own two kinds rather than
+      // vertex/edge/face - a tap that missed the locked kind but landed on
+      // the OTHER one should say so, not evaporate in silence.
+      const hiddenOnly = pickHiddenOnly;
+      if (App.uvSelKind === 'face' && pickEdgeOnActive(ev, OFF_MODE_PICK_BIAS) >= 0) pickBlockedBy = 'edge';
+      else if (App.uvSelKind !== 'face' && pickFaceOnActive(ev) >= 0) pickBlockedBy = 'island';
+      else if (hiddenOnly) pickBlockedBy = 'hidden';
+      return null;
+    }
+
     let idx = -1;
     if (App.mode === 'vertex') idx = pickVertexOnActive(ev);
-    else if (App.mode === 'edge' || App.mode === 'uv') idx = pickEdgeOnActive(ev);
+    else if (App.mode === 'edge') idx = pickEdgeOnActive(ev);
     else if (App.mode === 'face') idx = pickFaceOnActive(ev);
     if (idx >= 0) return { type: App.mode, index: idx };
 
@@ -25514,15 +25672,26 @@ function pickComponentOnActiveInner(ev) {
     return null;
   }
 
-  /* UV mode only ever selects edges (seams live on edges, islands are
-     merged by clearing the seam between them) - so it skips the
-     vertex/edge/face distance race below entirely and returns its OWN type,
-     'uv', never 'edge'. Returning 'edge' here would make the caller's
+  /* UV mode's free tap (v2.51: edge, then face resolved to its whole
+     island) - skips the vertex/edge/face distance race below entirely,
+     trying its own two kinds in a fixed order instead: an edge sits
+     visually ON the surface a face tap would otherwise land on, so edge
+     goes first, the same "more specific thing wins" reasoning the free
+     tap below uses for a vertex sitting on its edges. Returns its OWN
+     kind-tagged type, 'uv', never 'edge' or 'face'. Returning either of
+     those here would make the caller's
      `if (pick.type !== App.mode) switchToComponentType(pick.type)` kick the
-     user straight out of UV mode into plain Edge mode on their first tap. */
+     user straight out of UV mode on their first tap. */
   if (App.mode === 'uv') {
     const e = pickEdgeOnActive(ev);
-    return e >= 0 ? { type: 'uv', index: e } : null;
+    if (e >= 0) return { type: 'uv', kind: 'edge', index: e };
+    const f = pickFaceOnActive(ev);
+    if (f >= 0) {
+      const obj = findObject(App.activeObjectId);
+      const island = obj ? uvIslandFaceIds(obj, f) : [];
+      if (island.length) return { type: 'uv', kind: 'face', index: f, island };
+    }
+    return null;
   }
 
   /* Free tap. The current mode still gets a wider catch RADIUS than the
@@ -25808,6 +25977,14 @@ function performRegionSelect(region) {
     endFacingMemo();
   }
 
+  if (App.mode === 'uv') {
+    // Box/lasso select in UV mode only ever finds edges (v2.51 added a
+    // face TAP, not a face/island box-select) - if the kind lock was
+    // 'face' from an earlier tap, starting fresh here keeps this Set from
+    // mixing island face-group ids in with these edge indices.
+    if (App.uvSelKind === 'face') App.selectedElements.clear();
+    App.uvSelKind = 'edge';
+  }
   if (!additive) App.selectedElements.clear();
   hit.forEach(i => App.selectedElements.add(i));
   refreshElementColors(obj);
@@ -25848,7 +26025,13 @@ function grownElements(obj) {
       const [a, b] = topo.edges[ei];
       next.add(a); next.add(b);
     }));
-  } else if (App.mode === 'edge' || App.mode === 'uv') {
+  } else if (App.mode === 'edge' || (App.mode === 'uv' && App.uvSelKind !== 'face')) {
+    // uvSelKind guard (v2.51): an island selection holds face-group ids
+    // here, not edge indices - topo.edges[ei] on one would destructure
+    // undefined and throw. Growing an island has no defined meaning yet
+    // (not asked for), so this branch simply does not match for it and
+    // `next` falls through unchanged below, same as a mode with nothing
+    // selected.
     App.selectedElements.forEach(ei => {
       const [a, b] = topo.edges[ei];
       [a, b].forEach(v => (G.vertEdges.get(v) || []).forEach(n => next.add(n)));
@@ -25893,7 +26076,15 @@ function shrunkElements(obj) {
       const neighbors = (G.vertEdges.get(l) || []).map(ei => { const [a, b] = topo.edges[ei]; return a === l ? b : a; });
       if (neighbors.every(n => cur.has(n))) keep.add(l);
     });
-  } else if (App.mode === 'edge' || App.mode === 'uv') {
+  } else if (App.mode === 'edge' || (App.mode === 'uv' && App.uvSelKind !== 'face')) {
+    // uvSelKind guard (v2.51, review finding) - the sibling of grownElements'
+    // own guard just above in this file. An island selection holds
+    // face-group ids here, not edge indices; topo.edges[ei] on one would
+    // destructure undefined and throw (or, on a mesh with enough edges,
+    // silently compute garbage and wipe the island selection instead).
+    // Shrinking an island has no defined meaning yet, so this branch simply
+    // does not match for it and `keep` stays empty, same as a mode with
+    // nothing selected.
     cur.forEach(ei => {
       const [a, b] = topo.edges[ei];
       const touching = new Set([...(G.vertEdges.get(a) || []), ...(G.vertEdges.get(b) || [])]);
@@ -26768,7 +26959,15 @@ function handleDoubleTap(ev) {
   // UV mode's selection is edges too (v2.49, review finding) - without this
   // branch the edgeAnchor handleTap now tracks there went nowhere, and loop
   // select - the main way to grab a ring of edges to seam - was unreachable.
-  if ((App.mode === 'edge' || App.mode === 'uv') && App.activeObjectId) {
+  // uvSelKind guard (v2.51, review finding): with an island selected, this
+  // branch's own mergeRunIntoSelection would ADD edge indices into a Set
+  // that already holds face-group ids without clearing them first, leaving
+  // App.selectedElements holding both kinds at once while uvSelKind still
+  // says 'face' - every kind-guarded consumer in the file then disagrees
+  // about what's selected. Skip it for a face-kind selection and fall
+  // through to camera focus instead, same as any other mode with nothing
+  // edge-shaped to double-tap.
+  if ((App.mode === 'edge' || (App.mode === 'uv' && App.uvSelKind !== 'face')) && App.activeObjectId) {
     const obj = findObject(App.activeObjectId);
     let ei = obj ? pickEdgeOnActive(ev) : -1;
 
@@ -26913,21 +27112,35 @@ function handleTap(ev) {
      indistinguishable from the app being broken - and that is exactly how
      it was reported. */
   if (!pick && pickBlockedBy) {
+    // UV mode's own two kinds don't share App.mode's word for the lock
+    // (both read as 'uv') - a small override rather than stretching the
+    // generic template to cover a lock App.mode alone can't name (v2.51).
+    const lockNoun = App.mode === 'uv'
+      ? (App.uvSelKind === 'face' ? 'island selection' : 'edge selection')
+      : App.mode;
     toast(pickBlockedBy === 'hidden'
       ? 'That\u2019s behind the surface \u2014 turn on See-through to reach it.'
-      : 'That\u2019s ' + (pickBlockedBy === 'edge' ? 'an ' : 'a ') + pickBlockedBy +
-        ' \u2014 ' + App.mode + ' is locked. Tap empty space first.');
+      : 'That\u2019s ' + ((pickBlockedBy === 'edge' || pickBlockedBy === 'island') ? 'an ' : 'a ') + pickBlockedBy +
+        ' \u2014 ' + lockNoun + ' is locked. Tap empty space first.');
     return;
   }
 
   if (pick) {
     if (pick.type !== App.mode) switchToComponentType(pick.type);
+    // Locks UV's own kind in for the NEXT tap (v2.51) - see
+    // pickComponentOnActiveInner's uv branch, which reads this back before
+    // App.selectedElements says anything about what kind it holds.
+    if (pick.type === 'uv') App.uvSelKind = pick.kind;
 
     // Remember a lone previously-selected edge: if the user now double-taps a
     // different edge, we join the two together into a continuous run.
-    // Also true in UV mode (v2.49), whose picks are edges under a different
-    // type name - same double-tap-join feature works there unchanged.
-    if (pick.type === 'edge' || pick.type === 'uv') {
+    // Also true in UV mode (v2.49), whose EDGE picks are edges under a
+    // different type name - same double-tap-join feature works there
+    // unchanged. NOT true of a UV face/island pick (v2.51): pick.index
+    // there is a face-group id, not an edge id, and joining two of those
+    // as though they were edges would corrupt whichever edge a stale
+    // anchor named.
+    if (pick.type === 'edge' || (pick.type === 'uv' && pick.kind !== 'face')) {
       const prev = Array.from(App.selectedElements);
       App.edgeAnchor = (prev.length === 1 && prev[0] !== pick.index) ? prev[0] : null;
       App.edgeAnchorTime = performance.now();
@@ -26954,7 +27167,11 @@ function handleTap(ev) {
     } else {
       App.vertAnchor = null;
     }
-    toggleElement(pick.index, additive);
+    // An island pick toggles every face group it contains as one unit
+    // (v2.51); everything else - including UV's own edge picks - keeps the
+    // plain single-index toggle it always used.
+    if (pick.type === 'uv' && pick.kind === 'face') toggleUvIslandElements(pick.island, additive);
+    else toggleElement(pick.index, additive);
     return;
   }
 
@@ -33600,16 +33817,15 @@ const HUB_TOOLS_FACE = [
       on: () => App.shadeSmooth, run: toggleShading },
     { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 1, run: flipNormalsSelection },
     { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 7, run: setFlowSelection },
-    { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 2, run: circularizeSelection },
-    // UV islands preview (uv-commands-maps-plan.md stage 5, slice 2): which
-    // faces the current seams would cut apart, colour-coded. A reading of
-    // the surface, same family as Shade and Flip normals, so it lives here
-    // rather than earning a seat of its own on the outer ring. Unwrap itself
-    // moved out to Object mode's Finish door in v2.46 - it writes UV for the
-    // whole object regardless of what is selected here, so Face mode was
-    // never the right place for it, just where it landed first.
-    { key: 'islands', icon: 'islands', label: 'Show islands', seat: 3,
-      on: () => App.showIslands, run: toggleShowIslands }
+    { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 2, run: circularizeSelection }
+    /* Seat 3 is deliberately EMPTY (v2.51). Show islands lived here
+       (uv-commands-maps-plan.md stage 5, slice 2) as a manual, whole-session
+       toggle; islands are now shown automatically whenever App.mode is
+       'uv' (syncIslandOverlay's own guard) and nowhere else, so there is no
+       more Face-mode button to hold the seat. Unwrap itself moved out to
+       Object mode's Finish door back in v2.46, for the same "this was never
+       really about Face mode" reason - it writes UV for the whole object
+       regardless of what is selected here. */
   ] }
 ];
 
@@ -35333,8 +35549,19 @@ const HUB_TOOLS_WORLD = [
     seat: 0,
     run: () => { if (App.mode === 'uv') openUvView(); else openGeoRing(); } },
   { key: 'pivot', icon: 'pivot', label: 'Pivot', seat: 1, run: openPivotRing },
-  { key: 'snap', icon: 'snap', label: 'Snap', seat: 2,
-    on: () => App.snapMode !== 'off', run: toggleSnapping },
+  /* Doubles as the door into Unwrap while in UV mode (v2.51), the same
+     "the seat's label/action just switch with App.mode" trick seat 0 above
+     already uses for Open 2D UV - Snap has no meaning on a UV layout (there
+     is no grid or geometry there to snap to), and this was the one seat in
+     the ring guaranteed to be reachable on an EMPTY-space hold, which
+     HUB_TOOLS_UV's own seam/island door is not: that one only blooms on a
+     hold over an already-selected edge or island (selectionScreenShape
+     needed its own 'uv' branch for that to reach the 3D viewport at all -
+     review finding, fixed alongside this seat). */
+  { key: 'snap', icon: () => (App.mode === 'uv' ? 'unwrap' : 'snap'),
+    label: () => (App.mode === 'uv' ? 'Unwrap' : 'Snap'), seat: 2,
+    on: () => App.mode !== 'uv' && App.snapMode !== 'off',
+    run: () => { if (App.mode === 'uv') unwrapSelection(); else toggleSnapping(); } },
   { key: 'grid', icon: 'grid', label: 'Floor grid', seat: 3,
     on: () => grid.visible, run: toggleFloorGrid },
   /* ISOLATE TAKES THE DOWNWARD BEARING (a2.112). It had been reachable only
@@ -36901,6 +37128,7 @@ function openUvView() {
   try { ed = toEditable(obj.mesh); }
   catch (e) { console.warn('openUvView: toEditable failed', e); toast('Could not read this object’s UV'); return; }
   uvViewObj = obj;
+  resetUvViewBox();   // v2.51: never opens already zoomed/panned from the last object
   const res = renderUvView(obj, ed);
   uvViewSvgEl.style.display = res.ok ? '' : 'none';
   uvViewEmptyEl.style.display = res.ok ? 'none' : '';
@@ -37020,6 +37248,12 @@ function closeUvView() {
   if (uvVDrag) endUvVertexDrag(false);
   clearUvEdgeHold();
   clearUvEmptyHoldTimer();
+  // A pan or pinch-zoom left open mid-gesture (v2.51), same reasoning as
+  // the drags just above - the view itself resets right after anyway, so
+  // there is nothing for either to commit.
+  uvPan = null;
+  uvPinchView = null;
+  resetUvViewBox();
   // Always reopens in Island mode with nothing selected (v2.48) - a
   // vertex or edge selection has no meaning once the card is gone, and
   // starting fresh next time is one less thing to explain than "remembers
@@ -37039,7 +37273,7 @@ document.getElementById('uvViewClose').addEventListener('click', closeUvView);
 // can start and end on the backdrop without ever registering as a drag,
 // synthesizing a click that would otherwise silently throw the gesture
 // away with no commit and no feedback.
-uvViewEl.addEventListener('click', (ev) => { if (ev.target === uvViewEl && !uvDrag && !uvVDrag) closeUvView(); });
+uvViewEl.addEventListener('click', (ev) => { if (ev.target === uvViewEl && !uvDrag && !uvVDrag && !uvPan && !uvPinchView) closeUvView(); });
 
 /* DRAGGING AN ISLAND (v2.45), PINCHING ONE (v2.47). One finger translates;
    a second finger, arriving while the first is already holding an island,
@@ -37072,6 +37306,21 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
   // above already rules out a second pointer competing for the SAME drag.
   const g = ev.target.closest && ev.target.closest('.uv-island');
   if (!g) { armUvEmptyHold(ev); return; }
+  // A finger already panning or pinch-zooming the VIEW (v2.51, review
+  // finding, fixed after this exact guard first broke pinch-start itself by
+  // sitting ABOVE the empty-space check above: that swallowed every second
+  // finger while a pan was live, content or not, so it never reached
+  // armUvEmptyHold and the pinch-promotion just above never ran either -
+  // caught live, testing the pinch-during-pan repro this same review
+  // finding describes) must not also start dragging an ISLAND underneath a
+  // second finger: uvDrag's own coordinates are read through uvViewPoint at
+  // the CURRENT viewBox, which the pan/pinch is actively rewriting every
+  // move, so the island would jump by however far the view has moved and
+  // commit that jump to the mesh on release. A second finger on EMPTY
+  // background during a pan is the normal, intended way to start the pinch
+  // above, so this only ever needs to reject a second finger that landed ON
+  // content instead.
+  if (uvPan || uvPinchView) return;
   const p = uvViewPoint(ev);
   const fillBB = g.querySelector('.uv-fill').getBBox();
   uvDrag = {
@@ -37320,6 +37569,15 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
     armUvEmptyHold(ev);
     return;
   }
+  // Same view-gesture-owns-both-fingers rule as island mode above (v2.51,
+  // review finding - moved below the empty-space check for the same reason
+  // that one was: sitting above it here would swallow a second finger
+  // landing on EMPTY background during a pan too, which is the normal way
+  // to promote into the pinch inside armUvEmptyHold, not something to
+  // reject). Only a second finger landing ON a vertex dot while the view is
+  // panning/pinching needs to be refused - it would read moving-target
+  // coordinates and commit a bogus UV edit.
+  if (uvPan || uvPinchView) return;
   const ai = +c.dataset.ai;
   const tapWasSelected = uvSel.has(ai);
   if (!tapWasSelected) uvSel.add(ai); // provisional - see endUvVertexDrag's tap branch
@@ -37420,7 +37678,192 @@ function clearUvEmptyHoldTimer() {
   uvEmptyHoldTimer = null;
   uvEmptyHoldOrigin = null;
 }
+
+/* THE CARD'S OWN ZOOM AND PAN (v2.51). uvViewBox is the SVG's actual
+   viewBox - not a copy the renderer reads, the literal thing - so every
+   coordinate the rest of this file already computes through uvViewPoint's
+   getScreenCTM (island/vertex/edge drag math, tap hit-testing via
+   ev.target) keeps working unchanged: the content never moves, only the
+   window onto it does, which is what a viewBox is for. Bounded so you
+   cannot zoom out past the default framing (there is nothing past it to
+   see) or in past the point a triangle stops being a shape at all. */
+const UV_ZOOM_MIN = 8, UV_ZOOM_MAX = 100;
+// How far the box may drift past the 0..100 square while panning - just
+// enough to work right up to an edge-hugging island without it sitting
+// glued to the card's own border.
+const UV_PAN_MARGIN = 20;
+let uvViewBox = { x: 0, y: 0, w: 100, h: 100 };
+function applyUvViewBox() {
+  uvViewSvgEl.setAttribute('viewBox', uvViewBox.x + ' ' + uvViewBox.y + ' ' + uvViewBox.w + ' ' + uvViewBox.h);
+}
+// Called by openUvView and closeUvView (v2.51) - a zoom or pan is a way of
+// LOOKING, not document data, the same reasoning App.xraySelection and
+// App.showIslands (before it became automatic) were given; it has no
+// business surviving past the object you were looking at it on.
+function resetUvViewBox() {
+  uvViewBox = { x: 0, y: 0, w: 100, h: 100 };
+  applyUvViewBox();
+}
+function clampUvViewBox() {
+  const maxX = 100 + UV_PAN_MARGIN - uvViewBox.w;
+  uvViewBox.x = Math.max(-UV_PAN_MARGIN, Math.min(maxX, uvViewBox.x));
+  const maxY = 100 + UV_PAN_MARGIN - uvViewBox.h;
+  uvViewBox.y = Math.max(-UV_PAN_MARGIN, Math.min(maxY, uvViewBox.y));
+}
+// Scales the box around one fixed SVG-space point (svgX, svgY) - the mouse
+// wheel's own anchor, found the same way a wheel-zoom always is: whatever
+// is under the cursor stays under the cursor.
+function zoomUvViewBoxAt(factor, svgX, svgY) {
+  const newW = Math.max(UV_ZOOM_MIN, Math.min(UV_ZOOM_MAX, uvViewBox.w * factor));
+  const actual = newW / uvViewBox.w;   // the CLAMPED ratio, not the raw wheel factor
+  uvViewBox.x = svgX - (svgX - uvViewBox.x) * actual;
+  uvViewBox.y = svgY - (svgY - uvViewBox.y) * actual;
+  uvViewBox.w = newW;
+  uvViewBox.h = uvViewBox.h * actual;
+  clampUvViewBox();
+  applyUvViewBox();
+}
+// Desktop only in practice (a touch pinch is its own gesture below), so no
+// RING_MOVE_CANCEL_PX-style dead zone: a wheel tick is already a deliberate
+// act, never an accidental graze the way a touch drag can be.
+uvViewSvgEl.addEventListener('wheel', (ev) => {
+  ev.preventDefault();
+  const pt = uvViewPoint(ev);
+  // deltaMode normalisation (v2.51, review finding): deltaY is only ever
+  // pixels (mode 0) on Chrome/Edge, but Firefox on a plain mouse reports
+  // "lines" (mode 1, deltaY of about +-3 per notch) - fed straight into
+  // 1.0015^deltaY that is a ~0.4% step per notch, so zooming from the
+  // default framing down to UV_ZOOM_MIN would take hundreds of notches.
+  // No other listener in this file reads deltaMode, so there is nothing
+  // existing to reuse; 16px approximates one line, matching the scroll
+  // amount browsers themselves use for line-mode wheel events. Mode 2
+  // (whole pages) is rarer still but gets the same treatment for safety.
+  let dy = ev.deltaY;
+  if (ev.deltaMode === 1) dy *= 16;
+  else if (ev.deltaMode === 2) dy *= window.innerHeight;
+  // 1.0015^dy: a small, steady step per unit of scroll, the same shape
+  // most map/canvas wheel-zooms use rather than a fixed per-tick jump, so
+  // a trackpad's finer-grained deltaY zooms smoothly instead of in leaps.
+  zoomUvViewBoxAt(Math.pow(1.0015, dy), pt.x, pt.y);
+}, { passive: false });
+
+// One-finger PAN on empty background (v2.51) - what an empty-space hold
+// becomes once the finger actually moves rather than staying still for
+// the "3D" ring below. Kept entirely separate from uvDrag's island drag:
+// this one drags the VIEW, uvDrag drags an island THROUGH the view, and
+// they can never be live at once since one requires landing on an island
+// and the other requires missing every one of them.
+let uvPan = null;   // { pointerId, startClientX, startClientY, lastClientX, lastClientY, startX, startY, scale }
+function startUvPan(ev) {
+  const rect = uvViewSvgEl.getBoundingClientRect();
+  if (!rect.width) return;
+  uvPan = {
+    pointerId: ev.pointerId,
+    startClientX: ev.clientX, startClientY: ev.clientY,
+    lastClientX: ev.clientX, lastClientY: ev.clientY,
+    startX: uvViewBox.x, startY: uvViewBox.y,
+    // A fixed px->SVG-unit ratio for the whole drag rather than reading it
+    // fresh from getScreenCTM every move - cheaper, and exactly right here
+    // since nothing else changes uvViewBox.w mid-pan (zoom is a separate
+    // gesture, wheel or the pinch below, neither live at the same time).
+    scale: uvViewBox.w / rect.width
+  };
+}
+function updateUvPan(ev) {
+  uvPan.lastClientX = ev.clientX; uvPan.lastClientY = ev.clientY;
+  // Finger right -> content should track right under it -> the WINDOW
+  // (viewBox.x) moves left, the mirror image of every drag in this file
+  // that moves something IN view rather than the view itself.
+  uvViewBox.x = uvPan.startX - (ev.clientX - uvPan.startClientX) * uvPan.scale;
+  uvViewBox.y = uvPan.startY - (ev.clientY - uvPan.startClientY) * uvPan.scale;
+  clampUvViewBox();
+  applyUvViewBox();
+}
+
+// Two-finger pinch-zoom-and-pan of the VIEW on empty background (v2.51) -
+// the touch equivalent of the wheel above, for the one gesture that was
+// already spoken for everywhere else in this card: Island mode's own pinch
+// rotates and scales the ISLAND, but only once the first finger has
+// already landed ON one (startUvPinch, above). Landing on empty background
+// instead is what routes here, through armUvEmptyHold picking up a SECOND
+// pointer while the first already holds or pans empty space - the same
+// "second finger promotes the gesture" shape, aimed at uvViewBox instead
+// of an island's transform.
+let uvPinchView = null;   // { id1, id2, startDist, startMidClientX, startMidClientY, startBox, anchorX, anchorY, rectWidth, lastP1, lastP2 }
+function startUvPinchView(ev, firstClientX, firstClientY, firstPointerId) {
+  const rect = uvViewSvgEl.getBoundingClientRect();
+  if (!rect.width) return;
+  const midX = (firstClientX + ev.clientX) / 2, midY = (firstClientY + ev.clientY) / 2;
+  // The content point under the STARTING midpoint, in the box as it stood
+  // the instant the second finger landed - this is what stays put as the
+  // pinch scales; updateUvPinchView layers the midpoint's own travel on
+  // top of it separately, the same two-part shape zoomUvViewBoxAt's caller
+  // and startUvPan's caller split between them.
+  const anchor = uvViewPoint({ clientX: midX, clientY: midY });
+  uvPinchView = {
+    id1: firstPointerId, id2: ev.pointerId,
+    startDist: Math.hypot(ev.clientX - firstClientX, ev.clientY - firstClientY) || 1,
+    startMidClientX: midX, startMidClientY: midY,
+    startBox: { x: uvViewBox.x, y: uvViewBox.y, w: uvViewBox.w, h: uvViewBox.h },
+    anchorX: anchor.x, anchorY: anchor.y,
+    rectWidth: rect.width,
+    lastP1: { x: firstClientX, y: firstClientY },
+    lastP2: { x: ev.clientX, y: ev.clientY }
+  };
+  try { uvViewSvgEl.setPointerCapture(ev.pointerId); } catch (e) {}
+}
+function updateUvPinchView(ev) {
+  if (ev.pointerId === uvPinchView.id1) uvPinchView.lastP1 = { x: ev.clientX, y: ev.clientY };
+  else if (ev.pointerId === uvPinchView.id2) uvPinchView.lastP2 = { x: ev.clientX, y: ev.clientY };
+  else return;
+  const { lastP1, lastP2, startDist, startBox, anchorX, anchorY, rectWidth } = uvPinchView;
+  const dist = Math.hypot(lastP2.x - lastP1.x, lastP2.y - lastP1.y) || 1;
+  const midX = (lastP1.x + lastP2.x) / 2, midY = (lastP1.y + lastP2.y) / 2;
+  // Fingers spreading (dist grows past startDist) should zoom IN, which
+  // means the box shrinks - so the ratio is startDist/dist, not the other
+  // way round.
+  const ratio = startDist / dist;
+  const newW = Math.max(UV_ZOOM_MIN, Math.min(UV_ZOOM_MAX, startBox.w * ratio));
+  const actual = newW / startBox.w;   // the CLAMPED ratio
+  const newH = startBox.h * actual;
+  let x = anchorX - (anchorX - startBox.x) * actual;
+  let y = anchorY - (anchorY - startBox.y) * actual;
+  // ...then the midpoint's own travel since the pinch started, converted
+  // through the NEW scale - the pan half of the gesture, layered on top of
+  // the zoom-about-anchor half just above.
+  const scalePxToSvg = newW / rectWidth;
+  x -= (midX - uvPinchView.startMidClientX) * scalePxToSvg;
+  y -= (midY - uvPinchView.startMidClientY) * scalePxToSvg;
+  uvViewBox = { x, y, w: newW, h: newH };
+  clampUvViewBox();
+  applyUvViewBox();
+}
+
 function armUvEmptyHold(ev) {
+  // A second finger landing on empty space while the first already holds
+  // or pans it promotes the gesture to a pinch-zoom of the view instead of
+  // arming an unrelated second hold-timer (v2.51) - see uvPinchView above.
+  if (uvPan && uvPan.pointerId !== ev.pointerId) {
+    clearUvEmptyHoldTimer();
+    startUvPinchView(ev, uvPan.lastClientX, uvPan.lastClientY, uvPan.pointerId);
+    // Must be nulled here, not just left for pointerup to clear later
+    // (review finding): pointerup only clears uvPan when the LIFTING
+    // finger's id matches it, so if the second (pinch) finger lifts first,
+    // uvPan would still hold the pre-pinch viewBox/scale snapshot while the
+    // first finger is still down. That finger's next pointermove checks
+    // uvPinchView first (now null) and falls through to updateUvPan with
+    // that stale snapshot, snapping the view back toward the pre-pinch
+    // origin and then panning at the wrong scale. The pinch already reads
+    // everything it needs from uvPan above before this line runs.
+    uvPan = null;
+    return;
+  }
+  if (uvEmptyHoldOrigin && uvEmptyHoldOrigin.pointerId !== ev.pointerId) {
+    const first = uvEmptyHoldOrigin;
+    clearUvEmptyHoldTimer();
+    startUvPinchView(ev, first.x, first.y, first.pointerId);
+    return;
+  }
   clearUvEmptyHoldTimer();
   const px = ev.clientX, py = ev.clientY, pid = ev.pointerId;
   uvEmptyHoldOrigin = { x: px, y: py, pointerId: pid };
@@ -37440,18 +37883,33 @@ function armUvEmptyHold(ev) {
 // above and below ever see this timer - they are all gated on their own
 // live drag state (uvDrag/uvVDrag/uvEdgeHold), none of which exists during
 // an empty-space hold. This unconditional trio is the only thing watching
-// for "the finger moved away" or "the finger lifted before the hold fired".
+// for "the finger moved away" (v2.51: which starts a pan, or hands off to
+// the pinch above once a second finger is already live) or "the finger
+// lifted before the hold fired".
 uvViewSvgEl.addEventListener('pointermove', (ev) => {
+  if (uvPinchView && (ev.pointerId === uvPinchView.id1 || ev.pointerId === uvPinchView.id2)) {
+    updateUvPinchView(ev);
+    return;
+  }
+  if (uvPan && ev.pointerId === uvPan.pointerId) {
+    updateUvPan(ev);
+    return;
+  }
   if (!uvEmptyHoldTimer || !uvEmptyHoldOrigin || ev.pointerId !== uvEmptyHoldOrigin.pointerId) return;
   if (Math.hypot(ev.clientX - uvEmptyHoldOrigin.x, ev.clientY - uvEmptyHoldOrigin.y) > RING_MOVE_CANCEL_PX) {
     clearUvEmptyHoldTimer();
+    startUvPan(ev);
   }
 });
 uvViewSvgEl.addEventListener('pointerup', (ev) => {
   if (uvEmptyHoldOrigin && ev.pointerId === uvEmptyHoldOrigin.pointerId) clearUvEmptyHoldTimer();
+  if (uvPan && ev.pointerId === uvPan.pointerId) uvPan = null;
+  if (uvPinchView && (ev.pointerId === uvPinchView.id1 || ev.pointerId === uvPinchView.id2)) uvPinchView = null;
 });
 uvViewSvgEl.addEventListener('pointercancel', (ev) => {
   if (uvEmptyHoldOrigin && ev.pointerId === uvEmptyHoldOrigin.pointerId) clearUvEmptyHoldTimer();
+  if (uvPan && ev.pointerId === uvPan.pointerId) uvPan = null;
+  if (uvPinchView && (ev.pointerId === uvPinchView.id1 || ev.pointerId === uvPinchView.id2)) uvPinchView = null;
 });
 
 // EDGE MODE (v2.50): select edges for the UV door's seam ops. No drag of
@@ -39966,10 +40424,9 @@ HELP_SECTIONS.push(
       ['del', 'Delete', 'Cuts the faces away and leaves a hole. This is how you make one — every other mode’s Delete closes the gap instead.'],
       ['bridge', 'Bridge', 'Joins two selections with new faces.'],
       ['detach', 'Detach', 'The selected faces leave as their own object.'],
-      [null, 'SURFACE — a door', 'Shade, Flip normals, Set flow, Circularize, Show islands.'],
+      [null, 'SURFACE — a door', 'Shade, Flip normals, Set flow, Circularize.'],
       ['smooth', 'Shade', 'Flat or smooth, on the selected faces. In Edge mode use Mark Sharp instead — it is the same idea, said once.'],
-      ['flipnorm', 'Flip normals', 'Turns the selected faces inside out.'],
-      ['islands', 'Show islands', 'Colours the faces by which UV island they would fall into once cut along the current seams.']
+      ['flipnorm', 'Flip normals', 'Turns the selected faces inside out.']
     ]
   },
   {
@@ -39991,7 +40448,7 @@ HELP_SECTIONS.push(
       ['smoothangle', 'Smooth by angle', 'One threshold for the whole object: edges sharper than it stay hard, the rest blend. It keeps deciding for geometry you have not made yet.'],
       ['cleanup', 'Clean up', 'Tris to quads pairs triangles back into faces — the fix for an imported model that will not loop cut. Merge by distance welds points that are almost touching.'],
       ['centre', 'Centre', 'Back to the middle, resting on the floor.'],
-      ['unwrap', 'Unwrap', 'Lays out the whole object’s UV from its current islands — flat for a panel, wrapped around for a tube-shaped one. Mark seam (Edge mode) decides where it cuts; Show islands (Face mode) previews the cuts first.']
+      ['unwrap', 'Unwrap', 'Lays out the whole object’s UV from its current islands — flat for a panel, wrapped around for a tube-shaped one. Mark seam (Edge or UV mode) decides where it cuts; UV mode itself previews the islands automatically, no separate toggle.']
     ]
   },
   {
@@ -40235,17 +40692,11 @@ function toggleXray() {
   toast(App.xraySelection ? 'Selection: see-through' : 'Selection: solid');
 }
 
-// Face-mode UV islands preview (uv-commands-maps-plan.md stage 5, slice 2).
-// Same shape as toggleXray - a transient view flag, not document data - but
-// the overlay is per-object (syncIslandOverlay reads App.showIslands plus
-// each object's own topo/seams), so flipping the flag has to sweep every
-// object rather than just the active one: an object the user isn't
-// currently editing still needs its overlay shown or hidden to match.
-function toggleShowIslands() {
-  App.showIslands = !App.showIslands;
-  App.objects.forEach(o => syncIslandOverlay(o));
-  toast(App.showIslands ? 'UV islands: shown' : 'UV islands: hidden');
-}
+// toggleShowIslands is gone (v2.51) - islands are shown automatically
+// whenever App.mode is 'uv' now (syncIslandOverlay's own guard), so there
+// is no more manual, whole-session toggle to flip. See setMode's explicit
+// syncIslandOverlay sweep for how the overlay turns on and off with the
+// mode these days.
 // A plain flip-flop: 0/I, not a readout of the actual mixed shading state
 // across faces - it just toggles and applies, same pattern as the Material
 // cycler. Works on the whole object in Object mode or the current selection
@@ -41673,8 +42124,12 @@ if (PICK_DEBUG) {
     markSeamSelection, clearAllSeams, seamSet,
     // UV islands preview (uv-commands-maps-plan.md stage 5, slice 2) - lets a
     // harness compute islands directly and inspect the overlay without
-    // pretending to be a finger on the ring.
-    computeUVIslands, syncIslandOverlay, toggleShowIslands, islandColorHex,
+    // pretending to be a finger on the ring. toggleShowIslands is gone
+    // (v2.51) - islands show automatically in UV mode now; uvIslandFaceIds
+    // and toggleUvIslandElements are the v2.51 island-tap-selection pieces,
+    // exported for the same reason.
+    computeUVIslands, syncIslandOverlay, islandColorHex,
+    uvIslandFaceIds, toggleUvIslandElements,
     // The unwrap itself (uv-commands-maps-plan.md stage 5, slice 3) - the
     // numerical pieces individually, so a harness can check a frame or a
     // classification on one island without running the whole op, plus the
