@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~40,550 lines)
-- Version at time of writing: **2.43b**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~40,627 lines)
+- Version at time of writing: **2.44**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -390,6 +390,124 @@ is the original by-reference one); and whether `aim` could rotate a
 corner-tuned arc back into a wall (`HUB_TOOLS_MODE` never sets `.door`, so
 the swap path this would require is never reached, same finding 2.43a's
 review already made and confirmed still holds).
+
+## Corner menu turned from an arc into a line (2.44)
+
+Zeghreit's follow-up on 2.43b, worked out over several rounds in a claude.ai
+Design canvas before any code changed: the arc still "moves away from us" -
+because it's oriented radially, the icon under the finger stays close but
+each next one along the fan gets farther from the corner. Five layout ideas
+were mocked up and compared side by side (arc variants, an L-hook, staggered
+pairs, a plain diagonal); a plain diagonal line came closest to what Zeghreit
+wanted but ran in the wrong direction (radially, so it stretched away rather
+than staying close), so the fix was to turn it 90°: a straight line ACROSS
+the radius instead of along it, so every item sits at close to the same
+distance from the corner, the way an arc's items do, while staying a single
+straight bar. Zeghreit's last request before approving - "order them so their
+side edges line up, with a small gap between them" - turned out to already be
+satisfied by that same perpendicular direction, once spaced correctly (see
+below); approved as-is ("Годится - делаем так").
+
+**The new machinery, replacing the old one to one.** `MODE_RING_ARC_DEG`/
+`MODE_RING_GAP_DEG`/`CORNER_ARC_MIN_R`/`cornerArcAngles`/`tools.cornerArc`
+are gone; in their place: `MODE_LINE_GAP`/`MODE_LINE_PITCH`/`MODE_LINE_R`/
+`cornerLineLayout`/`tools.cornerLine`. The old system only ever needed a
+per-item ANGLE override (every seat shared one radius, `ringR`); a straight
+bar needs a per-item RADIUS too, since only the middle of a line sits at the
+bar's nominal distance - the ends are farther out. `cornerLineLayout` now
+returns both `{ angles, radii }`, and `tools.ringRadii` joins `tools.
+ringAngles` as a second, parallel per-item override, read wherever the first
+one already was.
+
+**Why the diamonds land edge-to-edge for free.** A `.hub-item` is a 52px
+square rotated 45°, so it has flat edges on the four 45°-family diagonals
+and points on the cardinals. The perpendicular-line direction Zeghreit asked
+for turned out to already be a 45°-family diagonal (it runs across whichever
+corner diagonal the ring opens on, and those are always 135°/45°/225°/315°),
+which is exactly the direction where moving by the diamond's own width lines
+up edges instead of corners. So "line up the side edges, small gap between"
+and "run perpendicular to the corner" were the same instruction once the
+diagonal math was done - not a coincidence the code had to reconcile, just
+two ways of describing one direction.
+
+**Spacing: a third of the house gap, not the whole thing.** `MODE_LINE_PITCH
+= TOOL_RING_ITEM + MODE_LINE_GAP` (item width plus a gap) is the
+center-to-center step along the line. `TOOL_RING_GAP = 30` is the house
+minimum clear space between icons everywhere else, but a straight line of
+52px diamonds spaced a full 30px apart fans out much wider than the
+approved mockup (which used 8px, picked by eye on the canvas for how the
+four items looked together). Rather than ship the arbitrary mockup number
+or the unrelated house number, `MODE_LINE_GAP = TOOL_RING_GAP / 3 = 10px` -
+a deliberate, documented fraction of the house constant (the same move
+`CORNER_ARC_MIN_R` made in 2.43a, padding by half of `TOOL_RING_GAP` rather
+than inventing a new number), which lands within a couple of pixels of the
+already-approved mockup's spacing. `MODE_LINE_R = 77px`, the bar's own
+distance from the button, is picked directly rather than derived - there's
+no equivalent house constant for "how far a bar sits," and 77px reproduces
+the approved mockup's near/far distances (81px/118px on paper; measured
+live, see below) closely enough that no further tuning pass was run.
+
+**Two bugs found and fixed during live testing, both worth remembering.**
+First: feeding the line's bearings through the existing wall-aware seat
+placement (`env.at(f)`, an arc-length-fraction walk around the whole
+clipped envelope, built for rings that share one radius) distorted the
+rendered angles even when none of the four items' own radii were actually
+being clipped by a wall - because the walk's fraction-to-angle mapping
+depends on the WHOLE envelope shape, including directions the line's own
+items never point at. Caught by a targeted test (aiming just past the
+midpoint between two adjacent items and getting the wrong one) before the
+review even started. Fixed by bypassing `env.at` for angle on line items
+entirely - use the intended bearing directly - and exposing a new `env.rho`
+(previously a private closure variable inside `bloomToolRing`) purely for
+looking up the wall-safety radius cap at a given bearing, with nothing else
+about the envelope's shape involved.
+
+Second, more serious, found by opus review rather than by me: the code that
+decides which item the finger is "aiming at" (`updateToolRingHover`) compares
+the direction from the PRESS POINT (`aimX/aimY` - wherever the finger came
+down, which for a corner button is never exactly at the ring's own drawn
+center, because of the wall-clamp described below) against each item's
+bearing as stored FROM THE RING'S CENTER. Those are two different reference
+points, and the arc got away with the mismatch because its gaps were wide
+(30-40°); the line's gaps (as tight as 28.4°) did not - the review measured
+real mispicks at both real corners (aiming at "UV" selected "Soft"; aiming at
+"Object" selected "Component") and confirmed via `git diff`/checkout that the
+SAME mismatch already existed in 2.43b's arc, just below its error threshold.
+Fixed with a new `pickAngle` per item - the item's bearing as seen from the
+press point instead of the ring's center - computed only for line items
+(every other ring's `pickAngle` is just its existing `angle`, so nothing
+about any other ring's hover behavior changed). Re-verified live at both of
+the review's exact failure viewports, aiming at each item's true on-screen
+position: 8 of 8 correct, versus 4 of 8 before the fix.
+
+**What review found, and what's still open.** Besides the `pickAngle` bug
+above (fixed), opus flagged four smaller, non-live items, left as-is for now:
+some duplicated fit-check logic between the corner-detection block and the
+radius computation right after it; three separate places that each re-derive
+"is this a corner-line ring" from `tools.cornerLine`/`Array.isArray(tools.
+ringAngles)` rather than sharing one check; a code comment that still
+name-drops the now-deleted `CORNER_ARC_MIN_R` by name; and that the item
+order along the line reads in the opposite direction from the old arc's
+sweep (a labeling/changelog concern, not a functional one). None of these
+are bugs - they're worth a cleanup pass if this area gets touched again, not
+before.
+
+**A separate, out-of-scope finding: the ring's visual center is never where
+the finger is.** Testing this surfaced a pre-existing, unrelated mechanism:
+`#touchToolRing`'s on-screen position is clamped away from the actual press
+point whenever the button sits within `minReach = RING_EDGE_PX + TOOL_RING_
+TIP + 60 = 111px` of a screen edge - which is always true for this button,
+since it's anchored close to its corner regardless of viewport size. Measured
+at 390×760: button center at (344,724), ring drawn centered at (279,649) - a
+65-75px shift, about 99px total, roughly along the ring's own open diagonal.
+This means "distance from the ring's own center" (what every one of the six
+design-canvas mockups compared, arc and line alike) is not the same as
+"distance from the actual finger," for ANY layout - it's a property of the
+button's position, not of what's drawn in the ring. Not fixed here: it
+predates this whole redesign, affects the baseline arc equally, and touching
+it means revisiting the 2.0-era `place()`/`minReach` clamp itself - a bigger,
+separate decision. Worth returning to if "still feels far" persists after
+this ships.
 
 ## Mode-hold bloom menu + read-only 2D UV view (2.43)
 

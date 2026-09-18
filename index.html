@@ -2452,7 +2452,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.43b</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.44</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -35298,42 +35298,40 @@ const RING_EDGE_PX = 14;
    still outside the middle and still separable from a cancel. A dense
    ring floors higher than this; see `seatMinR` in bloomToolRing. */
 const TOOL_RING_SEAT_MIN_R = TOOL_RING_DEAD_ZONE_PX + TOOL_RING_TIP + 6;
-/* HOW WIDE THE MODE RING'S CORNER ARC IS (v2.43b, balancing v2.43a's
-   literal quarter against the "one size" rule below). A strict 90-degree
-   quarter reads clean but asks for roughly 2.7x TOOL_RING_R's radius for
-   the same physical spacing - noticeably bigger than every other ring in
-   the app, which is its own kind of inconsistency. 120 degrees is the
-   width whose own `ideal` formula (four items, so three gaps of 40 degrees
-   each) comes back within a pixel of TOOL_RING_R itself - the ring this
-   app already settled on as the one size a marking menu should be,
-   wherever it opens. So this menu now reads as "the standard ring, fanned
-   into the open corner" rather than "a bigger ring because it's in a
-   corner". The two outer seats land 15 degrees past the open cardinals
-   instead of exactly on them - a small, deliberate trade for landing on
-   the house radius instead of a custom one. */
-const MODE_RING_ARC_DEG = 120;
-/* THE SMALLEST RADIUS THE CORNER ARC CAN USE WITHOUT ITS ICONS TOUCHING
-   (v2.43a, review finding; recomputed for the 120-degree arc in v2.43b,
-   then padded after a second review + live measurement caught it running
-   too tight - see below). Four items over MODE_RING_ARC_DEG have three
-   40-degree gaps; a bare `TOOL_RING_ITEM` numerator is the radius at which
-   a 40-degree gap, with none of TOOL_RING_GAP's extra clearance, keeps two
-   52px icons from overlapping ON A CIRCLE. This ring is not one: it is
-   centred on a corner's open diagonal and fed through the same wall-aware
-   arc-length redistribution every other ring uses, which does not preserve
-   equal ANGULAR spacing the way a plain circle would - measured live at a
-   280x500 viewport, the middle pair of seats compressed enough to overlap
-   by a few pixels even though the bare formula said this radius was still
-   comfortably above its own floor. Splitting the difference with half of
-   TOOL_RING_GAP as padding (not the full amount - that would just reproduce
-   the "ideal" radius above and remove the point of having a separate,
-   smaller floor at all) raises the floor enough that live-measured spacing
-   at the new floor is clear again; a screen too small even for this now
-   falls back to the ordinary full-circle spread every other seatless ring
-   already uses, same as before. */
-const MODE_RING_GAP_DEG = MODE_RING_ARC_DEG / 3;   // three gaps, four items
-const CORNER_ARC_MIN_R = (TOOL_RING_ITEM + TOOL_RING_GAP / 2) /
-  (2 * Math.sin(THREE.MathUtils.degToRad(MODE_RING_GAP_DEG / 2)));
+/* WHY THE CORNER MENU IS A LINE, NOT AN ARC (v2.44, replacing v2.43b).
+   v2.43b widened the arc to 120 degrees so its own radius formula landed on
+   TOOL_RING_R - the "one size" every other ring uses - instead of a bigger,
+   bespoke one. That fixed the SIZE but not the COMPLAINT: an arc's items sit
+   ALONG the corner's open diagonal, so any radius big enough to keep four
+   52px icons apart is a radius every one of them sits out at, diagonal and
+   all. Zeghreit's fix: turn the fan sideways. A straight bar placed ACROSS
+   the diagonal instead of along it can hold all four items close to the
+   button AND at close to the same distance from it, the way the arc's items
+   were, without curving outward at all - each item just slides along the
+   bar instead of out along its own ray.
+
+   The two end items still land further out than the middle two (the price
+   of a straight bar instead of a true arc - a chord meets a circle only at
+   its own ends), but by less than the arc ever did, and the near pair sits
+   right on TOOL_RING_MIN_R, the floor every other ring already respects. */
+const MODE_LINE_GAP = TOOL_RING_GAP / 3;
+/* A THIRD OF THE HOUSE GAP, NOT THE WHOLE THING - deliberately, the same
+   trade CORNER_ARC_MIN_R made with half of it in v2.43a. The full 30px is
+   sized for icons that might sit at any bearing around a shared radius,
+   where a tight angular gap can put two icons closer together diagonally
+   than their straight-line distance suggests. These four have no bearing to
+   share: they ride one straight bar, so the gap IS the on-screen distance
+   between them, and a third of the house minimum (10px) already reads as a
+   clean, deliberate seam - not a crowded one - between two 52px diamonds. */
+const MODE_LINE_PITCH = TOOL_RING_ITEM + MODE_LINE_GAP;   // 52 + 10 = 62
+/* THE BAR'S OWN DISTANCE FROM THE BUTTON. Picked, not derived: the general
+   `ideal` formula (see bloomToolRing) answers "how big must a RING be for
+   these items not to touch", which does not apply to a bar whose spacing is
+   already fixed by MODE_LINE_PITCH regardless of radius. 77px puts the near
+   pair at ~83px from the button - just clear of TOOL_RING_MIN_R (80), the
+   floor every seatless ring already respects - and the far pair at ~121px,
+   a hair over today's uniform 120 rather than the arc's old 158. */
+const MODE_LINE_R = 77;
 
 let toolRingTimer = null;
 let toolRingActive = null;   // { x, y, tools, itemEls, hoveredIndex }
@@ -35351,7 +35349,7 @@ function clearToolRingTimer() {
    so neither group ever touches the other and the poles stay free for
    whatever claims them. */
 function toolRingAngles(tools) {
-  /* A corner-arc ring (see bloomToolRing) has already decided its own
+  /* A corner-line ring (see bloomToolRing) has already decided its own
      bearings before this runs - read them back rather than falling into
      the seat/halved logic below, which knows nothing about corners and
      would spread these four across the whole circle instead.
@@ -35359,9 +35357,9 @@ function toolRingAngles(tools) {
      Kept on the ARRAY, not on the individual tool objects (review finding,
      v2.43a): the tools are long-lived singletons and the array is what
      `bloomToolRing` freshly overwrites on every single open of this ring,
-     whether or not the arc fits (see CORNER_ARC_MIN_R there) - so a
+     whether or not the bar fits (see cornerLineLayout there) - so a
      stale value can only survive if something copies the ARRAY without its
-     `ringAngles`, which also drops `cornerArc` and correctly falls back
+     `ringAngles`, which also drops `cornerLine` and correctly falls back
      to the general spread below. A value living on the tool objects instead
      would have failed the opposite way: a copy keeps the objects, so a
      dropped flag would still find angles from the last bloom and use them
@@ -35431,32 +35429,43 @@ function minAngularGapDeg(anglesDeg) {
   return Math.max(best, 1);
 }
 
-/* Bearings for a ring that always opens in a screen CORNER (the mode ring -
-   see bloomToolRing for why this exists and what it replaces, and
-   MODE_RING_ARC_DEG for why the arc is 120 degrees and not a literal
-   90-degree quarter). `x, y` are the point the ring is asked to bloom at,
-   in the same client coordinates bloomToolRing itself takes (not the
-   clamped ring centre - a button this close to a corner can't cross the
-   screen's midpoint by being clamped inward from the edge, so the two give
-   the same quadrant answer); `rect` is the viewport's box. Picks whichever
-   diagonal points AWAY from both nearby walls (by which half of the screen
-   `x, y` falls in - a proximity test would suit a ring that could open
-   anywhere, but this one only ever opens in a corner), then centres the
-   arc on that diagonal and spreads the tools evenly across it - so the two
-   outer seats land 15 degrees short of the two open cardinal directions
-   (due up/left/down/right, whichever pair is free) rather than exactly on
-   them, and the rest fill in between. That is still closer to the open
-   cardinals than to the walled ones, and the placement is exact only while
-   the envelope this feeds into (see bloomToolRing) is still the full
-   circle - against a wall the outline redistributes seats along its own
-   cut perimeter instead, same as it would for any ring. */
-function cornerArcAngles(tools, x, y, rect) {
+/* Bearings AND radii for a ring that always opens in a screen CORNER (the
+   mode ring - see bloomToolRing for why this exists and what it replaces,
+   and the MODE_LINE_* constants for why it is a straight bar and not an
+   arc). `x, y` are the point the ring is asked to bloom at, in the same
+   client coordinates bloomToolRing itself takes (not the clamped ring
+   centre - a button this close to a corner can't cross the screen's
+   midpoint by being clamped inward from the edge, so the two give the same
+   quadrant answer); `rect` is the viewport's box. Picks whichever diagonal
+   points AWAY from both nearby walls (by which half of the screen `x, y`
+   falls in - a proximity test would suit a ring that could open anywhere,
+   but this one only ever opens in a corner), then lays the bar ACROSS that
+   diagonal - perpendicular to it, MODE_LINE_R out - and spaces the tools
+   along it at MODE_LINE_PITCH, centred on the diagonal so the set straddles
+   it evenly. Each item gets its own bearing AND its own distance back;
+   `bloomToolRing` carries both on the tools array (`ringAngles`,
+   `ringRadii`), and `paintToolRing` reads the radius back per item instead
+   of assuming the ring's shared one. The placement is exact only while the
+   envelope this feeds into (see bloomToolRing) is still the full circle -
+   against a wall the outline redistributes along its own cut perimeter
+   instead, same as it would for any ring, and each item's own radius is
+   still capped there so a wall shrinks it exactly as it would any seat. */
+function cornerLineLayout(tools, x, y, rect) {
   const nearRight = (x - rect.left) > rect.width / 2;
   const nearBottom = (y - rect.top) > rect.height / 2;
-  const diag = nearBottom ? (nearRight ? 135 : 45) : (nearRight ? 225 : 315);
-  const from = diag - MODE_RING_ARC_DEG / 2, to = diag + MODE_RING_ARC_DEG / 2;
-  const n = tools.length;
-  return tools.map((t, i) => (from + (n > 1 ? i * (to - from) / (n - 1) : (to - from) / 2) + 360) % 360);
+  const diagDeg = nearBottom ? (nearRight ? 135 : 45) : (nearRight ? 225 : 315);
+  const diag = THREE.MathUtils.degToRad(diagDeg);
+  const perp = diag - Math.PI / 2;   // across the diagonal, not along it
+  const n = tools.length, mid = (n - 1) / 2;
+  const angles = [], radii = [];
+  tools.forEach((t, i) => {
+    const off = (i - mid) * MODE_LINE_PITCH;
+    const px = Math.cos(diag) * MODE_LINE_R + Math.cos(perp) * off;
+    const py = Math.sin(diag) * MODE_LINE_R + Math.sin(perp) * off;
+    angles.push((THREE.MathUtils.radToDeg(Math.atan2(py, px)) + 360) % 360);
+    radii.push(Math.hypot(px, py));
+  });
+  return { angles, radii };
 }
 
 /* `aim` is where the GESTURE starts, in client coords, when that isn't
@@ -35497,8 +35506,9 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
   const rect = viewportEl.getBoundingClientRect();
 
   /* THE MODE RING OPENS INTO ITS SCREEN CORNER, NOT A FULL CIRCLE
-     (v2.43a, arc width tuned in v2.43b). Its two buttons (#hubBtn,
-     #hdrMode) each live in a screen CORNER on every layout this app ships -
+     (v2.43a; turned from an arc into a straight bar in v2.44 - see the
+     MODE_LINE_* constants for why). Its two buttons (#hubBtn, #hdrMode)
+     each live in a screen CORNER on every layout this app ships -
      bottom-right on phone, top-left in the desktop header - so spreading
      its seats over the WHOLE circle, as any other seatless set does,
      always lands two of them pointing straight at the nearest walls. The
@@ -35507,31 +35517,37 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
      out there - which is the "скомкано" bunching v2.43a was written to
      fix, not a bug in the envelope itself. A ring that ALWAYS opens in a
      corner does not need the general shape built for a ring that can open
-     anywhere: it needs the one arc that corner always has room for, spread
-     evenly like any other marking menu (MODE_RING_ARC_DEG says why that
-     arc is 120 degrees, not a literal 90-degree quarter). `tools.cornerArc`
-     marks that set; the angles go on `tools.ringAngles` - the ARRAY, not
-     the individual tool objects (see toolRingAngles) - so it and the flag
-     are lost together by any caller that copies the array, and so that
+     anywhere: it needs the one bar that corner always has room for.
+     `tools.cornerLine` marks that set; the bearings AND radii go on
+     `tools.ringAngles`/`tools.ringRadii` - the ARRAYS, not the individual
+     tool objects (see toolRingAngles) - so they and the flag are lost
+     together by any caller that copies the array, and so that
      `toolRingAngles`, called again independently inside `paintToolRing`,
      reads back exactly what was decided here instead of a second, possibly
      different, computation.
 
-     WRITTEN EVERY TIME, EVEN WHEN IT DOESN'T FIT. The arc needs a bigger
-     radius than the same four items over a full circle would for the same
-     physical spacing (see CORNER_ARC_MIN_R) - fine on a phone or a desktop
-     window, not guaranteed on a small one. `fits` below is a pure function
-     of the screen, so it can be read early, before `anglesDeg` exists to
-     feed it: below CORNER_ARC_MIN_R the arc is skipped for THIS open and
-     `ringAngles` is cleared to `null` rather than left as whatever the
-     last open set it to, so toolRingAngles falls all the way through to
-     the ordinary full-circle spread - crowded by the wall's cut like any
-     other seatless ring in a corner, same as this ring behaved before
-     v2.43a, rather than crowded by an arc with no room to be one. */
-  if (tools.cornerArc) {
+     WRITTEN EVERY TIME, EVEN WHEN IT DOESN'T FIT. The bar reaches further
+     from the button than TOOL_RING_MIN_R alone would - fine on a phone or a
+     desktop window, not guaranteed on a small one. `fits` below is a pure
+     function of the screen, so it can be read early, before `anglesDeg`
+     exists to feed it: below the bar's own farthest item it is skipped for
+     THIS open and `ringAngles`/`ringRadii` are cleared to `null` rather
+     than left as whatever the last open set them to, so toolRingAngles
+     falls all the way through to the ordinary full-circle spread -
+     crowded by the wall's cut like any other seatless ring in a corner,
+     same as this ring behaved before v2.43a, rather than crowded by a bar
+     with no room to be one. */
+  if (tools.cornerLine) {
     const fits0 = Math.min(rect.width, rect.height) / 2 - TOOL_RING_TIP - RING_EDGE_PX;
-    tools.ringAngles = fits0 >= CORNER_ARC_MIN_R
-      ? cornerArcAngles(tools, x, y, rect) : null;
+    const line = cornerLineLayout(tools, x, y, rect);
+    const lineMaxR = Math.max(...line.radii);
+    if (fits0 >= lineMaxR) {
+      tools.ringAngles = line.angles;
+      tools.ringRadii = line.radii;
+    } else {
+      tools.ringAngles = null;
+      tools.ringRadii = null;
+    }
   }
 
   const anglesDeg = toolRingAngles(tools);
@@ -35559,7 +35575,22 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
      aiming out of it at all. They keep the radius their own spacing asks for,
      which is what they always had and is the right size for four items. */
   const flatR = tools.every(t => t.seat !== undefined) ? TOOL_RING_R : 0;
-  const ideal = Math.max(
+  /* A CORNER-LINE RING KNOWS ITS OWN RADIUS ALREADY (v2.44). The angular-gap
+     term below answers "how big must a RING be so these BEARINGS don't
+     crowd", which assumes every item rides one shared circle - not true
+     here, where MODE_LINE_PITCH already fixes the physical spacing
+     regardless of radius. Feeding this ring's own (deliberately uneven)
+     bearings into that formula anyway sizes it for its TIGHTEST angular
+     gap - the gap next to the wide-set end pair, not the four-evenly-spaced
+     case the formula assumes - and overshoots past 160px: a radius nobody
+     would ever SEE (each seat's own radius is still capped below), but one
+     that would still leak into the arm-commit and cancel-by-aiming-out
+     distances, which read `toolRingActive.radius` straight from `ringR`.
+     Using the bar's own farthest item instead keeps those distances matched
+     to what is actually on screen. */
+  const lineR = (tools.cornerLine && Array.isArray(tools.ringRadii))
+    ? Math.max(...tools.ringRadii) : 0;
+  const ideal = lineR || Math.max(
     TOOL_RING_MIN_R,
     flatR,
     (TOOL_RING_ITEM + TOOL_RING_GAP) / (2 * Math.sin(gap / 2))
@@ -35748,7 +35779,11 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
 
      Passed to paintToolRing rather than closed over, since a DOOR repaints
      through swapToolRing, outside this function entirely. */
-  const env = { at: envAt, poly, rmax: ringR * Math.SQRT2 + 2 };
+  /* `rho` is exposed alongside the walked curve (v2.44) for a corner-line
+     ring, which asks it directly for the safe radius on ITS OWN bearing
+     instead of going through `at` - see paintToolRing for why walking the
+     curve is the wrong tool for an item that already knows its angle. */
+  const env = { at: envAt, rho, poly, rmax: ringR * Math.SQRT2 + 2 };
 
   /* The gesture just happened, so the chip has done its job - and it goes
      whether or not a tool is picked, because backing out of a ring still
@@ -35803,13 +35838,52 @@ function paintToolRing(tools, ringR, ox, oy, tag, spin, env) {
 
   const itemEls = [];
   tools.forEach((tool, idx) => {
-    /* The bearing this seat WANTS, turned into a fraction of the way
-       clockwise round the outline. On an open diamond the two are the same
-       thing; against a wall the outline decides. */
-    const f = ((((90 - anglesDeg[idx]) % 360) + 360) % 360) / 360;
-    const p = env.at(f);
-    const angle = Math.atan2(p[1], p[0]);
-    const seatR = Math.hypot(p[0], p[1]) || 1;
+    /* A CORNER-LINE RING'S ITEMS DO NOT SHARE ONE RADIUS, AND DO NOT RIDE
+       THE WALKED CURVE (v2.44) - each has its own fixed bearing AND
+       distance from cornerLineLayout, carried on `ringAngles`/`ringRadii`.
+       `env.at` walks a FRACTION OF THE WHOLE CURVE'S LENGTH, which is the
+       right tool for redistributing several seats that share one radius
+       evenly along a cut perimeter - and the wrong one here: the walk's
+       total length shrinks whenever ANY part of the circle meets a wall,
+       even a part these four bearings never use, which shifts where a
+       given fraction lands even in a stretch that is not itself clipped.
+       Measured live: at 390x760 two of the four items landed 15-20 degrees
+       off their intended bearing this way, close enough to swap which one
+       a flick picked. A corner-line item keeps its own bearing outright
+       and only asks the envelope how far THAT bearing may reach before a
+       nearby wall would clip it (`env.rho`) - the same safety a
+       wall-hugging item gets everywhere else, just without its DIRECTION
+       being redecided for it. */
+    let angle, seatR, pickAngle;
+    if (Array.isArray(tools.ringRadii) && tools.ringRadii.length === tools.length) {
+      angle = THREE.MathUtils.degToRad(anglesDeg[idx]);
+      const wallCap = env.rho ? env.rho(angle) : Infinity;
+      seatR = Math.min(tools.ringRadii[idx], wallCap);
+      /* THE FINGER'S FRAME, NOT THE RING'S (v2.44, review finding). Hover
+         (updateToolRingHover) measures the direction the finger has moved
+         from the AIM point (the button, for this ring) and compares it
+         against a stored bearing - which for every other ring is measured
+         from the ring's OWN centre, and is quietly the same frame, because
+         those rings space seats 45-90 degrees apart and the centre is never
+         more than a few seats' width from the aim point. This ring packs
+         four seats into about 100 degrees, with gaps as tight as 28, and
+         its centre is clamped up to ~100px from the button it opens on -
+         easily more than half a gap's own width. Left as `angle`, aiming
+         cleanly at one item could measure as closer to its neighbour and
+         pick that instead (caught live: two of four seats mis-picked at
+         both corners). `ox, oy` are the aim point in this same ring-local,
+         y-up frame (see the reticle a few lines below, which is drawn at
+         exactly this point) - so subtracting them from the seat's own
+         position re-bearings it from the finger instead of the centre,
+         which is the frame the hover comparison actually needs. */
+      pickAngle = Math.atan2(Math.sin(angle) * seatR + oy, Math.cos(angle) * seatR - ox);
+    } else {
+      const f = ((((90 - anglesDeg[idx]) % 360) + 360) % 360) / 360;
+      const p = env.at(f);
+      angle = Math.atan2(p[1], p[0]);
+      seatR = Math.hypot(p[0], p[1]) || 1;
+      pickAngle = angle;
+    }
     const el = document.createElement('div');
     el.className = 'hub-item';
     /* A toggle has to show which way it is currently set, or you can't tell
@@ -35853,7 +35927,7 @@ function paintToolRing(tools, ringR, ox, oy, tag, spin, env) {
       el.title = toolLabel(tool);
     }
     el.querySelector('.tx').textContent = toolLabel(tool);
-    itemEls.push({ el, tool, angle, r: seatR });
+    itemEls.push({ el, tool, angle, pickAngle, r: seatR });
     touchToolRingEl.appendChild(el);
   });
 
@@ -36012,7 +36086,10 @@ function updateToolRingHover(ev) {
        finger to look like a line; a direction does not. */
     let best = -1, bestDiff = Infinity;
     toolRingActive.itemEls.forEach((it, i) => {
-      const itAng = it.angle;
+      // `pickAngle` (v2.44) is the same bearing for every ring except the
+      // corner-line one - see where it's set in paintToolRing for why that
+      // one needs its own.
+      const itAng = it.pickAngle;
       /* The modulo is load-bearing. atan2 returns (-PI, PI], but the halved
          layout places items anywhere in [0, 2PI) - so for a finger below
          the centre and an item near 2PI, |ang - angle| can exceed 2PI, and
@@ -36334,10 +36411,10 @@ const HUB_TOOLS_MODE = [
   { key: 'mode-uv', label: 'UV', run: openUvView }
 ];
 // Both buttons this ring opens from (#hubBtn, #hdrMode) sit in a screen
-// corner on every layout the app ships - see cornerArcAngles/bloomToolRing
+// corner on every layout the app ships - see cornerLineLayout/bloomToolRing
 // for what this flag buys instead of the usual full-circle spread
-// (v2.43a; arc width tuned to the house ring radius in v2.43b).
-HUB_TOOLS_MODE.cornerArc = true;
+// (v2.43a as an arc; turned into a straight bar in v2.44).
+HUB_TOOLS_MODE.cornerLine = true;
 
 /* A timer of its own rather than the viewport's toolRingTimer: the press
    starts on a DOM button, not the canvas, so it has nothing to do with
