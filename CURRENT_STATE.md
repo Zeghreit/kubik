@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
-- Version at time of writing: **2.61**
+- Version at time of writing: **2.62**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,59 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## The 2D view says where it is, and Undo keeps your place (2.62)
+
+Zeghreit asked for "Undo/Redo and a status line" in the 2D UV editor. Half of
+that turned out to be there already and neither half worked the way it should
+have.
+
+**Undo and Redo were never missing.** `#quickRow` paints at z 13 against this
+view's z 12, so the two cells sit over it, low left, exactly where the thumb
+map puts them - and `#toast` is z 33, so every op's own word is visible too.
+What Undo DID do was throw away your place: `restoreDoc` rebuilds objects, so
+`reconcileUvViewTarget` saw a different object instance under the same id and
+reset the framing. On a layout zoomed to 900% that is most of the work of
+getting back to where you were. It keeps the zoom and pan now when the id is
+unchanged; the selections still go, because the topology behind those indices
+may genuinely have changed and that is the one thing an undo is entitled to do.
+
+**A LOAD IS NOT AN UNDO** (review finding). Object ids come from the DOCUMENT -
+small integers counted from 1 in every one of them - which is why `restoreDoc`
+abandons `geoSetup`, `opSetup` and `curveEdit` rather than id-matching them.
+Keeping the framing across a File open would open the 2D view on an unrelated
+model, zoomed into a corner. `restoreDoc` closes the view outright on a load;
+`keepSelection` is what tells a load from an undo, since undo and redo pass it
+and the three load paths do not. With that, every id compared in the sweep is
+from the document still open.
+
+**The status line** is `#uvViewStatus`, two spans in the card below the square:
+the kind and the count on the left, the zoom on the right. Read-only,
+`pointer-events: none`, so a press on it falls through to the card's own
+empty-space hold exactly as the letterboxed strips do. It is refreshed from
+everything that can change what it says, including `applyUvViewBox` - once per
+frame of a pinch - so the strings are compared before they are written and a
+frame that changed nothing touches no DOM.
+
+Two things it does NOT do, both from review:
+
+- **It does not sit at the bottom edge.** The first draft did, which put the
+  kind and the count underneath the opaque Undo cell with a fragment of the
+  tail sticking out past Redo - the one thing the line exists to say, printed
+  behind the buttons whose z-index its own comment had just noted. It stands
+  68px above that band now, clearing the 64px hub on the right as well. In
+  portrait that costs the square nothing (it is width-limited there and the
+  wrapper gives up height it was not using); in landscape it takes the row's
+  height off the square, which is the price of the view being able to speak.
+- **It does not show Undo/Redo depth.** The first draft printed how many steps
+  each cell had to walk, and those numbers went stale after any push that did
+  not replace the object instance - a seam toggle, a rename from the drawer -
+  because `pushHistory` ends in `refreshUI`, whose only hook into this view
+  returns early when the object is the same one. Worse, Undo twice then Mark
+  seam left the line advertising a Redo depth beside a Redo button that same
+  push had greyed out. Two numbers that can disagree with the button standing
+  next to them are worse than no numbers. `refreshUvStatus` is called from the
+  `refreshUI` sweep regardless, so nothing can leave the line stale again.
 
 ## Two fingers are the view (2.61)
 

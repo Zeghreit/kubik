@@ -512,6 +512,7 @@
       run().catch(e => finish('THREW ' + (e && e.stack ? e.stack : e)));
     }, 400);
   }
-  if (document.readyState === 'complete') boot();
-  else window.addEventListener('load', boot);
+  // Без window.load (урок v2.61): событие ждёт подресурсы, а __kubik
+  // создаётся модулем до него; опрос внутри и так есть.
+  boot();
 })();

@@ -2246,6 +2246,28 @@
   #uvViewSvg .uv-edge.seamed { stroke: #ff3bd0; stroke-opacity: 0.95; stroke-width: 2.2; }
   #uvViewSvg .uv-edge.selected { stroke: var(--accent); stroke-opacity: 1; stroke-width: 2.6; }
   #uvViewEmpty { padding: 24px 8px; text-align: center; color: var(--text-dim); }
+  /* Dim, small, and out of the way - it is a label, not a control.
+
+     IT HAS TO CLEAR THE CONTROLS THAT PAINT OVER THIS VIEW (review finding,
+     v2.62). #uvView is z 12; #quickRow (Undo/Redo, two opaque 56x44 cells at
+     --edge-l) is z 13 and #hubBtn (64x64 at --edge-r) is z 16, both anchored
+     to the bottom. The first draft of this row sat at --edge-b with the kind
+     and the count on the left - that is, printed underneath the Undo cell,
+     with a fragment of its tail sticking out past Redo, which reads as a
+     rendering fault rather than a label. So it stands ABOVE that whole band:
+     68px clears the taller of the two (the hub) with room to breathe.
+
+     In portrait this costs the square nothing, because there the square is
+     width-limited and the wrapper simply gives up height it was not using.
+     In landscape it takes the row off a height-limited square, which is the
+     price of the view being able to say what it is doing. */
+  #uvViewStatus {
+    display: flex; justify-content: space-between; gap: 10px;
+    padding: 2px 10px;
+    margin-bottom: calc(var(--edge-b) + 68px);
+    font-size: 11px; font-weight: 600; color: var(--text-dim);
+    pointer-events: none; white-space: nowrap; overflow: hidden;
+  }
   #helpCard {
     background: var(--panel); border: var(--rule) solid var(--line); border-radius: var(--r-md);
     padding: 16px; width: min(360px, 100%); max-height: 80vh; overflow-y: auto;
@@ -2572,6 +2594,12 @@
         <div id="uvViewSvgWrap">
           <svg id="uvViewSvg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet"></svg>
         </div>
+        <!-- THE ONLY WORDS IN THIS VIEW (v2.62). The header row went in v2.53
+             and nothing replaced it, so a full-screen editor said nothing at
+             all about what was selected or how far in you were zoomed. Two
+             spans, read-only, pointer-events:none so a press on it falls
+             through to the card's own empty-space hold. -->
+        <div id="uvViewStatus"><span id="uvViewStatusL"></span><span id="uvViewStatusR"></span></div>
         <div id="uvViewEmpty" style="display:none;">No UV yet on this object — run Unwrap first.</div>
       </div>
     </div>
@@ -2602,7 +2630,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.61</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.62</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -31534,6 +31562,17 @@ function restoreDoc(doc, opts = {}) {
      that op set aside; confirm and cancel are the only two paths that empty
      it, and neither is taken here. */
   if (App.pendingOp) { App.pendingOp = null; hideOpBar(); flushMatBin(); }
+  /* THE FOURTH ONE (review finding, v2.62), and it is the same argument the
+     three notes above make. reconcileUvViewTarget keeps the 2D view's zoom
+     and pan when the object it re-targets to carries the same id, because an
+     undo rebuilds instances and resetting the framing on every Undo threw
+     away most of the work of getting back to where you were. Across a LOAD
+     that comparison is exactly the retargeting those notes describe: ids are
+     small integers counted from 1 in every document, App.mode comes back as
+     'uv' if the file was saved in UV mode, and the view would open on an
+     unrelated model zoomed 900% into a corner. keepSelection is what tells
+     the two apart - undo and redo pass it, the three load paths do not. */
+  if (!opts.keepSelection && uvViewObj) closeUvView();
   /* Every mesh below is rebuilt, and a rebuilt position attribute starts at
      version 0 again - so the soft field's signature, which leans on that
      version to notice a changed mesh, reads identical across an undo and hands
@@ -38304,6 +38343,9 @@ const uvViewEl = document.getElementById('uvView');
 const uvViewCardEl = document.getElementById('uvViewCard');
 const uvViewSvgEl = document.getElementById('uvViewSvg');
 const uvViewEmptyEl = document.getElementById('uvViewEmpty');
+const uvViewStatusEl = document.getElementById('uvViewStatus');
+const uvViewStatusLEl = document.getElementById('uvViewStatusL');
+const uvViewStatusREl = document.getElementById('uvViewStatusR');
 
 /* A cap rather than no limit (review finding, v2.43a): the path below is
    built as one giant string with full-precision numbers and no dedup, so an
@@ -38548,6 +38590,9 @@ function refreshUvView(obj) {
   const res = renderUvView(obj, ed);
   uvViewSvgEl.style.display = res.ok ? '' : 'none';
   uvViewEmptyEl.style.display = res.ok ? 'none' : '';
+  uvViewStatusEl.style.display = res.ok ? '' : 'none';   // v2.62
+  uvStatusLast = '';   // the redraw may have pruned a selection out from under it
+  refreshUvStatus();
   if (!res.ok) {
     uvViewEmptyEl.textContent = res.tooHeavy
       ? 'Too many triangles to preview here.'
@@ -38729,6 +38774,9 @@ function openUvView() {
   }
   uvViewSvgEl.style.display = res.ok ? '' : 'none';
   uvViewEmptyEl.style.display = res.ok ? 'none' : '';
+  uvViewStatusEl.style.display = res.ok ? '' : 'none';   // v2.62
+  uvStatusLast = '';
+  refreshUvStatus();
   if (!res.ok) {
     uvViewEmptyEl.textContent = res.tooHeavy
       ? 'Too many triangles to preview here.'
@@ -38879,7 +38927,17 @@ function commitUvIslandTransform(islandIds, dxSvg, dySvg, angleDeg, scale, cxSvg
    Switching object drops the selections and the zoom outright. They are
    indices into the object that WAS open - keeping them would point them at
    whatever happens to carry those numbers on the new one, which is the
-   exact failure v2.51's uvSelKind guard exists to prevent elsewhere. */
+   exact failure v2.51's uvSelKind guard exists to prevent elsewhere.
+
+   AN UNDO IS NOT A SWITCH (v2.62). restoreDoc builds new object instances,
+   so this sweep sees a different object for the same id and, until now, reset
+   the zoom along with everything else: every Undo inside the 2D view threw
+   you back to the whole-square framing, which on a zoomed layout is most of
+   the work of getting back to where you were. The selections still go - the
+   topology behind those indices may genuinely have changed, and that is the
+   one thing an undo is entitled to do - but the FRAMING is a way of looking,
+   not document data, and looking at the same object from the same place is
+   what someone pressing Undo is asking for. */
 function reconcileUvViewTarget() {
   if (!uvViewObj) return;
   /* THE 2D VIEW BELONGS TO UV MODE (review finding, v2.53). The drawer and
@@ -38895,6 +38953,7 @@ function reconcileUvViewTarget() {
   // is no such thing as a UV view of nothing, so step back to the 3D view.
   if (!want) { closeUvView(); return; }
   if (want === uvViewObj) return;
+  const prev = uvViewObj;   // v2.62 - read before the swap below
   if (uvDrag) endUvDrag(false);
   if (uvVDrag) endUvVertexDrag(false);
   clearUvEdgeHold();
@@ -38910,8 +38969,16 @@ function reconcileUvViewTarget() {
   uvEdgeSel.clear();
   uvIslandSel.clear();
   uvFaceSel.clear();
+  /* Same object, rebuilt (an undo, a redo, an op that replaced the mesh) -
+     keep the framing; a genuinely different object gets the default view.
+     `prev` cannot be null here - the function's first line returns on
+     !uvViewObj - and an id from ANOTHER document cannot reach this line
+     either: restoreDoc closes this view outright on a load (see its own
+     fourth abandonment note), so every id compared here is from the document
+     that is still open. */
+  const sameObject = prev.id === want.id;
   uvViewObj = want;
-  resetUvViewBox();
+  if (!sameObject) resetUvViewBox();
   refreshUvView(want);
 }
 
@@ -38931,6 +38998,12 @@ function closeUvView() {
   uvEmptyTapClear = null;
   // No finger belongs to a view that no longer exists (v2.61).
   uvPointers.clear();
+  /* The status line's cache with it (review finding, v2.62). resetUvViewBox
+     below reaches refreshUvStatus while the mode and the selections are still
+     the ones being torn down, so it would leave the cache holding a string
+     for a view that is gone - and both entry points had to defuse that by
+     hand. Cleared here instead, where the rest of this view's state is. */
+  uvStatusLast = '';
   resetUvViewBox();
   // Always reopens in Island mode with nothing selected (v2.48) - a
   // vertex or edge selection has no meaning once the card is gone, and
@@ -39227,6 +39300,7 @@ function paintUvCompSelection() {
   uvViewSvgEl.querySelectorAll('.uv-island').forEach(g => {
     g.classList.toggle('selected', uvIslandSel.has(+g.dataset.island));
   });
+  refreshUvStatus();   // v2.62
 }
 function endUvVertexDrag(commit) {
   if (!uvVDrag) return;
@@ -39505,6 +39579,52 @@ function applyUvViewBox() {
      the same size ON SCREEN at every zoom, which is the whole rule being
      borrowed from the 3D dots. */
   uvViewSvgEl.style.setProperty('--uv-hit', String(Math.round(dr * 625) / 100));
+  refreshUvStatus();   // v2.62: the zoom is one of the five things it reports
+}
+/* WHAT THE VIEW IS DOING, IN TWO SHORT LINES (v2.62). Zeghreit asked for
+   "Undo/Redo and a status line" in the 2D view. Undo and Redo turned out to
+   be there already - #quickRow paints at z 13 against this view's 12, so the
+   two cells sit over it, low left, exactly where his thumb map puts them, and
+   the toast is at z 33 so every op's own word is visible too. What was
+   missing was the standing statement: the header row went with v2.53 and
+   nothing replaced it, so nothing on screen said which kind was live, how
+   much was picked, or how far in the view was zoomed.
+
+   Left: the kind and the count. Right: the zoom.
+
+   NO UNDO/REDO DEPTH (review finding, v2.62). The first draft printed how
+   many steps each of those cells had to walk, and it was wrong twice over.
+   The numbers went stale after any push that did not replace the object
+   instance - a seam toggle, a rename from the drawer - because pushHistory
+   ends in refreshUI, whose only hook into this view returns early when the
+   object is the same one. And after an Undo followed by a seam toggle the
+   line advertised a Redo depth beside a Redo cell that push had just greyed
+   out. Two numbers that can disagree with the button standing next to them
+   are worse than no numbers, and those buttons' own enabled state already
+   says whether there is anywhere to walk.
+
+   Called from every place that can change one of the three things it
+   reports, from the refreshUI sweep so that nothing can leave it stale, and
+   from applyUvViewBox - which means once per frame of a pinch, so the
+   strings are compared before they are written and a frame that changes
+   nothing touches no DOM. */
+let uvStatusLast = '';
+function refreshUvStatus() {
+  if (!uvViewObj) return;
+  const sel = uvCompMode === 'island' ? uvIslandSel.size
+            : uvCompMode === 'vertex' ? uvSel.size
+            : uvCompMode === 'edge'   ? uvEdgeSel.size
+            : uvFaceSel.size;
+  const kind = uvCompMode.charAt(0).toUpperCase() + uvCompMode.slice(1);
+  const left = kind + ' · ' + (sel ? sel + ' selected' : 'nothing selected');
+  // The box is square and starts at 100 wide, so one number says it all.
+  const zoom = Math.round(10000 / uvViewBox.w);
+  const right = zoom + '%';
+  const both = left + '\n' + right;
+  if (both === uvStatusLast) return;
+  uvStatusLast = both;
+  uvViewStatusLEl.textContent = left;
+  uvViewStatusREl.textContent = right;
 }
 // Called by openUvView and closeUvView (v2.51) - a zoom or pan is a way of
 // LOOKING, not document data, the same reasoning App.xraySelection and
@@ -39968,6 +40088,7 @@ function paintUvEdgeSelection() {
   uvViewSvgEl.querySelectorAll('.uv-edge').forEach(el => {
     el.classList.toggle('selected', uvEdgeSel.has(el.dataset.key));
   });
+  refreshUvStatus();   // v2.62
 }
 uvViewSvgEl.addEventListener('pointerdown', (ev) => {
   if (uvCompMode !== 'edge') return;
@@ -42953,6 +43074,12 @@ function refreshUI() {
      be re-asserted here rather than only when the button is pressed. */
   refreshXrayMode();
   reconcileUvViewTarget();
+  /* And the 2D status line (review finding, v2.62), for the same reason this
+     whole block is a sweep: a history push, a rename, a seam toggle - any of
+     them can change what that line reports without the object instance
+     changing, and hunting the call sites is how one gets missed. It is
+     guarded on the view being open and writes no DOM when nothing moved. */
+  refreshUvStatus();
   /* Each axis wears its own state, and several can be lit at once. There is
      nothing else to light: the lit letters ARE symmetry being on. */
   document.querySelectorAll('#symAxes button').forEach(b =>
@@ -44213,6 +44340,10 @@ if (PICK_DEBUG) {
        move between - live flags rather than the records themselves, so a
        probe cannot reach in and steer a gesture it is meant to observe. */
     uvSecondPointer, promoteUvViewPinch, uvOtherPointer, UV_VIEW_PINCH_MIN_PX,
+    // v2.62: the status line, and what it currently says.
+    refreshUvStatus,
+    get uvStatusText() { return uvViewStatusLEl.textContent + ' | ' + uvViewStatusREl.textContent; },
+    get uvStatusShown() { return uvViewStatusEl.style.display !== 'none'; },
     // How many fingers this view thinks are on the glass - the number a
     // leaked entry would quietly inflate until nothing could be edited.
     get uvPointerCount() { return uvPointers.size; },

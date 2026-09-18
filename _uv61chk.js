@@ -99,9 +99,8 @@
     ok('0.setup вид открыт, островов хотя бы два',
        K.uvViewOpen && islands().length >= 2, 'islands=' + islands().length);
     ok('0.setup привратник на месте', typeof K.uvSecondPointer === 'function');
-    ok('0.setup и версия 2.61',
-       (document.querySelector('.brand') || {}).textContent.indexOf('2.61') >= 0,
-       (document.querySelector('.brand') || {}).textContent);
+    const brand = (document.querySelector('.brand') || {}).textContent || '';
+    ok('0.setup версия не ниже 2.61', parseFloat((brand.match(/[\d.]+/) || [0])[0]) >= 2.61, brand);
     mark('0');
 
     // ---------------------------------------------------------------- 1

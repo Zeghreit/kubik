@@ -410,6 +410,7 @@
       setTimeout(wait, 100);
     })();
   }
-  if (document.readyState === 'complete') setTimeout(boot, 400);
-  else window.addEventListener('load', () => setTimeout(boot, 400));
+  // Без window.load (урок v2.61): событие ждёт подресурсы, а __kubik
+  // создаётся модулем до него; опрос внутри и так есть.
+  setTimeout(boot, 400);
 })();

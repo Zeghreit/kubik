@@ -154,5 +154,7 @@
     finish();
   }
   const go = () => setTimeout(() => { boot().catch(e => { say('THREW ' + e.message + '\n' + e.stack); finish(); }); }, 2200);
-  if (document.readyState === 'complete') go(); else window.addEventListener('load', go);
+  // Без window.load (урок v2.61): событие ждёт подресурсы, а __kubik
+  // создаётся модулем до него; опрос внутри и так есть.
+  go();
 })();
