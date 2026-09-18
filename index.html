@@ -2546,7 +2546,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.53</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.54</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -5622,6 +5622,17 @@ const MASK_TYPES = [
   { id: 'dots',      name: 'Dots',      detail: 'Density', scale: 'Scale', contrast: 'Contrast' },
   { id: 'stripes',   name: 'Stripes',   detail: 'Bands',   scale: 'Scale', contrast: 'Contrast' },
   { id: 'image',     name: 'Image',     detail: null,      scale: 'Scale', contrast: 'Contrast' },
+  /* THE ONE MASK THAT READS UV (v2.54). Every other type here is sampled
+     triplanarly in object space - see the section header - which is exactly
+     what makes them lie about a UV layout: a triplanar checker lands on the
+     model evenly however badly the unwrap stretches. `uv: 1` sends this one
+     through the shader's UV branch instead, so a square that comes out
+     stretched, sheared or the wrong size IS the report. Scale counts TILES
+     of the baked 2x2 pattern, so 4 is eight squares across the 0..1 square,
+     which is why it gets integer bounds of its own rather than the cloth
+     masks' quarter steps. */
+  { id: 'checker',   name: 'Checker UV', detail: null,     scale: 'Tiles', contrast: 'Contrast', uv: 1,
+    sMin: 1, sMax: 32, sStep: 1, sDef: 4 },
   /* SHAPE masks (a2.24). These two read no texture at all - they ride the
      kubikCurv vertex attribute, which is the mesh's OWN curvature, so the
      same material laid on a second object finds that object's crevices
@@ -5650,6 +5661,8 @@ function maskTypeOf(mk) {
   return MASK_TYPES.find(x => x.id === t) || MASK_TYPES[0];
 }
 function maskCurvMode(mk) { return maskTypeOf(mk).curv || 0; }
+// 1 = this mask is sampled in UV space rather than triplanar object space.
+function maskUvMode(mk) { return maskTypeOf(mk).uv ? 1 : 0; }
 // 3 reads as 3, 0.35 reads as 0.35 - the same slider carries both now.
 function mkNum(v) { return (Math.abs(v - Math.round(v)) < 1e-6) ? String(Math.round(v)) : Number(v).toFixed(2); }
 const MASK_SIZE = 128;
@@ -5926,6 +5939,26 @@ function maskImageField(mk, size) {
   return null;
 }
 
+/* A 2x2 checker in the tile, which is the smallest pattern that TILES as a
+   checker: an odd count would put two squares of the same colour next to
+   each other across the wrap. Hard 0/1 values - the contrast tail below
+   leaves them alone at any contrast >= 1 and greys the dark squares below
+   it, which is a soft-focus checker rather than a broken one, so the slider
+   stays honest without a special case. The mask texture is mipmapped
+   (getMaskTexture), so the far side of a model does not alias into
+   confetti. */
+function maskCheckerField(mk, size) {
+  const f = new Float32Array(size * size);
+  const half = size / 2;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const cx = x < half ? 0 : 1, cy = y < half ? 0 : 1;
+      f[y * size + x] = (cx ^ cy) ? 1 : 0;
+    }
+  }
+  return f;
+}
+
 /* The one call the packer makes. Contrast is the shared tail: every type
    gets the same push away from mid-grey, so the slider means one thing. */
 function bakeNoiseField(mk, size) {
@@ -5939,6 +5972,7 @@ function bakeNoiseField(mk, size) {
   else if (t === 'dots') raw = maskDotField(mk, size);
   else if (t === 'stripes') raw = maskStripeField(mk, size);
   else if (t === 'image') raw = maskImageField(mk, size);
+  else if (t === 'checker') raw = maskCheckerField(mk, size);
   else raw = maskFbmField(mk, size);
   const out = new Float32Array(size * size);
   if (!raw) return out;   // an image still decoding paints nothing, not half
@@ -6195,7 +6229,7 @@ function maskWantsPatch(d) {
 const _maskSlot = {
   live: false, color: '#ffffff', amount: 0, scale: 1, blend: 0,
   colorOn: 0, roughOn: 0, rough: 0.5, source: 0, blur: 0.5, noise: 0, nscale: 1,
-  bump: 0
+  bump: 0, uv: 0
 };
 function maskSlotValues(list, k) {
   const mk = list[k];
@@ -6224,6 +6258,11 @@ function maskSlotValues(list, k) {
   s.blur = cm && mk ? Math.min(1, Math.max(0, mk.contrast)) : 0.5;
   s.noise = cm && mk ? Math.min(1, Math.max(0, mk.detail)) : 0;
   s.nscale = cm && mk && mk.nscale > 0 ? Math.min(8, mk.nscale) : 1;
+  // 1 = sample this slot in UV space (v2.54). Only the checker sets it, and
+  // a shape mask never can: its weight comes from the distance field, not
+  // from the baked texture at all, so `source` wins in the shader's own
+  // branch order below.
+  s.uv = mk ? maskUvMode(mk) : 0;
   return s;
 }
 
@@ -6294,6 +6333,7 @@ function applyMaskPatch(mat, d) {
       // measuring its own pixel footprint on every material that does not.
       uKubikBumpAny: { value: 0 },
       uKubikSource: { value: [] },
+      uKubikUv: { value: [] },
       uKubikBlur: { value: [] },
       uKubikNoise: { value: [] },
       uKubikNScale: { value: [] },
@@ -6326,6 +6366,7 @@ function applyMaskPatch(mat, d) {
       u.uKubikBump.value.push(s.bump);
       if (s.bump !== 0) u.uKubikBumpAny.value = 1;
       u.uKubikSource.value.push(s.source);
+      u.uKubikUv.value.push(s.uv);
       u.uKubikBlur.value.push(s.blur);
       u.uKubikNoise.value.push(s.noise);
       u.uKubikNScale.value.push(s.nscale);
@@ -6363,6 +6404,7 @@ function applyMaskPatch(mat, d) {
       u.uKubikBump.value[k] = s.bump;
       if (s.bump !== 0) anyBump = 1;
       u.uKubikSource.value[k] = s.source;
+      u.uKubikUv.value[k] = s.uv;
       u.uKubikBlur.value[k] = s.blur;
       u.uKubikNoise.value[k] = s.noise;
       u.uKubikNScale.value[k] = s.nscale;
@@ -6463,13 +6505,21 @@ function applyMaskPatch(mat, d) {
   mat.onBeforeCompile = function (shader) {
     Object.assign(shader.uniforms, packUniforms());
     maskUniStore(mat).set(key, shader.uniforms);
+    /* vKubikUv is OURS, not three's vUv (v2.54). `attribute vec2 uv;` is in
+       three's vertex prefix unconditionally (checked in the 0.184 source,
+       WebGLProgram.js - position, normal and uv are the three that are not
+       behind a parameter), while vUv only exists under USE_UV, which
+       depends on which maps the material happens to carry. A geometry with
+       no uv attribute feeds zeros, so a checker on an unwrapped-never mesh
+       reads as one flat colour - the honest answer rather than a crash. */
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vKubikPos;\nvarying vec3 vKubikNrm;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvKubikPos = position;\nvKubikNrm = normal;');
+      .replace('#include <common>', '#include <common>\nvarying vec3 vKubikPos;\nvarying vec3 vKubikNrm;\nvarying vec2 vKubikUv;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvKubikPos = position;\nvKubikNrm = normal;\nvKubikUv = uv;');
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', ['#include <common>',
         'varying vec3 vKubikPos;',
         'varying vec3 vKubikNrm;',
+        'varying vec2 vKubikUv;',
         'uniform sampler2D uKubikMask;',
         'uniform int   uKubikCount;',
         'uniform vec3  uKubikColor[' + MASK_SLOTS + '];',
@@ -6485,6 +6535,7 @@ function applyMaskPatch(mat, d) {
         'uniform float uKubikBlur[' + MASK_SLOTS + '];',
         'uniform float uKubikNoise[' + MASK_SLOTS + '];',
         'uniform float uKubikNScale[' + MASK_SLOTS + '];',
+        'uniform float uKubikUv[' + MASK_SLOTS + '];',
         'uniform float uKubikBevel;',
         'uniform mat3  uKubikNrmMat;',
         'uniform sampler2D uKubikField;',
@@ -6861,6 +6912,14 @@ function applyMaskPatch(mat, d) {
         '    if (i >= uKubikCount) continue;',
         '    if (uKubikAmount[i] <= 0.0) continue;',
         '    if (uKubikSource[i] > 0) kubikW[i] = kubikEdgeW(uKubikSource[i], uKubikScale[i], uKubikBlur[i], uKubikNoise[i], uKubikNScale[i]);',
+        /* THE UV BRANCH (v2.54). Same baked texture, same channel, read
+           through the mesh's own UV instead of three object-space planes -
+           which is the whole point of a checker: it has to distort exactly
+           as the unwrap does. fract() because the tile repeats and the
+           texture's own RepeatWrapping cannot be trusted to cover a
+           negative UV, which an unwrap or a hand-dragged island can easily
+           produce. */
+        '    else if (uKubikUv[i] > 0.5) kubikW[i] = kubikPick(texture2D(uKubikMask, fract(vKubikUv * uKubikScale[i])), i);',
         '    else kubikW[i] = kubikTriplanar(vKubikPos, kubikN, uKubikScale[i], i);',
         '    if (uKubikColorOn[i] > 0.5) {',
         '      vec3 mixed = kubikBlend(diffuseColor.rgb, uKubikColor[i], uKubikBlend[i]);',
@@ -40312,8 +40371,9 @@ function refreshMaskControls(d) {
         spec.dStep !== undefined ? spec.dStep : 1,
         () => mk.detail, v => { mk.detail = v; });
   }
-  // "New pattern" rolls a seed. A picture has none, and neither does a shape.
-  document.getElementById('mkSeed').style.display = (isImg || curvMode) ? 'none' : '';
+  /* "New pattern" rolls a seed. A picture has none, a shape has none, and
+     neither does a checker (v2.54) - there is only one checker. */
+  document.getElementById('mkSeed').style.display = (isImg || curvMode || spec.uv) ? 'none' : '';
   const prev = document.getElementById('mkImgPrev');
   const src = maskImageSrc(mk);
   prev.style.display = src ? '' : 'none';

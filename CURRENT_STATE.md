@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
-- Version at time of writing: **2.53**
+- Version at time of writing: **2.54**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,54 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## A checker that actually reads the UV (2.54)
+
+Zeghreit asked for a checker material to check an unwrap with, and said how
+he wanted it built: as a mask in the stack, already on the colour channel,
+not as a new kind of thing. The first half is a one-line catalogue entry.
+The second half is not, and it is the whole slice: **every mask in Kubik is
+sampled triplanarly in OBJECT space** - "no UVs anywhere", as the section
+header has said since a2.20 - and a triplanar checker is exactly the tool
+that cannot check an unwrap. It lands on the model evenly however badly the
+UV stretches, which is the opposite of the one thing a checker is for.
+
+So the type carries a flag, `uv: 1`, and the fragment shader gains a second
+sampling branch beside the triplanar one: same baked texture, same channel,
+read through the mesh's own UV. A square that comes out stretched, sheared
+or the wrong size next to its neighbour IS the report.
+
+**The varying is ours, not three's.** `vKubikUv = uv` rides alongside the
+`vKubikPos`/`vKubikNrm` this patch already declares, rather than using
+three's `vUv` - which exists only under `USE_UV`, i.e. only when the
+material happens to carry a map, so a checker on a material with no
+textures would have failed to compile. `attribute vec2 uv;` is in three's
+vertex prefix unconditionally: checked in the 0.184 source
+(`WebGLProgram.js` - position, normal and uv are the three declared outside
+any parameter test), not assumed. A geometry with no `uv` attribute feeds
+zeros, so the checker reads as one flat colour on a mesh that has never
+been unwrapped - the honest answer, and confirmed on the stand: a cylinder
+with no UVs renders flat, the same cylinder after Unwrap wears the squares
+and shows the cap islands sitting at a different texel density from the
+side.
+
+The pattern itself is a 2x2 checker baked into the mask's own channel -
+the smallest tile that still reads as a checker across the wrap, since an
+odd count puts two squares of one colour side by side at the seam. Scale
+counts TILES, with integer bounds of its own (1..32) instead of the cloth
+masks' quarter steps. Contrast is left wired up rather than hidden: on a
+hard 0/1 field anything at or above 1 leaves it crisp and below 1 greys the
+dark squares, which is a soft checker rather than a broken one. There is no
+seed button - there is only one checker.
+
+### What this slice deliberately does not do
+
+It is not a separate "checker material": the type is in the stack, so it
+goes on any material, in any slot, alongside whatever else is there - which
+is what was asked for. Nothing else samples in UV space; the other eight
+types stay triplanar, and a bump driven by a checker uses the cloth mask's
+own feature-size estimate, which is approximately right and not worth a
+special case until someone wants a UV-space bump.
 
 ## The 2D UV editor stops being a card and becomes a view (2.53)
 
