@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~40,525 lines)
-- Version at time of writing: **2.43a**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~40,550 lines)
+- Version at time of writing: **2.43b**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -310,6 +310,86 @@ that cut under normal conditions instead of walking straight into it. The
 vs the midpoint) rather than actual wall distances, which is exactly right
 for a ring that only ever opens from a genuine corner button and would be
 the wrong tool for a set opened from, say, a mid-edge toolbar.
+
+## Mode ring's corner arc widened to 120° for the house radius (2.43b)
+
+Zeghreit's follow-up on 2.43a: the quarter fixed the "скомкано" bunching,
+but the resulting radius (~158px, `sin(45°)/sin(15°) ≈ 2.73x` the ring's
+normal size) read as too big - not a bug, a request to balance beauty,
+usability, and consistency with the app's own style ("выдерживание с общего
+стиля"), with explicit license to use whatever it took to get there.
+
+**Why 120°, not some other number picked by eye.** `TOOL_RING_R = 120px` is
+the one size this app has settled on for every other seatless marking menu
+- established well before this ring existed, with its own extensive
+rationale elsewhere in this file. A literal 90° quarter (three 30° gaps)
+needs `ideal = 82/(2·sin15°) ≈ 158px` for the same physical icon spacing;
+120° (three 40° gaps) needs `ideal = 82/(2·sin20°) ≈ 120px` - within a
+pixel of the house standard. So 120° isn't a compromise between "quarter"
+and "small enough" picked by feel; it's the one width whose own ideal-radius
+formula lands on the radius this app already uses everywhere else. The
+trade is that the two outer seats now sit 15° short of the open cardinals
+(at the diagonal ± 60° instead of exactly on the cardinals) rather than
+exactly on them - a small, deliberate cost for landing on the house number
+instead of a custom one.
+
+**What changed, mechanically.** `QUARTER_RING_MIN_R`/`quarterMenuAngles`/
+`tools.quarterMenu` (2.43a) are renamed `CORNER_ARC_MIN_R`/
+`cornerArcAngles`/`tools.cornerArc` throughout - the shape is no longer a
+literal quarter, so the old names would have been actively misleading.
+`cornerArcAngles` centres a `MODE_RING_ARC_DEG = 120`-wide span on whichever
+screen diagonal points away from both nearby walls (135°/45°/225°/315° for
+bottom-right/bottom-left/top-right/top-left) rather than spanning exactly
+between the two open cardinals the way the 2.43a quarter did. Everything
+else - `tools.ringAngles` living on the array so it and the flag are lost
+together, `toolRingAngles` reading it first, `bloomToolRing` recomputing it
+on every single open and clearing it to `null` when it doesn't fit - is
+untouched from 2.43a; only the angles fed into that machinery changed.
+
+**`CORNER_ARC_MIN_R` needed a second pass.** The first cut used a bare
+`TOOL_RING_ITEM` numerator - the radius at which a 40° gap alone puts two
+52px icons exactly edge to edge on a true circle, no clearance at all
+(matching 2.43a's own `QUARTER_RING_MIN_R`, which used the same bare-ITEM
+convention). Live-testing at 280×500 caught this running too tight in
+practice: this ring isn't drawn on a true circle - it feeds through the
+same wall-aware, equal-arc-length seat redistribution every ring uses,
+which does not preserve equal ANGULAR spacing, and at that viewport size
+the middle pair of seats compressed enough to measurably overlap by a few
+pixels (confirmed via `getBoundingClientRect()`, not just the angle/radius
+math) even though the radius was, on paper, above its own floor. Padded the
+floor with half of `TOOL_RING_GAP` (not the full amount - that would just
+reproduce the ideal radius above and remove the point of having a smaller
+floor at all): `CORNER_ARC_MIN_R = (TOOL_RING_ITEM + TOOL_RING_GAP/2) /
+(2·sin(20°)) ≈ 98px`. Re-tested at 280×500 after the pad: the ring now
+falls back to the ordinary full-circle spread there instead of rendering
+the tight arc (correct - the old, tighter floor let 280×500 through and
+that's exactly what overlapped), and at 310×550 - just above the new floor
+- the corner arc renders with clear, non-overlapping gaps between every
+adjacent pair, confirmed the same way.
+
+### What review found
+
+A fresh opus pass (cold, pasted diff only, no repo access) confirmed the
+diagonal math is correct for all four corners (DOM y-down reconciled
+correctly with the ring's math-convention y-up in every branch, not just
+the two spot-checked live), the `n === 1` and wraparound edge cases in
+`cornerArcAngles` are fine, and `ringAngles = null` correctly fails the
+`Array.isArray` guard. Its one finding that mattered - the bare-`TOOL_RING_
+ITEM` floor being a "no overlap" threshold rather than a "comfortable"
+one, made worse by the redistribution step not preserving nominal angular
+gaps - is the fix described above, verified live rather than taken on
+the review's math alone (real bounding-box overlap was measured before the
+fix and its absence confirmed after, at both the old and new boundary).
+Its other points were about latent, currently-unreachable risk rather than
+live bugs: `MODE_RING_ARC_DEG`'s three-gap assumption would need revisiting
+if `HUB_TOOLS_MODE` ever grew a fifth item (it hasn't, and nothing in the
+file suggests it will); `cornerArc`/`ringAngles` being plain array
+properties means any future `.map`/`.filter`/spread of `HUB_TOOLS_MODE`
+would silently lose them (true of 2.43a too, and still the only call site
+is the original by-reference one); and whether `aim` could rotate a
+corner-tuned arc back into a wall (`HUB_TOOLS_MODE` never sets `.door`, so
+the swap path this would require is never reached, same finding 2.43a's
+review already made and confirmed still holds).
 
 ## Mode-hold bloom menu + read-only 2D UV view (2.43)
 
