@@ -2452,7 +2452,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.44</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.44a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -35312,8 +35312,14 @@ const TOOL_RING_SEAT_MIN_R = TOOL_RING_DEAD_ZONE_PX + TOOL_RING_TIP + 6;
 
    The two end items still land further out than the middle two (the price
    of a straight bar instead of a true arc - a chord meets a circle only at
-   its own ends), but by less than the arc ever did, and the near pair sits
-   right on TOOL_RING_MIN_R, the floor every other ring already respects. */
+   its own ends), but by less than the arc ever did.
+
+   v2.44a moved the whole bar closer still, on Zeghreit's direct feedback
+   that even this read as too far from the button. TOOL_RING_MIN_R (80) is
+   the floor for a SEATLESS ring spread over a shared radius, which this bar
+   never was even at launch; the floor that actually applies to a placed
+   seat is TOOL_RING_SEAT_MIN_R, and the near pair now sits right on that
+   instead. See MODE_LINE_R below for the number. */
 const MODE_LINE_GAP = TOOL_RING_GAP / 3;
 /* A THIRD OF THE HOUSE GAP, NOT THE WHOLE THING - deliberately, the same
    trade CORNER_ARC_MIN_R made with half of it in v2.43a. The full 30px is
@@ -35327,11 +35333,19 @@ const MODE_LINE_PITCH = TOOL_RING_ITEM + MODE_LINE_GAP;   // 52 + 10 = 62
 /* THE BAR'S OWN DISTANCE FROM THE BUTTON. Picked, not derived: the general
    `ideal` formula (see bloomToolRing) answers "how big must a RING be for
    these items not to touch", which does not apply to a bar whose spacing is
-   already fixed by MODE_LINE_PITCH regardless of radius. 77px puts the near
-   pair at ~83px from the button - just clear of TOOL_RING_MIN_R (80), the
-   floor every seatless ring already respects - and the far pair at ~121px,
-   a hair over today's uniform 120 rather than the arc's old 158. */
-const MODE_LINE_R = 77;
+   already fixed by MODE_LINE_PITCH regardless of radius.
+
+   62, not v2.44's 77 (v2.44a). Zeghreit on the shipped bar: still too far
+   from the button. 77 was chosen to clear TOOL_RING_MIN_R (80), the floor a
+   SEATLESS ring holds itself to so a full spread of icons doesn't crowd the
+   finger - the wrong floor here, because a corner-line item is a placed
+   seat with its own fixed radius, not a member of an evenly-spread set. The
+   floor that actually applies to a placed seat is TOOL_RING_SEAT_MIN_R
+   (69) - clear of the dead zone by the seat's own tip, the closest ANY seat
+   in this file is ever allowed to sit. 62px puts the near pair at ~69px,
+   right on that floor, and the far pair at ~112px - both meaningfully
+   closer than v2.44's 83/121. */
+const MODE_LINE_R = 62;
 
 let toolRingTimer = null;
 let toolRingActive = null;   // { x, y, tools, itemEls, hoveredIndex }
@@ -35655,8 +35669,49 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
      leaves 590px of curve and eight 52px seats need 588 - they touch. At 60
      the curve is 642 and there are 6.7px between them. The price is 32px of
      the band where the ring blooms exactly under the thumb, which on a 393px
-     phone is 171px rather than 203 - against 51px before v2.0. */
-  const minReach = RING_EDGE_PX + TOOL_RING_TIP + 60;
+     phone is 171px rather than 203 - against 51px before v2.0.
+
+     A CORNER-LINE RING PAYS A SMALLER PRICE (v2.44a, and fixed twice - see
+     below). Zeghreit read the v2.44 bar as still too far from the button.
+     The 60 above buys SHAPE - a flat side wide enough that a densely-packed
+     shared-radius ring doesn't crowd when a wall cuts it - and this ring's
+     seats don't need that: each rides its own fixed radius from
+     `cornerLineLayout`, individually capped by `rho` below on its own
+     bearing, not by the ring's overall shape.
+
+     FIRST CUT dropped the pad to zero (wall = 0 before flooring) and was
+     wrong: `rho`'s floor, `TOOL_RING_DEAD_ZONE_PX` (26), stopped being a
+     negative-value safety net and became the actual room on offer,
+     silently, at every real screen size - not just the wall-hugging
+     fallback this floor exists for. A live pointer-drag review measured the
+     cost: the two end seats' bearings tilt back toward the near wall (11.3
+     degrees off the diagonal), which spends 21.9 of that 26px, leaving the
+     tip only 4.1px of margin against a 37px tip - a 7.9px overhang past the
+     actual screen edge, reproduced at ten sizes from 360x740 to 1280x800,
+     with zero overhang in v2.44. The same review clocked a second cost: the
+     screen-too-small fallback (`fits0 < lineMaxR` in bloomToolRing, full
+     circle instead of the bar) ALSO read this branch, because `tools.
+     cornerLine` stays true on the array even when the layout it requests
+     doesn't fit - so a short or heavily zoomed window lost the same 60px of
+     genuine margin exactly where the fallback needs it most, seats landing
+     0.8px outside the dead zone instead of comfortably inside it.
+
+     THE FIX IS THE FLOOR ITSELF, MADE HONEST, on the RIGHT CONDITION. Pad by
+     `TOOL_RING_DEAD_ZONE_PX` instead of zero, so the wall this ring's seats
+     actually get is the dead zone's own width - the floor stops lying about
+     room it doesn't have, which is what caused the overhang. And read the
+     SAME test `paintToolRing` already uses per seat (`ringRadii` actually
+     set, not just `cornerLine` on the array) rather than the static flag, so
+     a fallen-back ring - genuinely a shared-radius ring again once
+     `ringRadii` is null - gets the full 60 back automatically, the same
+     margin every other seatless ring keeps. Centre now sits roughly half as
+     far from the button as v2.44 (measured ~51px on `#hubBtn`, ~48px on
+     `#hdrMode`, versus v2.44's ~99/82) - the honest half of the win, not the
+     whole of it. */
+  const lineFit = Array.isArray(tools.ringRadii) && tools.ringRadii.length === tools.length;
+  const minReach = lineFit
+    ? RING_EDGE_PX + TOOL_RING_TIP + TOOL_RING_DEAD_ZONE_PX
+    : RING_EDGE_PX + TOOL_RING_TIP + 60;
   const place = (v, span) => (span < minReach * 2 ? span / 2
     : THREE.MathUtils.clamp(v, minReach, span - minReach));
   const cx = place(x - rect.left, rect.width);
@@ -35955,7 +36010,18 @@ function paintToolRing(tools, ringR, ox, oy, tag, spin, env) {
 
      Inserted first, so the seats lay on top of it. Through the ring, not
      behind it - at 80% of --line the model still reads underneath. */
-  {
+  /* SKIPPED WHEN THE SEATS ARE A CORNER LINE (v2.44a) - keyed on the SAME
+     test the per-seat loop above uses, `ringRadii` actually being an array
+     matching `tools.length`, not the static `tools.cornerLine` flag. The
+     two used to disagree in exactly the case that matters: `cornerLine`
+     stays true on the array even when `bloomToolRing` decided the bar
+     doesn't fit and fell back to the ordinary full circle (`ringRadii`
+     null) - a genuinely shared-radius ring at that point, the case this
+     star exists to draw. Gating on the flag suppressed it there too, which
+     is the a2.104 failure this file already has a name for: seats spread
+     round a cut circle with no figure around them. See below for why the
+     line itself skips it. */
+  if (!(Array.isArray(tools.ringRadii) && tools.ringRadii.length === tools.length)) {
     const NS = 'http://www.w3.org/2000/svg';
     /* THE STAR IS THE ENVELOPE (v2.0). It used to be a figure drawn near the
        seats; now it is the outline the seats ride on, so the two cannot
@@ -35963,7 +36029,19 @@ function paintToolRing(tools, ringR, ox, oy, tag, spin, env) {
 
        The diamond, corners at ringR*SQRT2 along the axes so its edges pass
        through the diagonal seats, then cut by whichever walls are close. One
-       wall leaves a diamond with a flat side; two leave a triangle. */
+       wall leaves a diamond with a flat side; two leave a triangle.
+
+       SKIPPED FOR A CORNER LINE (v2.44a). The diamond's corners sit at
+       ringR*SQRT2 because that is where a ring's diagonal seats sit when
+       every seat shares one radius - this bar's four seats do not (see
+       cornerLineLayout, `tools.ringRadii`), so the shape drawn here would
+       not pass through any of them. Zeghreit read the mismatch as a stray
+       frame sitting under the icons, not as a diagram of anything. Drawing
+       it against `lineR` (the far pair's own radius) would at least touch
+       those two, but still float clear of the near pair - no single
+       diamond fits four seats at three different radii, so the honest fix
+       is to stop drawing one for this ring rather than draw a shape that is
+       only sometimes true. */
     const poly = env.poly;
     const rmax = env.rmax;
     const star = document.createElementNS(NS, 'svg');

@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~40,627 lines)
-- Version at time of writing: **2.44**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~40,704 lines)
+- Version at time of writing: **2.44a**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -508,6 +508,87 @@ predates this whole redesign, affects the baseline arc equally, and touching
 it means revisiting the 2.0-era `place()`/`minReach` clamp itself - a bigger,
 separate decision. Worth returning to if "still feels far" persists after
 this ships.
+
+## The out-of-scope finding above stopped being out of scope (2.44a)
+
+Zeghreit's very next message after v2.44 shipped: still too far from the
+button, and the star-diamond behind the diagonal line reads as a stray
+frame. Both land on the same mechanism the v2.44 section above flagged and
+deliberately left alone - so this is that "bigger, separate decision",
+scoped down to touch only the corner-line ring rather than the shared
+`place()`/`minReach` clamp every ring goes through.
+
+**The frame: an honest fix, not a toggle.** `#ringStar` is the wall-cut
+diamond envelope every ring draws behind its seats (v2.0, the a2.104
+lesson: draw the shape the clamp implies, not a figure separately clamped
+per seat). Its corners sit at `ringR*SQRT2` specifically because that is
+where a SHARED-radius ring's diagonal seats sit - the corner line's four
+seats don't share a radius (`tools.ringRadii`, v2.44), so the diamond never
+actually passed through any of them. `paintToolRing` now skips drawing it
+for this ring, gated on the SAME test the per-seat loop already uses -
+`Array.isArray(tools.ringRadii) && tools.ringRadii.length === tools.length`
+- not the static `tools.cornerLine` flag on the array. That distinction
+mattered: `cornerLine` stays true even when `bloomToolRing` decides the bar
+doesn't fit a small screen and falls back to the ordinary full circle
+(`ringRadii` reset to `null`) - at that point it genuinely IS a
+shared-radius ring again, the exact case the star exists to draw, and
+gating on the flag would have suppressed it there too (see below - this
+was caught, not shipped).
+
+**The distance: two cuts at the same number, the first one wrong.** The
+ring's rendered centre sits wherever `bloomToolRing`'s `place()` clamps it,
+never closer to any screen edge than `minReach = RING_EDGE_PX +
+TOOL_RING_TIP + 60`. That `+60` buys SHAPE - a flat side wide enough that a
+densely-packed shared-radius ring doesn't crowd once a wall cuts it - and
+the corner line doesn't need it: each of its four seats already rides its
+own fixed radius, independently capped by `rho`'s wall lookup on its own
+bearing, not by the ring's overall shape. The first cut dropped the pad to
+zero for this ring (`tools.cornerLine` gated again). Wrong, caught by
+review before shipping: `rho`'s floor, `TOOL_RING_DEAD_ZONE_PX` (26px),
+stops being a negative-value safety net at that point and becomes the
+actual room on offer, silently, everywhere - not just the wall-hugging
+edge case that floor exists for. Live-measured cost: the two end seats'
+bearings tilt 11.3 degrees back toward the near wall, spending 21.9 of that
+26px and leaving the tip only 4.1px of clearance against its own 37px tip -
+a 7.9px overhang past the real screen edge, reproduced at ten sizes from
+360x740 to 1280x800 (zero overhang in v2.44 itself). The same review
+clocked the fallback getting worse for the identical reason: a short or
+heavily zoomed window that falls back to the full circle read this same
+gated branch (`cornerLine` still true on the array), losing the same 60px
+of real margin exactly where the fallback needs it most - seats landing
+0.8px outside the dead zone instead of safely inside it, at sizes as
+unremarkable as a 300px-tall desktop window.
+
+**Fixed by keying both cuts to the same live test** -
+`Array.isArray(tools.ringRadii) && tools.ringRadii.length === tools.length`
+- rather than the static flag, and by padding the reduced case with
+`TOOL_RING_DEAD_ZONE_PX` (26) instead of zero, so the floor is never asked
+to cover for room that isn't really there. Re-measured after the fix: zero
+overhang at all ten sizes above (line-fit case, radii uncapped at 69.3/
+111.8 as v2.44 intended), and the fallback case is now byte-for-byte what
+v2.44 gave it - radii 80/60/60.2/80, star drawn, no clipping - because a
+fallen-back ring now reads the untouched `+ 60` branch exactly like every
+other seatless ring. The centre sits roughly HALF as far from the button as
+v2.44 shipped (measured ~51px on `#hubBtn`, ~48px on `#hdrMode`, versus
+v2.44's ~99/82) - the honest half of the win a zero pad would have bought,
+not the whole of it, because the whole of it silently ran seats off the
+side of the screen.
+
+**What review found, live, before any of the above shipped.** A second
+opus pass (this one interaction-focused, told to actually reproduce
+findings rather than reason about the diff) ran full pointerdown-hold-move-
+pointerup gestures at both real corners (`#hubBtn` on a phone-sized
+viewport, `#hdrMode` on a desktop one), including lifting on UV and
+confirming the UV view actually opened - not just that the geometry looked
+right. It independently re-derived the wall-flooring mechanism above,
+confirmed the arm-commit and cancel-by-aiming-out paths are unreachable for
+this ring (no item in `HUB_TOOLS_MODE` carries `.door`, and `armStickyRing`
+is never called for it) so neither could hide a problem here, and confirmed
+`pickAngle` still matches `updateToolRingHover`'s frame after the centre
+moved (4 of 4 correct picks at both corners, aiming at each seat's true
+on-screen position). Its two real findings - the overhang and the
+fallback's lost margin - are the fixes described above, both re-verified
+live afterward rather than taken on the review's numbers alone.
 
 ## Mode-hold bloom menu + read-only 2D UV view (2.43)
 
