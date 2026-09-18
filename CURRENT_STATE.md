@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~40,420 lines)
-- Version at time of writing: **2.43**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~40,525 lines)
+- Version at time of writing: **2.43a**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -203,6 +203,113 @@ something scoped to "while marking".
 - Minor: `unseam` was reusing `seam`'s icon at an adjacent seat — now a
   faded, solid-line variant of the same glyph, mirroring how `uncrease`
   already simplifies `crease`'s icon rather than repeating it.
+
+## Mode-hold ring: a quarter, not a full circle (2.43a)
+
+Zeghreit's own read of the v2.43 mode-hold menu (see below): the shape
+looked "скомкано" - cramped/jumbled - not like the clean marking menu every
+other Bloom ring in the app reads as. The cause wasn't a bug in the shared
+envelope machinery; it was that `HUB_TOOLS_MODE` had no `seat`, so it spread
+its four items over the WHOLE 360° circle like any other seatless set. Both
+buttons this ring opens from (`#hubBtn`, bottom-right on phone; `#hdrMode`,
+top-left in the desktop header) are always in a screen CORNER, so two of
+those four bearings always pointed straight at the two nearest walls - the
+general envelope's wall-cut then folded those two onto the same short flat
+edge while the other two sat far apart on the open side. A ring that always
+opens in a corner doesn't need the shape built for a ring that can open
+anywhere.
+
+**Fix: a `quarterMenu` opt-in.** `HUB_TOOLS_MODE.quarterMenu = true` tells
+`bloomToolRing` to pick whichever 90° quadrant points away from both nearby
+walls (by which half of the screen the press landed in - this only ever
+matters for a ring anchored in a corner, so a proximity test would be
+overkill) and spread the four items evenly across it, edge to edge, so the
+two outer seats land on the two open cardinal directions and the rest fill
+in between. The chosen bearings go on `tools.ringAngles` - the ARRAY, not
+the four tool objects - specifically so the flag and the angles are always
+lost together if anything ever copies the array without them, rather than a
+dropped flag finding stale angles still sitting on the (long-lived,
+never-cloned) tool objects from whatever corner was opened last.
+`toolRingAngles` checks for `ringAngles` first, before falling into the
+existing seat/halved/full-circle logic - and `bloomToolRing` overwrites it
+on every single open, never leaving a value from a previous open in place.
+
+**Written every time, even when it doesn't fit.** Four items over 30° gaps
+(one quarter) need roughly 2.7x the radius of the same four over 90° gaps
+(the full circle) for the same physical spacing - `ideal`'s own formula,
+`sin(45°)/sin(15°)`. Fine on a phone or a desktop window; not guaranteed on
+a small one, where the screen-derived `fits` ceiling would clamp the radius
+back down while the 30° angular gap stayed fixed, shrinking the icons'
+spacing right along with it - reproducing the original crowding, just
+spread evenly instead of piled on a wall. `QUARTER_RING_MIN_R` is the
+radius below which a 30° gap alone puts two 52px icons edge-to-edge with no
+room at all; below it, `ringAngles` is set to `null` for that open and the
+ring falls all the way back to the ordinary full-circle spread - the same
+behaviour this ring shipped with in v2.43, still folded onto the wall's cut
+by the shared envelope like any other seatless ring in a corner, but never
+literally overlapping.
+
+### What review found
+
+Opus reviewed the diff cold, from pasted code only (no repo access) - a
+useful check on how well an isolated diff explains itself. Traced the four
+quadrant branches by hand and found the angle math itself correct (up/left
+for bottom-right, down/right for top-left, and so on - no wraparound or
+off-by-one in any branch). Its two live findings, both real and both fixed
+before the `QUARTER_RING_MIN_R` fallback existed to make the second one
+safe:
+
+- **MUST-FIX: the flag and the angles had different lifetimes.** The first
+  version put the flag on the array (`tools.quarterMenu`) but the computed
+  bearings on the four tool objects (`tools[i].angleDeg`) - and those
+  objects are long-lived singletons, never cloned, while the array
+  reference is the only thing any hypothetical future copy
+  (`.filter`/`.map`/spread) would actually drop. A copy would have kept the
+  angle-bearing objects but lost the flag, so `toolRingAngles`'s check for
+  finite `angleDeg` on every tool would still fire and use whatever corner
+  was opened LAST rather than falling back safely. Nothing in the current
+  codebase actually makes such a copy (`HUB_TOOLS_MODE` has exactly one
+  call site, passed by reference, confirmed by grep) - the bug was latent,
+  not live - but the fix removes the trap outright rather than leaving it
+  for the next thing that touches this ring: the angles now live on
+  `tools.ringAngles`, the same object as the flag, so the two can only ever
+  be lost together, and losing both falls back to the general spread
+  correctly.
+- **MUST-VERIFY, confirmed real: a quarter can be clamped smaller than the
+  full circle it replaced.** Review worked out that a 30° angular gap needs
+  ~2.7x the radius of a 90° one for equal icon spacing, and that the
+  screen-derived `fits` ceiling doesn't know which walls a corner-anchored
+  ring actually needs clearance from - it could clamp the quarter's radius
+  below what 30° gaps need while never having been tight enough to clamp
+  the OLD 90°-gap layout at all. Live-tested at 280×500 (chosen so
+  `fits` < `QUARTER_RING_MIN_R`): the ring correctly falls back to the
+  full-circle spread, at the same ~80px radius and shape it would have used
+  before this slice existed. Tested again at 1600×1000 immediately after,
+  confirming the fallback path doesn't leave any state (`ringAngles`,
+  `tools.quarterMenu`) that corrupts the very next normal-sized open.
+
+Also checked, both live in the file and confirmed already safe without a
+code change: whether `HUB_TOOLS_MODE`'s tools could ever reach
+`paintToolRing` through the door-swap path (`swapToolRing`) with a stale or
+rotated bearing - they can't, because none of the four carry a `.door`, so
+the only reachable `swapToolRing` call for this ring (`swapToolRing(rt.root,
+null)`, returning from a door that was never entered) repaints with
+`spin: 0` using the same `ringAngles` this same gesture already set; and
+whether any other tool object anywhere in the file already carries a field
+named `angleDeg` that could make the new check misfire - grepped, the only
+three occurrences are the ones in this diff.
+
+### What this slice deliberately does not do
+
+Doesn't touch the shared envelope/wall-cut machinery itself - a
+corner-anchored quarter still rides the same cut-diamond outline and
+equal-arc-length seat redistribution every other ring uses when a wall is
+close; it just starts from bearings that keep the two outer seats out of
+that cut under normal conditions instead of walking straight into it. The
+`quarterMenu` flag is intentionally narrow: it reads screen HALVES (`x, y`
+vs the midpoint) rather than actual wall distances, which is exactly right
+for a ring that only ever opens from a genuine corner button and would be
+the wrong tool for a set opened from, say, a mid-edge toolbar.
 
 ## Mode-hold bloom menu + read-only 2D UV view (2.43)
 

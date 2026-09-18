@@ -2452,7 +2452,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.43</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.43a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -35298,6 +35298,20 @@ const RING_EDGE_PX = 14;
    still outside the middle and still separable from a cancel. A dense
    ring floors higher than this; see `seatMinR` in bloomToolRing. */
 const TOOL_RING_SEAT_MIN_R = TOOL_RING_DEAD_ZONE_PX + TOOL_RING_TIP + 6;
+/* THE SMALLEST RADIUS A QUARTER-MENU CAN USE WITHOUT ITS ICONS TOUCHING
+   (v2.43a, review finding). Four items over a full circle need a 90-degree
+   gap; the same four over one quarter need 30 - a third the angle, so by
+   `ideal`'s own formula roughly 2.7x the radius (sin 45 / sin 15) for the
+   SAME physical spacing. On a screen too small to give a quarter menu that
+   radius, `fits` clamps it down anyway, and shrinking R while the angular
+   gap stays fixed at 30 degrees shrinks the icons' spacing right along with
+   it - which is exactly the crowding this whole change exists to remove,
+   just spread evenly instead of piled on a wall. This is the floor below
+   which that trade stops being worth it: the radius at which a 30-degree
+   gap alone, with none of TOOL_RING_GAP's extra clearance, still keeps two
+   52px icons from overlapping. Below it, bloomToolRing falls back to the
+   ordinary full-circle spread every other seatless ring already uses. */
+const QUARTER_RING_MIN_R = TOOL_RING_ITEM / (2 * Math.sin(THREE.MathUtils.degToRad(15)));
 
 let toolRingTimer = null;
 let toolRingActive = null;   // { x, y, tools, itemEls, hoveredIndex }
@@ -35315,6 +35329,24 @@ function clearToolRingTimer() {
    so neither group ever touches the other and the poles stay free for
    whatever claims them. */
 function toolRingAngles(tools) {
+  /* A quarter-menu ring (see bloomToolRing) has already decided its own
+     bearings before this runs - read them back rather than falling into
+     the seat/halved logic below, which knows nothing about corners and
+     would spread these four across the whole circle instead.
+
+     Kept on the ARRAY, not on the individual tool objects (review finding,
+     v2.43a): the tools are long-lived singletons and the array is what
+     `bloomToolRing` freshly overwrites on every single open of this ring,
+     whether or not the quarter fits (see QUARTER_RING_MIN_R there) - so a
+     stale value can only survive if something copies the ARRAY without its
+     `ringAngles`, which also drops `quarterMenu` and correctly falls back
+     to the general spread below. A value living on the tool objects instead
+     would have failed the opposite way: a copy keeps the objects, so a
+     dropped flag would still find angles from the last bloom and use them
+     for whatever corner this one is not in. */
+  if (Array.isArray(tools.ringAngles) && tools.ringAngles.length === tools.length) {
+    return tools.ringAngles.slice();
+  }
   const halved = tools.some(t => t.half);
   if (!halved) {
     /* EIGHT BEARINGS, FIXED FOR LIFE (a2.110). A seat is 0..7 clockwise from
@@ -35377,6 +35409,33 @@ function minAngularGapDeg(anglesDeg) {
   return Math.max(best, 1);
 }
 
+/* Bearings for a ring that always opens in a screen CORNER (the mode ring -
+   see bloomToolRing for why this exists and what it replaces). `x, y` are
+   the point the ring is asked to bloom at, in the same client coordinates
+   bloomToolRing itself takes (not the clamped ring centre - a button this
+   close to a corner can't cross the screen's midpoint by being clamped
+   inward from the edge, so the two give the same quadrant answer); `rect`
+   is the viewport's box. Picks whichever of the four 90-degree quadrants
+   points AWAY from both nearby walls (by which half of the screen `x, y`
+   falls in - a proximity test would suit a ring that could open anywhere,
+   but this one only ever opens in a corner), then spreads the tools evenly
+   across it, edge to edge - so the two outer seats land ON the two open
+   cardinal directions (due up/left/down/right, whichever pair is free) and
+   the rest fill in between. That placement is exact only while the
+   envelope this feeds into (see bloomToolRing) is still the full circle -
+   against a wall the outline redistributes seats along its own cut
+   perimeter instead, same as it would for any ring, and the two outer
+   ones can end up short of their cardinal by however much the cut ate. */
+function quarterMenuAngles(tools, x, y, rect) {
+  const nearRight = (x - rect.left) > rect.width / 2;
+  const nearBottom = (y - rect.top) > rect.height / 2;
+  const [from, to] = nearBottom
+    ? (nearRight ? [90, 180] : [0, 90])
+    : (nearRight ? [180, 270] : [270, 360]);
+  const n = tools.length;
+  return tools.map((t, i) => (from + (n > 1 ? i * (to - from) / (n - 1) : (to - from) / 2)) % 360);
+}
+
 /* `aim` is where the GESTURE starts, in client coords, when that isn't
    the same place the ring gets drawn. The centre is kept far enough from
    the viewport edge for the ring's shortest seat (see the clamp below),
@@ -35407,14 +35466,51 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
   // items already gone from the DOM.
   if (toolRingActive) closeToolRing(false);
 
-  const anglesDeg = toolRingAngles(tools);
-
   // Ring radius scales with the CLOSEST pair rather than staying fixed - a
   // 3-tool set (Vertex) stays close and quick to reach, a 9-tool set
   // spreads out enough to keep real spacing. Every set lands at roughly the
   // same gap between icons regardless of how many there are or how they're
   // grouped.
   const rect = viewportEl.getBoundingClientRect();
+
+  /* THE MODE RING IS A QUARTER, NOT A FULL CIRCLE (v2.43a). Its two buttons
+     (#hubBtn, #hdrMode) each live in a screen CORNER on every layout this
+     app ships - bottom-right on phone, top-left in the desktop header - so
+     spreading its seats over the WHOLE circle, as any other seatless set
+     does, always lands two of them pointing straight at the nearest walls.
+     The envelope below still folds those onto the wall's cut, same as it
+     would for any ring, but now it is folding seats that were never meant
+     to be out there - which is the "скомкано" bunching this was written to
+     fix, not a bug in the envelope itself. A ring that ALWAYS opens in a
+     corner does not need the general shape built for a ring that can open
+     anywhere: it needs the one quarter that corner always has room for,
+     spread evenly like any other marking menu. `tools.quarterMenu` marks
+     that set; the angles go on `tools.ringAngles` - the ARRAY, not the
+     individual tool objects (see toolRingAngles) - so it and the flag are
+     lost together by any caller that copies the array, and so that
+     `toolRingAngles`, called again independently inside `paintToolRing`,
+     reads back exactly what was decided here instead of a second,
+     possibly different, computation.
+
+     WRITTEN EVERY TIME, EVEN WHEN IT DOESN'T FIT. A quarter needs roughly
+     2.7x the radius of the same four items over a full circle for the same
+     physical spacing (see QUARTER_RING_MIN_R) - fine on a phone or a
+     desktop window, not guaranteed on a small one. `fits` below is a pure
+     function of the screen, so it can be read early, before `anglesDeg`
+     exists to feed it: below QUARTER_RING_MIN_R the quarter is skipped for
+     THIS open and `ringAngles` is cleared to `null` rather than left as
+     whatever the last open set it to, so toolRingAngles falls all the way
+     through to the ordinary full-circle spread - crowded by the wall's cut
+     like any other seatless ring in a corner, same as this ring behaved
+     before v2.43a, rather than crowded by a quarter with no room to be
+     one. */
+  if (tools.quarterMenu) {
+    const fits0 = Math.min(rect.width, rect.height) / 2 - TOOL_RING_TIP - RING_EDGE_PX;
+    tools.ringAngles = fits0 >= QUARTER_RING_MIN_R
+      ? quarterMenuAngles(tools, x, y, rect) : null;
+  }
+
+  const anglesDeg = toolRingAngles(tools);
 
   /* The ideal radius, from the tightest pair - and then whatever the SCREEN
      will actually hold.
@@ -36213,6 +36309,10 @@ const HUB_TOOLS_MODE = [
   // this can't be pressed - the seat's lit state could never be seen.
   { key: 'mode-uv', label: 'UV', run: openUvView }
 ];
+// Both buttons this ring opens from (#hubBtn, #hdrMode) sit in a screen
+// corner on every layout the app ships - see quarterMenuAngles/bloomToolRing
+// for what this flag buys instead of the usual full-circle spread (v2.43a).
+HUB_TOOLS_MODE.quarterMenu = true;
 
 /* A timer of its own rather than the viewport's toolRingTimer: the press
    starts on a DOM button, not the canvas, so it has nothing to do with
