@@ -2569,7 +2569,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.55</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.56</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -19135,6 +19135,469 @@ function markSeamSelectionUv(on) {
   toast(want ? changed + ' edge(s) seamed' : changed + ' seam(s) cleared');
 }
 
+/* THE SIMILARITY THAT MAKES TWO ISLANDS ONE SHEET (v2.56).
+
+   Clearing the seams between two islands makes them one island by TOPOLOGY -
+   one colour, one drag group - but it does not move a single UV, so the two
+   halves stay wherever their own projection left them and the texture jumps
+   across the join. Until v2.56 that was the whole of Merge. This is the rest
+   of it: one island is held still and every other picked island is carried
+   onto it by a 2D similarity - rotation, uniform scale, translation, and a
+   reflection where one is needed - fitted to the UVs the two sides already
+   agree on along the edges they share.
+
+   WHY A SIMILARITY AND NOTHING RICHER. The two islands were projected
+   separately, so their shared boundary is one 3D polyline seen through two
+   different flattenings: nothing short of a full re-solve makes both sides
+   metrically identical, and a full re-solve is Unwrap, which already exists
+   and throws this layout away. A similarity is the largest transform that
+   cannot shear or fold the island it moves - it can only put it in the right
+   place, at the right size, the right way round.
+
+   THE FIT is the closed-form Procrustes one, on correspondences collected at
+   the shared LOGICAL vertices: one per shared vertex, each side averaged over
+   however many attribute copies that vertex has there, so a vertex touched by
+   three face groups does not out-vote one touched by one.
+
+   REFLECTION IS DECIDED LOCALLY AND BY VOTE. Two faces meeting at an edge are
+   traversed in OPPOSITE directions round that edge by the index buffer, so if
+   both their UV parameterisations agree with the surface, both their UV
+   polygons come out wound the same way - and if one island's projection
+   flipped (a PCA frame is free to pick either sign of its axes, so this is
+   routine), its faces come out wound the other way. So "does this island need
+   mirroring" is answered by comparing the winding of the two faces AT each
+   shared edge and taking the majority.
+
+   The first draft asked it of the whole sheet - sign of the candidate's total
+   UV area against the total of everything placed - and that was wrong twice
+   over. It read `placed` AFTER the candidate had been added to it, so the
+   candidate's own area sat inside the reference it was compared against; and
+   on the commonest case of all, two faces of equal size and opposite
+   orientation, the two totals cancelled to somewhere around 1e-10 and the
+   answer was then decided by the sign of the rounding error. It happened to
+   come out right on a cube, which is exactly how that kind of bug survives.
+   _uv56chk's 6b builds the case where it cannot: an anchor a quarter the size
+   of the candidate, where the sum takes the candidate's sign every time.
+
+   THE SIGNS ARE READ ONCE, from the UVs as they arrived, and flipped when an
+   island is reflected - not re-measured from the working copy. A snap can
+   invert a single boundary face; re-measuring would let that damage vote on
+   the NEXT island and cascade down a chain. Handedness is a property of the
+   chart, so it is stored as one.
+
+   THE SNAP, and it is what makes the join watertight rather than nearly so.
+   The similarity is a BEST fit: it closes the gap on average and leaves a
+   residual at every individual vertex, and a residual at a shared vertex is a
+   visible tear. Pinning the candidate's copies exactly onto the placed side's
+   values spends that residual as a small stretch in the ring of triangles
+   behind the join instead - the trade every unwrapper makes here.
+
+   BUT ONLY WHILE IT IS A STRETCH AND NOT A FOLD. Two charts of a CURVED seam
+   are not similar at all - each flattens the same 3D polyline with its own
+   distortion - and there the residual is a real fraction of the boundary
+   length. Pulling a vertex further than the next vertex along the seam is
+   away turns those triangles inside out, which is worse than the gap it
+   closes. So the snap is gated on the residual against the mean length of the
+   seam edges it would be closing: one edge's worth, because that is the
+   distance at which a vertex can pass its own neighbour. Islands that fail it
+   keep the similarity placement, which cannot fold anything, and the toast
+   says how many did.
+
+   DEGENERATE CASES fall back or refuse rather than throw: a source or target
+   set that collapses to one point is refused outright (snapping onto it, or
+   fanning out of it, is all sliver); fewer than two correspondences is
+   refused, since a weld edge always supplies both its endpoints and one can
+   only mean a coordinate upstream was not a number; a source spread too small
+   to measure an angle from gives a pure translation; a scale outside
+   [1e-3, 1e3] means the correspondences are junk, and the island is refused
+   rather than placed at a scale that would then be yanked by the snap.
+
+   THE ANCHOR NEVER MOVES, and it is the BIGGEST island of each connected
+   component by face count, not the lowest id. The anchor's texel scale is
+   what the merged sheet ends up wearing, so holding a one-quad detail still
+   and rescaling the two-hundred-face body onto it is exactly backwards; and
+   "the big piece stays put" is something the person can see, which the island
+   numbering is not. Face count rather than UV area, so a degenerate
+   projection cannot win the vote. A picked set that touches in two separate
+   groups (A-B and C-D, with no edge between the pairs) is two components and
+   gets two anchors, the same way the seam clear below already treats it as
+   two merges.
+
+   WHAT IT REPORTS. `mirrored`, off the decision itself rather than inferred
+   afterwards from an area sign, which could not tell an intended mirror from
+   a fold. `slack`, islands placed but not snapped. `refused`, islands left
+   exactly where they were. `pinched`, shared vertices where the candidate's
+   own copies disagreed before the fit - a seam it KEEPS ends there, the snap
+   has to pull those copies together, and the texture pinches. Nothing refuses
+   on that one: it is a property of the seam layout the person asked for, not
+   a mistake, but the toast names it, because it is the outcome that looks
+   like a bug and is not.
+
+   Returns null when there is nothing to do - no UV attribute, no topo, or no
+   shared edge between two PICKED islands - and the caller then does exactly
+   what v2.52 did and no more. */
+function alignUvIslands(obj, islandOf, edgeFaces, picked) {
+  const geo = obj.mesh.geometry;
+  const topo = obj.mesh.userData.topo;
+  const uvAttr = geo.attributes.uv;
+  if (!topo || !topo.faceGroups.length || !geo.index) return null;
+  // The same length gate rebuildFromEditable applies on the way out: a uv
+  // attribute that does not describe THESE vertices is not a UV layout to
+  // align, it is a stale one to ignore.
+  if (!uvAttr || uvAttr.count !== geo.attributes.position.count) return null;
+
+  const index = geo.index;
+  const n = uvAttr.count;
+  const fgCount = topo.faceGroups.length;
+
+  /* THE WELD EDGES COME FIRST, before anything is allocated. A merge touches
+     two islands out of however many the mesh has, and the first draft built a
+     Map per face group and an array per logical vertex for the WHOLE mesh to
+     do it - fifty thousand Maps to merge two quads. Everything below is built
+     from these lists, so the cost is the size of the join. */
+  const weld = [];
+  edgeFaces.forEach((gis, key) => {
+    // Boundary and non-manifold edges are skipped for the same reason
+    // computeUVIslands skips them: a cut no seam made and none can close, so
+    // they can carry no correspondence either.
+    if (gis.length !== 2) return;
+    const ia = islandOf[gis[0]], ib = islandOf[gis[1]];
+    if (ia === ib || !picked.has(ia) || !picked.has(ib)) return;
+    const us = key.split('_');
+    weld.push({ ia: ia, ga: gis[0], ib: ib, gb: gis[1], la: +us[0], lb: +us[1] });
+  });
+  if (!weld.length) return null;
+
+  const adj = new Map();
+  const weldOf = new Map();         // island -> its weld records, so no pass rescans them all
+  const weldGroupsOf = new Map();   // island -> its face groups that touch a weld
+  const weldGroups = new Set();
+  const weldLogicals = new Set();
+  function push(map, k, v) {
+    let a = map.get(k);
+    if (!a) { a = []; map.set(k, a); }
+    if (a.indexOf(v) < 0) a.push(v);
+  }
+  weld.forEach(w => {
+    if (!adj.has(w.ia)) adj.set(w.ia, new Set());
+    if (!adj.has(w.ib)) adj.set(w.ib, new Set());
+    adj.get(w.ia).add(w.ib);
+    adj.get(w.ib).add(w.ia);
+    let la = weldOf.get(w.ia); if (!la) { la = []; weldOf.set(w.ia, la); } la.push(w);
+    let lb = weldOf.get(w.ib); if (!lb) { lb = []; weldOf.set(w.ib, lb); } lb.push(w);
+    push(weldGroupsOf, w.ia, w.ga);
+    push(weldGroupsOf, w.ib, w.gb);
+    weldGroups.add(w.ga); weldGroups.add(w.gb);
+    weldLogicals.add(w.la); weldLogicals.add(w.lb);
+  });
+  // Only islands that actually touch another picked one take part; the rest
+  // are picked but not part of any merge, and must not be moved.
+  const live = new Set();
+  picked.forEach(id => { if (adj.has(id)) live.add(id); });
+  if (live.size < 2) return null;
+
+  /* Float64 for the working copy, not Float32. The fit divides by a sum of
+     squares of differences of nearby numbers, which is exactly where single
+     precision loses its digits, and the result is written back through a
+     Float32 attribute anyway - so the only cost is one array and the only
+     effect is that the rotation is right for islands packed into a corner of
+     the 0..1 square. */
+  const uv = new Float64Array(n * 2);
+  for (let i = 0; i < n; i++) { uv[i * 2] = uvAttr.getX(i); uv[i * 2 + 1] = uvAttr.getY(i); }
+
+  /* A SEEN FLAG, not "is it already marked with this island". The dedup below
+     is only equivalent to a seen-set while every attribute vertex belongs to
+     exactly one face group - which is true, separateGroupVertices guarantees
+     it - but an import path or a future weld pass that shared one would make
+     the cheaper test push it twice and transform it twice, silently. The flag
+     costs one byte per vertex and cannot. */
+  const attrIsland = new Int32Array(n).fill(-1);
+  const attrSeen = new Uint8Array(n);
+  const attrsOf = new Map();        // live island -> [attr], what the transform moves
+  const faceCountOf = new Map();    // live island -> face groups, for the anchor
+  const logByGroup = new Map();     // weld face group -> Map(weld logical -> [attr])
+  const logByIsland = new Map();    // live island   -> Map(weld logical -> [attr])
+  for (let gi = 0; gi < fgCount; gi++) {
+    const id = islandOf[gi];
+    if (!live.has(id)) continue;
+    faceCountOf.set(id, (faceCountOf.get(id) || 0) + 1);
+    let al = attrsOf.get(id);
+    if (!al) { al = []; attrsOf.set(id, al); }
+    let li = logByIsland.get(id);
+    if (!li) { li = new Map(); logByIsland.set(id, li); }
+    let lg = null;
+    if (weldGroups.has(gi)) { lg = new Map(); logByGroup.set(gi, lg); }
+    const fg = topo.faceGroups[gi];
+    const end = (fg.triStart + fg.triCount) * 3;
+    for (let i = fg.triStart * 3; i < end; i++) {
+      const ai = index.getX(i);
+      if (!attrSeen[ai]) { attrSeen[ai] = 1; attrIsland[ai] = id; al.push(ai); }
+      const l = topo.logicalOf[ai];
+      if (!weldLogicals.has(l)) continue;
+      push(li, l, ai);
+      if (lg) push(lg, l, ai);
+    }
+  }
+
+  const FIT_EPS = 1e-12, S_MIN = 1e-3, S_MAX = 1e3;
+
+  /* Handedness, measured ONCE from the UVs as they arrived and then carried,
+     not re-measured off the working copy - see the note at the top about the
+     cascade that causes. Only the weld face groups are ever asked. */
+  const signOf = new Map();
+  weldGroups.forEach(gi => {
+    const fg = topo.faceGroups[gi];
+    let a = 0;
+    const end = (fg.triStart + fg.triCount) * 3;
+    for (let i = fg.triStart * 3; i < end; i += 3) {
+      const a0 = index.getX(i), a1 = index.getX(i + 1), a2 = index.getX(i + 2);
+      const x0 = uv[a0 * 2], y0 = uv[a0 * 2 + 1];
+      a += (uv[a1 * 2] - x0) * (uv[a2 * 2 + 1] - y0)
+         - (uv[a2 * 2] - x0) * (uv[a1 * 2 + 1] - y0);
+    }
+    signOf.set(gi, a > 0 ? 1 : (a < 0 ? -1 : 0));
+  });
+
+  const placed = new Set();
+
+  // Which weld records join this candidate to something already placed, with
+  // the two sides named. One pass over the candidate's OWN records.
+  function joinsOf(cand) {
+    const out = [];
+    (weldOf.get(cand) || []).forEach(w => {
+      if (w.ia === cand && placed.has(w.ib)) out.push({ w: w, cg: w.ga, pg: w.gb });
+      else if (w.ib === cand && placed.has(w.ia)) out.push({ w: w, cg: w.gb, pg: w.ga });
+    });
+    return out;
+  }
+
+  /* One correspondence per shared logical vertex, each side averaged over its
+     own attribute copies. A vertex sitting on several weld edges is
+     accumulated once per edge with the same values, which an average is
+     immune to - that is why this is an average and not a sum. `pinch` counts
+     the vertices where the CANDIDATE's own copies disagree. */
+  function correspondences(joins) {
+    const m = new Map();
+    joins.forEach(j => {
+      const cm = logByGroup.get(j.cg), pm = logByGroup.get(j.pg);
+      [j.w.la, j.w.lb].forEach(l => {
+        let e = m.get(l);
+        if (!e) { e = { l: l, sx: 0, sy: 0, sn: 0, tx: 0, ty: 0, tn: 0, spread: 0, s0: null }; m.set(l, e); }
+        const cs = cm && cm.get(l);
+        if (cs) cs.forEach(ai => {
+          const x = uv[ai * 2], y = uv[ai * 2 + 1];
+          if (!e.s0) e.s0 = [x, y];
+          else e.spread = Math.max(e.spread, Math.abs(x - e.s0[0]), Math.abs(y - e.s0[1]));
+          e.sx += x; e.sy += y; e.sn++;
+        });
+        const ps = pm && pm.get(l);
+        if (ps) ps.forEach(ai => { e.tx += uv[ai * 2]; e.ty += uv[ai * 2 + 1]; e.tn++; });
+      });
+    });
+    const out = [];
+    const byLogical = new Map();
+    let pinch = 0;
+    m.forEach(e => {
+      if (!e.sn || !e.tn) return;
+      const px = e.sx / e.sn, py = e.sy / e.sn, qx = e.tx / e.tn, qy = e.ty / e.tn;
+      // A non-finite UV anywhere upstream would turn the whole island into NaN
+      // through the centroid; drop the correspondence instead. This is the only
+      // way the count can fall below two, and below two it is refused.
+      if (!isFinite(px) || !isFinite(py) || !isFinite(qx) || !isFinite(qy)) return;
+      // Copies of ONE vertex inside ONE island come from one unwrap and are
+      // normally bit-identical, so this is "they genuinely differ", not a
+      // tolerance with a number to argue about.
+      if (e.spread > 0) pinch++;
+      const c = { l: e.l, px: px, py: py, qx: qx, qy: qy };
+      out.push(c);
+      byLogical.set(e.l, c);
+    });
+    return { corr: out, byLogical: byLogical, pinch: pinch };
+  }
+
+  // Majority vote over the shared edges: same winding on both sides means the
+  // two parameterisations already agree, opposite means the candidate is
+  // mirrored relative to the sheet it is joining.
+  function mirrorFor(joins) {
+    let agree = 0, against = 0;
+    joins.forEach(j => {
+      const sc = signOf.get(j.cg), sp = signOf.get(j.pg);
+      if (!sc || !sp) return;         // a face with no UV area votes on nothing
+      if (sc === sp) agree++; else against++;
+    });
+    return against > agree ? -1 : 1;
+  }
+
+  // All of one side's points at a single spot. Exact equality, because a
+  // genuinely collapsed chart is bit-equal, not merely close.
+  function collapsed(corr, xk, yk) {
+    for (let i = 1; i < corr.length; i++) {
+      if (corr[i][xk] !== corr[0][xk] || corr[i][yk] !== corr[0][yk]) return false;
+    }
+    return true;
+  }
+
+  // The transform, or null when the numbers say the correspondences are junk.
+  function fitFor(corr, mir) {
+    const k = corr.length;
+    let pcx = 0, pcy = 0, qcx = 0, qcy = 0;
+    corr.forEach(c => { pcx += c.px; pcy += mir * c.py; qcx += c.qx; qcy += c.qy; });
+    pcx /= k; pcy /= k; qcx /= k; qcy /= k;
+
+    let dot = 0, cross = 0, pn = 0;
+    corr.forEach(c => {
+      const px = c.px - pcx, py = mir * c.py - pcy;
+      const qx = c.qx - qcx, qy = c.qy - qcy;
+      dot += px * qx + py * qy;
+      cross += px * qy - py * qx;
+      pn += px * px + py * py;
+    });
+    /* Identity until the numbers earn something else. pn at zero is a SOURCE
+       that is one point and mag at zero is a TARGET that is one point; either
+       way the correspondences establish where the island goes and nothing
+       about how it is turned or how big it is, so the centroid match is the
+       whole answer and this stays a translation. Both of those are refused
+       upstream now; this is what is left of the guard, and it still has to
+       hold for a source that is merely tiny rather than exactly one point. */
+    let cos = 1, sin = 0, s = 1;
+    if (pn > FIT_EPS) {
+      const mag = Math.sqrt(dot * dot + cross * cross);
+      if (mag > FIT_EPS) { cos = dot / mag; sin = cross / mag; s = mag / pn; }
+    }
+    /* OUT OF RANGE IS A REFUSAL, not a clamp and not a quiet fall back to 1.
+       Keeping the rotation and dropping the scale leaves the island at its own
+       texel density beside a neighbour at another, and then the snap yanks its
+       seam row across to reach - the worst boundary triangles the function can
+       produce. A thousandfold is already far past any real difference between
+       two charts of one mesh; past it the correspondences are wrong, and the
+       honest answer is to leave the island alone. */
+    if (!isFinite(s) || s < S_MIN || s > S_MAX) return null;
+    if (!isFinite(cos) || !isFinite(sin)) return null;
+    const tx = qcx - s * (cos * pcx - sin * pcy);
+    const ty = qcy - s * (sin * pcx + cos * pcy);
+    if (!isFinite(tx) || !isFinite(ty)) return null;
+    return { cos: cos, sin: sin, s: s, mir: mir, tx: tx, ty: ty };
+  }
+
+  // The seam's own length scale, in the space being fitted TO: the mean length
+  // of the weld edges as the placed side draws them. This is the distance at
+  // which pulling a vertex can take it past its neighbour along the seam, so
+  // it is what the residual is measured against.
+  function seamScale(joins, byLogical) {
+    let sum = 0, cnt = 0;
+    joins.forEach(j => {
+      const a = byLogical.get(j.w.la), b = byLogical.get(j.w.lb);
+      if (!a || !b) return;
+      sum += Math.sqrt((b.qx - a.qx) * (b.qx - a.qx) + (b.qy - a.qy) * (b.qy - a.qy));
+      cnt++;
+    });
+    return cnt ? sum / cnt : 0;
+  }
+
+  function apply(cand, corr, t, scale) {
+    const mir = t.mir, s = t.s, cos = t.cos, sin = t.sin, tx = t.tx, ty = t.ty;
+    (attrsOf.get(cand) || []).forEach(ai => {
+      const x = uv[ai * 2], y = mir * uv[ai * 2 + 1];
+      uv[ai * 2] = s * (cos * x - sin * y) + tx;
+      uv[ai * 2 + 1] = s * (sin * x + cos * y) + ty;
+    });
+    // What the snap would have to move, measured before deciding whether it may.
+    let worst = 0;
+    corr.forEach(c => {
+      const px = c.px, py = mir * c.py;
+      const fx = s * (cos * px - sin * py) + tx, fy = s * (sin * px + cos * py) + ty;
+      const d = Math.sqrt((fx - c.qx) * (fx - c.qx) + (fy - c.qy) * (fy - c.qy));
+      if (d > worst) worst = d;
+    });
+    if (scale > 0 && worst > scale) return { worst: worst, snapped: false };
+    /* Only copies whose island IS the candidate are touched, and ALL of them:
+       an island has no seam inside it, so every copy of a shared vertex within
+       it has to move together or the island tears along its own interior
+       edges. A third island still seamed to this vertex keeps its own UV,
+       which is the whole point of the seam it still has. */
+    const li = logByIsland.get(cand);
+    corr.forEach(c => {
+      const g = li && li.get(c.l);
+      if (!g) return;
+      g.forEach(ai => { uv[ai * 2] = c.qx; uv[ai * 2 + 1] = c.qy; });
+    });
+    return { worst: worst, snapped: true };
+  }
+
+  const remaining = new Set(live);
+  const touched = [];
+  let moved = 0, worst = 0, mirrored = 0, pinched = 0, refused = 0, slack = 0;
+  while (remaining.size) {
+    /* EMPTIED PER COMPONENT. No weld edge crosses between components, so a
+       stale `placed` could never invent a correspondence, but it would put a
+       previous component's islands into this one's winding vote. */
+    placed.clear();
+    // The biggest island of what is left anchors the next component; ties go
+    // to the lower id, so the same selection always merges the same way.
+    let anchor = -1, best = -1;
+    remaining.forEach(id => {
+      const c = faceCountOf.get(id) || 0;
+      if (c > best || (c === best && id < anchor)) { best = c; anchor = id; }
+    });
+    remaining.delete(anchor);
+    placed.add(anchor);
+    for (;;) {
+      let cand = -1;
+      const sorted = Array.from(remaining).sort((a, b) => a - b);
+      for (let i = 0; i < sorted.length && cand < 0; i++) {
+        const id = sorted[i];
+        const nb = adj.get(id);
+        if (!nb) continue;
+        nb.forEach(o => { if (cand < 0 && placed.has(o)) cand = id; });
+      }
+      if (cand < 0) break;
+      remaining.delete(cand);
+      const joins = joinsOf(cand);
+      const got = correspondences(joins);
+      const corr = got.corr;
+      /* REFUSED MEANS NOT PLACED EITHER, and that is the whole point. An
+         island that keeps its own chart is not a frame anything else may be
+         fitted to - the first draft added it to `placed` before this test and
+         a third island reached through it was then carried off to wherever
+         that untouched chart happened to sit. Left out of `placed`, anything
+         that could only be reached through it stays in `remaining` and becomes
+         its own component's anchor, keeping its own UVs. That is the honest
+         answer. */
+      if (corr.length < 2 ||
+          collapsed(corr, 'qx', 'qy') || collapsed(corr, 'px', 'py')) { refused++; continue; }
+      const t = fitFor(corr, mirrorFor(joins));
+      if (!t) { refused++; continue; }
+      const res = apply(cand, corr, t, seamScale(joins, got.byLogical));
+      placed.add(cand);
+      touched.push(cand);
+      if (res.worst > worst) worst = res.worst;
+      if (!res.snapped) slack++;
+      if (t.mir < 0) {
+        mirrored++;
+        // The chart is now the other way round, so every sign read off it from
+        // here on has to be too.
+        (weldGroupsOf.get(cand) || []).forEach(gi => signOf.set(gi, -(signOf.get(gi) || 0)));
+      }
+      pinched += got.pinch;
+      moved++;
+    }
+  }
+  if (!moved) return null;
+  /* Nothing non-finite leaves this function - but only the vertices this pass
+     actually wrote are asked. Sweeping the whole array meant one stale NaN
+     anywhere on the object, from any earlier tool, silently disabled stitching
+     for every merge on it for ever. */
+  for (let t = 0; t < touched.length; t++) {
+    const list = attrsOf.get(touched[t]) || [];
+    for (let i = 0; i < list.length; i++) {
+      const ai = list[i];
+      if (!isFinite(uv[ai * 2]) || !isFinite(uv[ai * 2 + 1])) return null;
+    }
+  }
+  return { uv: uv, moved: moved, mirrored: mirrored, pinched: pinched,
+           refused: refused, slack: slack, worst: worst };
+}
+
 /* MERGE ISLANDS, for real (v2.52). This seat used to be a literal alias for
    Clear seam, which does the right thing on an EDGE selection and NOTHING
    AT ALL on the island selection v2.51 taught the 3D viewport to make:
@@ -19146,11 +19609,14 @@ function markSeamSelectionUv(on) {
    What "merge" means for two islands is the seams BETWEEN them: clear those
    and computeUVIslands' union-find puts both in one bucket, which is what
    makes them one colour in the viewport and one unit in the 2D editor.
-   Nothing moves in UV space - the two halves keep the coordinates they
-   already had until the next Unwrap. That is still short of the rigid
-   align-along-the-shared-edge operation v2.49 and v2.51 deferred (and which
-   still wants its Fable review when it exists), and it is the whole of what
-   the word can honestly mean before those coordinates are recomputed. */
+   AND SINCE v2.56 THE COORDINATES MOVE TOO. Clearing the seams is still the
+   half of the op that makes them one island; alignUvIslands above is the half
+   that makes them one SHEET, carrying every picked island onto the anchor by a
+   similarity fitted along the edges they share and pinning the shared vertices
+   exactly. The rigid align-along-the-shared-edge operation v2.49 and v2.51
+   deferred is that function, and this is the seat that runs it. Nothing here
+   recomputes a projection - that is Unwrap, and it still throws this layout
+   away when you ask for it. */
 function mergeUvIslandsSelection() {
   /* An edge selection, or a call from inside the 2D editor, still means
      "clear the seam under it" - that is the only merge those two selections
@@ -19178,8 +19644,49 @@ function mergeUvIslandsSelection() {
     if (k) keys.add(k);
   });
   if (!keys.size) { toast('Those islands do not touch'); return; }
+  /* THE ALIGN RUNS FIRST, while the islands are still separate (v2.56).
+     Every id it works with - islandOf, the picked set, which attribute vertex
+     belongs to which island - stops meaning anything the moment the seams go,
+     so the transform is computed here and applied below. It only READS the
+     mesh; nothing has changed yet if it comes back null. */
+  /* WRAPPED, because the merge itself must not depend on the stitch working.
+     If the fit throws, the seams still come off and the islands still become
+     one - which is what the seat promised before v2.56 and all it has to keep
+     promising. Blocking the whole operation because the nicety failed would be
+     the worse trade. */
+  let fit = null;
+  try {
+    fit = alignUvIslands(obj, islandOf, edgeFaces, picked);
+  } catch (e) {
+    fit = null;
+    if (PICK_DEBUG) console.warn('[merge] align threw', e);
+  }
   const { changed } = toggleSeamKeys(obj, Array.from(keys), false);
   if (!changed) { toast('Nothing to merge there'); return; }
+  /* One rebuild, through the door Unwrap uses. toEditable keeps the index
+     layout, so the new UV array lines up vertex for vertex and
+     rebuildFromEditable's own length gate passes; ensureHelpers straight after
+     because that rebuild nulled topo and the reselect below reads it. */
+  /* A TRIPWIRE, not a formality (Fable review). The fit was computed against
+     the attribute layout as it stood BEFORE toggleSeamKeys; if anything on
+     that path ever started rebuilding the geometry, these UVs would describe
+     the old vertex order and get written onto the new one - scrambled texture,
+     no error. One comparison says so instead. */
+  let stitched = fit;
+  if (stitched) {
+    const ed = toEditable(obj.mesh);
+    if (!ed.uvs || ed.uvs.length !== stitched.uv.length) {
+      stitched = null;
+    } else {
+      ed.uvs = Array.from(stitched.uv);
+      rebuildFromEditable(obj, ed);
+      ensureHelpers(obj);
+      if (PICK_DEBUG) console.log('[merge]', JSON.stringify({
+        moved: stitched.moved, mirrored: stitched.mirrored, pinched: stitched.pinched,
+        refused: stitched.refused, slack: stitched.slack, worst: stitched.worst
+      }));
+    }
+  }
   /* Re-select the island they BECAME, not the face groups they were. The
      point of the op is that these are now one island; leaving the old
      selection alone would say so in the tint and deny it in the selection,
@@ -19194,11 +19701,26 @@ function mergeUvIslandsSelection() {
     if (mergedIds.has(after.islandOf[gi])) App.selectedElements.add(gi);
   }
   App.uvSelKind = 'face';
-  refreshElementColors(obj);
-  hideRadialMenu();
-  refreshUI();
-  pushHistory();
-  toast(changed + ' seam(s) cleared - islands merged');
+  /* finishMeshEdit when the GEOMETRY changed - it is the one door that runs
+     the winding audit and pushes exactly one history step - and the plain tail
+     when only the seam set did. Both end in one history step either way; what
+     they must not do is both. */
+  if (stitched) {
+    finishMeshEdit(obj, changed + ' seam(s) cleared - ' + stitched.moved + ' island(s) stitched' +
+      (stitched.mirrored ? ', ' + stitched.mirrored + ' mirrored' : '') +
+      /* Said out loud, because it is the one outcome that looks like a bug and
+         is not: a seam the merge KEEPS, ending inside the island it just made,
+         has to pinch there. Naming it is the difference between "the tool broke
+         my UVs" and "that seam needs to go too". */
+      (stitched.slack ? ', ' + stitched.slack + ' left with a gap' : '') +
+      (stitched.pinched ? ' \u00b7 pinched at ' + stitched.pinched + ' vert(s)' : ''));
+  } else {
+    refreshElementColors(obj);
+    hideRadialMenu();
+    refreshUI();
+    pushHistory();
+    toast(changed + ' seam(s) cleared - islands merged');
+  }
 }
 
 function clearAllSeams() {
@@ -42717,6 +43239,9 @@ if (PICK_DEBUG) {
     // Seams (uv-commands-maps-plan.md stage 5) - same reason creaseSelection
     // and markSharpSelection are here: let a harness drive the real toggle.
     markSeamSelection, clearAllSeams, seamSet, mergeUvIslandsSelection,
+    // v2.56: the fit on its own, so a probe can check the transform it
+    // returns against a known answer without driving the whole seat.
+    alignUvIslands,
     // UV islands preview (uv-commands-maps-plan.md stage 5, slice 2) - lets a
     // harness compute islands directly and inspect the overlay without
     // pretending to be a finger on the ring. toggleShowIslands is gone

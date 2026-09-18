@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
-- Version at time of writing: **2.55**
+- Version at time of writing: **2.56**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,128 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## Merge islands now moves the UVs (2.56)
+
+Since v2.52 Merge cleared the seams between the picked islands, which made
+them one island - one colour, one drag group - and left every coordinate
+exactly where it was. The two halves went on sitting wherever their own
+projection had put them, so the texture still jumped across the join, and
+the v2.52 comment said as much: short of the rigid align v2.49 and v2.51
+had deferred. This is that align.
+
+**One island is held still and the others are carried onto it** by a 2D
+similarity - rotation, uniform scale, translation, and a reflection where
+one is needed - fitted to the UVs the two sides already agree on along the
+edges they share, then the shared vertices are pinned exactly. A similarity
+is the largest transform that cannot shear or fold the island it moves;
+anything richer would be a re-solve, and a re-solve is Unwrap, which
+already exists and throws this layout away when you ask for it. The new
+`alignUvIslands` only READS the mesh and hands back an array; the seat
+writes it through `toEditable`/`rebuildFromEditable`, the same door Unwrap
+uses, so it is one history step and one winding audit.
+
+**The anchor is the biggest island of each component**, by face count. The
+anchor's texel scale is what the merged sheet ends up wearing, so holding a
+one-quad detail still and rescaling the body onto it is backwards; and "the
+big piece stays put" is something you can see, which the island numbering
+is not.
+
+**Reflection is decided by winding, locally, by vote.** Two faces meeting
+at an edge are traversed in opposite directions by the index buffer, so two
+parameterisations that both agree with the surface give their faces the
+same UV winding - and a PCA frame is free to pick either sign of its axes,
+so one island of a pair coming out mirrored is routine rather than exotic.
+Comparing residuals cannot answer this: on a straight seam both mirrors fit
+with identical zero residual, because reflecting across the seam line maps
+a collinear point set onto itself. The signs are read once, from the UVs as
+they arrived, and flipped when an island is reflected - never re-measured
+off the working copy, or one bad boundary face would vote on the next
+island and cascade.
+
+### What review found
+
+Fable first (its first run on this codebase; see below), then Opus, cold,
+on the finished function. Both found real defects and no false alarms.
+
+- **The reflection test had the candidate inside its own reference.**
+  `placed.add(cand)` ran before the decision, so the candidate's area was in
+  the total it was being compared against - and on two faces of equal size
+  and opposite orientation the two cancelled to about 1e-10 and the answer
+  was decided by the sign of the rounding error. It came out right on a
+  cube, which is how that kind of bug survives. The whole criterion is local
+  now and asks for no total at all.
+- **A refused island was still used as a frame.** An island whose chart is
+  degenerate is left alone - correctly - but it was added to the placed set
+  first, so a third island reached only through it was fitted onto that
+  untouched chart and carried off to wherever it happened to sit. Refused
+  now means not placed either, and anything reachable only through it
+  becomes its own anchor and keeps its own UVs.
+- **No guard on a collapsed SOURCE**, only on a collapsed target - the
+  island would stay a dot while its seam vertices fanned out to the anchor's
+  boundary, every triangle between them a sliver. Both sides are checked.
+- **The scale guard was a silent cliff.** Out of range dropped the scale to
+  1 but kept the rotation, so the island sat at its own texel density beside
+  a neighbour at another and then the snap yanked its seam row across to
+  reach - the worst boundary triangles the function can make. Out of range
+  is a refusal now.
+- **The residual was computed and thrown away.** Two charts of a CURVED
+  seam are not similar at all, so the fit leaves a residual that is a real
+  fraction of the boundary length, and snapping a vertex further than its
+  neighbour along the seam turns those triangles inside out - a fold along
+  the exact line you asked to make seamless. The snap is gated on the
+  residual against the mean length of the seam edges it would close; islands
+  that fail it keep the similarity placement, which cannot fold anything,
+  and the toast says how many were left with a gap.
+- **The whole-mesh NaN sweep** meant one stale non-finite UV anywhere on the
+  object, from any earlier tool, silently disabled stitching for every merge
+  on it for ever. Only the vertices this pass wrote are asked now.
+- **Cost was the size of the model, not of the join** - a Map per face group
+  and an array per logical vertex for the whole mesh to merge two quads,
+  plus a full re-scan of the weld list and two polygon-area evaluations per
+  candidate per edge. All of it is bucketed by island now.
+- The fit throws nowhere, but the seat wraps it anyway: if the stitch fails,
+  the seams still come off and the islands still become one, which is what
+  the seat promised before v2.56 and all it has to keep promising.
+
+Opus also confirmed what the algebra is: the closed-form similarity
+Procrustes, with the mirror applied consistently in the centroids, the fit,
+the apply loop, the residual and the snap. Neither reviewer found a defect
+in it.
+
+### Fable's first run here, against Opus on the same code
+
+The project rule says to say so. Fable reviewed the first draft and found
+the reference-frame bug, the meaningless `flipped` counter, the anchor
+choice, the clamp-plus-snap trade and the whole-mesh allocation - nine
+findings, no false alarms, and the two design arguments (local orientation
+instead of a global area sign; refuse rather than clamp) are what the final
+shape is built on. Opus then reviewed the rewrite and found five more real
+ones that Fable's version had not had to consider, chiefly the refused
+island used as a frame and the discarded residual. Comparable to Opus's own
+record on this codebase - 5 real defects on Spin, 4 on v2.9, none false -
+so on this evidence Fable is worth the seat the rule gives it for numerical
+geometry, and neither reviewer is a substitute for the other.
+
+**And a lesson about the probe, not the code.** The first suite passed
+36/36 against BOTH the fixed function and a rebuilt copy of the buggy one.
+It was asserting the consequence - no folds in the merged island - and on a
+cube the broken rule happened to land right. `6b` builds the case where it
+cannot: an anchor a quarter the size of the candidate, where the total
+takes the candidate's sign every time. That one fails on the old rule with
+a real fold and passes on the new. Assert the decision, not its symptom.
+
+`_uv56chk` is 48 checks driven through the real `HUB_TOOLS_UV` seat.
+
+### What this deliberately does not do
+
+No loop closure: placement is greedy, so round a cycle A-B-C-D-A the error
+accumulates and the last island compromises between two neighbours. No
+repack - a merged island is moved onto its anchor without regard for the
+rest of the atlas and can land on top of an unrelated chart; packing is
+Unwrap's job. And an edge selection, or a call from inside the 2D editor,
+still means clear-the-seam-under-it and moves nothing, which is the only
+merge those selections can name.
 
 ## Faces in the 2D view, and islands you can actually pick (2.55)
 
