@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~41,432 lines)
-- Version at time of writing: **2.48**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~41,500 lines)
+- Version at time of writing: **2.49**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -953,9 +953,13 @@ the app uses) blooms the same kind of radial menu those other holds open,
 with four seats: Object, Component, Soft, UV. Object and Component jump
 straight to that mode; Soft jumps to the last component type first if the
 press started in Object, then turns Soft on - one lift does what the tap
-cycle needs two presses for. UV is new: it isn't an editing mode, so it has
-no place in a loop that always returns to Object, and a hold is what gives it
-a door in at all. `HUB_TOOLS_MODE` is an ordinary tools array, seatless (the
+cycle needs two presses for. UV was new at the time this section describes:
+it wasn't an editing mode, so it had no place in a loop that always returns
+to Object, and a hold was what gave it a door in at all - selecting it ran
+`openUvView` directly, straight into the 2D view below. **That changed at
+2.49** - see "UV mode: a real editing mode, not a door into 2D (2.49)"
+further down; UV is now a component mode of its own, and this seat enters
+it rather than opening the 2D view. `HUB_TOOLS_MODE` is an ordinary tools array, seatless (the
 four spread evenly, Object at the top), read by the same `bloomToolRing` /
 `paintToolRing` / `closeToolRing` machinery every other ring in the app
 already uses - nothing about that machinery changed.
@@ -1061,6 +1065,99 @@ explanation) and no distinction between "no UV attribute" and "UV attribute
 present but its vertex count doesn't match position count" - both slices of
 polish, deferred rather than folded into what was meant to be a small,
 reviewable increment.
+
+## UV mode: a real editing mode, not a door into 2D (2.49)
+
+Reworks the UV workflow the mode-hold ring shipped at 2.43 (previous
+section): holding the mode button and picking UV used to jump straight into
+the read-only 2D view (`openUvView`). It now enters a new
+`App.mode === 'uv'` instead - a fifth value alongside object/vertex/edge/
+face - so seams can be marked and cleared on the 3D model itself, without
+leaving the viewport. The 2D view is still one step away: while in UV mode,
+the world ring's empty-space "Add geo" seat becomes "Open 2D UV" (same
+long-press-on-nothing gesture every mode already uses, so no new
+empty-space mechanism was needed - the world ring was already universal
+across modes, contrary to an early exploration finding that it was
+Object-only).
+
+UV mode's own door, `HUB_TOOLS_UV`, opens the same way every component
+mode's door does (hold on a selected element): four flat seats, Mark seam /
+Clear seam / Merge islands / Unwrap. "Merge islands" is provisional - it is
+currently a literal alias for "Clear seam" on the current edge selection,
+since real island-tap selection (pick a whole UV island by tapping one of
+its faces) is deferred to a fast-follow slice; clearing the seam between two
+islands is what actually merges them once the model is next unwrapped, so
+the interim behavior is an honest approximation rather than a stub, but the
+two seats are visually and behaviorally indistinguishable until that slice
+lands.
+
+Implementation strategy: rather than touch the ~170 call sites across the
+file that branch on `App.mode === 'edge'`/`'face'` for OPERATION-specific
+logic (extrude, bevel, bridge, and the rest - none of which UV mode's
+4-seat door ever invokes), only the small set of ALWAYS-ACTIVE
+INFRASTRUCTURE got a `'uv'` branch added: wireframe visibility
+(`setActiveObjectHelpersVisible`, `refreshElementColors`'s `showSel`), both
+tap-pick dispatch paths, box/lasso region-select, Grow/Shrink, the
+seam-command mode guard, and double-tap edge-loop/path select.
+
+The one genuine pitfall: the free-tap auto-detect picker is mode-agnostic
+by design - it probes vertex/edge/face by screen distance and the caller
+does `if (pick.type !== App.mode) switchToComponentType(pick.type)` to
+follow whichever type won. Left unguarded, UV mode's first tap on an edge
+would have reported `type: 'edge'` and silently kicked the user out of UV
+mode into plain Edge mode. Fixed by giving UV mode its own early return in
+the free-tap branch that only ever probes edges and returns `type: 'uv'`
+(never `'edge'`), so `pick.type === App.mode` holds and the switch never
+fires.
+
+### What review found
+
+Second opus review of a UI/interaction-focused slice (no Fable - same
+reasoning as 2.43's). Three real findings, all fixed and re-verified live:
+
+- Entering UV mode didn't clear `App.soft`. `setMode` only zeroed it for
+  `mode === 'object'`; UV has no falloff drag of its own, so entering it
+  mid-Soft left the flag stuck true with no way to turn it off from the
+  mode ring - `mode-soft` and `mode-uv` both read as lit at once, breaking
+  the ring's one-lit-seat invariant. Fixed by folding `'uv'` into that same
+  clear.
+- Delete/Backspace in UV mode was destructive and wrong, not just
+  unavailable. The global keyboard shortcut calls `deleteSelection()`,
+  whose mode dispatch only branches `vertex`/`edge` (dissolve) before
+  object mode's own early return; anything else - `'uv'` included - fell
+  through to `deleteFaceGroups(obj, Array.from(App.selectedElements))`,
+  treating UV mode's edge indices AS face-group indices and cutting
+  whatever faces happened to share those numbers. Fixed with an early
+  guard: Delete is a no-op in UV mode (toast points at Clear seam instead),
+  since there is nothing to delete there - a seam is cleared, not removed
+  as geometry.
+- Double-tap edge-loop/path select was gated to `App.mode === 'edge'`
+  specifically, so the `edgeAnchor` bookkeeping `handleTap` now tracks for
+  UV picks had no consumer - loop select, the main way to grab a ring of
+  edges to seam in one gesture, was silently unreachable from UV mode.
+  Fixed by adding `'uv'` to that gate too.
+
+Two findings investigated and NOT fixed, false alarms on inspection: the
+type-locked pick branch's "nothing of the locked type was close enough"
+fallback only ever sets a `pickBlockedBy` hint before an unconditional
+`return null` - it cannot return a wrong-type pick, so the
+switchToComponentType risk the free-tap fix addresses doesn't apply there.
+And seam/crease/sharp edge coloring in `refreshElementColors` was never
+gated by mode at all (only the *selected-edge* accent highlight was, via
+`showSel`) - seams already rendered in every mode before this slice, so
+there was nothing to fix.
+
+### What this slice deliberately does not do
+
+Real island-tap selection (pick a whole UV island by tapping one of its
+faces, for "Merge islands" to act on) - deferred, see above. Edge selection
+inside the 2D `#uvView` editor, and a UV bloom menu reachable from inside
+it - `#uvView` currently has no bloom-ring mechanism of its own at all;
+adding one, plus a third "Edge" toggle alongside its existing Island/Vertex
+modes, is its own slice. The real geometric "Merge islands" operation for
+the 2D editor (rigid rotate+translate alignment of one island onto another
+along their shared edge) - flagged for a dedicated Fable review given its
+numerical sensitivity, once it exists to review.
 
 ## UV packing: islands into the 0..1 square (2.42)
 

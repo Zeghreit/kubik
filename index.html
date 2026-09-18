@@ -2498,7 +2498,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.48</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.49</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -18786,12 +18786,14 @@ function clearAllCreases() {
   toast('All creases cleared');
 }
 
-// Edge mode: mark or clear a UV seam - a cut edge for the unwrap
+// Edge and UV mode: mark or clear a UV seam - a cut edge for the unwrap
 // (uv-commands-maps-plan.md stage 5). Architected exactly like
 // creaseSelection - same position-keyed map, same toggle logic - because a
 // seam has to survive drags and rebuilds the identical way a crease does.
+// v2.49: also callable from the new 'uv' mode, whose own door is the main
+// way to reach it now - Edge mode keeps it too, unchanged.
 function markSeamSelection(on) {
-  if (App.mode !== 'edge') { toast('Seam works in Edge mode'); return; }
+  if (App.mode !== 'edge' && App.mode !== 'uv') { toast('Seam works in Edge or UV mode'); return; }
   const obj = findObject(App.activeObjectId);
   if (!obj || !App.selectedElements.size) { toast('Select an edge first'); return; }
 
@@ -19554,7 +19556,7 @@ function refreshElementColors(obj) {
     const hasCreases = Object.keys(creases).length > 0;
     const hasShade = Object.keys(shade).length > 0;
     const hasSeams = Object.keys(seams).length > 0;
-    const showSel = App.mode === 'edge';
+    const showSel = App.mode === 'edge' || App.mode === 'uv';
     /* THE MODE'S MULTIPLIER BELONGS TO THE PLAIN WIREFRAME ALONE (a2.62a).
        It used to be a scalar on the whole material, and this one buffer
        carries four different things: the plain edge, the crease mark, the
@@ -20125,7 +20127,7 @@ function setActiveObjectHelpersVisible(obj, mode) {
      clutter, and hiding them meant a tap near a corner could be claimed by
      a vertex you could not see - the exact trap the note above warns
      about. Dots and wireframe now appear and disappear together. */
-  const inComponentMode = mode === 'vertex' || mode === 'edge' || mode === 'face';
+  const inComponentMode = mode === 'vertex' || mode === 'edge' || mode === 'face' || mode === 'uv';
   if (p) p.visible = inComponentMode;
   if (l) l.visible = inComponentMode;
   /* Hidden, not torn down: refreshElementColors runs right after every path
@@ -20315,11 +20317,15 @@ function setMode(mode) {
   if (App.opSetup) finishOpSetup(true);
   /* Object mode has no components to fall off from, so Soft cannot survive
      the trip. Coming back through the button re-enters Component, not Soft,
-     which is what makes the three positions a cycle rather than a memory. */
-  if (mode === 'object') App.soft = false;
+     which is what makes the three positions a cycle rather than a memory.
+     UV joins Object here (v2.49, review finding): it has no falloff drag of
+     its own, so entering it mid-Soft left App.soft stuck true with no way
+     to turn it off from the mode ring - mode-soft and mode-uv both read as
+     lit at once, and the ring's one-lit-seat invariant broke. */
+  if (mode === 'object' || mode === 'uv') App.soft = false;
   clearSoftField();
   App.mode = mode;
-  if (mode !== 'object') App.lastComponentMode = mode;
+  if (mode !== 'object' && mode !== 'uv') App.lastComponentMode = mode;
   App.selectedElements.clear();
   App.edgeAnchor = null;
   App.lastEdgePick = null;
@@ -25404,7 +25410,7 @@ function pickComponentOnActiveInner(ev) {
   if (hasSelection) {
     let idx = -1;
     if (App.mode === 'vertex') idx = pickVertexOnActive(ev);
-    else if (App.mode === 'edge') idx = pickEdgeOnActive(ev);
+    else if (App.mode === 'edge' || App.mode === 'uv') idx = pickEdgeOnActive(ev);
     else if (App.mode === 'face') idx = pickFaceOnActive(ev);
     if (idx >= 0) return { type: App.mode, index: idx };
 
@@ -25429,6 +25435,17 @@ function pickComponentOnActiveInner(ev) {
     else if (App.mode !== 'face' && pickFaceOnActive(ev) >= 0) pickBlockedBy = 'face';
     else if (hiddenOnly) pickBlockedBy = 'hidden';
     return null;
+  }
+
+  /* UV mode only ever selects edges (seams live on edges, islands are
+     merged by clearing the seam between them) - so it skips the
+     vertex/edge/face distance race below entirely and returns its OWN type,
+     'uv', never 'edge'. Returning 'edge' here would make the caller's
+     `if (pick.type !== App.mode) switchToComponentType(pick.type)` kick the
+     user straight out of UV mode into plain Edge mode on their first tap. */
+  if (App.mode === 'uv') {
+    const e = pickEdgeOnActive(ev);
+    return e >= 0 ? { type: 'uv', index: e } : null;
   }
 
   /* Free tap. The current mode still gets a wider catch RADIUS than the
@@ -25517,6 +25534,7 @@ function cycleEditMode() {
      already in - the button did nothing at all, ten presses running, and the
      only ways out were the bar and the keyboard. */
   if (App.curveEdit) { finishCurveEdit(true); return; }
+  if (App.mode === 'uv') { setMode('object'); return; }
   if (App.mode === 'object') { setSoft(false); setMode(App.lastComponentMode); }
   else if (!App.soft) { setSoft(true); toast('Soft \u00b7 three fingers slide to size it'); }
   else { setSoft(false); setMode('object'); }
@@ -25681,7 +25699,7 @@ function performRegionSelect(region) {
       if (skipHidden && !vertexVisible(obj, l)) { hiddenSkipped++; continue; }
       hit.push(l);
     }
-  } else if (App.mode === 'edge') {
+  } else if (App.mode === 'edge' || App.mode === 'uv') {
     topo.edges.forEach((e, i) => {
       const a = logicalPos(obj, e[0]), b = logicalPos(obj, e[1]);
       const mid = a.clone().add(b).multiplyScalar(0.5);
@@ -25753,7 +25771,7 @@ function grownElements(obj) {
       const [a, b] = topo.edges[ei];
       next.add(a); next.add(b);
     }));
-  } else if (App.mode === 'edge') {
+  } else if (App.mode === 'edge' || App.mode === 'uv') {
     App.selectedElements.forEach(ei => {
       const [a, b] = topo.edges[ei];
       [a, b].forEach(v => (G.vertEdges.get(v) || []).forEach(n => next.add(n)));
@@ -25798,7 +25816,7 @@ function shrunkElements(obj) {
       const neighbors = (G.vertEdges.get(l) || []).map(ei => { const [a, b] = topo.edges[ei]; return a === l ? b : a; });
       if (neighbors.every(n => cur.has(n))) keep.add(l);
     });
-  } else if (App.mode === 'edge') {
+  } else if (App.mode === 'edge' || App.mode === 'uv') {
     cur.forEach(ei => {
       const [a, b] = topo.edges[ei];
       const touching = new Set([...(G.vertEdges.get(a) || []), ...(G.vertEdges.get(b) || [])]);
@@ -26670,7 +26688,10 @@ function handleDoubleTap(ev) {
   }
 
   // In Edge mode a double-tap selects a run of edges rather than focusing.
-  if (App.mode === 'edge' && App.activeObjectId) {
+  // UV mode's selection is edges too (v2.49, review finding) - without this
+  // branch the edgeAnchor handleTap now tracks there went nowhere, and loop
+  // select - the main way to grab a ring of edges to seam - was unreachable.
+  if ((App.mode === 'edge' || App.mode === 'uv') && App.activeObjectId) {
     const obj = findObject(App.activeObjectId);
     let ei = obj ? pickEdgeOnActive(ev) : -1;
 
@@ -26827,7 +26848,9 @@ function handleTap(ev) {
 
     // Remember a lone previously-selected edge: if the user now double-taps a
     // different edge, we join the two together into a continuous run.
-    if (pick.type === 'edge') {
+    // Also true in UV mode (v2.49), whose picks are edges under a different
+    // type name - same double-tap-join feature works there unchanged.
+    if (pick.type === 'edge' || pick.type === 'uv') {
       const prev = Array.from(App.selectedElements);
       App.edgeAnchor = (prev.length === 1 && prev[0] !== pick.index) ? prev[0] : null;
       App.edgeAnchorTime = performance.now();
@@ -27010,6 +27033,15 @@ function deleteSelection() {
     finishSceneEdit(null);
     return;
   }
+
+  /* UV mode's selection is edge indices, same numbering as Edge mode's -
+     but with no vertex/face branch of its own here, falling through to the
+     face-group delete below would treat those edge indices AS face-group
+     indices and cut whatever faces happened to share their numbers. UV
+     mode has no delete of its own (there is nothing to delete - a seam is
+     cleared, not removed as geometry), so Delete/Backspace is a no-op here
+     rather than a silent wrong-target edit (v2.49, review finding). */
+  if (App.mode === 'uv') { toast('Nothing to delete in UV mode — use Clear seam instead'); return; }
 
   const obj = findObject(App.activeObjectId);
   if (!obj || App.selectedElements.size === 0) { toast('Nothing selected'); return; }
@@ -35215,7 +35247,14 @@ const SEL_GESTURE_NEXT = { off: 'box', box: 'lasso', lasso: 'off' };
    at all. There is no danger seat - the world ring makes and shows, it never
    destroys - so seat 7, straight down, stays empty. */
 const HUB_TOOLS_WORLD = [
-  { key: 'addgeo', icon: 'object', label: 'Add geo', seat: 0, run: openGeoRing },
+  /* Doubles as the door into the 2D UV editor while in UV mode (v2.49) -
+     the world ring already blooms on empty space in every mode, so this
+     seat's label/action just switch with App.mode rather than adding a
+     second empty-space mechanism. */
+  { key: 'addgeo', icon: 'object',
+    label: () => (App.mode === 'uv' ? 'Open 2D UV' : 'Add geo'),
+    seat: 0,
+    run: () => { if (App.mode === 'uv') openUvView(); else openGeoRing(); } },
   { key: 'pivot', icon: 'pivot', label: 'Pivot', seat: 1, run: openPivotRing },
   { key: 'snap', icon: 'snap', label: 'Snap', seat: 2,
     on: () => App.snapMode !== 'off', run: toggleSnapping },
@@ -35259,6 +35298,25 @@ const HUB_TOOLS_WORLD = [
 // The Material cycle op is gone (a2.9) - the materials tray on the right
 // border replaced it with a real picker; see the Materials fly-out below.
 
+/* UV mode's own door (v2.49). Four flat seats, no sub-doors: mark/clear a
+   seam on the selected edges, merge two islands into one, and unwrap.
+   'merge' is provisional - real island-tap selection (picking a whole UV
+   island by tapping one of its faces) is planned as a fast-follow slice;
+   until then it acts exactly like 'unseam' on the current edge selection,
+   which is an honest enough approximation of "these two islands become one"
+   since clearing the seam between them is what actually merges them when
+   the model is next unwrapped. */
+const HUB_TOOLS_UV = [
+  { key: 'seam', icon: 'seam', label: 'Mark seam', seat: 0,
+    run: () => markSeamSelection(true) },
+  { key: 'unseam', icon: 'unseam', label: 'Clear seam', seat: 1,
+    run: () => markSeamSelection(false) },
+  { key: 'merge', icon: 'unseam', label: 'Merge islands', seat: 2,
+    run: () => markSeamSelection(false) },
+  { key: 'unwrap', icon: 'unwrap', label: 'Unwrap', seat: 3,
+    run: unwrapSelection }
+];
+
 function currentHubTools() {
   if (App.mode === 'object') {
     if (App.selectedObjectIds.size === 0) return HUB_TOOLS_EMPTY;
@@ -35285,6 +35343,7 @@ function currentHubTools() {
   if (App.mode === 'vertex') return HUB_TOOLS_VERTEX;
   if (App.mode === 'edge') return HUB_TOOLS_EDGE;
   if (App.mode === 'face') return HUB_TOOLS_FACE;
+  if (App.mode === 'uv') return HUB_TOOLS_UV;
   return [];
 }
 
@@ -37189,7 +37248,7 @@ const HUB_TOOLS_MODE = [
     on: () => App.mode === 'object',
     run: () => { setSoft(false); setMode('object'); } },
   { key: 'mode-component', label: 'Component',
-    on: () => App.mode !== 'object' && !App.soft,
+    on: () => App.mode !== 'object' && App.mode !== 'uv' && !App.soft,
     run: () => { setSoft(false); setMode(App.lastComponentMode); } },
   { key: 'mode-soft', label: 'Soft',
     on: () => App.mode !== 'object' && App.soft,
@@ -37207,10 +37266,13 @@ const HUB_TOOLS_MODE = [
       }
       setSoft(true);
     } },
-  // No `on` here (review finding, v2.43a): #uvView sits at z-index 41,
-  // above the hub at 16, so while it is showing the button that would read
-  // this can't be pressed - the seat's lit state could never be seen.
-  { key: 'mode-uv', label: 'UV', run: openUvView }
+  // v2.49: UV used to open #uvView (the 2D editor) directly, which is why
+  // this seat had no `on` - #uvView sits above the hub in z-index, so a lit
+  // state could never be seen while it showed. Now it enters the new 'uv'
+  // 3D mode instead (seams/islands on the model itself); the 2D editor is
+  // reached from there via the world ring's "Open 2D UV" seat, so the old
+  // z-index concern no longer applies and `on` can reflect the mode.
+  { key: 'mode-uv', label: 'UV', on: () => App.mode === 'uv', run: () => setMode('uv') }
 ];
 // Both buttons this ring opens from (#hubBtn, #hdrMode) sit in a screen
 // corner on every layout the app ships - see cornerLineLayout/bloomToolRing
