@@ -2111,6 +2111,34 @@
   #uvViewSvg .uv-fill { stroke: none; fill-opacity: 0.35; }
   #uvViewSvg .uv-island { cursor: grab; }
   #uvViewSvg .uv-island.dragging { cursor: grabbing; }
+  /* Component mode toggle (v2.48), same base button look .insp-head already
+     uses elsewhere, just smaller - a segmented pair fits the card's own
+     header row (.insp-head is space-between with a gap, so a middle child
+     lands centred between the label and the close button for free). */
+  .uv-mode-toggle { display: flex; gap: 4px; }
+  .uv-mode-btn {
+    min-height: 26px; padding: 2px 10px; font-size: 11px; font-family: var(--mono);
+    font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  }
+  .uv-mode-btn.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  /* Per-attribute-vertex hit target (v2.48) - deliberately a large, mostly
+     transparent disc rather than a small precise dot, the same reasoning
+     the per-island fill above already spells out: an outline (or a dot
+     sized to look right) is hard to grab by touch. r=3.2 in the card's own
+     0..100 viewBox is close to the 44px minimum #geoBar already uses for a
+     touch target at this card's default on-screen size (min(560px,100%)).
+     Two DIFFERENT attribute vertices can legitimately share one screen
+     position (an internal, non-seam edge between two face groups that
+     unwrapped to the same spot) - the later one in paint order sits on top
+     and is what a tap there reaches; picking the other one is out of scope
+     for this slice, the same tradeoff Blender's own overlapping-vertex
+     picking exists to solve and this file does not attempt yet. */
+  #uvViewSvg .uv-vertex {
+    fill: var(--text); fill-opacity: 0.55; stroke: var(--panel); stroke-width: 0.4;
+    cursor: grab;
+  }
+  #uvViewSvg .uv-vertex.selected { fill: var(--accent); fill-opacity: 0.95; }
+  #uvViewSvg .uv-vertex.dragging { cursor: grabbing; }
   #uvViewEmpty { padding: 24px 8px; text-align: center; color: var(--text-dim); }
   #helpCard {
     background: var(--panel); border: var(--rule) solid var(--line); border-radius: var(--r-md);
@@ -2433,6 +2461,10 @@
       <div id="uvViewCard">
         <div class="insp-head">
           <span>UV</span>
+          <div id="uvModeToggle" class="uv-mode-toggle" role="group" aria-label="UV edit mode">
+            <button id="uvModeIslandBtn" class="uv-mode-btn active" data-mode="island" aria-pressed="true">Island</button>
+            <button id="uvModeVertexBtn" class="uv-mode-btn" data-mode="vertex" aria-pressed="false">Vertex</button>
+          </div>
           <button id="uvViewClose" title="Close"></button>
         </div>
         <svg id="uvViewSvg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet"></svg>
@@ -2466,7 +2498,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.47</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.48</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -36515,6 +36547,30 @@ function renderUvView(obj, ed) {
     g.appendChild(edges);
     uvViewSvgEl.appendChild(g);
   }
+
+  // One hit-target circle per attribute vertex with a finite UV (v2.48),
+  // vertex mode only - built from the same ed.groups walk as the fills
+  // above rather than 0..ed.uvs.length/2, so a vertex no triangle actually
+  // uses (dead data an op left behind) never gets a dot nothing can select
+  // meaningfully. Paint order is index order: last-drawn sits on top,
+  // which is what a tap resolves to when two attribute vertices share one
+  // screen position (see the .uv-vertex CSS comment).
+  if (uvCompMode === 'vertex') {
+    const seen = new Uint8Array(ed.uvs.length / 2);
+    ed.groups.forEach(g => g.triangles.forEach(t => t.forEach(ai => {
+      if (seen[ai]) return;
+      const u = ed.uvs[ai * 2], v = ed.uvs[ai * 2 + 1];
+      if (!Number.isFinite(u) || !Number.isFinite(v)) return;
+      seen[ai] = 1;
+      const c = document.createElementNS(NS, 'circle');
+      c.setAttribute('class', 'uv-vertex' + (uvSel.has(ai) ? ' selected' : ''));
+      c.setAttribute('cx', r2(toX(u)));
+      c.setAttribute('cy', r2(toY(v)));
+      c.setAttribute('r', '3.2');
+      c.dataset.ai = String(ai);
+      uvViewSvgEl.appendChild(c);
+    })));
+  }
   return { ok: true };
 }
 
@@ -36526,6 +36582,18 @@ function refreshUvView(obj) {
   let ed;
   try { ed = toEditable(obj.mesh); }
   catch (e) { console.warn('refreshUvView: toEditable failed', e); return; }
+  // Drop any selected id the rebuild just invalidated (review finding,
+  // v2.48) - a mesh op that changes the attribute-vertex count (or a
+  // caller that swaps uvViewObj without going through closeUvView first)
+  // otherwise leaves uvSel pointing at indices that now mean a different
+  // vertex, or none at all past ed.uvs.length. This is a bounds check
+  // only, not a true identity check - it cannot catch every case an op
+  // could cause, but it is what stands between a stale selection and the
+  // next drag silently editing the wrong vertex.
+  if (uvSel.size && ed.uvs) {
+    const n = ed.uvs.length / 2;
+    uvSel.forEach(ai => { if (ai < 0 || ai >= n) uvSel.delete(ai); });
+  }
   const res = renderUvView(obj, ed);
   uvViewSvgEl.style.display = res.ok ? '' : 'none';
   uvViewEmptyEl.style.display = res.ok ? 'none' : '';
@@ -36551,6 +36619,61 @@ let uvDrag = null;
 //   pointerId, startX, startY, lastSvgX, lastSvgY, dx, dy,
 //   startClientX, startClientY, lastClientX, lastClientY,
 //   pointerId2, p1, p2, startAngle, startDist, angleDeg, scale }
+
+// Component UV editing (v2.48). uvCompMode gates which gesture the card's
+// pointer listeners run: 'island' is everything above (v2.45/v2.47,
+// unchanged), 'vertex' hands taps and drags to a separate, simpler set of
+// listeners below instead. A UV vertex here is one ATTRIBUTE vertex's own
+// (u,v) pair - the same indexing ed.uvs and islandVertexMap's attrIsland
+// already use - not the 3D viewport's LOGICAL vertex (topo.logicalGroups).
+// That is a deliberate departure from mirroring the 3D viewport's index
+// space, not an oversight: a seam's whole reason to exist is that two
+// attribute vertices welded at the same 3D position can carry different
+// UV, so selecting and moving by logical identity would silently weld
+// them back together the moment either one moved. What IS mirrored from
+// the 3D viewport is the interaction shape - a mode toggle, tap to
+// select, drag the whole current selection together - just addressed in
+// UV's own space instead of the mesh's.
+let uvCompMode = 'island'; // 'island' | 'vertex'
+// Selected attribute-vertex indices in vertex mode. A plain Set, like
+// App.selectedElements - cleared whenever the card opens, closes, or the
+// mode toggle changes, since a selection from one mode (or one object)
+// has no meaning in another.
+let uvSel = new Set();
+// The in-progress vertex drag, or null - kept separate from uvDrag rather
+// than folded into its mode enum, so this whole feature is additive to the
+// island gesture code above: nothing already shipped and reviewed in
+// v2.45/v2.47 has to change shape to make room for it.
+// { ids, els: Map<ai, circleEl>, startX, startY, dx, dy,
+//   startClientX, startClientY, lastClientX, lastClientY,
+//   pointerId, tapAi, tapWasSelected }
+let uvVDrag = null;
+
+// Switches between the whole-island gesture (v2.45/v2.47) and per-vertex
+// editing (v2.48), and always drops whatever selection/gesture the OTHER
+// mode had - a selection or a live drag carried across a mode switch would
+// either mean nothing (vertex ids in island mode) or point at attribute
+// vertices the user never chose (an island's worth of them, suddenly "in
+// vertex mode selected" just because vertex mode is now on).
+function setUvCompMode(mode) {
+  if (uvCompMode === mode) return;
+  if (uvDrag) endUvDrag(false);
+  if (uvVDrag) endUvVertexDrag(false);
+  uvCompMode = mode;
+  uvSel.clear();
+  paintUvModeButtons(mode);
+  if (uvViewObj) refreshUvView(uvViewObj);
+}
+// class AND aria-pressed together (review finding) - class alone left a
+// screen reader unable to tell which of the pair is on, since role=group
+// plus two plain buttons reads identically either way.
+function paintUvModeButtons(mode) {
+  const isl = document.getElementById('uvModeIslandBtn'), vtx = document.getElementById('uvModeVertexBtn');
+  isl.classList.toggle('active', mode === 'island'); isl.setAttribute('aria-pressed', String(mode === 'island'));
+  vtx.classList.toggle('active', mode === 'vertex'); vtx.setAttribute('aria-pressed', String(mode === 'vertex'));
+}
+document.getElementById('uvModeIslandBtn').addEventListener('click', () => setUvCompMode('island'));
+document.getElementById('uvModeVertexBtn').addEventListener('click', () => setUvCompMode('vertex'));
 
 function openUvView() {
   const obj = findObject(App.activeObjectId);
@@ -36685,6 +36808,14 @@ function closeUvView() {
   // own pointerup - devtools, a resize, anything unforeseen) is cancelled,
   // not committed: closing was never a gesture aimed at this island.
   if (uvDrag) endUvDrag(false);
+  if (uvVDrag) endUvVertexDrag(false);
+  // Always reopens in Island mode with nothing selected (v2.48) - a
+  // vertex selection has no meaning once the card is gone, and starting
+  // fresh next time is one less thing to explain than "remembers where
+  // you left it".
+  uvCompMode = 'island';
+  uvSel.clear();
+  paintUvModeButtons('island');
   uvViewEl.classList.remove('show');
   uvViewObj = null;
 }
@@ -36696,7 +36827,7 @@ document.getElementById('uvViewClose').addEventListener('click', closeUvView);
 // can start and end on the backdrop without ever registering as a drag,
 // synthesizing a click that would otherwise silently throw the gesture
 // away with no commit and no feedback.
-uvViewEl.addEventListener('click', (ev) => { if (ev.target === uvViewEl && !uvDrag) closeUvView(); });
+uvViewEl.addEventListener('click', (ev) => { if (ev.target === uvViewEl && !uvDrag && !uvVDrag) closeUvView(); });
 
 /* DRAGGING AN ISLAND (v2.45), PINCHING ONE (v2.47). One finger translates;
    a second finger, arriving while the first is already holding an island,
@@ -36704,6 +36835,13 @@ uvViewEl.addEventListener('click', (ev) => { if (ev.target === uvViewEl && !uvDr
    direct manipulation, no gizmo and no hold-to-arm step, the app's own
    headline principle for the 3D viewport applying here just as much. */
 uvViewSvgEl.addEventListener('pointerdown', (ev) => {
+  // Component modes (v2.48) run their own, separate listeners below - the
+  // island gesture is Island-mode-only now, not because a finger on a
+  // vertex dot couldn't also be read as one on the island beneath it, but
+  // because a mode toggle the user just pressed should mean what it says:
+  // Vertex mode moves vertices, full stop, never a whole island by
+  // accident underneath one.
+  if (uvCompMode !== 'island') return;
   if (ev.pointerType === 'mouse' && ev.button !== 0) return;
   // A second finger while the first already holds an island starts the
   // pinch (v2.47), checked first and unconditionally - Chromium marks only
@@ -36875,6 +37013,167 @@ uvViewSvgEl.addEventListener('pointercancel', (ev) => {
   if (!uvDrag) return;
   if (ev.pointerId !== uvDrag.pointerId && ev.pointerId !== uvDrag.pointerId2) return;
   endUvDrag(false);
+});
+
+/* SELECTING AND DRAGGING UV VERTICES (v2.48). One finger only - no pinch,
+   the way a single 3D vertex has no rotate/scale of its own either, only a
+   position. Tapping is always additive here (add if unselected, remove if
+   already selected) and only an empty-space tap clears the rest - the
+   3D viewport's own "taps add up" multiSelect behaviour, just always on,
+   since this card has no room, and the main toolbar's own multiSelect
+   toggle is behind the dimmed backdrop while the card is open. Dragging
+   moves the WHOLE current selection, exactly like the 3D viewport's
+   direct drag - a fresh tap-drag on an unselected vertex adds it to
+   whatever was already held first, so one continuous gesture can pick up
+   an extra vertex and carry the group on in the same motion. */
+function paintUvVertexSelection() {
+  uvViewSvgEl.querySelectorAll('.uv-vertex').forEach(c => {
+    c.classList.toggle('selected', uvSel.has(+c.dataset.ai));
+  });
+}
+function endUvVertexDrag(commit) {
+  if (!uvVDrag) return;
+  const { ids, els, dx, dy, startClientX, startClientY, lastClientX, lastClientY,
+    tapAi, tapWasSelected } = uvVDrag;
+  els.forEach(el => { el.classList.remove('dragging'); el.removeAttribute('transform'); });
+  uvVDrag = null;
+  if (!commit) {
+    // Cancelled (pointercancel) - undo pointerdown's provisional add so an
+    // aborted gesture never changes the selection (review finding): a tap
+    // that never got to decide tap-vs-drag should leave things exactly as
+    // they were, the same as commit=false already does for the island.
+    if (!tapWasSelected) uvSel.delete(tapAi);
+    return;
+  }
+  const movedPx = Math.hypot(lastClientX - startClientX, lastClientY - startClientY);
+  // Real screen movement can still commit nothing once the margin clamp
+  // (see pointermove) has already pinned every selected vertex at the
+  // card's edge - dx/dy round to zero even though a finger travelled far
+  // past RING_MOVE_CANCEL_PX (review finding). Read as a drag that simply
+  // couldn't go anywhere, not a tap: the selection stays exactly as the
+  // provisional add/keep left it, but nothing is written to history.
+  const clampedAway = Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01;
+  if (movedPx <= RING_MOVE_CANCEL_PX) {
+    // A tap, not a drag: pointerdown below provisionally added tapAi to
+    // uvSel so a drag starting on it would carry it - undo that add if the
+    // vertex was not actually selected before this tap landed, exactly
+    // mirroring toggleElement's own has-and-additive check.
+    if (tapWasSelected) uvSel.delete(tapAi); else uvSel.add(tapAi);
+    paintUvVertexSelection();
+    return;
+  }
+  if (clampedAway) return;
+  commitUvVertexDrag(ids, dx, dy);
+}
+// Same translate-only math commitUvIslandTransform uses for dx/dy, minus
+// the pivot/rotate/scale terms a single vertex or a loose group of them
+// has no meaningful centre to rotate around (see the CLAUDE.md scope note
+// - rotate/scale on a component selection is a later slice, not this one).
+function commitUvVertexDrag(ids, dxSvg, dySvg) {
+  const obj = uvViewObj;
+  if (!obj || !obj.mesh || !obj.mesh.geometry) return;
+  const span = 100 - 2 * UV_VIEW_PAD;
+  const du = dxSvg / span, dv = -dySvg / span;
+  let ed;
+  try { ed = toEditable(obj.mesh); }
+  catch (e) { console.warn('commitUvVertexDrag: toEditable failed', e); return; }
+  if (!ed.uvs || !ed.uvs.length) return;
+  let moved = 0;
+  ids.forEach(ai => {
+    if (ai < 0 || ai * 2 + 1 >= ed.uvs.length) return;
+    ed.uvs[ai * 2] += du;
+    ed.uvs[ai * 2 + 1] += dv;
+    moved++;
+  });
+  if (!moved) return;
+  rebuildFromEditable(obj, ed);
+  finishMeshEdit(obj, moved === 1 ? 'Moved UV vertex' : `Moved ${moved} UV vertices`);
+  refreshUvView(obj);
+}
+uvViewSvgEl.addEventListener('pointerdown', (ev) => {
+  if (uvCompMode !== 'vertex') return;
+  if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+  // Claimed even when this turns out to be an ignored second finger or an
+  // empty-space tap (review finding) - #uvViewSvg already carries
+  // touch-action:none so a stray touch was never going to scroll the
+  // page, but a second finger arriving mid-drag is exactly the case that
+  // must not be left for the browser to interpret as anything else while
+  // the first finger's drag is still live under pointer capture.
+  ev.preventDefault();
+  if (uvVDrag) return; // an unexpected second pointer - ignore, single-finger only
+  const c = ev.target.closest && ev.target.closest('.uv-vertex');
+  if (!c) {
+    // Empty-space tap: clear the selection, same as the island backdrop.
+    if (uvSel.size) { uvSel.clear(); paintUvVertexSelection(); }
+    return;
+  }
+  const ai = +c.dataset.ai;
+  const tapWasSelected = uvSel.has(ai);
+  if (!tapWasSelected) uvSel.add(ai); // provisional - see endUvVertexDrag's tap branch
+  const p = uvViewPoint(ev);
+  const els = new Map();
+  // The screen-space box every selected dot's own centre sits in right
+  // now, so pointermove below can clamp the shared dx/dy against it - the
+  // same UV_VIEW_CENTER_MARGIN safeguard the island drag already has
+  // (review finding, v2.45) applies here for the identical reason: past
+  // the card's edge a dot is clipped by the SVG's own bounds, not just
+  // dimmed behind a backdrop, so nothing - not even a tap where it used to
+  // be - can reach it again. Found live in this slice's own testing (a
+  // vertex dragged just past u=1 already vanished), not by a review pass.
+  let minCx = Infinity, maxCx = -Infinity, minCy = Infinity, maxCy = -Infinity;
+  uvSel.forEach(id => {
+    const el = uvViewSvgEl.querySelector(`.uv-vertex[data-ai="${id}"]`);
+    if (!el) return;
+    els.set(id, el);
+    el.classList.add('dragging', 'selected');
+    const cx = parseFloat(el.getAttribute('cx')), cy = parseFloat(el.getAttribute('cy'));
+    if (cx < minCx) minCx = cx; if (cx > maxCx) maxCx = cx;
+    if (cy < minCy) minCy = cy; if (cy > maxCy) maxCy = cy;
+  });
+  uvVDrag = {
+    ids: Array.from(uvSel), els,
+    pointerId: ev.pointerId, startX: p.x, startY: p.y, dx: 0, dy: 0,
+    minCx, maxCx, minCy, maxCy,
+    startClientX: ev.clientX, startClientY: ev.clientY,
+    lastClientX: ev.clientX, lastClientY: ev.clientY,
+    tapAi: ai, tapWasSelected,
+  };
+  try { uvViewSvgEl.setPointerCapture(ev.pointerId); } catch (e) {}
+  ev.preventDefault();
+});
+uvViewSvgEl.addEventListener('pointermove', (ev) => {
+  if (!uvVDrag || ev.pointerId !== uvVDrag.pointerId) return;
+  const p = uvViewPoint(ev);
+  let dx = p.x - uvVDrag.startX, dy = p.y - uvVDrag.startY;
+  // Clamp on the delta, not on the rendered transform (same reasoning as
+  // the island drag's own clamp): what is shown live has to be the exact
+  // value commitUvVertexDrag writes on release. Guarded per axis (review
+  // finding) - a selection already wider than the 100-2*M margin band (a
+  // vertex dragged past u=0/1 earlier, or two vertices far enough apart)
+  // makes the lower bound exceed the upper one, and Math.min(Math.max(...))
+  // over an inverted [lo,hi] silently collapses to the fixed upper bound
+  // no matter where the finger goes - the selection would teleport once
+  // and then refuse to move at all. Skipping the clamp on an axis it can't
+  // satisfy just lets that axis move freely instead, same as an island too
+  // big for its own margin already implicitly would.
+  const M = UV_VIEW_CENTER_MARGIN;
+  const loX = M - uvVDrag.minCx, hiX = (100 - M) - uvVDrag.maxCx;
+  const loY = M - uvVDrag.minCy, hiY = (100 - M) - uvVDrag.maxCy;
+  if (loX <= hiX) dx = Math.min(Math.max(dx, loX), hiX);
+  if (loY <= hiY) dy = Math.min(Math.max(dy, loY), hiY);
+  uvVDrag.dx = dx; uvVDrag.dy = dy;
+  uvVDrag.lastClientX = ev.clientX; uvVDrag.lastClientY = ev.clientY;
+  const t = `translate(${dx.toFixed(2)},${dy.toFixed(2)})`;
+  uvVDrag.els.forEach(el => el.setAttribute('transform', t));
+});
+uvViewSvgEl.addEventListener('pointerup', (ev) => {
+  if (!uvVDrag || ev.pointerId !== uvVDrag.pointerId) return;
+  uvVDrag.lastClientX = ev.clientX; uvVDrag.lastClientY = ev.clientY;
+  endUvVertexDrag(true);
+});
+uvViewSvgEl.addEventListener('pointercancel', (ev) => {
+  if (!uvVDrag || ev.pointerId !== uvVDrag.pointerId) return;
+  endUvVertexDrag(false);
 });
 
 /* HOLD FOR THE FOUR (v2.43). A tap still cycles Object -> Component -> Soft
@@ -41042,9 +41341,15 @@ if (PICK_DEBUG) {
     setSoft, cycleEditMode, engageSoftSlide, softSlideMove, endSoftSlide, refreshSoftHud,
     // v2.43: the mode-hold bloom menu and the read-only 2D UV view it opens.
     // v2.45: dragging an island in that view. v2.47: pinch to rotate/scale it.
+    // v2.48: a Vertex mode alongside Island, to select and drag individual
+    // UV vertices (attribute-vertex indices, not the 3D viewport's logical
+    // ones - see the uvCompMode comment above its declaration).
     openUvView, closeUvView, renderUvView, HUB_TOOLS_MODE,
     refreshUvView, islandVertexMap, commitUvIslandTransform,
     startUvPinch, updateUvPinchTransform,
+    setUvCompMode, commitUvVertexDrag,
+    get uvCompMode() { return uvCompMode; },
+    get uvSel() { return Array.from(uvSel); },
     get uvViewOpen() { return uvViewEl.classList.contains('show'); },
     enterIsolation, exitIsolation, reconcileIsolation, applyIsolation, objectPickable,
     unhideObject, isolationOn,

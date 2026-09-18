@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~41,133 lines)
-- Version at time of writing: **2.47**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~41,432 lines)
+- Version at time of writing: **2.48**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -589,6 +589,151 @@ moved (4 of 4 correct picks at both corners, aiming at each seat's true
 on-screen position). Its two real findings - the overhang and the
 fallback's lost margin - are the fixes described above, both re-verified
 live afterward rather than taken on the review's numbers alone.
+
+## UV editing by component: a Vertex mode (2.48)
+
+Stage 5's first slice of per-component UV editing, and the first slice of
+"эдитинг юви по компонентам и анфолд/релакс" the user asked for - scoped
+via three AskUserQuestion prompts before any code: component editing
+before unfold/relax ("Сначала эдитинг по компонентам"), the full set of
+components - vertices, edges, faces - modelled on "как в 3D-вьюпорте
+сейчас" ("Вершины, рёбра и грани"), and both replacing the current
+best-fit-plane unwrap with a real LSCM/ABF solver AND adding a separate
+Relax pass, deferred until after component editing ships ("Оба
+варианта"). This version ships vertices only - edges and faces are their
+own later slices, the same way island-drag (2.45) and island-pinch (2.47)
+shipped separately rather than as one commit.
+
+**What "mirrors the 3D viewport" actually means here, and what doesn't.**
+The 3D viewport's Vertex/Edge/Face modes select by LOGICAL identity
+(`topo.logicalGroups` - one entry per welded 3D position, however many
+attribute vertices share it). A UV vertex here is deliberately NOT that:
+it is one ATTRIBUTE vertex's own `(u,v)` pair, the same indexing
+`ed.uvs` and `islandVertexMap`'s `attrIsland` already use. The reason is
+a seam's whole purpose: two attribute vertices welded at the same 3D
+point can legitimately carry different UV, so selecting by logical
+identity would silently weld them back together the moment either one
+moved - editing UV by logical identity would make seams undraggable
+apart, which defeats having them. What IS mirrored is the interaction
+shape: a mode toggle, tap to select, drag moves the whole current
+selection together - not the index space underneath it.
+
+**The toggle.** Two small buttons, Island / Vertex, in the UV card's own
+header (`.insp-head` is already `space-between`, so a middle child lands
+centred between the "UV" label and the close button for free - no new
+layout code needed). Switching modes always clears whatever selection or
+live gesture the OTHER mode had: a vertex id means nothing in Island
+mode, and an island's worth of vertices would suddenly read as "selected"
+for no reason a user asked for if carried over. Closing the card resets
+to Island mode with nothing selected, the same "starts fresh, no state to
+explain" choice v2.45's own drag-vs-no-drag question settled.
+
+**Selecting.** Vertex mode draws one hit-target circle per attribute
+vertex with a finite UV (r=3.2 in the card's 0..100 viewBox - close to
+the 44px `#geoBar` already treats as a touch-target minimum at this
+card's default size). Tapping is ALWAYS additive here: add if
+unselected, remove if already selected and the tap didn't turn into a
+drag. There is no separate multi-select toggle to check, unlike the 3D
+viewport's `App.multiSelect` - that toggle lives on the main toolbar,
+which sits behind the UV card's own dimmed backdrop and is not reachable
+while the card is open, so "taps add up, tap empty space to clear" is
+simply always on inside this modal rather than something to wire up
+against a flag it cannot see. Two different attribute vertices can
+legitimately land on the exact same screen position (an internal,
+non-seam edge between two face groups whose UV happens to coincide) -
+paint order (last-drawn on top) decides which one a tap there reaches;
+picking the other one is out of scope for this slice, the same tradeoff
+Blender's own overlapping-vertex picking exists to solve.
+
+**Dragging.** Moves the whole current selection together, translate
+only - no rotate/scale on a component selection in this slice (the user's
+answer scoped WHICH components, not which transforms; island rotate/scale
+already cost a full version on its own in 2.47, and nothing asked for the
+same on a vertex group yet). The tap-vs-drag threshold is the same
+`RING_MOVE_CANCEL_PX` (8 real screen pixels) the island gesture already
+uses, and a fresh tap-drag on an unselected vertex adds it to whatever was
+already held, so one continuous motion can pick up an extra vertex and
+carry the group on.
+
+**The margin clamp - found live, not by review.** The island drag has
+carried a `UV_VIEW_CENTER_MARGIN` clamp since a 2.45 review finding: past
+the card's edge, an island's element sits behind the dimmed backdrop, so
+a tap meant to grab it again instead closes the whole view. Vertex
+dragging needed the same idea for a different reason - a dragged vertex
+pushed past the SVG's own 0..100 viewBox is not dimmed, it is CLIPPED: the
+circle stops painting there at all, so nothing, not even a tap where it
+used to be, can reach it again. This was not caught by design or by
+opus's review - it was found live, testing this slice's own first drag
+(a vertex nudged just past u=1 vanished off the visible card). The fix
+clamps the shared drag delta against the tightest bound across every
+selected vertex's own current position, the same per-axis
+`Math.min(Math.max(...))` recipe the island drag already uses.
+
+**Four real findings from a fresh opus review, all fixed and re-verified
+live:**
+1. *Clamp inversion on a wide selection.* The margin clamp's
+   `Math.min(Math.max(dx, lo), hi)` silently collapses to a fixed `hi`
+   whenever `lo > hi` - reachable whenever the selected vertices already
+   span more than the 96-unit margin band (a vertex previously dragged
+   near one edge, or UV outside 0..1 from an import). The selection would
+   teleport once on the first move and then refuse to go anywhere else,
+   in either direction. Fixed by skipping the clamp per-axis whenever
+   `lo > hi` for that axis, letting it track the pointer freely instead -
+   verified live with two vertices forced to u=-0.6 and u=1.6 (SVG-unit
+   span 202, nowhere near fitting in 96): before the fix this teleports
+   and sticks; after, three consecutive moves (+5, -5, +20 SVG units)
+   produced `translate(5,0)`, `translate(-5,0)`, `translate(20,0)` -
+   exact 1:1 tracking, confirmed against the raw pointer delta by hand.
+2. *A fully-clamped drag still commits.* The tap-vs-drag decision uses
+   real screen pixels (correct - it has to, to match `RING_MOVE_CANCEL_PX`
+   the same way the island gesture does), but a vertex already pinned at
+   the boundary can have its clamped `dx`/`dy` round to zero while
+   `movedPx` is still large, so a real drag that could not actually move
+   anything was still writing "Moved UV vertex" to history. Fixed with an
+   epsilon check on the clamped delta before calling commit - verified
+   live: a vertex forced to exactly the clamp boundary (`u = 94/92`, so
+   `toX(u) = 98.00` on the nose), dragged another 30 units further in the
+   same direction, live-transforms to `translate(0,0)` and the UV value
+   is bit-for-bit unchanged afterward (`1.02173912525177` before and
+   after) - no rebuild, no history entry, confirmed by reading the
+   attribute back, not just watching the toast.
+3. *A cancelled gesture kept its provisional selection.* Pointerdown
+   provisionally adds the tapped vertex to the selection so a drag
+   starting on it carries it; on `pointercancel` (`commit=false`) that
+   provisional add was never rolled back, so an aborted gesture could
+   silently change the selection. Fixed by undoing the add on the
+   non-commit path, mirroring the island gesture's own commit=false
+   meaning "nothing happened."
+4. *A second finger during a vertex drag fell through to the browser.*
+   The busy-pointer guard returned before calling `preventDefault()`, so
+   a stray second touch arriving mid-drag was left for the browser to
+   interpret rather than explicitly claimed - `#uvViewSvg` already
+   carries `touch-action:none` so this was unlikely to cause a visible
+   scroll/zoom in practice, but it is the one case (pointer capture
+   already live on the first finger) where leaving a second touch
+   unclaimed is worth closing outright rather than relying on the CSS
+   property alone. Fixed by moving `preventDefault()` before the busy
+   check.
+
+A fifth, lower-severity finding - `uvSel` can hold indices a mesh op run
+elsewhere invalidates, since nothing else can currently reach an op while
+the card's backdrop blocks the rest of the UI - got a cheap defensive
+fix anyway: `refreshUvView` now drops any selected id past the current
+`ed.uvs` bounds before rendering, a bounds check rather than a true
+identity check, but it is what stands between a stale selection and the
+next drag editing the wrong vertex if that assumption about the backdrop
+ever stops holding. A sixth (the extended `!uvVDrag` backdrop-click
+guard is inert, since `pointerup` already nulls it before `click` fires)
+turned out to be the same latent, pre-existing characteristic the
+original `!uvDrag` guard from 2.47 already has - not something this
+slice introduced, left alone. Also added: `aria-pressed` on the two mode
+buttons, toggled alongside the `active` class, so which mode is on
+doesn't rely on visual state alone.
+
+**Not yet built:** Edge and Face component modes (next slices); rotate/
+scale on a component selection; picking the OTHER vertex when two share
+a screen position; Unfold/Relax (explicitly deferred by the user's own
+stated order).
 
 ## Pinch to rotate/scale a UV island (2.47)
 
