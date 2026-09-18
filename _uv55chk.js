@@ -190,6 +190,43 @@
     ok('6.reset смена режима очистила выбор граней', K.uvFaceSel.length === 0 && K.uvIslandSel.length === 0);
     mark('6');
 
+    // ---------------------------------------------------------------- 9
+    // Размер точки (v2.60): видимая маленькая, хит-таргет прежний, и оба
+    // держат постоянный размер на экране при зуме.
+    {
+      K.setUvCompMode('vertex');
+      await wait(60);
+      const dot = svg.querySelector('.uv-vertex');
+      ok('9.dot    точки в вершинном режиме есть', !!dot);
+      if (dot) {
+        const rAttr = parseFloat(dot.getAttribute('r'));
+        ok('9.dot    видимая точка много меньше прежних 3.2',
+           rAttr > 0 && rAttr < 1.2, 'r=' + rAttr);
+        const cs = getComputedStyle(dot);
+        const sw = parseFloat(cs.strokeWidth);
+        ok('9.dot    но прозрачная обводка возвращает прежний охват',
+           rAttr + sw / 2 > 2.8, 'r=' + rAttr + ' stroke=' + sw +
+           ' охват=' + (rAttr + sw / 2).toFixed(2));
+        ok('9.dot    и она действительно ловит указатель',
+           cs.pointerEvents === 'all', 'pointer-events=' + cs.pointerEvents);
+        // Зум вдвое - радиус в единицах SVG обязан уполовиниться, иначе на
+        // экране точка вырастет.
+        const before = K.uvDotR();
+        K.zoomUvViewBoxAt(0.5, 50, 50);
+        await wait(20);
+        const after = K.uvDotR();
+        ok('9.dot    при зуме радиус следует за viewBox',
+           Math.abs(after - before * 0.5) < 0.02,
+           'было ' + before + ' стало ' + after);
+        ok('9.dot    и переменная на svg обновилась',
+           Math.abs(parseFloat(svg.style.getPropertyValue('--uv-dot')) - after) < 1e-6,
+           'var=' + svg.style.getPropertyValue('--uv-dot'));
+        K.resetUvViewBox();
+        await wait(20);
+      }
+    }
+    mark('9');
+
     finish();
   }
 
@@ -201,7 +238,12 @@
         run().catch(e => finish('THREW: ' + (e && e.stack || e)));
         return;
       }
-      if (Date.now() - t0 > 20000) { finish('__kubik не появился за 20с'); return; }
+      if (Date.now() - t0 > 20000) {
+        // 'THREW' первым словом не для красоты: раннер считает провалы по началу
+        // строки, и без этого незагрузившаяся проба уходила в PASS.
+        finish('THREW: __kubik не появился за 20с');
+        return;
+      }
       setTimeout(w, 100);
     })();
   }

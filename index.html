@@ -2189,11 +2189,44 @@
      and is what a tap there reaches; picking the other one is out of scope
      for this slice, the same tradeoff Blender's own overlapping-vertex
      picking exists to solve and this file does not attempt yet. */
+  /* A DOT AND A PAD, NOT ONE FAT DISC (v2.60, Zeghreit: "in point mode they
+     are too big - take their size and brightness from the vertices").
+
+     The 3D viewport's own rule, written at VERTEX_DOT_PX: a 2px dot at
+     CONSTANT SCREEN SIZE, because "what you SEE is the thing you can HIT at
+     every zoom level". This card had the opposite - one r=3.2 disc doing
+     both jobs, so the thing you saw WAS the touch target: a blob four times
+     the size of the 3D dot, and one that grew as you zoomed in.
+
+     Split in two, on one element. `r` is the dot you see. The touch target
+     is a transparent STROKE around it, and `pointer-events: all` is what
+     makes that stroke hit-test even though it paints nothing - the default
+     `visiblePainted` would ignore it. Radius 0.8 + half of a 5.0 stroke is
+     3.3 of reach, which is what the old disc had.
+
+     And `--uv-dot` is rewritten by applyUvViewBox in step with the viewBox,
+     so both the dot and its reach hold a constant size on screen through
+     the zoom - the 3D rule, kept. Set as a CSS geometry property rather than
+     an attribute so one write on the svg moves every dot; the attribute is
+     still written at render time, which is both the fallback and what the
+     first frame uses. */
+  /* BOTH NUMBERS COME FROM JS, and that is not tidiness (found on the
+     stand). `stroke-width: calc(var(--uv-dot) * 6.25)` computed to nothing -
+     getComputedStyle reported no width at all - and the stroke IS the touch
+     target, so every dot would have been left with a 1-unit reach and taps
+     would have had to be nearly exact. An unregistered custom property is
+     substituted as raw tokens, and what survives that on an SVG geometry
+     property is a plain var(), not arithmetic on one. applyUvViewBox writes
+     both, from the same one number. */
+  #uvViewSvg { --uv-dot: 0.8; --uv-hit: 5; }
   #uvViewSvg .uv-vertex {
-    fill: var(--text); fill-opacity: 0.55; stroke: var(--panel); stroke-width: 0.4;
+    r: var(--uv-dot);
+    fill: var(--text); fill-opacity: 0.92;
+    stroke: transparent; stroke-width: var(--uv-hit);
+    pointer-events: all;
     cursor: grab;
   }
-  #uvViewSvg .uv-vertex.selected { fill: var(--accent); fill-opacity: 0.95; }
+  #uvViewSvg .uv-vertex.selected { fill: var(--accent); fill-opacity: 1; }
   #uvViewSvg .uv-vertex.dragging { cursor: grabbing; }
   /* Edge mode (v2.50) - the same generous-hit-target reasoning as .uv-vertex
      above, spent as stroke-width instead of a disc radius: an edge is a
@@ -2569,7 +2602,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.59</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.60</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -38408,7 +38441,7 @@ function renderUvView(obj, ed) {
     }
   }
 
-  // One hit-target circle per attribute vertex with a finite UV (v2.48),
+  // One circle per attribute vertex with a finite UV (v2.48),
   // vertex mode only - built from the same ed.groups walk as the fills
   // above rather than 0..ed.uvs.length/2, so a vertex no triangle actually
   // uses (dead data an op left behind) never gets a dot nothing can select
@@ -38426,7 +38459,7 @@ function renderUvView(obj, ed) {
       c.setAttribute('class', 'uv-vertex' + (uvSel.has(ai) ? ' selected' : ''));
       c.setAttribute('cx', r2(toX(u)));
       c.setAttribute('cy', r2(toY(v)));
-      c.setAttribute('r', '3.2');
+      c.setAttribute('r', String(uvDotR()));
       c.dataset.ai = String(ai);
       uvViewSvgEl.appendChild(c);
     })));
@@ -39436,8 +39469,33 @@ const UV_ZOOM_MIN = 8, UV_ZOOM_MAX = 100;
 // glued to the card's own border.
 const UV_PAN_MARGIN = 20;
 let uvViewBox = { x: 0, y: 0, w: 100, h: 100 };
+/* THE DOT'S RADIUS IN SVG UNITS (v2.60), which is not a constant because the
+   unit is not: the viewBox is what maps this card's 0..100 onto the screen,
+   so a fixed radius doubles on screen every time you halve the box. Scaled by
+   the box's own width, it holds still - the same thing sizeAttenuation:false
+   does for the 3D dots, said in the only language an SVG has for it.
+
+   0.8 at the default framing: about a fifth of the r=3.2 disc it replaces,
+   which lands near the 2px the 3D dots use on a card this size. */
+const UV_DOT_R = 0.8;
+// Two decimals, the same shape renderUvView's own r2 gives every other
+// number it writes - but spelled out, because that helper is a local of
+// that function and this one is called from the view box as well.
+function uvDotR() { return Math.round(UV_DOT_R * uvViewBox.w) / 100; }
 function applyUvViewBox() {
   uvViewSvgEl.setAttribute('viewBox', uvViewBox.x + ' ' + uvViewBox.y + ' ' + uvViewBox.w + ' ' + uvViewBox.h);
+  /* One write moves every dot, and it has to happen HERE rather than in
+     renderUvView: a zoom or a pan changes the viewBox without redrawing a
+     single circle, which is the whole point of driving the view through it. */
+  const dr = uvDotR();
+  uvViewSvgEl.style.setProperty('--uv-dot', String(dr));
+  /* The reach scales with the dot, not against it. r plus half the stroke is
+     how far a tap may land, and 6.25x the radius puts that at 3.3 units at
+     the default framing - exactly what the old r=3.2 disc had. Because it is
+     a multiple of a radius that already follows the viewBox, the reach holds
+     the same size ON SCREEN at every zoom, which is the whole rule being
+     borrowed from the 3D dots. */
+  uvViewSvgEl.style.setProperty('--uv-hit', String(Math.round(dr * 625) / 100));
 }
 // Called by openUvView and closeUvView (v2.51) - a zoom or pan is a way of
 // LOOKING, not document data, the same reasoning App.xraySelection and
@@ -43933,6 +43991,8 @@ if (PICK_DEBUG) {
     // and toggleUvIslandElements are the v2.51 island-tap-selection pieces,
     // exported for the same reason.
     computeUVIslands, syncIslandOverlay, islandColorHex,
+    // v2.60: the 2D dot's radius, which follows the zoom.
+    uvDotR, UV_DOT_R, zoomUvViewBoxAt, resetUvViewBox,
     // v2.59: the seams' own thick layer.
     syncSeamOverlay, SEAM_EDGE_PX,
     uvIslandFaceIds, toggleUvIslandElements,

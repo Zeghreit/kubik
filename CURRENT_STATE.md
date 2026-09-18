@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
-- Version at time of writing: **2.59**
+- Version at time of writing: **2.60**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,52 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## The 2D dots get their size from the 3D ones (2.60)
+
+Zeghreit: "in point mode they are too big - take their size and brightness
+from the vertices". They were one `r=3.2` disc doing two jobs at once, and
+the job that won was the touch target: a blob about four times the size of
+the 3D vertex dot, sitting on top of the layout it was supposed to let you
+read.
+
+The 3D viewport settled this years ago and wrote the rule down at
+`VERTEX_DOT_PX`: a 2px dot at CONSTANT SCREEN SIZE, because "what you SEE is
+the thing you can HIT at every zoom level". This card had the inverse - the
+thing you could hit was what you saw, and it grew as you zoomed in.
+
+Split in two, on one element. `r` is the dot; the touch target is a
+transparent STROKE around it, and `pointer-events: all` is what makes that
+stroke hit-test at all - the default `visiblePainted` ignores a stroke that
+paints nothing. Radius 0.8 plus half of a 5.0 stroke is 3.3 of reach, which
+is what the old disc had, so the dot got small without the target moving.
+
+And both numbers are rewritten by `applyUvViewBox` in step with the viewBox,
+so the dot and its reach hold the same size on screen at every zoom - the 3D
+rule, in the only language an SVG has for it. It belongs in `applyUvViewBox`
+rather than in the renderer because a zoom or a pan changes the viewBox
+without redrawing a single circle, which is the whole point of driving the
+view through it.
+
+### Two things the stand caught
+
+**`calc()` on an unregistered custom property computed to nothing.** The
+first cut wrote `stroke-width: calc(var(--uv-dot) * 6.25)`, and
+`getComputedStyle` reported no width at all - which would have left every
+dot with a 1-unit reach and made taps need to be nearly exact, silently,
+while looking exactly right in a screenshot. An unregistered custom property
+is substituted as raw tokens and what survives that on an SVG geometry
+property is a plain `var()`, not arithmetic on one. Both numbers come from
+JS now, from the same one radius.
+
+**A probe that did not load reported PASS.** `_uv55chk`'s boot wait ended in
+`finish('__kubik не появился за 20с')`, and the runner counts failures by
+lines starting with FAIL, THREW or NO REPORT - so a probe that never ran at
+all came back green. It says THREW now. Worth more than the one-line fix:
+this is the second time this session a suite has been quietly green for a
+reason that had nothing to do with the code (the first was `_boolchk`
+reading a stale output file from a run that had collided with another
+Chrome). A stand that cannot fail is not a stand.
 
 ## Seams get a line of their own, and the mode button loses a stop (2.59)
 
