@@ -2069,6 +2069,35 @@
     background: rgb(var(--shadow) / .6);
   }
   #helpOverlay.show { display: flex; }
+  /* THE 2D UV VIEW (v2.43), read-only for this first slice - see the plan
+     doc. Same fixed-overlay shape as Help: a dimmed backdrop you tap to
+     dismiss and a card that holds the real content, so it costs nothing
+     new to learn. The card here is the SVG itself rather than a scrollable
+     list - the UV square is the whole point of the screen. */
+  #uvView {
+    position: fixed; inset: 0; z-index: 41; display: none;
+    align-items: center; justify-content: center; padding: 20px;
+    background: rgb(var(--shadow) / .6);
+  }
+  #uvView.show { display: flex; }
+  #uvViewCard {
+    background: var(--panel); border: var(--rule) solid var(--line); border-radius: var(--r-md);
+    padding: 16px; width: min(560px, 100%); max-height: 90vh;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  #uvViewSvg {
+    width: 100%; height: auto; aspect-ratio: 1 / 1; background: var(--panel2);
+    border: var(--rule) solid var(--line);
+  }
+  /* Classes rather than the var()-in-attribute the file uses nowhere else
+     (review finding, v2.43a): a stylesheet rule is the house pattern
+     (#ringStar polyline is the same shape), and it keeps the wireframe off
+     --accent, which is mode-dependent - a UV layout has no business
+     changing colour with whatever component mode you happened to open it
+     from. */
+  #uvViewSvg .uv-square { fill: none; stroke: var(--text-dim); stroke-width: 0.4; stroke-dasharray: 2,1.5; }
+  #uvViewSvg .uv-edges { fill: none; stroke: var(--text); stroke-width: 0.3; }
+  #uvViewEmpty { padding: 24px 8px; text-align: center; color: var(--text-dim); }
   #helpCard {
     background: var(--panel); border: var(--rule) solid var(--line); border-radius: var(--r-md);
     padding: 16px; width: min(360px, 100%); max-height: 80vh; overflow-y: auto;
@@ -2386,6 +2415,17 @@
       </div>
     </div>
 
+    <div id="uvView">
+      <div id="uvViewCard">
+        <div class="insp-head">
+          <span>UV</span>
+          <button id="uvViewClose" title="Close"></button>
+        </div>
+        <svg id="uvViewSvg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet"></svg>
+        <div id="uvViewEmpty" style="display:none;">No UV yet on this object — run Unwrap first.</div>
+      </div>
+    </div>
+
     <div id="inspector">
       <div class="insp-head">
         <span id="inspTitle">Transform</span>
@@ -2412,7 +2452,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.42</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.43</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -36031,16 +36071,226 @@ function closeToolRing(run) {
    same and costs one seat instead of two. Symmetry was the last thing using
    it - #hubBtn cycles three states and never did. */
 
-hubBtnEl.addEventListener('pointerdown', (ev) => ev.stopPropagation());
-hubBtnEl.addEventListener('click', (ev) => { ev.stopPropagation(); cycleEditMode(); });
+/* ---------------- 2D UV view (v2.43) ----------------
+   View only, for now (uv-commands-maps-plan.md stage 5, slice 5). Shows the
+   active object's UV layout - every triangle's edges in UV space, plus the
+   0..1 square packIslandUVs packs into - so an unwrap can be checked by eye
+   without exporting a texture to see it on. Nothing here moves; dragging an
+   island or a seam is the next slice, once this one has been used for real. */
+const uvViewEl = document.getElementById('uvView');
+const uvViewSvgEl = document.getElementById('uvViewSvg');
+const uvViewEmptyEl = document.getElementById('uvViewEmpty');
+
+/* A cap rather than no limit (review finding, v2.43a): the path below is
+   built as one giant string with full-precision numbers and no dedup, so an
+   uncapped mesh can build tens of megabytes of SVG and hang the tab. This
+   app is a LOW-POLY editor by design, so a mesh past this is already an
+   edge case - the cap just turns "the tab freezes" into a toast. */
+const UV_VIEW_TRI_CAP = 20000;
+
+function renderUvView(ed) {
+  const NS = 'http://www.w3.org/2000/svg';
+  uvViewSvgEl.innerHTML = '';
+  if (!ed.uvs || !ed.uvs.length) return { ok: false };
+  const triCount = ed.groups.reduce((n, g) => n + g.triangles.length, 0);
+  if (triCount > UV_VIEW_TRI_CAP) return { ok: false, tooHeavy: true };
+
+  // A little padding so an island packed right up to the gutter (as
+  // packIslandUVs runs them) doesn't visually touch the card's own edge.
+  const PAD = 4;
+  const toX = (u) => PAD + u * (100 - 2 * PAD);
+  const toY = (v) => PAD + (1 - v) * (100 - 2 * PAD); // UV's V points up; SVG's Y points down.
+  // 2dp is already finer than a device pixel at the card's own on-screen
+  // size, and it roughly halves the string a heavy mesh builds below.
+  const r2 = (n) => n.toFixed(2);
+
+  // The 0..1 square itself, dashed, so the packed layout reads against the
+  // space it was packed into rather than floating with no reference frame.
+  // Coloured by a class, not an inline var() (see the CSS beside #uvView) -
+  // this file's other SVGs (#ringStar) do the same.
+  const square = document.createElementNS(NS, 'rect');
+  square.setAttribute('class', 'uv-square');
+  square.setAttribute('x', r2(toX(0)));
+  square.setAttribute('y', r2(toY(1)));
+  square.setAttribute('width', r2(toX(1) - toX(0)));
+  square.setAttribute('height', r2(toY(0) - toY(1)));
+  uvViewSvgEl.appendChild(square);
+
+  // Every triangle edge, in one path - a shared edge between two triangles
+  // is drawn twice on top of itself, which costs nothing to look at and
+  // saves the bookkeeping a dedup pass would need for a read-only view.
+  let segs = '';
+  ed.groups.forEach(g => {
+    g.triangles.forEach(t => {
+      for (let i = 0; i < 3; i++) {
+        const a = t[i], b = t[(i + 1) % 3];
+        const ax = ed.uvs[a * 2], ay = ed.uvs[a * 2 + 1];
+        const bx = ed.uvs[b * 2], by = ed.uvs[b * 2 + 1];
+        if (!Number.isFinite(ax) || !Number.isFinite(ay) ||
+            !Number.isFinite(bx) || !Number.isFinite(by)) continue;
+        segs += `M${r2(toX(ax))},${r2(toY(ay))}L${r2(toX(bx))},${r2(toY(by))}`;
+      }
+    });
+  });
+  const path = document.createElementNS(NS, 'path');
+  path.setAttribute('class', 'uv-edges');
+  path.setAttribute('d', segs);
+  uvViewSvgEl.appendChild(path);
+  return { ok: true };
+}
+
+function openUvView() {
+  const obj = findObject(App.activeObjectId);
+  if (!obj || !obj.mesh || !obj.mesh.geometry) { toast('Select an object first'); return; }
+  /* Checked BEFORE toEditable, not caught after (review finding, v2.43a):
+     toEditable throws exactly this one named case on purpose - its own
+     comment says a silent wrong answer is the failure this file fears most
+     - so catching it here and nothing else means an unrelated failure
+     (a damaged topology, a non-indexed import) can no longer hide behind
+     the same reassuring "no UV" toast. */
+  if (obj.mesh.userData && obj.mesh.userData.kubikCurve && !obj.mesh.userData.kubikTube) {
+    toast('UV view is for meshes, not curves');
+    return;
+  }
+  let ed;
+  try { ed = toEditable(obj.mesh); }
+  catch (e) { console.warn('openUvView: toEditable failed', e); toast('Could not read this object’s UV'); return; }
+  const res = renderUvView(ed);
+  uvViewSvgEl.style.display = res.ok ? '' : 'none';
+  uvViewEmptyEl.style.display = res.ok ? 'none' : '';
+  if (!res.ok) {
+    uvViewEmptyEl.textContent = res.tooHeavy
+      ? 'Too many triangles to preview here.'
+      : 'No UV yet on this object — run Unwrap first.';
+    toast(res.tooHeavy ? 'Too many triangles to preview' : 'No UV yet · run Unwrap first');
+  }
+  /* Opened a tick late (review finding, v2.43a): this runs from inside the
+     mode ring's own pointerup, and the click the browser synthesises for
+     that same gesture hasn't fired yet. Showing the overlay in the same
+     tick risks that click landing on the backdrop and closing what it just
+     opened; a tick later, the gesture is over. */
+  setTimeout(() => uvViewEl.classList.add('show'), 0);
+}
+function closeUvView() { uvViewEl.classList.remove('show'); }
+document.getElementById('uvViewClose').addEventListener('click', closeUvView);
+// Tapping the dimmed backdrop dismisses it too, the same guard helpOverlay
+// uses so a tap inside the card is never mistaken for one outside it.
+uvViewEl.addEventListener('click', (ev) => { if (ev.target === uvViewEl) closeUvView(); });
+
+/* HOLD FOR THE FOUR (v2.43). A tap still cycles Object -> Component -> Soft
+   the way it always has; a HOLD now blooms the same kind of ring every other
+   press opens elsewhere, carrying the one thing the cycle can never reach -
+   UV isn't an editing mode, so it has no place between Soft and Object in a
+   loop that always comes back around. Soft's run mirrors cycleEditMode's own
+   Object-mode branch: jump to the last component type first when the press
+   started from Object, then turn Soft on - so lifting on Soft from Object
+   behaves exactly like the tap cycle does after two presses instead of one. */
+const HUB_TOOLS_MODE = [
+  { key: 'mode-object', label: 'Object',
+    on: () => App.mode === 'object',
+    run: () => { setSoft(false); setMode('object'); } },
+  { key: 'mode-component', label: 'Component',
+    on: () => App.mode !== 'object' && !App.soft,
+    run: () => { setSoft(false); setMode(App.lastComponentMode); } },
+  { key: 'mode-soft', label: 'Soft',
+    on: () => App.mode !== 'object' && App.soft,
+    /* setMode can refuse to leave Object (review finding, v2.43a): a live
+       tube, a curve selection, or the opSetup re-entry guard all return
+       with App.mode untouched. Falling into setSoft(true) regardless used
+       to leave Soft on while still in Object mode - a state the tap cycle
+       can never produce, since ITS Object branch is this same
+       setSoft/setMode pair and nothing after it. Bail the same way setMode
+       itself did. */
+    run: () => {
+      if (App.mode === 'object') {
+        setMode(App.lastComponentMode);
+        if (App.mode === 'object') return;
+      }
+      setSoft(true);
+    } },
+  // No `on` here (review finding, v2.43a): #uvView sits at z-index 41,
+  // above the hub at 16, so while it is showing the button that would read
+  // this can't be pressed - the seat's lit state could never be seen.
+  { key: 'mode-uv', label: 'UV', run: openUvView }
+];
+
+/* A timer of its own rather than the viewport's toolRingTimer: the press
+   starts on a DOM button, not the canvas, so it has nothing to do with
+   directCandidate/amountCandidate and no reason to share their variable.
+
+   It still has to tell the SHARED pointer tracker about this press (review
+   finding, v2.43a): activePointers is what every "a second finger showed
+   up" guard elsewhere reads (the world ring's own camera-takeover branch
+   among them), and this is the first bloomToolRing caller that isn't the
+   canvas's own pointerdown, which is the only place that used to feed it. */
+let modeHoldTimer = null;
+let modeHoldFired = false;
+let modeHoldStart = null;
+function armModeHold(ev) {
+  // A second mouse button, or a second touch landing on the same button
+  // (isPrimary is false for it), is not the press this hold is for.
+  if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+  if (ev.isPrimary === false) return;
+  modeHoldFired = false;
+  modeHoldStart = { x: ev.clientX, y: ev.clientY };
+  trackPointerDown(ev);
+  const px = ev.clientX, py = ev.clientY, pid = ev.pointerId;
+  clearTimeout(modeHoldTimer);
+  modeHoldTimer = setTimeout(() => {
+    modeHoldTimer = null;
+    modeHoldFired = true;
+    bloomToolRing(px, py, HUB_TOOLS_MODE, pid, { x: px, y: py });
+  }, TOOL_RING_HOLD_MS);
+}
+// Called on pointerup/pointercancel/pointerleave - every way the press can
+// end BEFORE the hold fires. Once the ring has bloomed, the canvas owns the
+// pointer (bloomToolRing captures it there) and this button sees none of
+// those events for it, so there is no double-teardown to guard against.
+function disarmModeHold(ev) {
+  if (modeHoldTimer) { clearTimeout(modeHoldTimer); modeHoldTimer = null; }
+  modeHoldStart = null;
+  // The ring never opened, so the canvas's own trackPointerUp - the one
+  // that runs inside its `if (toolRingActive)` branch - never gets a turn.
+  // Skipping this leaks the pointer into activePointers forever and, per
+  // that branch's own comment, "corrupts every tap gesture after it".
+  if (ev) trackPointerUp(ev);
+}
+// Mouse gets no implicit capture (only touch does), so dragging off the
+// button while still held leaves this element with no pointerup/cancel to
+// ever see - the timer would fire anyway, on a pointer that already let go
+// somewhere else (review finding, v2.43a: MUST-FIX, the ring would then
+// bloom over a dead camera with nothing able to close it).
+function modeHoldTravelCancel(ev) {
+  if (!modeHoldTimer || !modeHoldStart) return;
+  if (Math.hypot(ev.clientX - modeHoldStart.x, ev.clientY - modeHoldStart.y) > RING_MOVE_CANCEL_PX) {
+    disarmModeHold(ev);
+  }
+}
+
+hubBtnEl.addEventListener('pointerdown', (ev) => { ev.stopPropagation(); armModeHold(ev); });
+hubBtnEl.addEventListener('pointermove', modeHoldTravelCancel);
+hubBtnEl.addEventListener('pointerup', disarmModeHold);
+hubBtnEl.addEventListener('pointercancel', disarmModeHold);
+hubBtnEl.addEventListener('pointerleave', disarmModeHold);
+hubBtnEl.addEventListener('click', (ev) => {
+  ev.stopPropagation();
+  // The click that follows a hold is the same press finishing, not a
+  // second tap - the hold already made its own pick.
+  if (modeHoldFired) { modeHoldFired = false; return; }
+  cycleEditMode();
+});
 // The header's slab is the same control at the other end of the screen.
 const hdrModeEl = document.getElementById('hdrMode');
-hdrModeEl.addEventListener('pointerdown', (ev) => ev.stopPropagation());
-hdrModeEl.addEventListener('click', (ev) => { ev.stopPropagation(); cycleEditMode(); });
-
-/* One tap, one toggle (a2.65). stopPropagation for the same reason #hubBtn
-   does it: a pointerdown that reaches the viewport arms a tap which would
-   clear the selection behind the button. */
+hdrModeEl.addEventListener('pointerdown', (ev) => { ev.stopPropagation(); armModeHold(ev); });
+hdrModeEl.addEventListener('pointermove', modeHoldTravelCancel);
+hdrModeEl.addEventListener('pointerup', disarmModeHold);
+hdrModeEl.addEventListener('pointercancel', disarmModeHold);
+hdrModeEl.addEventListener('pointerleave', disarmModeHold);
+hdrModeEl.addEventListener('click', (ev) => {
+  ev.stopPropagation();
+  if (modeHoldFired) { modeHoldFired = false; return; }
+  cycleEditMode();
+});
 
 /* ---------------- Drawer ---------------- */
 
@@ -39552,7 +39802,8 @@ let lastFrameTime = performance.now();
 function paintStaticIcons() {
   const map = {
     btnMenu: ['menu', 20], btnUndo: ['undo', 20], btnRedo: ['redo', 20],
-    drawerClose: ['close', 16], inspClose: ['close', 16], opCancel: ['close', 16], helpClose: ['close', 16]
+    drawerClose: ['close', 16], inspClose: ['close', 16], opCancel: ['close', 16], helpClose: ['close', 16],
+    uvViewClose: ['close', 16]
   };
   Object.entries(map).forEach(([id, [name, size]]) => {
     const el = document.getElementById(id);
@@ -40084,6 +40335,9 @@ if (PICK_DEBUG) {
     ensureVertEdges, syncHelperGeometry, syncFaceOverlay,
     transformAxes, scaleAlongDir,
     setSoft, cycleEditMode, engageSoftSlide, softSlideMove, endSoftSlide, refreshSoftHud,
+    // v2.43: the mode-hold bloom menu and the read-only 2D UV view it opens.
+    openUvView, closeUvView, renderUvView, HUB_TOOLS_MODE,
+    get uvViewOpen() { return uvViewEl.classList.contains('show'); },
     enterIsolation, exitIsolation, reconcileIsolation, applyIsolation, objectPickable,
     unhideObject, isolationOn,
     snapTargetAt, snapSkipSet, updateSnapTarget, clearSnapTarget, refreshSnapMarker,

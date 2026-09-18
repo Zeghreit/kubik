@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~40,170 lines)
-- Version at time of writing: **2.42**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~40,420 lines)
+- Version at time of writing: **2.43**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -203,6 +203,131 @@ something scoped to "while marking".
 - Minor: `unseam` was reusing `seam`'s icon at an adjacent seat — now a
   faded, solid-line variant of the same glyph, mirroring how `uncrease`
   already simplifies `crease`'s icon rather than repeating it.
+
+## Mode-hold bloom menu + read-only 2D UV view (2.43)
+
+Stage 5 of `uv-commands-maps-plan.md`, slice 5 - the last item on the stage's
+list, and the only one that needed a UI decision rather than an algorithm
+(Zeghreit picked the mechanism explicitly: hold the mode button, don't add a
+new one). Two things ship together because neither has a use without the
+other: a way to get to a 2D UV view, and the view itself.
+
+**The mode button (`#hubBtn`, and `#hdrMode` in the header) now has a hold as
+well as its tap.** The tap is untouched - it still cycles Object -> Component
+-> Soft -> Object exactly as it did (`cycleEditMode`). A HOLD past
+`TOOL_RING_HOLD_MS` (300ms, the same threshold every other tool-ring hold in
+the app uses) blooms the same kind of radial menu those other holds open,
+with four seats: Object, Component, Soft, UV. Object and Component jump
+straight to that mode; Soft jumps to the last component type first if the
+press started in Object, then turns Soft on - one lift does what the tap
+cycle needs two presses for. UV is new: it isn't an editing mode, so it has
+no place in a loop that always returns to Object, and a hold is what gives it
+a door in at all. `HUB_TOOLS_MODE` is an ordinary tools array, seatless (the
+four spread evenly, Object at the top), read by the same `bloomToolRing` /
+`paintToolRing` / `closeToolRing` machinery every other ring in the app
+already uses - nothing about that machinery changed.
+
+Wiring a hold onto a DOM button rather than the canvas turned out to need
+more than copying the pattern: this is the first `bloomToolRing` caller that
+isn't the canvas's own pointerdown, and mice don't get the implicit pointer
+capture touch does, so a plain "arm on pointerdown, cancel on pointerup and
+pointercancel" left two real ways to end up stuck (see below). The hold also
+now feeds `activePointers` (`trackPointerDown`/`trackPointerUp`) - the shared
+tracker every "did a second finger just show up" guard elsewhere in the app
+reads - since this press is otherwise invisible to it.
+
+**The 2D UV view (`#uvView`) is read-only for this slice**, per Zeghreit's
+own scoping answer - no dragging an island or a seam yet, only seeing what
+Unwrap already produced. It draws the active object's UV layout as an SVG:
+the 0..1 square (dashed, since `packIslandUVs` packs into exactly that) plus
+every triangle edge in UV space, V flipped since UV's V points up and SVG's Y
+points down. Built from `toEditable(obj.mesh)` - `ed.groups[].triangles` for
+the edges, `ed.uvs` (2 floats per attribute vertex) for their positions -
+which is also what makes an object with no UV attribute at all, or a curve, a
+question `toEditable`'s own contract already answers rather than one this
+view has to re-decide. Opens and closes like the existing Help overlay: a
+dimmed backdrop, tap outside the card to dismiss.
+
+### What review found
+
+First opus review of a UI/interaction-focused slice rather than a
+geometry/numerical one - no Fable here, per the project's own guidance that
+it's for tolerance-bearing geometric code, which this isn't. Two MUST-FIX
+(both real, both about ways the hold's own bookkeeping could get stuck) and
+several SHOULD-FIX findings, all fixed and re-verified live:
+
+- **MUST-FIX: dragging off the button before the hold fires could bloom a
+  ring nothing could ever close.** Mice get no implicit pointer capture, so
+  moving off `#hubBtn` while still held and releasing elsewhere leaves the
+  button with no `pointerup`/`pointercancel` to see - the armed timer still
+  fires at 300ms, over a pointer that already let go, `orbit.enabled` gets
+  set false with no path back, and the next real click anywhere on the
+  canvas would have committed whichever seat happened to be under the cursor.
+  Fixed with a `pointerleave` listener (mice fire it; touch's implicit
+  capture means a real hold never does), matching a hold elsewhere in the
+  file that already guards this exact case.
+- **MUST-FIX: no travel cancel, so a sloppy tap could resolve as a menu
+  pick.** The hold bloomed unconditionally at the ORIGINAL press point after
+  300ms with no check that the finger was still there, so a thumb that
+  drifted while pressing could wake up already past the dead zone with a
+  seat hovered before it ever aimed at one - turning a tap meant to just
+  cycle the mode into an accidental Soft or UV. Fixed with a `pointermove`
+  listener cancelling the hold past `RING_MOVE_CANCEL_PX` (8px), the same
+  threshold and the same signal (movement, not `pointercancel`) an existing
+  a2.30-era hold comment already documents as the correct one.
+- **SHOULD-FIX: Soft's run didn't check that `setMode` actually left
+  Object.** `setMode` has several early returns that leave `App.mode`
+  unchanged (a live tube, a curve selection, the op-setup re-entry guard);
+  lifting on Soft from Object in one of those states used to call
+  `setSoft(true)` anyway, leaving Soft on while still in Object mode - a
+  state the tap cycle can never reach, since its own Object branch is the
+  same pair and nothing runs after it. Fixed by checking `App.mode` after
+  the jump and bailing before turning Soft on if it's still `'object'`.
+- **SHOULD-FIX: the hold never told the shared pointer tracker about
+  itself.** `activePointers` is what the canvas's own "a second finger
+  showed up, cancel the ring" branches read, and this press was invisible to
+  it - a second finger on the canvas while the mode ring was open wouldn't
+  have cancelled it the way it does for every other ring. Fixed by calling
+  `trackPointerDown`/`trackPointerUp` from the hold's own arm/disarm.
+- **SHOULD-FIX: `openUvView`'s catch around `toEditable` was too wide.**
+  `toEditable` throws exactly one named case on purpose (a curve, per its own
+  comment about silent wrong answers being the failure this file fears
+  most); catching broadly around it meant an unrelated failure - a damaged
+  topology, a non-indexed import - would report the same reassuring "no UV"
+  toast as the ordinary case. Fixed by checking for a curve before the call
+  (the same `userData.kubikCurve` test `toEditable` itself uses) and logging
+  anything else that still throws.
+- **SHOULD-FIX: no cap on the SVG the view builds.** One `M...L...` path
+  entry per triangle edge, full precision, no dedup - fine for what this app
+  actually produces, but nothing stopped an unusually heavy import from
+  building tens of megabytes of path and hanging the tab. Fixed with a
+  20,000-triangle cap (a toast past it, not a freeze) and 2-decimal
+  rounding, well under a device pixel at the card's own on-screen size.
+- **SHOULD-FIX: the wireframe's colour was `var(--accent)`, which is
+  mode-dependent.** A UV layout drawn a different colour depending on which
+  component mode happened to be active when you opened it was never the
+  intent. Fixed by moving both the square and the wireframe to stylesheet
+  classes (`#uvViewSvg .uv-square` / `.uv-edges`) using `--text-dim` /
+  `--text` instead - also brings the file's only two inline `var()`-in-SVG-
+  attribute uses in line with how `#ringStar` already does it.
+- **SHOULD-FIX: the close button had no glyph.** Added to `paintStaticIcons`
+  like every other overlay's close button; the overlay was still dismissible
+  via the backdrop either way.
+- Also fixed: a same-tick open-then-instant-close risk (the view now shows a
+  tick after the ring's own `pointerup`/synthesised `click`, not inside it),
+  and a right-click or second touch on the button no longer arms a hold that
+  a left tap didn't start.
+
+### What this slice deliberately does not do
+
+**No dragging.** Islands, seams, individual UVs - none of it moves; this is
+purely a window onto what Unwrap already produced, per Zeghreit's own
+scoping choice for this slice. No bounds warning for UV outside 0..1 (an
+imported mesh with tiled or unpacked UVs draws a mostly-empty square with no
+explanation) and no distinction between "no UV attribute" and "UV attribute
+present but its vertex count doesn't match position count" - both slices of
+polish, deferred rather than folded into what was meant to be a small,
+reviewable increment.
 
 ## UV packing: islands into the 0..1 square (2.42)
 
