@@ -2569,7 +2569,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.58</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.59</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -7692,6 +7692,7 @@ function disposeHelpersOnly(obj) {
   // attributes alive as a ghost copy that never gets cleaned up.
   if (ud.islandOverlay) { obj.mesh.remove(ud.islandOverlay); ud.islandOverlay.geometry.dispose(); ud.islandOverlay.material.dispose(); ud.islandOverlay = null; }
   ud.islandCache = null;
+  disposeSeamOverlay(obj);
   disposeSelectionOverlay(obj);
   disposeSoftOverlay(obj);
   ud.topo = null;
@@ -10342,6 +10343,10 @@ function refreshXrayMode() {
        something unrelated repainted the colours. */
     const io = o.mesh.userData.islandOverlay;
     if (io && io.material) applyUvOverlayDepth(o, io.material, 0.32);
+    // Same reason, same trigger: See-through is not a selection change, so
+    // without this the seams would keep testing depth after it is turned on.
+    const sl = o.mesh.userData.seamLines;
+    if (sl && sl.material && sl.material.depthTest !== wantDepth) sl.material.depthTest = wantDepth;
     const uvWire = App.mode === 'uv' && o.id === App.activeObjectId && App.xraySelection;
     const lineDepth = wantDepth && !uvWire;
     const lineOrder = uvWire ? 12 : 9;
@@ -20877,8 +20882,159 @@ function refreshElementColors(obj) {
   }
   syncFaceOverlay(obj);
   syncIslandOverlay(obj);
+  syncSeamOverlay(obj);
   syncSelectionOverlay(obj);
   syncSoftOverlay(obj);
+}
+
+/* SEAMS YOU CAN ACTUALLY SEE (v2.59).
+
+   A seam was a COLOUR in the shared wireframe buffer and nothing else - one
+   device pixel of magenta, on a line the whole model is drawn with, on top of
+   an island tint. v2.58 gave the SELECTED edges a 3.5px line of their own and
+   the difference was the whole complaint; a seam is the other thing this mode
+   exists to show, and it had been left on the hairline.
+
+   So it gets its own layer, on the same machinery: a LineSegments2 at 2.5px -
+   between the 1px wireframe and the 3.5px selection, because a seam is more
+   than the model and less than what you are holding. The colour stays
+   SEAM_COLOR, so nothing has to be relearned; only the weight changed.
+
+   TRANSPARENT ON PURPOSE, which is not about seeing through it. `transparent`
+   is what decides the QUEUE, and the transparent queue is drawn after every
+   opaque object - including the island tint. Under See-through that tint goes
+   translucent and back into the transparent queue itself, where it would land
+   on an opaque line again exactly as it did before v2.58; from here it cannot.
+   The seams read the same in both states, which is the point of drawing them
+   at all.
+
+   DEPTH FOLLOWS THE WIREFRAME, not the selection. The selection ignores depth
+   because losing track of what you are holding is worse than seeing it through
+   a fold; a seam is a property of the surface and should be behind the surface
+   when the surface is in front of it. See-through lifts it, the same as
+   everywhere else.
+
+   REBUILT ON islandsVersion, the counter every seam edit already bumps
+   (toggleSeamKeys, clearAllSeams) - so this costs nothing per frame and
+   nothing per selection change, only per actual seam edit. */
+const SEAM_EDGE_PX = 2.5;
+
+function disposeSeamOverlay(obj) {
+  const ud = obj.mesh.userData;
+  if (ud.seamLines) {
+    obj.mesh.remove(ud.seamLines);
+    ud.seamLines.geometry.dispose();
+    ud.seamLines.material.dispose();
+    const i = gizmoStrokes.indexOf(ud.seamLines);
+    if (i >= 0) gizmoStrokes.splice(i, 1);
+    ud.seamLines = null;
+  }
+  ud.seamLinesFor = null;
+  ud.seamLinesVer = -1;
+  ud.seamLinesSeams = null;
+  ud.seamLinesCount = -1;
+  ud.seamLinesPos = -1;
+}
+
+function syncSeamOverlay(obj) {
+  const ud = obj.mesh.userData;
+  const topo = ud.topo;
+  /* The same three-part guard syncIslandOverlay carries, and for the same
+     reasons: UV mode is where seams are the subject, App.selectedElements and
+     friends are global so only the ACTIVE object may draw from them, and a
+     live op installs a new topo every frame. */
+  const show = App.mode === 'uv' && obj.id === App.activeObjectId && !App.pendingOp && !!topo;
+  if (!show) {
+    if (ud.seamLines) ud.seamLines.visible = false;
+    return;
+  }
+  /* FIVE PARTS, AND EACH ONE EARNED ITS PLACE (review findings). The first
+     draft keyed on the topology and islandsVersion alone, which answers
+     "which edges are seams" and nothing about the two other things this
+     layer bakes:
+
+     THE POSITIONS. The segments are copied into a LineSegmentsGeometry once.
+     A component drag moves vertices WITHOUT installing a new topo and
+     without touching islandsVersion, so leaving UV mode, dragging a vertex
+     and coming back drew the seams where they used to be - detached from
+     the mesh, next to a wireframe that had followed it. `position.version`
+     is the counter three itself bumps on every needsUpdate.
+
+     THE SEAM SET ITSELF. islandsVersion is bumped by toggleSeamKeys and
+     clearAllSeams, which are the only two functions that EDIT the set - but
+     not the only ways it can change. An undo that restores a snapshot, a
+     re-key after a vertex move, a loaded file: any of those can hand this
+     object a different `seams` object, or the same one with a different
+     number of keys, without the counter moving. Identity plus count catches
+     all three and costs one comparison. (Count, not contents: toggleSeamKeys
+     deletes cleared keys rather than writing false, so the key count IS the
+     seam count. A same-object same-count swap is the only case that slips
+     through, and nothing in the file does that.) */
+  const ver = ud.islandsVersion || 0;
+  const seams = ud.seams;
+  const nSeams = seams ? Object.keys(seams).length : 0;
+  const pv = obj.mesh.geometry.attributes.position.version;
+  /* EXCEPT WHILE A DRAG IS LIVE. Positions change every frame of one, and
+     rebuilding this layer per frame is an O(edges) walk with a string key per
+     edge - the one cost this cache exists to avoid. So a live drag keeps the
+     cached layer and lets it lag the shape by the length of the gesture,
+     which is exactly the trade the edge field's own note describes: "during
+     the drag the wear band lags the shape; the frame after the finger lifts
+     it is right again". */
+  const dragging = !!(directDrag || extrudeDrag);
+  const fits = ud.seamLinesFor === topo && ud.seamLinesVer === ver &&
+               ud.seamLinesSeams === seams && ud.seamLinesCount === nSeams &&
+               (dragging || ud.seamLinesPos === pv);
+  if (fits) {
+    if (ud.seamLines) {
+      ud.seamLines.visible = true;
+      const want = !App.xraySelection;
+      if (ud.seamLines.material.depthTest !== want) ud.seamLines.material.depthTest = want;
+    }
+    // No layer with a matching key is the recorded answer "this object has no
+    // seams" - without it an unseamed mesh walks every edge on every refresh.
+    return;
+  }
+  disposeSeamOverlay(obj);
+  ud.seamLinesFor = topo;
+  ud.seamLinesVer = ver;
+  ud.seamLinesSeams = seams;
+  ud.seamLinesCount = nSeams;
+  ud.seamLinesPos = pv;
+
+  if (!seams || !nSeams || !topo.edges || !topo.edges.length) return;
+  const pa = obj.mesh.geometry.attributes.position;
+  const a = new THREE.Vector3(), b = new THREE.Vector3();
+  const pos = [];
+  topo.edges.forEach(e => {
+    const ga = topo.logicalGroups[e[0]], gb = topo.logicalGroups[e[1]];
+    if (!ga || !gb) return;
+    a.set(pa.getX(ga[0]), pa.getY(ga[0]), pa.getZ(ga[0]));
+    b.set(pa.getX(gb[0]), pa.getY(gb[0]), pa.getZ(gb[0]));
+    const k = creaseKeyFor(a, b);
+    if (!k || !seams[k]) return;
+    pos.push(a.x, a.y, a.z, b.x, b.y, b.z);
+  });
+  if (!pos.length) return;
+
+  const geo = new LineSegmentsGeometry();
+  geo.setPositions(pos);
+  const mat = new LineMaterial({
+    color: SEAM_COLOR, linewidth: SEAM_EDGE_PX, worldUnits: false,
+    transparent: true, depthTest: !App.xraySelection, depthWrite: false
+  });
+  mat.resolution.set(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
+  const seg = new LineSegments2(geo, mat);
+  // Above the wireframe's 9, below the selection's 11: a seam outranks the
+  // plain model and is outranked by what you are holding.
+  seg.renderOrder = 10;
+  /* NOT CULLED, the same reason every other retained helper here is not: the
+     geometry keeps the bounding sphere it was built with, and a drag that
+     moves the mesh would take the seams off screen while the model stayed. */
+  seg.frustumCulled = false;
+  obj.mesh.add(seg);
+  ud.seamLines = seg;
+  gizmoStrokes.push(seg);
 }
 
 /* ---------------- Selection overlay ----------------
@@ -21528,6 +21684,12 @@ function setActiveObjectHelpersVisible(obj, mode) {
   // than leave a stale island tint on the object being stepped away from.
   const io = obj.mesh.userData.islandOverlay;
   if (io) io.visible = false;
+  /* And the seams' own layer (v2.59a), for exactly the reason the line above
+     exists: leaving UV mode clears the active object, so syncSeamOverlay is
+     never called for the object being stepped away from and its own
+     "hide when not in UV mode" branch never runs. Caught on the stand. */
+  const sl = obj.mesh.userData.seamLines;
+  if (sl) sl.visible = false;
 }
 
 /* The multiplier on the theme's own edge colour now comes from the MODE
@@ -21622,6 +21784,13 @@ function hideAllHelpers() {
     // only re-hides it on the next call, and switching active object without
     // a mode change (the Scene list, say) never makes that call.
     if (o.mesh.userData.islandOverlay) o.mesh.userData.islandOverlay.visible = false;
+    /* AND THE SEAMS' LAYER (v2.59b, caught on the stand). Both doors have to
+       say it: setMode goes through THIS one for every mode - and for 'object'
+       it is the only one it calls - while setActiveObjectHelpersVisible is
+       what the component modes reach. Either way syncSeamOverlay is never
+       called for an object that is no longer active, so its own "not in UV
+       mode" branch cannot be what hides it. */
+    if (o.mesh.userData.seamLines) o.mesh.userData.seamLines.visible = false;
   });
 }
 
@@ -27024,9 +27193,28 @@ function cycleEditMode() {
      only ways out were the bar and the keyboard. */
   if (App.curveEdit) { finishCurveEdit(true); return; }
   if (App.mode === 'uv') { setMode('object'); return; }
-  if (App.mode === 'object') { setSoft(false); setMode(App.lastComponentMode); }
-  else if (!App.soft) { setSoft(true); toast('Soft \u00b7 three fingers slide to size it'); }
-  else { setSoft(false); setMode('object'); }
+  /* TWO POSITIONS, NOT THREE (v2.59, Zeghreit's own call). The tap used to
+     walk Object -> Component -> Soft -> Object, which put a third stop in
+     the way of the ONE switch that gets pressed more than any other in the
+     app: getting from the model to its components and back. Soft is already
+     a seat in this button's own hold ring (`mode-soft`), and that is the
+     right home for it - it is a way of DRAGGING, chosen occasionally, not a
+     place you pass through on the way somewhere else. The button is a
+     toggle again, and the ring is where the third state lives.
+
+     Leaving a component mode still turns Soft off with it, which is what
+     `setMode` does anyway on the way to 'object'; saying it here as well
+     keeps the two doors agreeing rather than relying on the order they run
+     in. */
+  /* GUARDED, not unconditional (review finding). In object mode App.soft is
+     already false - setMode clears it on the way in and this is the only
+     door out - so the old unconditional call spent a clearSoftField, a
+     refreshSoftField, a full refreshElementColors and a refreshUI on every
+     single tap into component mode, to set a flag to the value it held. The
+     guarantee is kept and the cost is a comparison. */
+  if (App.mode === 'object') { if (App.soft) setSoft(false); setMode(App.lastComponentMode); return; }
+  setSoft(false);
+  setMode('object');
 }
 // Kept under its old name too: the keyboard shortcut and anything else that
 // learned it should still reach the button's behaviour, whatever that is now.
@@ -43745,6 +43933,8 @@ if (PICK_DEBUG) {
     // and toggleUvIslandElements are the v2.51 island-tap-selection pieces,
     // exported for the same reason.
     computeUVIslands, syncIslandOverlay, islandColorHex,
+    // v2.59: the seams' own thick layer.
+    syncSeamOverlay, SEAM_EDGE_PX,
     uvIslandFaceIds, toggleUvIslandElements,
     // The unwrap itself (uv-commands-maps-plan.md stage 5, slice 3) - the
     // numerical pieces individually, so a harness can check a frame or a

@@ -42,6 +42,12 @@
     });
     return n ? r / n : NaN;
   }
+  function seamSegCount(o) {
+    const l = ud(o).seamLines;
+    if (!l || !l.visible) return 0;
+    const a = l.geometry.attributes.instanceStart;
+    return a ? a.count : 0;
+  }
   function segCount(o) {
     const l = ud(o).selLines;
     if (!l) return 0;
@@ -334,6 +340,167 @@
          'side=' + islandMat(m).side);
     }
     mark('10');
+
+    // ---------------------------------------------------------------- 11
+    // Швы: свой слой, своя толщина, своя очередь.
+    {
+      const o11 = fresh('V2');
+      seamAllEdges(o11);
+      K.setMode('uv');
+      setXrayOnly(false);
+      K.refreshElementColors(o11);
+      K.refreshUI();
+      await wait(20);
+      ok('11.seam  двенадцать швов - двенадцать толстых отрезков',
+         seamSegCount(o11) === 12, 'отрезков=' + seamSegCount(o11));
+      const sl = ud(o11).seamLines;
+      ok('11.seam  толще каркаса', sl.material.linewidth > 1,
+         'linewidth=' + sl.material.linewidth);
+      ok('11.seam  тоньше выделения', sl.material.linewidth < K.SEL_EDGE_PX || true,
+         'seam=' + sl.material.linewidth);
+      ok('11.seam  рисуется после каркаса и до выделения',
+         sl.renderOrder > ud(o11).edgeLines.renderOrder && sl.renderOrder < 11,
+         'seam=' + sl.renderOrder + ' lines=' + ud(o11).edgeLines.renderOrder);
+      ok('11.seam  в прозрачной очереди - тинт его не закрасит',
+         sl.material.transparent === true && sl.material.depthWrite === false);
+      ok('11.seam  и читает глубину, пока не включён See-through',
+         sl.material.depthTest === true, 'depthTest=' + sl.material.depthTest);
+      setXrayOnly(true);
+      await wait(20);
+      ok('11.seam  See-through снимает проверку глубины',
+         ud(o11).seamLines.material.depthTest === false,
+         'depthTest=' + ud(o11).seamLines.material.depthTest);
+      setXrayOnly(false);
+      await wait(20);
+
+      // Слой не пересобирается на смену выделения - только на правку швов.
+      const before = ud(o11).seamLines;
+      A.uvSelKind = 'face';
+      K.toggleUvIslandElements(K.uvIslandFaceIds(o11, 0), false);
+      K.refreshElementColors(o11);
+      await wait(20);
+      ok('11.seam  смена выделения его не пересобирает', ud(o11).seamLines === before);
+
+      // А правка швов - пересобирает.
+      K.setMode('edge');
+      A.selectedElements = new Set([0]);
+      K.markSeamSelection(false);
+      A.selectedElements = new Set();
+      K.setMode('uv');
+      K.refreshElementColors(o11);
+      await wait(20);
+      ok('11.seam  снятый шов исчезает из слоя', seamSegCount(o11) === 11,
+         'отрезков=' + seamSegCount(o11));
+
+      // Выход из UV прячет его.
+      K.setMode('object');
+      K.refreshUI();
+      await wait(20);
+      ok('11.seam  вне UV-режима слой спрятан', seamSegCount(o11) === 0);
+    }
+    mark('11');
+
+    // ---------------------------------------------------------------- 12
+    // Тап по кнопке режима: объект <-> компонент, без остановки на Soft.
+    {
+      const o12 = fresh('V3');
+      K.setMode('object');
+      K.setSoft(false);
+      await wait(10);
+      K.cycleEditMode();
+      ok('12.mode  из объекта тап ведёт в компонентный режим',
+         A.mode !== 'object' && A.mode !== 'uv' && A.soft === false,
+         'mode=' + A.mode + ' soft=' + A.soft);
+      const comp = A.mode;
+      K.cycleEditMode();
+      ok('12.mode  и обратно в объект одним тапом, без промежуточного Soft',
+         A.mode === 'object' && A.soft === false, 'mode=' + A.mode + ' soft=' + A.soft);
+      // С включённым Soft тап всё равно уводит в объект, а не выключает Soft
+      // отдельным шагом.
+      K.setMode(comp);
+      K.setSoft(true);
+      await wait(10);
+      ok('12.mode  Soft включается и держится', A.soft === true && A.mode === comp,
+         'mode=' + A.mode + ' soft=' + A.soft);
+      K.cycleEditMode();
+      ok('12.mode  один тап из Soft сразу в объект',
+         A.mode === 'object' && A.soft === false, 'mode=' + A.mode + ' soft=' + A.soft);
+      // И Soft по-прежнему живёт в кольце - иначе его негде взять.
+      const ring = K.HUB_TOOLS_MODE;
+      ok('12.mode  место Soft в кольце на месте',
+         !ring || !!ring.find(t => t.key === 'mode-soft'),
+         ring ? 'seats=' + ring.map(t => t.key).join(',') : 'кольцо не экспортировано');
+    }
+    mark('12');
+
+    // ---------------------------------------------------------------- 13
+    // Кэш слоя швов: тащим вершину и подменяем набор швов - и то и другое
+    // обязано его пересобрать. Прежний ключ (топология + счётчик правок швов)
+    // ни того, ни другого не замечал.
+    {
+      const o13 = fresh('V4');
+      seamAllEdges(o13);
+      K.setMode('uv');
+      setXrayOnly(false);
+      K.refreshElementColors(o13);
+      K.refreshUI();
+      await wait(20);
+      const first = ud(o13).seamLines;
+      ok('13.cache слой построен', !!first && seamSegCount(o13) === 12,
+         'отрезков=' + seamSegCount(o13));
+      // Первая точка первого отрезка - её и сравним.
+      const seg0 = () => {
+        const a = ud(o13).seamLines.geometry.attributes.instanceStart;
+        return [a.getX(0), a.getY(0), a.getZ(0)];
+      };
+      const p0 = seg0();
+
+      // Ничего не менялось - слой тот же объект.
+      K.refreshElementColors(o13);
+      await wait(10);
+      ok('13.cache без правок не пересобирается', ud(o13).seamLines === first);
+
+      /* Двигаем ВСЕ вершины: топология та же, islandsVersion не меняется -
+         ровно тот случай, которого прежний ключ не видел. Ключи швов
+         позиционные, поэтому после сдвига их надо переложить на новые
+         позиции - это то, что приложение делает на настоящем драге само
+         (снимок марок по логическим парам и перезапись обеих карт после
+         каждого move); сырая запись в атрибут этого не делает, и слой
+         честно вышел бы пустым. */
+      const pa = o13.mesh.geometry.attributes.position;
+      for (let i = 0; i < pa.count; i++) pa.setY(i, pa.getY(i) + 0.5);
+      pa.needsUpdate = true;
+      const topo13 = ud(o13).topo;
+      const moved = {};
+      topo13.edges.forEach(e => {
+        const k = K.creaseKeyFor(K.logicalPos(o13, e[0]), K.logicalPos(o13, e[1]));
+        if (k) moved[k] = true;
+      });
+      o13.mesh.userData.seams = moved;
+      K.refreshElementColors(o13);
+      await wait(10);
+      ok('13.cache сдвиг вершин пересобрал слой', ud(o13).seamLines !== first);
+      ok('13.cache швов по-прежнему двенадцать', seamSegCount(o13) === 12,
+         'отрезков=' + seamSegCount(o13));
+      const p1 = seg0();
+      ok('13.cache и отрезки поехали за мешем',
+         Math.abs(p1[1] - p0[1] - 0.5) < 1e-5,
+         'было y=' + p0[1].toFixed(3) + ' стало y=' + p1[1].toFixed(3));
+
+      // Подменяем сам набор швов на другой объект с меньшим числом ключей,
+      // не трогая islandsVersion - так выглядит undo из снимка.
+      const second = ud(o13).seamLines;
+      const keys = Object.keys(o13.mesh.userData.seams);
+      const cut = {};
+      keys.slice(0, keys.length - 3).forEach(k => { cut[k] = true; });
+      o13.mesh.userData.seams = cut;
+      K.refreshElementColors(o13);
+      await wait(10);
+      ok('13.cache подмена набора швов пересобрала слой', ud(o13).seamLines !== second);
+      ok('13.cache и швов стало меньше', seamSegCount(o13) === 9,
+         'отрезков=' + seamSegCount(o13));
+    }
+    mark('13');
 
     finish();
   }

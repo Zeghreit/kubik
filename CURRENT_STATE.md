@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
-- Version at time of writing: **2.58**
+- Version at time of writing: **2.59**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,91 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## Seams get a line of their own, and the mode button loses a stop (2.59)
+
+Two small things, both asked for.
+
+**A seam was a colour and nothing else.** One device pixel of magenta in the
+shared wireframe buffer, on a line the whole model is drawn with, under an
+island tint. v2.58 gave the SELECTED edges a 3.5px `LineSegments2` of their
+own and that was the whole difference; a seam is the other thing this mode
+exists to show and it had been left on the hairline. It gets the same
+machinery now: `syncSeamOverlay` builds one layer per object at 2.5px -
+between the 1px wireframe and the 3.5px selection, because a seam is more
+than the model and less than what you are holding - in `SEAM_COLOR`, so
+nothing has to be relearned.
+
+`transparent: true`, which is not about seeing through it: `transparent` is
+what decides the QUEUE, and the transparent queue is drawn after every
+opaque object including the island tint. Under See-through that tint goes
+translucent and back into the transparent queue itself, where it would land
+on an opaque line exactly as it did before v2.58; from here it cannot. Depth
+follows the wireframe rather than the selection - the selection ignores depth
+because losing track of what you are holding is worse than seeing it through
+a fold, while a seam is a property of the surface and belongs behind the
+surface. See-through lifts it, as everywhere else.
+
+**And the mode button is a toggle again.** It used to walk Object ->
+Component -> Soft -> Object, which put a third stop in front of the switch
+that gets pressed more than any other in the app. Soft is already a seat in
+this same button's hold ring, and that is the right home for it: it is a way
+of DRAGGING, chosen occasionally, not a place you pass through on the way
+somewhere else.
+
+### What review found
+
+Opus, cold. Two real defects in the new layer's cache, both of the same
+shape - the key knew about the seam SET and nothing about what else the layer
+bakes:
+
+- **It missed vertex positions.** The segments are copied into a
+  `LineSegmentsGeometry` once. A component drag moves vertices without
+  installing a new topo and without touching `islandsVersion`, so leaving UV
+  mode, dragging a vertex and coming back drew the seams where they used to
+  be - floating off the mesh, beside a wireframe that had followed it.
+  `position.version` is in the key now. Except while a drag is live, where
+  the cached layer is kept and allowed to lag: rebuilding an O(edges) walk
+  with a string key per edge on every frame is the one cost this cache
+  exists to avoid, and it is the same trade the edge field's own note
+  describes.
+- **It missed the seam set changing by any route other than the two
+  functions that bump the counter.** An undo that restores a snapshot, a
+  re-key after a vertex move, a loaded file: any of those hands the object a
+  different `seams` object, or the same one with a different number of keys,
+  without `islandsVersion` moving - and the thick layer would then disagree
+  with the 1px colour, per edge, which reads as corruption. The object's
+  identity and its key count are in the key now.
+
+Also from the review and worth recording as checked rather than assumed: the
+exporters build a fresh group from `source.geometry` rather than traversing
+children, and the pickers use non-recursive `intersectObject`, so a new
+helper child is invisible to both - no filter needed. `updateStrokeResolution`
+sets `resolution` from `viewportEl.clientWidth/clientHeight`, which is
+exactly what the creation line uses, so the width is right before the first
+resize. And the old tap chain had no UV branch at all, so tapping the mode
+button in UV mode used to turn Soft on and toast about it; the explicit UV
+branch removes a real bug nobody had reported.
+
+One piece of dead work dropped while in there: the `setSoft(false)` on the
+way INTO a component mode ran a `clearSoftField`, a `refreshSoftField`, a
+full `refreshElementColors` and a `refreshUI` on every tap, to set a flag to
+the value it already held. Guarded on the flag now.
+
+`_uv58chk` is 63 checks.
+
+### What this deliberately does not do
+
+The seam layer is rebuilt whole on every seam click, walking every edge and
+building a position key per edge - the same walk `refreshElementColors`
+already does to paint the colour. On a 20k-face mesh that is two identical
+loops per tap. The fix, if it ever hurts, is for the colour pass to hand its
+segments over as it goes, since it already has both endpoints and the key in
+hand; it is not worth the coupling until someone feels it.
+
+And Soft is now hold-only. There is no general keyboard shortcut map in this
+app, so nothing lost a binding - but on a device where holding is awkward it
+is the only door, which is a deliberate trade rather than an oversight.
 
 ## UV mode stops being an x-ray (2.58)
 
