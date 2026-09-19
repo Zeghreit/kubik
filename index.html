@@ -2663,7 +2663,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.66</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.67</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -35269,6 +35269,16 @@ ICON.alignright  = '<path d="M20 4v16"/><path d="M4 12h11"/><path d="M11 8l4 4-4
 ICON.aligntop    = '<path d="M4 4h16"/><path d="M12 20V9"/><path d="M8 13l4-4 4 4"/>';
 ICON.alignbottom = '<path d="M4 20h16"/><path d="M12 4v11"/><path d="M8 11l4 4 4-4"/>';
 ICON.flipvert  = '<g transform="rotate(90 12 12)">' + ICON.flip + '</g>';
+/* v2.67. `density` is one quad drawn twice at two rulings - coarse beside fine,
+   which is the thing the op removes; `tosquare` is arrows pushing a wide box
+   out to the square it is being stretched into. Both read at ring size because
+   neither depends on a letter or a fill. */
+ICON.density  = '<path d="M3 4h8v7H3z"/><path d="M3 7.5h8"/><path d="M7 4v7"/>' +
+                '<path d="M13 13h8v7h-8z"/><path d="M13 15h8"/><path d="M13 17h8"/>' +
+                '<path d="M13 19h8"/><path d="M15 13v7"/><path d="M17 13v7"/><path d="M19 13v7"/>';
+ICON.tosquare = '<path d="M3 3h18v18H3z"/><path d="M7 9h10v6H7z"/>' +
+                '<path d="M12 9V5"/><path d="M12 15v4"/>' +
+                '<path d="M10 7l2-2 2 2"/><path d="M10 17l2 2 2-2"/>';
 
 // Wraps a pictogram in an svg at the size the caller needs.
 function icon(name, size) {
@@ -37220,7 +37230,14 @@ const HUB_TOOLS_UV2D_WORLD = [
      not neighbours - "back to 3D" and "rewrite the whole layout" are the two
      things here you would least like to hit by accident on the way to the
      other. */
-  { key: 'uvpack', icon: 'grid', label: 'Pack all', seat: 2, run: uvPackAll }
+  { key: 'uvpack', icon: 'grid', label: 'Pack all', seat: 2, run: uvPackAll },
+  /* v2.67, beside Pack because all three are the same kind of thing: they lay
+     out every island there is, and none of them looks at the selection. Even
+     density at 3 and Stretch at 4 so the pair that disagree about aspect are
+     neighbours - reaching for one and landing on the other is one Undo, and
+     seeing them together is what makes the difference between them legible. */
+  { key: 'uvdensity', icon: 'density', label: 'Even density', seat: 3, run: uvEvenDensity },
+  { key: 'uvsquare', icon: 'tosquare', label: 'Stretch to square', seat: 4, run: uvStretchToSquare }
 ];
 
 function currentHubTools() {
@@ -39210,7 +39227,16 @@ function uvIslandXform(kind) {
 function uvsChangedAsStored(before, uvs) {
   if (!before || before.length !== uvs.length) return true;
   for (let i = 0; i < uvs.length; i++) {
-    if (Math.fround(before[i]) !== Math.fround(uvs[i])) return true;
+    const a = Math.fround(before[i]), b = Math.fround(uvs[i]);
+    /* NaN COMPARES EQUAL HERE (v2.67, review finding), because pushHistory's
+       own comparison says it does. `!==` calls NaN different from itself, so a
+       mesh carrying one NaN UV - an imported glTF with a hole in TEXCOORD_0 is
+       enough, since the import sweep checks positions and not UVs - reported
+       "changed" from every op that skips non-finite values and leaves it
+       exactly where it was. Which is precisely the failure this function was
+       written to prevent: a toast for an edit pushHistory then drops, and the
+       next Undo taking the step before it. */
+    if (a !== b && !(Number.isNaN(a) && Number.isNaN(b))) return true;
   }
   return false;
 }
@@ -39408,6 +39434,479 @@ function uvPackAll() {
      undo is not a switch, keep the framing" - there the thing you were looking
      at stayed where it was. Quietly, so the pack's own word is the one left on
      screen. */
+  frameUvAll(true);
+  return true;
+}
+
+/* HOW BIG EACH ISLAND IS, IN BOTH SPACES AT ONCE (v2.67) - the measurement the
+   two layout ops below share. Per island: the summed area of its triangles in
+   the mesh's own coordinates, the summed area of the same triangles in UV, and
+   the ratio's square root, which is the only one of the three that is a
+   DENSITY: texels per unit of surface, up to whatever the texture's resolution
+   turns out to be. Areas are quadratic in scale, so a length-like number is
+   what a uniform scale factor can be read off directly.
+
+   WORLD POSITIONS, NOT LOCAL (corrected by review; the first draft used local
+   and said the object's scale cancels out). It cancels only for a UNIFORM
+   scale, and the inspector sets x, y and z independently. On a cube scaled
+   (1,1,5) the four long sides have five times the world area of the caps, so a
+   layout that is even in local space gives them a fifth of the texture per unit
+   of surface - and world space is what the person sees on the model and what
+   the glTF export writes, since the node's scale goes into the file. Area is
+   invariant under rotation and translation, so only the scale and shear terms
+   of the matrix change any answer here; taking the whole matrix is the cheap
+   way to be right about all of them at once.
+
+   TRIANGLES, NOT THE BOX. A box ratio would call an L-shaped island the size of
+   the rectangle it fits in, and the whole point of matching density is that two
+   islands of equal SURFACE get equal texture - which is area, not extent. The
+   walk is over ed.groups, so a triangle counts once however many groups the
+   mesh has; the island of a triangle is the island of its first corner, which
+   is exact, since an island is a set of attribute vertices and a triangle's
+   three corners are always in the same one (a seam separates VERTICES). */
+/* HOW FLAT A PROJECTION HAS TO BE BEFORE IT STOPS BEING ONE (v2.67, review
+   finding - this was the blocker). An island whose UVs lie on a LINE has a UV
+   area of float32 noise rather than of zero: four collinear points at generic
+   coordinates give a cross product around 1e-8, not 0. Its density then comes
+   out around 1e-4 instead of 0, so it passes the "is this measurable" test, and
+   evening it out asks for a scale of a thousand or a million. That island
+   becomes hundreds of UV units wide, the packer then fits the sheet to IT, and
+   every real island lands at a millionth of a tile - with a toast reading
+   "was 1500x off", which sounds like success.
+
+   TWO SHAPE TESTS WERE TRIED HERE AND BOTH WERE THE WRONG TOOL; the note is
+   kept because the reasoning is the point. Asking how much of its own bounding
+   box an island covers is invariant under scaling U and V independently, so it
+   measures DIAGONAL thinness and nothing else: a band on an axis has a box that
+   collapses with it, covers most of that box, and passes as healthy - and an
+   axis-parallel collapse is exactly what computeIslandUVs produces for a
+   3D-collinear island, since it projects the residual onto U and the line onto
+   V. Bounding the RATIO between two densities fails for the same reason it
+   sounds right: any bound loose enough to allow a hand-made layout where one
+   island was deliberately scaled is also loose enough to allow the disaster
+   above, because the disaster is not a large ratio, it is a large ratio on an
+   island whose UV shape cannot absorb it.
+
+   SO THE GUARD MEASURES THE OUTCOME INSTEAD (see uvEvenDensity). What goes
+   wrong is always the same thing - the sheet ends up carrying less texture than
+   it started with - and that is one number, available by running the op on the
+   private copy and looking. No classification of islands, no threshold that has
+   to be right about what a projection "is". */
+const UV_DENSITY_MAX_LOSS = 4;
+function uvIslandAreas(obj, ed, mapIn) {
+  /* The island map is taken from the caller when it has one: uvEvenDensity
+     needs it too, and the union-find walk behind it is not free (review
+     finding - it was being paid twice per tap). */
+  const { attrIsland, count } = mapIn || islandVertexMap(obj);
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    out.push({ world: 0, uv: 0, density: 0, tris: 0, skipped: 0, broken: false });
+  }
+  const P = ed.positions, U = ed.uvs;
+  if (!U || !P) return out;
+  /* This node's own matrix AND its ancestors' (review finding: the first draft
+     called updateMatrixWorld, which refreshes this node and its CHILDREN and
+     reads the parent's matrix as it stands). Every object mesh is a direct
+     child of the scene today, so the two agree; the day one is parented to a
+     group, only this one still measures the right areas. */
+  obj.mesh.updateWorldMatrix(true, false);
+  const M = obj.mesh.matrixWorld;
+  const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3();
+  for (let g = 0; g < ed.groups.length; g++) {
+    const tris = ed.groups[g].triangles;
+    for (let t = 0; t < tris.length; t++) {
+      const a = tris[t][0], b = tris[t][1], c = tris[t][2];
+      const isl = attrIsland[a];
+      if (isl < 0 || isl >= count) continue;
+      const rec = out[isl];
+      // World: half the cross product's length, on the transformed corners.
+      vA.set(P[a * 3], P[a * 3 + 1], P[a * 3 + 2]).applyMatrix4(M);
+      vB.set(P[b * 3], P[b * 3 + 1], P[b * 3 + 2]).applyMatrix4(M);
+      vC.set(P[c * 3], P[c * 3 + 1], P[c * 3 + 2]).applyMatrix4(M);
+      const e1x = vB.x - vA.x, e1y = vB.y - vA.y, e1z = vB.z - vA.z;
+      const e2x = vC.x - vA.x, e2y = vC.y - vA.y, e2z = vC.z - vA.z;
+      const cx = e1y * e2z - e1z * e2y;
+      const cy = e1z * e2x - e1x * e2z;
+      const cz = e1x * e2y - e1y * e2x;
+      const wa = 0.5 * Math.sqrt(cx * cx + cy * cy + cz * cz);
+      // UV: half the 2D cross product's magnitude. ABSOLUTE, so a mirrored
+      // island counts its area rather than cancelling it - a flipped island is
+      // still covering texture.
+      const au = U[a * 2], av = U[a * 2 + 1];
+      const f1u = U[b * 2] - au, f1v = U[b * 2 + 1] - av;
+      const f2u = U[c * 2] - au, f2v = U[c * 2 + 1] - av;
+      const ua = 0.5 * Math.abs(f1u * f2v - f1v * f2u);
+      /* COUNTED, NOT JUST SKIPPED (review finding). A triangle with a NaN UV
+         corner cannot be measured, and an island where EVERY triangle touches
+         one - an n-gon cap fanned from a centre vertex with a hole in its UV,
+         which is how an imported glTF arrives - then has an area of exactly
+         zero and gets quietly excused from the op. The count is what lets the
+         op say so instead. */
+      if (!Number.isFinite(wa) || !Number.isFinite(ua)) { rec.skipped++; continue; }
+      rec.world += wa; rec.uv += ua; rec.tris++;
+    }
+  }
+  for (let i = 0; i < count; i++) {
+    const r = out[i];
+    // Had triangles, could measure none of them: unusable UV rather than a
+    // collapsed projection, and the two want different words.
+    r.broken = r.tris === 0 && r.skipped > 0;
+    r.density = (r.world > 0 && r.uv > 0) ? Math.sqrt(r.uv / r.world) : 0;
+  }
+  return out;
+}
+
+/* EVEN DENSITY (v2.67) - "texel density" from Zeghreit's layout list. Every
+   island is scaled until it gets the same texture per unit of surface as every
+   other, and then the whole sheet is packed, because rescaling islands where
+   they stand guarantees overlaps. Packing afterwards costs nothing: it is one
+   UNIFORM scale over everything, so it multiplies every density by the same
+   number and cannot undo the evening.
+
+   THE REFERENCE IS THE MEDIAN DENSITY, WEIGHTED BY WORLD AREA - the density at
+   which half the model's surface sits below and half above. Which is a third
+   attempt at this, and the first two are worth recording because the bug the
+   stand found is the kind that hides behind a reasonable sentence.
+
+   "The island with the most surface, because the big piece should keep its
+   detail" sounds right and matches the weld anchor. But it has to break ties,
+   and the commonest mesh in this app - a cube, six faces, six islands - is
+   nothing BUT ties. First-index-wins then made the reference island 0, so a
+   single broken island at index 0 handed its own wrong density to the entire
+   sheet, and the op tried to shrink everything by three thousand to match it.
+   The stand caught this by asking a question about something else: the refusal's
+   own "which island is at fault" loop came back empty, because with the broken
+   island AS the reference nothing is at fault relative to it.
+
+   The weighted median keeps everything that rationale wanted and needs no tie
+   break. Weighting by world area is what makes the big piece dominate: one
+   island carrying most of the surface IS the median, so the old rule's good case
+   is unchanged. And being a median it cannot be moved by one outlier, however
+   extreme - which is the whole failure above, in one word.
+
+   WORLD area rather than UV area, both for the weights and for the densities
+   (review finding: the first note here had the hazard backwards). An island
+   whose projection is blown up to ten tiles would dominate a UV-area weighting
+   and hand its own wrong density to the sheet while its actual surface is one
+   quad. World area is the thing the person means by "the big piece".
+
+   Scaled about each island's own UV box CENTRE, which is what keeps the layout
+   recognisable through the op: an island that was in the middle of the sheet
+   stays in the middle, and only its size changes. The pack then decides where
+   everything actually lands, so the choice of pivot is about what the person
+   sees for one frame - but it also keeps every intermediate coordinate near the
+   sheet instead of flinging islands at the origin, which is what a pivot of
+   (0,0) would do to an island out at tile 1055.
+
+   AN ISLAND WITH NO MEASURABLE DENSITY IS LEFT ALONE, not scaled by infinity:
+   zero world area (a fully degenerate set of triangles) or zero UV area (a
+   projection collapsed exactly onto a point or a line) both make the ratio
+   meaningless. They still go into the pack, so they are not lost - a collapsed
+   island has a box the packer can place, and leaving it out would be a silent
+   edit - and when the reason was unusable UV rather than a flat projection, the
+   message says how many, because that one is the person's file being wrong
+   rather than their layout.
+
+   AND THE WHOLE OP IS REFUSED WHEN IT WOULD COST THE SHEET ITS RESOLUTION.
+   Evening is a promise about ratios, and a ratio can be honoured by making
+   everything smaller: an island whose UV is a 175-to-1 ribbon over a square
+   surface has to grow enormously to reach the reference density, the packer
+   then fits the square to THAT ribbon, and every other island ends up with a
+   fraction of the texture it had - technically even, and useless. So the op
+   runs on its private copy, measures the density the sheet actually ends up
+   with against the MEDIAN it started from, and if the typical island lost more
+   than UV_DENSITY_MAX_LOSS it puts the copy down and says what it would have
+   cost. Median rather than mean, so one outlier cannot set the bar it is
+   being judged against.
+
+   AND IT IS A PACK EVEN WHEN NOTHING NEEDED EVENING (review finding). The pack
+   at the end is not free as a layout - it is free as a DENSITY, which is the
+   only thing it was claimed to be: one uniform scale multiplies every density
+   by the same number, so the evening survives it. The layout does move, and on
+   an already-even sheet - including every single-island mesh, where the scale
+   is exactly 1 - this op is a Pack. The message says which of the two
+   happened rather than reporting "was 1.00x off" and letting the person work
+   it out. */
+function uvEvenDensity() {
+  const obj = uvViewObj;
+  if (!obj || !obj.mesh || !obj.mesh.geometry) return false;
+  let ed;
+  try { ed = toEditable(obj.mesh); }
+  catch (e) { console.warn('uvEvenDensity: toEditable failed', e); return false; }
+  if (!ed.uvs || !ed.uvs.length) { toast('No UV to even out'); return false; }
+  const map = islandVertexMap(obj);
+  const areas = uvIslandAreas(obj, ed, map);
+  const { attrIsland, count } = map;
+  /* The weighted median - see the header. Sorted by density, walked until half
+     the measurable WORLD area is behind us; that island's density is the one the
+     sheet ends up wearing, and it is also the figure the outcome guard below
+     judges the result against, since "what the sheet had before" and "what it
+     is aiming at" are the same number here by construction. */
+  let target = 0;
+  {
+    const rows = [];
+    let total = 0;
+    for (let i = 0; i < count; i++) {
+      if (areas[i].density <= 0) continue;
+      rows.push({ d: areas[i].density, w: areas[i].world });
+      total += areas[i].world;
+    }
+    if (!rows.length || !(total > 0)) {
+      toast('No island has measurable UV area');
+      return false;
+    }
+    rows.sort((a, b) => a.d - b.d);
+    let acc = 0;
+    target = rows[rows.length - 1].d;
+    for (let i = 0; i < rows.length; i++) {
+      acc += rows[i].w;
+      if (acc * 2 >= total) { target = rows[i].d; break; }
+    }
+  }
+  if (!(target > 0)) { toast('No island has measurable UV area'); return false; }
+  const medianBefore = target;
+  // How many islands could not be measured because their UV is unusable, for
+  // the message at the end.
+  let brokenCount = 0;
+  for (let i = 0; i < count; i++) if (areas[i].broken) brokenCount++;
+  // Each island's own UV box, for the pivot. One pass; islands with no finite
+  // UV never get a box and so never get scaled.
+  const boxes = new Map();
+  for (let ai = 0; ai < attrIsland.length; ai++) {
+    const isl = attrIsland[ai];
+    if (isl < 0 || isl >= count) continue;
+    if (areas[isl].density <= 0) continue;
+    const u = ed.uvs[ai * 2], v = ed.uvs[ai * 2 + 1];
+    if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
+    const b = boxes.get(isl);
+    if (!b) { boxes.set(isl, { minU: u, maxU: u, minV: v, maxV: v }); continue; }
+    if (u < b.minU) b.minU = u;
+    if (u > b.maxU) b.maxU = u;
+    if (v < b.minV) b.minV = v;
+    if (v > b.maxV) b.maxV = v;
+  }
+  const wasUvs = Array.prototype.slice.call(ed.uvs);
+  let touched = 0, worst = 1;
+  for (let ai = 0; ai < attrIsland.length; ai++) {
+    const isl = attrIsland[ai];
+    const b = boxes.get(isl);
+    if (!b) continue;
+    const k = target / areas[isl].density;
+    if (!Number.isFinite(k) || k <= 0) continue;
+    const pu = (b.minU + b.maxU) / 2, pv = (b.minV + b.maxV) / 2;
+    ed.uvs[ai * 2] = pu + (ed.uvs[ai * 2] - pu) * k;
+    ed.uvs[ai * 2 + 1] = pv + (ed.uvs[ai * 2 + 1] - pv) * k;
+    touched++;
+    const spread = k > 1 ? k : 1 / k;
+    if (spread > worst) worst = spread;
+  }
+  /* Only reachable when the reference's own world area is a denormal, which
+     makes target infinite and every scale NaN. Every other refusal in this
+     function says something, and a seat that answers with nothing at all is
+     the one thing the ring's own rules forbid. */
+  if (!touched) { toast('Cannot measure this layout'); return false; }
+  /* THEN PACK, over the rescaled coordinates. Measured from ed.uvs as they now
+     stand rather than from the boxes above, which are the PRE-scale ones - the
+     parallel-array contract packIslandUVs relies on is the same one uvPackAll
+     builds, so it is built the same way here. */
+  const ids = [], bounds = [];
+  for (let i = 0; i < count; i++) { ids.push(null); bounds.push(null); }
+  for (let ai = 0; ai < attrIsland.length; ai++) {
+    const isl = attrIsland[ai];
+    if (isl < 0 || isl >= count) continue;
+    const u = ed.uvs[ai * 2], v = ed.uvs[ai * 2 + 1];
+    if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
+    if (!ids[isl]) { ids[isl] = []; bounds[isl] = { minU: u, maxU: u, minV: v, maxV: v }; }
+    ids[isl].push(ai);
+    const bb = bounds[isl];
+    if (u < bb.minU) bb.minU = u;
+    if (u > bb.maxU) bb.maxU = u;
+    if (v < bb.minV) bb.minV = v;
+    if (v > bb.maxV) bb.maxV = v;
+  }
+  const keepIds = [], keepBounds = [];
+  for (let i = 0; i < count; i++) {
+    if (ids[i] && ids[i].length) { keepIds.push(ids[i]); keepBounds.push(bounds[i]); }
+  }
+  if (!keepIds.length) return false;
+  packIslandUVs(ed.uvs, keepIds, keepBounds);
+  /* THE OUTCOME GUARD - see the header. Everything so far happened on `ed`, a
+     private copy, so putting it down here costs nothing but the measurement.
+     Asked AFTER the pack because the pack's uniform scale is most of the
+     answer: it is what turns one island's necessary growth into everyone
+     else's loss. */
+  {
+    const after = uvIslandAreas(obj, ed, map);
+    let densityAfter = 0;
+    for (let i = 0; i < count; i++) {
+      if (after[i].density > 0) { densityAfter = after[i].density; break; }
+    }
+    const loss = (densityAfter > 0 && medianBefore > 0) ? medianBefore / densityAfter : 0;
+    if (loss > UV_DENSITY_MAX_LOSS) {
+      /* The offending island gets SELECTED rather than named by a number the
+         person has never seen: the 2D view tints islands, so a selection is the
+         only way to point at one. Only in island mode, where a selection means
+         something - from vertex or face mode the figure has to carry it. */
+      let worstIsl = -1, worstRatio = 1;
+      for (let i = 0; i < count; i++) {
+        if (areas[i].density <= 0) continue;
+        const r = target / areas[i].density;
+        if (r > worstRatio) { worstRatio = r; worstIsl = i; }
+      }
+      if (uvCompMode === 'island' && worstIsl >= 0) {
+        uvIslandSel.clear();
+        uvIslandSel.add(worstIsl);
+        paintUvCompSelection();
+        refreshUvStatus();
+      }
+      toast('Evening this would cost ' + Math.round(loss) +
+            '\u00d7 resolution \u00b7 that island is stretched');
+      return false;
+    }
+  }
+  if (!uvsChangedAsStored(wasUvs, ed.uvs)) {
+    toast('Density is already even');
+    return false;
+  }
+  rebuildFromEditable(obj, ed);
+  /* The number is the spread it CLOSED - the worst ratio between an island's
+     density and the reference before the op. "Even density" alone gives no way
+     to tell a sheet that was already close from one where a face was getting
+     four times the texture of its neighbour. */
+  /* "Repacked" when the densities were already level (review finding): the
+     op did happen and the layout did move, but calling that "was 1.00x off"
+     claims it found something to fix. 1.005 rather than exactly 1 because two
+     area sums taken over the same triangles in a different order differ in the
+     last few digits, so the scale is never exactly 1 even where it should be.
+     And the count of islands it could not read at all, when there were any -
+     an op that quietly did nothing to a fifth of the mesh is the kind of
+     silence this file spends its comments on. */
+  const note = brokenCount
+    ? ' · ' + brokenCount + (brokenCount === 1 ? ' island has' : ' islands have') +
+      ' unusable UV'
+    : '';
+  finishMeshEdit(obj, (worst < 1.005 ? 'Even density · already level, repacked'
+    : 'Even density · was ' +
+      (worst >= 1.995 ? Math.round(worst) + '× off' : worst.toFixed(2) + '× off')) + note);
+  refreshUvView(obj);
+  frameUvAll(true);
+  return true;
+}
+
+/* STRETCH TO SQUARE (v2.67), the last of the layout list. The whole layout's
+   bounding box is mapped onto the 0..1 square, U and V INDEPENDENTLY - which is
+   the entire point, and the one thing that separates it from Pack. Pack fits
+   the layout in with one uniform scale and leaves whatever aspect it had; this
+   fills the square, so a wide strip of islands on a square texture stops
+   wasting the half of the image it was leaving blank, at the cost of stretching
+   the result.
+
+   THAT DISTORTION IS THE FEATURE, and it is why this is a separate seat rather
+   than something Pack does: it is the right answer when the texture is square
+   and the layout is not, and the wrong answer whenever the two axes need to
+   keep their proportion. Uneven density, in other words, deliberately - so it
+   is the op that undoes Even density above, and the two sit side by side on
+   purpose.
+
+   ONE AFFINE MAP OVER EVERY ISLAND, not a per-island fit. Fitting each island
+   to the square separately would stack them all on top of each other, which is
+   what Pack exists to avoid; mapping the union means the layout you had is the
+   layout you keep, only wider or taller. The relative gaps between islands
+   stretch with everything else, which is correct - they are part of the layout.
+
+   The target is 0..1 inset by the pack's own gutter, so a vertex never lands
+   exactly on the border: every map in this app is RepeatWrapping, and a
+   coordinate at exactly 1 samples across the seam under bilinear filtering.
+   The packer's own margin is min(UV_PACK_GUTTER, 0.4/rows), so the two agree
+   until a sheet has some hundreds of islands and the packer's shrinks.
+
+   ASKED BEFORE IT WRITES, not after (review finding). The map is not exactly
+   idempotent - 1-g minus g is not exactly 1-2g in double, so ku comes out 1
+   plus or minus a part in a hundred million, and some already-placed vertices
+   flip to the neighbouring float32. Which means the after-the-fact guard the
+   align and pack ops use would almost never fire here, and a second press would
+   record a step of pure noise. Comparing the BOX to the target first makes the
+   refusal the reachable one it reads as.
+
+   The tolerance is a flat constant, and it is only ever compared against the
+   two constants g and 1-g, so there is nothing for it to scale with (a second
+   review pass caught the first draft computing it from the literal 1 and
+   calling that "an ulp at these coordinates" - it was neither). 2^-21 is a few
+   float32 steps at the top edge and several hundred at the bottom one; both are
+   far below a texel on any texture this app will load, and there is no gesture
+   in it that can move a layout by less.
+
+   A LAYOUT WITH NO EXTENT ON ONE AXIS IS REFUSED - a single island collapsed to
+   a horizontal line has zero height, and "stretch that to fill the square"
+   has no answer that is not a division by zero. */
+function uvStretchToSquare() {
+  const obj = uvViewObj;
+  if (!obj || !obj.mesh || !obj.mesh.geometry) return false;
+  let ed;
+  try { ed = toEditable(obj.mesh); }
+  catch (e) { console.warn('uvStretchToSquare: toEditable failed', e); return false; }
+  if (!ed.uvs || !ed.uvs.length) { toast('No UV to stretch'); return false; }
+  /* MEASURED OVER THE ISLANDS, not over every entry in the attribute (review
+     finding). A position-attribute vertex belonging to no island - possible
+     straight from an import, though this app's own rebuild drops them - would
+     otherwise enlarge the box with a UV nothing draws, and the visible layout
+     would then NOT fill the square after the op said it did. The other three
+     layout ops all walk the island map; this one was the odd one out. */
+  const { attrIsland, count } = islandVertexMap(obj);
+  let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity, n = 0;
+  for (let ai = 0; ai < attrIsland.length; ai++) {
+    const isl = attrIsland[ai];
+    if (isl < 0 || isl >= count) continue;
+    const u = ed.uvs[ai * 2], v = ed.uvs[ai * 2 + 1];
+    if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
+    if (u < minU) minU = u;
+    if (u > maxU) maxU = u;
+    if (v < minV) minV = v;
+    if (v > maxV) maxV = v;
+    n++;
+  }
+  if (!n) { toast('No UV to stretch'); return false; }
+  const w = maxU - minU, h = maxV - minV;
+  /* An exact test, and it can be: a layout 1e-6 across is perfectly
+     stretchable and one of exactly a single point is not, and there is nothing
+     in between - two distinct float32 values always differ by enough for
+     span/w to be finite, and (u - minU) <= w by construction, so the product
+     lands inside the target however small w is. */
+  if (!(w > 0) || !(h > 0)) {
+    toast(w > 0 || h > 0 ? 'The layout is a line - nothing to stretch'
+                         : 'The layout is a single point');
+    return false;
+  }
+  const g = UV_PACK_GUTTER;
+  const span = 1 - 2 * g;
+  /* Already on the target box, within the tolerance the note above explains. */
+  {
+    const tol = Math.pow(2, -21);
+    if (Math.abs(minU - g) <= tol && Math.abs(maxU - (1 - g)) <= tol &&
+        Math.abs(minV - g) <= tol && Math.abs(maxV - (1 - g)) <= tol) {
+      toast('Already fills the square');
+      return false;
+    }
+  }
+  const ku = span / w, kv = span / h;
+  const wasUvs = Array.prototype.slice.call(ed.uvs);
+  for (let i = 0; i < ed.uvs.length; i += 2) {
+    const u = ed.uvs[i], v = ed.uvs[i + 1];
+    if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
+    ed.uvs[i] = g + (u - minU) * ku;
+    ed.uvs[i + 1] = g + (v - minV) * kv;
+  }
+  if (!uvsChangedAsStored(wasUvs, ed.uvs)) {
+    toast('Already fills the square');
+    return false;
+  }
+  rebuildFromEditable(obj, ed);
+  /* The stretch it applied, as the ratio between the two axis scales, which is
+     the number that says how much distortion was accepted. 1.00 means the
+     layout was already square and this was a pure fit. */
+  const aspect = ku > kv ? ku / kv : kv / ku;
+  finishMeshEdit(obj, 'Stretched to square · ' + aspect.toFixed(2) + '× distortion');
+  refreshUvView(obj);
   frameUvAll(true);
   return true;
 }
@@ -45159,6 +45658,16 @@ if (PICK_DEBUG) {
     uvSecondPointer, promoteUvViewPinch, uvOtherPointer, UV_VIEW_PINCH_MIN_PX,
     // v2.66: layout - align a group, pack the sheet.
     uvAlignIslands, UV_ALIGN, uvPackAll,
+    uvIslandAreas, uvEvenDensity, uvStretchToSquare,
+    UV_DENSITY_MAX_LOSS,
+    uvsChangedAsStored,
+    /* The glyph table itself (v2.67). A ring seat naming an icon that does not
+       exist draws an empty button, which nothing else can see - node --check
+       cannot, _verify.py cannot, and on screen it reads as a seat that is
+       simply blank. One line here lets a probe check every seat has a picture
+       and that no two seats share one, which is the rule v2.65's duplicate
+       glyph pair broke. */
+    ICON,
     // v2.65: the island door and the four transforms behind it.
     uvIslandXform, UV_ISLAND_XFORMS, HUB_TOOLS_UV2D_ISLAND,
     get uvDragHoldArmed() { return !!(uvDrag && uvDrag.holdTimer); },

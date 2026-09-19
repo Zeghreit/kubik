@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
-- Version at time of writing: **2.66**
+- Version at time of writing: **2.67**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,122 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## Texel density and stretch to square (2.67)
+
+The last two items on the layout list, both in the empty-space ring beside Pack
+because all three lay out every island there is and none of them looks at the
+selection. **Even density** scales each island until it carries the same texture
+per unit of surface as every other, then packs. **Stretch to square** maps the
+whole layout's bounding box onto the 0..1 square with independent U and V
+scales - the distortion is the feature, and it is the one thing that separates
+it from Pack, which fits the layout in with one uniform scale and keeps whatever
+aspect it had.
+
+Density is `sqrt(uvArea / worldArea)`, summed over triangles rather than taken
+from bounding boxes: a box ratio would call an L-shaped island the size of the
+rectangle it fits in, and the point of matching density is that two islands of
+equal SURFACE get equal texture. Areas are quadratic in scale, so the square
+root is the only one of the three numbers a uniform scale factor can be read off
+directly.
+
+Packing at the end is not optional - rescaling islands where they stand
+guarantees overlaps - and it is free as a DENSITY, which is the only thing it
+needs to be: one uniform scale multiplies every density by the same number, so
+it cannot undo the evening. It is not free as a layout, so on an already-level
+sheet this op is a Pack, and the message says "already level, repacked" rather
+than claiming it found something to fix.
+
+### The reference took three tries, and the third is the interesting one
+
+"Scale everything to match the island with the most surface, because the big
+piece should keep its detail" sounds right, matches the weld anchor's rule, and
+is what shipped first. It has to break ties - and the commonest mesh in this app
+is a cube, six faces, six islands, all of them tied. First-index-wins made
+island 0 the reference, so **one broken island at index 0 handed its own wrong
+density to the entire sheet** and the op tried to shrink everything by three
+thousand to match it.
+
+The stand found this by asking about something else entirely: the refusal's own
+"which island is at fault" loop came back empty, because with the broken island
+AS the reference nothing is at fault relative to it. An empty answer to a
+question that had to have one.
+
+The reference is now the **median density weighted by world area** - the density
+at which half the model's surface sits below and half above. It needs no tie
+break, one island carrying most of the surface still IS the median (so the
+original rationale's good case is untouched), and being a median it cannot be
+moved by one outlier however extreme, which was the whole failure in one word.
+
+### Two guards were written, and both were the wrong tool
+
+Worth recording, because each sounded right for a day.
+
+A **shape test** - what fraction of its own bounding box does an island's UV
+cover - is invariant under scaling U and V independently, so it measures
+DIAGONAL thinness and nothing else. A band lying on an axis has a box that
+collapses with it, covers most of that box, and passes as healthy. Which is
+precisely the shape that matters, because `computeIslandUVs` projects a
+3D-collinear island's residual onto U and the line onto V: the collapse the app
+produces itself is the one the test cannot see.
+
+Bounding the **ratio between two densities** fails for a subtler reason: any
+bound loose enough to allow a hand-made layout where one island was deliberately
+scaled is also loose enough to allow the disaster, because the disaster is not a
+large ratio. It is a large ratio on an island whose UV SHAPE cannot absorb it.
+The probe proved this from the other side too - an island shrunk uniformly by
+200 costs nothing to even out, since evening it just puts it back, and a ratio
+guard would have refused a perfectly ordinary layout.
+
+So the guard measures **the outcome**. Everything happens on the private
+editable copy, and after the pack the op asks what density the sheet actually
+ended up with against the median it started from. If the typical island lost
+more than fourfold, it puts the copy down, says what it would have cost, and
+selects the island that forced it - the 2D view tints islands, so a selection is
+the only way to point at one. One number, no classification of islands, no
+threshold that has to be right about what a projection "is".
+
+### Fixed on the way
+
+- **Areas are measured in WORLD space.** The first draft used local positions
+  and said the object's scale cancels out - it cancels only for a UNIFORM scale,
+  and the inspector sets x, y and z independently. On a cube scaled (1,1,5) the
+  four long sides have five times the surface of the caps, so a layout that is
+  level in local space gives them a fifth of the texture per unit of surface -
+  and world space is what the person sees on the model and what the glTF export
+  writes, since the node's scale goes into the file.
+- **`updateWorldMatrix(true, false)`, not `updateMatrixWorld(true)`** - the
+  second refreshes this node and its CHILDREN and reads the parent's matrix as
+  it stands. Every object mesh is a direct child of the scene today, so the two
+  agree; the day one is parented to a group, only the first still measures the
+  right areas.
+- **NaN now compares EQUAL in `uvsChangedAsStored`** (v2.66's helper), because
+  `pushHistory`'s own comparison says it does. `!==` calls NaN different from
+  itself, so a mesh carrying one NaN UV - an imported glTF with a hole in
+  TEXCOORD_0 is enough, since the import sweep checks positions and not UVs -
+  reported "changed" from every op that skips non-finite values and leaves it
+  exactly where it was. Which is the toast-without-a-step that helper exists to
+  prevent.
+- **An island whose every triangle touches a NaN UV** used to be silently
+  excused: its measurable area is exactly zero, so it looked like a collapsed
+  projection. Skipped triangles are now counted, and the message says how many
+  islands have unusable UV - that one is the person's file being wrong rather
+  than their layout.
+- **Stretch refuses BEFORE it writes.** The map is not exactly idempotent -
+  `1-g` minus `g` is not exactly `1-2g` in double, so the scale comes out one
+  part in a hundred million off and some already-placed vertices flip to the
+  neighbouring float32 - so the after-the-fact guard the align and pack ops use
+  would almost never fire, and a second press would record a step of pure noise.
+  Comparing the box to the target first makes the refusal the reachable thing it
+  reads as. (Its tolerance is a flat 2^-21 and is only ever compared against two
+  constants; an earlier draft computed it from the literal 1 and called that "an
+  ulp at these coordinates", which it was not.)
+- **Stretch measures its box over the ISLANDS**, like the other three layout
+  ops. A position-attribute vertex belonging to no island would otherwise
+  enlarge the union box with a UV nothing draws, and the visible layout would
+  then not fill the square after the op said it did.
+- `islandVertexMap` was being walked twice per tap; `uvIslandAreas` now takes
+  the map from its caller.
 
 ## Aligning a group, and packing the sheet (2.66)
 
