@@ -2663,7 +2663,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.63</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.64</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -38798,6 +38798,11 @@ function setUvCompMode(mode) {
   uvPan = null;
   uvPinchView = null;
   uvEmptyTapClear = null;
+  /* And half a double tap (review finding, v2.64): the reader keys on what was
+     under the finger, so a stale first tap cannot pair across a mode switch
+     anyway - but closeUvView and reconcileUvViewTarget both drop it, and a
+     third teardown path that does not is how the next slice trips. */
+  uvLastTap = null;
   uvCompMode = mode;
   uvSel.clear();
   uvEdgeSel.clear();
@@ -38931,7 +38936,7 @@ function endUvDrag(commit) {
   if (!uvDrag) return;
   const { islandIds, dx, dy, gEls, centerX, centerY,
     startClientX, startClientY, lastClientX, lastClientY,
-    mode, angleDeg, scale, tapId, tapWasSelected } = uvDrag;
+    mode, angleDeg, scale, tapId, tapWasSelected, slop } = uvDrag;
   gEls.forEach(el => { el.classList.remove('dragging'); el.removeAttribute('transform'); });
   uvDrag = null;
   if (!commit) {
@@ -38943,7 +38948,8 @@ function endUvDrag(commit) {
     return;
   }
   const movedPx = Math.hypot(lastClientX - startClientX, lastClientY - startClientY);
-  const translated = movedPx > RING_MOVE_CANCEL_PX;
+  // The pointer's own slop, not the ring's 8px - see the note on uvDrag.slop.
+  const translated = movedPx > slop;
   const rotated = Math.abs(angleDeg) > UV_PINCH_MIN_ANGLE_DEG;
   const scaled = Math.abs(scale - 1) > UV_PINCH_MIN_SCALE_DELTA;
   /* A TAP, NOT A DRAG (v2.55), and this is the branch that gives island
@@ -39072,6 +39078,7 @@ function reconcileUvViewTarget() {
   uvPan = null;
   uvPinchView = null;
   uvPointers.clear();   // v2.61 - the hand belonged to the previous object
+  uvForgetTap();        // v2.64
   /* And the armed empty-space clear with it (review finding, v2.61): it names
      a pointer that is still down but now hovers a DIFFERENT object's layout,
      so its eventual pointerup would clear a selection made on the new one. */
@@ -39107,6 +39114,7 @@ function closeUvView() {
   uvPan = null;
   uvPinchView = null;
   uvEmptyTapClear = null;
+  uvForgetTap();      // v2.64 - and neither does half a double tap
   // No finger belongs to a view that no longer exists (v2.61).
   uvPointers.clear();
   /* The status line's cache with it (review finding, v2.62). resetUvViewBox
@@ -39243,6 +39251,17 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
     // function's own comment).
     startClientX: ev.clientX, startClientY: ev.clientY,
     lastClientX: ev.clientX, lastClientY: ev.clientY,
+    /* HOW FAR A TAP MAY TRAVEL, from this pointer's own kind (review finding,
+       v2.64). RING_MOVE_CANCEL_PX - 8px - used to decide this, and this file
+       had already measured that number and rejected it: TAP_SLOP_TOUCH_PX is
+       22 because at 12 the complaint was still "sometimes I tap right on it
+       and nothing selects" (see its own note). At 8, an ordinary thumb roll of
+       11px was read as a DRAG here - so a deliberate double tap committed two
+       invisible UV moves and two history steps instead of framing anything,
+       and the double tap could not be made at all. Read once, at pointerdown,
+       because pointerup's event carries the same pointerType but the record is
+       what endUvDrag has. */
+    slop: tapSlopPx(ev),
     pointerId2: null, p1: null, p2: null,
     startAngle: 0, angleSeeded: false, startDist: 0, angleDeg: 0, scale: 1,
   };
@@ -39356,6 +39375,24 @@ uvViewSvgEl.addEventListener('pointerup', (ev) => {
   if (uvDrag.mode === 'translate') {
     if (ev.pointerId !== uvDrag.pointerId) return;
     uvDrag.lastClientX = ev.clientX; uvDrag.lastClientY = ev.clientY;
+    /* The SECOND tap of a double tap frames what it landed on instead of
+       toggling it (v2.64) - read here rather than inside endUvDrag, because
+       the second tap must never run the toggle at all, the same way the 3D
+       viewport's reader returns before handleTap. Cancelled, not committed:
+       that backs out this tap's own provisional add, so the island stays
+       exactly as the FIRST tap left it - selected. Only a gesture that did
+       not move is a tap, measured against the same threshold endUvDrag's own
+       tap branch uses. */
+    if (Math.hypot(ev.clientX - uvDrag.startClientX, ev.clientY - uvDrag.startClientY)
+          <= uvDrag.slop && uvIsDoubleTap(ev, 'i:' + uvDrag.tapId)) {
+      // The island under the FINGER, not gEls[0] - that is the first member of
+      // whatever group was already selected, which with two or more held is
+      // not the one being double-tapped.
+      const el = uvViewSvgEl.querySelector('.uv-island[data-island="' + uvDrag.tapId + '"]');
+      endUvDrag(false);
+      frameUvElement(el, 'Framed island');
+      return;
+    }
     endUvDrag(true);
     return;
   }
@@ -39403,7 +39440,7 @@ function paintUvCompSelection() {
 function endUvVertexDrag(commit) {
   if (!uvVDrag) return;
   const { ids, els, dx, dy, startClientX, startClientY, lastClientX, lastClientY,
-    tapAi, tapWasSelected, tapFace } = uvVDrag;
+    tapAi, tapWasSelected, tapFace, slop } = uvVDrag;
   // Which set this gesture's tap belongs to (v2.55) - faces and vertices
   // share every line below this one.
   const sel = tapFace ? uvFaceSel : uvSel;
@@ -39428,7 +39465,7 @@ function endUvVertexDrag(commit) {
      per pixel grow with the box, so zooming out makes the delta bigger, not
      smaller.) */
   const clampedAway = Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01;
-  if (movedPx <= RING_MOVE_CANCEL_PX) {
+  if (movedPx <= slop) {
     // A tap, not a drag: pointerdown below provisionally added tapAi to
     // uvSel so a drag starting on it would carry it - undo that add if the
     // vertex was not actually selected before this tap landed, exactly
@@ -39544,6 +39581,7 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
     minCx, maxCx, minCy, maxCy,
     startClientX: ev.clientX, startClientY: ev.clientY,
     lastClientX: ev.clientX, lastClientY: ev.clientY,
+    slop: tapSlopPx(ev),   // see the same field on uvDrag (v2.64)
     tapAi: tapId, tapWasSelected, tapFace: isFace,
   };
   try { uvViewSvgEl.setPointerCapture(ev.pointerId); } catch (e) {}
@@ -39564,6 +39602,17 @@ uvViewSvgEl.addEventListener('pointermove', (ev) => {
 uvViewSvgEl.addEventListener('pointerup', (ev) => {
   if (!uvVDrag || ev.pointerId !== uvVDrag.pointerId) return;
   uvVDrag.lastClientX = ev.clientX; uvVDrag.lastClientY = ev.clientY;
+  // Same double tap as island mode's, on whichever kind this drag holds.
+  if (Math.hypot(ev.clientX - uvVDrag.startClientX, ev.clientY - uvVDrag.startClientY)
+        <= uvVDrag.slop &&
+      uvIsDoubleTap(ev, (uvVDrag.tapFace ? 'f:' : 'v:') + uvVDrag.tapAi)) {
+    const tapFace = uvVDrag.tapFace;
+    const el = uvVDrag.els.get(uvVDrag.tapAi);
+    endUvVertexDrag(false);
+    // A vertex is framed as a POINT - see frameUvElement's third argument.
+    frameUvElement(el, tapFace ? 'Framed face' : 'Framed vertex', !tapFace);
+    return;
+  }
   endUvVertexDrag(true);
 });
 uvViewSvgEl.addEventListener('pointercancel', (ev) => {
@@ -39747,6 +39796,113 @@ function refreshUvStatus() {
   uvStatusLast = both;
   uvViewStatusLEl.textContent = left;
   uvViewStatusREl.textContent = right;
+}
+/* A DOUBLE TAP FRAMES (v2.64). Not a new idea, and deliberately not a new
+   mechanism: the 3D viewport has focused on a double tap since long before
+   this view existed - on what you tapped if you hit something, on everything
+   if you missed - and it reads the gesture with these same two numbers (450ms
+   apart, within 40px; see the canvas pointerup that calls handleDoubleTap).
+   The 2D view needs it now for a reason v2.63 created: the sheet is ten tiles
+   by ten, the view opens on one of them, and an island dragged three tiles
+   over is somewhere you have to go and find. Pan and pinch can get there;
+   this is the one that already knows where "there" is.
+
+   Deliberately NOT selection-based. "Frame the selection" would need a
+   selection first, and the commonest moment for wanting this is the one where
+   you have lost sight of what you were about to select.
+
+   BOTH TAPS HAVE TO BE ON THE SAME THING (review finding). Pairing on time
+   and distance alone - which is what the 3D viewport's reader does - misreads
+   two ordinary sequences here, because 40px on a phone is a fair part of an
+   island: tap an island, then tap just beside it to put the group down, and
+   the second tap framed the whole layout instead of clearing the selection;
+   tap empty space and then an island 20px away, and the island did not get
+   selected. This file's third reader, the outliner's, already keys on the
+   target for the same reason - see _outLastTap. `key` is the thing under the
+   finger ('i:3', 'v:41', 'f:2', 'e:0_1') or '' for empty space. */
+let uvLastTap = null;
+function uvIsDoubleTap(ev, key) {
+  const now = performance.now();
+  const k = key || '';
+  // !! and not the bare chain: without it this is null on the first tap, which
+  // works (falsy) but lies about its type to anyone comparing strictly.
+  const twice = !!(uvLastTap && uvLastTap.key === k && (now - uvLastTap.t) < 450 &&
+    Math.hypot(ev.clientX - uvLastTap.x, ev.clientY - uvLastTap.y) < 40);
+  // Consumed rather than remembered, so a third quick tap does not chain -
+  // the same line the 3D viewport's own reader ends on.
+  uvLastTap = twice ? null : { t: now, x: ev.clientX, y: ev.clientY, key: k };
+  return twice;
+}
+// Half a double tap belongs to one view, one object and one component mode.
+function uvForgetTap() { uvLastTap = null; }
+/* How much room to leave around what was framed. 1.25 puts a quarter of the
+   framed thing's own size between it and the card's edge, which is enough to
+   see what it sits next to - the point of framing an island rather than just
+   zooming to it. */
+const UV_FRAME_PAD = 1.25;
+/* Frames a box given in the card's own units. Square, because the card is and
+   the whole file keeps w === h; floored at UV_ZOOM_MIN so framing a single
+   vertex dot does not ask for a zoom no view can hold, capped at
+   UV_ZOOM_MAX, and clamped to the sheet like every other way of moving the
+   view. */
+function frameUvBox(minX, minY, maxX, maxY, what) {
+  if (!(maxX >= minX) || !(maxY >= minY)) return false;   // NaN-safe
+  const span = Math.max(maxX - minX, maxY - minY, 0);
+  const size = Math.min(Math.max(span * UV_FRAME_PAD, UV_ZOOM_MIN), UV_ZOOM_MAX);
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  uvViewBox = { x: cx - size / 2, y: cy - size / 2, w: size, h: size };
+  clampUvViewBox();
+  applyUvViewBox();
+  /* AND THEN CHECK THAT IT WORKED (review finding). Everything a drag can
+     reach is inside the sheet's pan window, so for that the centred box is
+     provably kept; content that arrived some other way is not. An imported
+     mesh with v below 0 sits under the sheet, the clamp slides the box back up
+     to the border, and part of what was asked for stays off screen - which is
+     worth saying rather than toasting "Framed island" over. */
+  const b = uvViewBox;
+  const held = minX >= b.x - 1e-6 && maxX <= b.x + b.w + 1e-6 &&
+               minY >= b.y - 1e-6 && maxY <= b.y + b.h + 1e-6;
+  if (what) toast(held ? what : what + ' \u00b7 part of it is off the sheet');
+  return held;
+}
+/* One element - whatever the finger actually landed on. `point` frames its
+   CENTRE instead of its box (review finding): a UV vertex is a point, and its
+   dot is drawn at a constant size on SCREEN, so its box in card units grows
+   as you zoom out - framing that box made the same vertex land at 1250% from
+   the default framing and 500% from the widest one. A point has one honest
+   answer, UV_ZOOM_MIN, and the floor in frameUvBox gives it. */
+function frameUvElement(el, what, point) {
+  if (!el) return false;
+  let bb;
+  try { bb = el.getBBox(); } catch (e) { return false; }
+  if (point) {
+    const cx = bb.x + bb.width / 2, cy = bb.y + bb.height / 2;
+    return frameUvBox(cx, cy, cx, cy, what);
+  }
+  return frameUvBox(bb.x, bb.y, bb.x + bb.width, bb.y + bb.height, what);
+}
+/* THE WHOLE LAYOUT, which is the islands and not the sheet: framing the sheet
+   would be framing ninety-nine tiles of nothing. Reads the drawn elements
+   rather than the UVs, so it needs no toEditable and cannot disagree with
+   what is on screen. */
+function frameUvAll() {
+  const gs = uvViewSvgEl.querySelectorAll('.uv-island');
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  gs.forEach(g => {
+    let bb;
+    try { bb = g.getBBox(); } catch (e) { return; }
+    /* A zero-size island is counted, not skipped (review finding): an island
+       scaled to nothing is a point in the layout, and it is exactly the one
+       you would be trying to find. Only a getBBox that throws is skipped. */
+    if (bb.x < minX) minX = bb.x;
+    if (bb.y < minY) minY = bb.y;
+    if (bb.x + bb.width > maxX) maxX = bb.x + bb.width;
+    if (bb.y + bb.height > maxY) maxY = bb.y + bb.height;
+  });
+  // Nothing drawn at all (an object with no UV): say so rather than moving
+  // the view in silence.
+  if (minX === Infinity) { resetUvViewBox(); toast('Nothing to frame'); return false; }
+  return frameUvBox(minX, minY, maxX, maxY, 'Framed the layout');
 }
 // Called by openUvView and closeUvView (v2.51) - a zoom or pan is a way of
 // LOOKING, not document data, the same reasoning App.xraySelection and
@@ -40194,7 +40350,14 @@ uvViewSvgEl.addEventListener('pointerup', (ev) => {
   // Nothing claimed this press, so it really was a tap on empty space: put
   // the selection down (v2.55). Read before uvPan/uvPinchView are nulled
   // below only for tidiness - both of them disarmed it when they started.
-  if (uvEmptyTapClear === ev.pointerId) { uvEmptyTapClear = null; clearUvModeSelection(); }
+  if (uvEmptyTapClear === ev.pointerId) {
+    uvEmptyTapClear = null;
+    /* And a double tap on nothing frames the whole layout (v2.64) - the 3D
+       viewport's "Reset view" on a missed double tap, said in the only terms
+       this view has. No clear here: the first tap already did it. */
+    if (uvIsDoubleTap(ev, '')) frameUvAll();
+    else clearUvModeSelection();
+  }
   if (uvPan && ev.pointerId === uvPan.pointerId) uvPan = null;
   if (uvPinchView && (ev.pointerId === uvPinchView.id1 || ev.pointerId === uvPinchView.id2)) uvPinchView = null;
 });
@@ -40279,6 +40442,31 @@ uvViewSvgEl.addEventListener('pointermove', (ev) => {
 });
 uvViewSvgEl.addEventListener('pointerup', (ev) => {
   if (!uvEdgeHold || ev.pointerId !== uvEdgeHold.pointerId) return;
+  /* The double tap frames, before the toggle gets to run (v2.64).
+
+     NO DISTANCE GATE HERE (review finding). The other three sites need one to
+     tell a tap from a drag; edge mode has no drag at all, and its hold
+     deliberately survives an unbounded drift so that a gesture which slid off
+     a thin line still resolves as the tap it was (see its pointermove). A gate
+     copied from the others made exactly those gestures unreadable: the edge
+     toggled on, then off, and the view never moved, with nothing to explain
+     why. Every release that reaches this line is a tap by this site's own
+     definition, so the reader gets all of them.
+
+     And the provisional add is backed out (review finding), which this branch
+     did not do - the one cancel path of the four that was missing it. Tap 1 on
+     a SELECTED edge deselects it; tap 2's pointerdown then re-adds it
+     provisionally; without this line the double tap ended with the edge
+     selected again and a Mark seam afterwards still included it. */
+  if (uvIsDoubleTap(ev, 'e:' + uvEdgeHold.key)) {
+    const key = uvEdgeHold.key, wasSelected = uvEdgeHold.wasSelected;
+    const el = uvViewSvgEl.querySelector('.uv-edge[data-key="' + key + '"]');
+    clearUvEdgeHold();
+    if (!wasSelected) uvEdgeSel.delete(key);   // as the FIRST tap left it
+    paintUvEdgeSelection();
+    frameUvElement(el, 'Framed edge');
+    return;
+  }
   // A tap, not a hold: resolve the toggle exactly like vertex mode's own
   // tap branch (endUvVertexDrag) - back out the provisional add if the
   // edge was already selected before this tap landed, keep it otherwise.
@@ -44486,6 +44674,13 @@ if (PICK_DEBUG) {
        move between - live flags rather than the records themselves, so a
        probe cannot reach in and steer a gesture it is meant to observe. */
     uvSecondPointer, promoteUvViewPinch, uvOtherPointer, UV_VIEW_PINCH_MIN_PX,
+    // v2.64: the double tap that frames, and the framing itself.
+    /* uvIsDoubleTap MUTATES what it reads - it is the gesture, not a flag -
+       so unlike the v2.61 exports beside it a harness can steer this one, and
+       has to: uvForgetTap is how it sets up "no prior tap" and how it avoids
+       poisoning the next real gesture. */
+    uvIsDoubleTap, uvForgetTap, frameUvBox, frameUvElement, frameUvAll, UV_FRAME_PAD,
+    tapSlopPx,
     // v2.63: the sheet the view is a window onto.
     UDIM_COLS, UDIM_ROWS, udimBounds, clampUvViewBox, UV_ZOOM_MAX, UV_ZOOM_MIN,
     // v2.62: the status line, and what it currently says.

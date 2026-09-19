@@ -84,12 +84,18 @@
     await wait(20);
     ok('1.tap   тап выбрал остров', K.uvIslandSel.length === 1, JSON.stringify(K.uvIslandSel));
     ok('1.tap   и это видно в классе', isl[0].classList.contains('selected'));
+    // Через 520 мс, а не 20 (v2.64): два тапа подряд по одному и тому же
+    // острову - это жест вписывания, а не выбор-и-снятие.
+    await wait(520);
     tap(isl[0], 12);
     await wait(20);
     ok('1.tap   повторный тап снял выбор', K.uvIslandSel.length === 0, JSON.stringify(K.uvIslandSel));
     mark('1');
 
     // 2. Два острова, и драг двигает ОБА.
+    // Пауза перед первым тапом обязательна (v2.64): без неё он приходит в тот
+    // же остров сразу за последним тапом секции 1 - и это двойной тап.
+    await wait(520);
     tap(isl[0], 13); tap(isl[1], 14);
     await wait(20);
     ok('2.multi два острова выбраны', K.uvIslandSel.length === 2, JSON.stringify(K.uvIslandSel));
@@ -108,13 +114,12 @@
     mark('2');
 
     // 3. Тап по пустому месту отпускает группу.
-    const sq = svg.querySelector('.uv-square');
     const cSq = { x: svg.getBoundingClientRect().left + 4, y: svg.getBoundingClientRect().top + 4 };
     svg.dispatchEvent(ev('pointerdown', cSq.x, cSq.y, 16));
     svg.dispatchEvent(ev('pointerup', cSq.x, cSq.y, 16));
     await wait(20);
     ok('3.empty тап по пустому снял выбор островов', K.uvIslandSel.length === 0,
-       JSON.stringify(K.uvIslandSel) + ' sq=' + !!sq);
+       JSON.stringify(K.uvIslandSel));
     mark('3');
 
     // 3b. Пан по пустому месту НЕ должен стирать собранную группу.
@@ -197,7 +202,12 @@
       K.setUvCompMode('vertex');
       await wait(60);
       const dot = svg.querySelector('.uv-vertex');
-      ok('9.dot    точки в вершинном режиме есть', !!dot);
+      /* Кадр фиксируется (v2.64): размер точки по замыслу следует за viewBox, так
+       что мерить её можно только на известном кадре - иначе любое вписывание
+       раньше по пробе ломает эти проверки, а выглядит это как регрессия точек. */
+    K.resetUvViewBox();
+    await wait(20);
+    ok('9.dot    точки в вершинном режиме есть', !!dot);
       if (dot) {
         const rAttr = parseFloat(dot.getAttribute('r'));
         ok('9.dot    видимая точка много меньше прежних 3.2',

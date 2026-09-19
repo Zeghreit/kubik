@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
-- Version at time of writing: **2.63**
+- Version at time of writing: **2.64**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,79 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## A double tap frames, in the 2D UV view (2.64)
+
+v2.63 made the 2D view a ten-by-ten UDIM sheet you can pan and zoom across.
+The cost of that was getting lost on it: the view opens on tile 1001, and an
+island dragged three tiles over is now somewhere you have to go and find.
+
+The way back is not a new mechanism. **The 3D viewport has focused on a double
+tap since long before this view existed** - on what you tapped if you hit
+something, on everything if you missed - and this reads the gesture with the
+same two numbers (450ms, 40px; see the canvas pointerup that calls
+`handleDoubleTap`). So: double-tap an island, vertex, face or edge and the view
+frames it; double-tap empty space and it frames the whole layout.
+
+`frameUvBox` keeps the box square (the whole file assumes `w === h`), floors it
+at `UV_ZOOM_MIN`, caps it at `UV_ZOOM_MAX`, leaves `UV_FRAME_PAD` of room, and
+clamps to the sheet like every other way of moving this view. `frameUvAll`
+unions the drawn `.uv-island` boxes - not the sheet, which would be framing
+ninety-nine tiles of nothing.
+
+**Deliberately not selection-based.** "Frame the selection" needs a selection
+first, and the moment you want this is usually the moment you have lost sight
+of the thing you were about to select.
+
+Each of the four places a tap resolves reads the double tap BEFORE running its
+own toggle, and then cancels its gesture rather than committing it - so the
+second tap's provisional selection add is backed out and the element is left
+exactly as the FIRST tap made it. That is the same shape the 3D viewport uses
+when it returns before `handleTap`.
+
+### Fixed on the way, all from cold review
+
+- **The tap gate was 8px, and this file had already measured that number and
+  rejected it.** `RING_MOVE_CANCEL_PX` decided tap-vs-drag here, while the 3D
+  reader this is modelled on uses `tapSlopPx` - 22 for touch, because at 12 the
+  complaint was still "sometimes I tap right on it and nothing selects". At 8,
+  an ordinary 11px thumb roll read as a DRAG: a deliberate double tap framed
+  nothing and instead committed two invisible UV moves and two history steps.
+  Both drags carry `slop: tapSlopPx(ev)` now, and it decides the tap in the
+  gesture's own `endUv*Drag` too, so the two definitions cannot disagree.
+- **Edge mode had no gate at all afterwards, and should not.** It is the one
+  site with no drag, and its hold deliberately survives unbounded drift so a
+  gesture that slid off a thin line still resolves as the tap it was. A gate
+  copied from the other three made exactly those gestures unreadable.
+- **Edge mode's cancel path was missing its back-out** - the one of the four
+  that was. Tap 1 on a selected edge deselected it, tap 2 re-added it
+  provisionally, and the double tap left it selected again, so a Mark seam
+  afterwards still included it.
+- **The reader ignored what was tapped.** Pairing on time and distance alone
+  misread two ordinary sequences, because 40px is a fair part of an island on a
+  phone: tap an island then tap beside it to put the group down, and the second
+  tap framed the layout instead of clearing the selection; tap empty space then
+  an island 20px away, and the island did not get selected. Both taps must now
+  name the same target ('i:3', 'v:41', 'f:2', 'e:0_1', or '' for empty) - which
+  is what this file's third double-tap reader, the outliner's, has always done.
+- **A vertex framed at a zoom that depended on the zoom it started from.** The
+  dot holds a constant size on SCREEN, so its box in card units grows as you
+  zoom out - the same vertex landed at 1250% from the default framing and 500%
+  from the widest. A vertex is a point; it is framed as one now.
+- **`frameUvBox` claimed a frame the clamp had not given it.** Everything a
+  drag can reach is inside the pan window, but content that arrived another way
+  is not - an imported mesh with v below 0 sits under the sheet, the clamp
+  slides the box back to the border, and part of what was asked for stays off
+  screen. It says so now instead of toasting "Framed island" over it.
+
+### And it took two fast taps away from the probes
+
+`_uv55chk` encoded "tap the same island twice quickly = select then deselect",
+which is precisely the gesture this slice claims. Three of its checks failed,
+all downstream of one pair of taps 20ms apart. The probes space repeated taps
+past 450ms now - and section 9, which measures the dot's size, pins the frame
+first, because that size follows the viewBox by design and any framing earlier
+in the run would otherwise look like a regression in the dots.
 
 ## The 2D UV view stops being a box (2.63)
 
