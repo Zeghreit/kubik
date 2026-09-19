@@ -2687,7 +2687,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.68a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.68b</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -41341,7 +41341,31 @@ function uvSecondPointer(ev) {
      take a finger onto its books - and must not capture, which would fight
      the ring for the very pointer it is aiming with. Consumed, not
      recorded. */
-  if (toolRingActive) return true;
+  /* ...AND THIS PRESS CLOSES IT (v2.68b), which is what the CANVAS has always
+     done with a second finger while a ring is up. Swallowing the press and
+     leaving the ring standing is what turned a ring that failed to close into a
+     DEAD APP rather than a stuck menu: every later press got the same "busy",
+     so nothing selected, nothing dragged, no hold armed - including the
+     empty-space hold that since v2.53 is the only way back to 3D. Zeghreit
+     reported exactly that shape from a phone: a freeze no amount of waiting
+     cleared, only a reload.
+
+     The cause of the ring not closing is still unfound (the window backstop
+     above lists what was measured and ruled out), so this does not pretend to
+     be a fix for it. It caps the cost at one tap.
+
+     Consumed, not handled: this press is the one that dismisses the ring, the
+     same as on the canvas, so it must not also select or start a drag. The
+     second tap is the one that does something - and that is now possible,
+     which it was not before.
+
+     The ring's own pointer is NOT tested here, and an earlier draft that did
+     was wrong in a way the v2.61 probe caught: a ring bloomed from this card
+     never went through the canvas's pointerdown, so its pointer is in neither
+     tracker, and "has this ring's finger gone?" answered yes while the finger
+     was still on the glass. A rule that cannot tell the two apart must not try;
+     this one needs no such knowledge. */
+  if (toolRingActive) { closeToolRing(false); return true; }
   /* WHICH OTHER FINGER IS STILL DOWN, read before this one is recorded - the
      fallback at the bottom needs it. */
   const orphan = uvOtherPointer(ev.pointerId);
@@ -44959,6 +44983,46 @@ if (typeof ResizeObserver === 'function') {
    A backstop on the window ends it wherever the finger actually lifted. It
    does nothing at all unless a drag is live, so an ordinary click on a button
    still costs one comparison. */
+/* AND THE RING THAT NEVER CLOSES (v2.68b). A NET, NOT A DIAGNOSIS - and the
+   difference is worth spelling out, because the first version of this comment
+   got it wrong and the stand caught it.
+
+   The ring's own close runs from the CANVAS's pointerup, which bloomToolRing
+   arranges by moving the pointer's capture there - a call wrapped in a
+   try/catch whose comment says "fine without it". The obvious theory was that
+   the capture silently fails when a ring blooms over the 2D card (z-index 12,
+   covering the canvas since v2.53), so the release lands on the card and the
+   canvas never hears it. MEASURED, by forcing that exact failure - the canvas's
+   setPointerCapture replaced with one that throws - on this version AND on the
+   one before it: both still close the ring cleanly. So a missing capture is not
+   the mechanism, and the release reaches the canvas anyway.
+
+   The report stands unexplained: Zeghreit gets a ring that never closes, on a
+   phone, repeatably, and it does not clear until a reload. A real mouse hold, a
+   real touch hold through CDP, a touchCancel mid-hold, a full phone emulation
+   and a refused capture all behave here. This listener is therefore not a fix
+   for that bug; it is the rule that a ring cannot outlive the finger that
+   opened it, enforced where every release is heard rather than resting on a
+   capture the code itself calls optional. If the freeze survives it, the cause
+   is elsewhere and this will not have hidden it - see the guard in
+   uvSecondPointer, which is what actually makes the state recoverable.
+   Deliberately ABOVE the early return below: the ring has nothing to do with
+   drags, and must be checked even when none is live. */
+function ringBackstop(ev) {
+  if (!toolRingActive) return;
+  if (toolRingActive.pointerId === undefined) return;   // opened without a finger (a door)
+  if (ev.pointerId !== toolRingActive.pointerId) return;
+  // Run the aimed seat on a lift, exactly as the canvas would have; a cancel
+  // is not a choice, so it closes without running anything.
+  closeToolRing(ev.type === 'pointerup');
+}
+window.addEventListener('pointerup', (ev) => {
+  if (ev.target !== renderer.domElement) ringBackstop(ev);
+}, true);
+window.addEventListener('pointercancel', (ev) => {
+  if (ev.target !== renderer.domElement) ringBackstop(ev);
+}, true);
+
 window.addEventListener('pointerup', (ev) => {
   if (ev.target === renderer.domElement) return;   // the canvas listener has it
   /* ...and a curve gesture, for the reason this backstop exists: a claimed

@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
-- Version at time of writing: **2.68a**
+- Version at time of writing: **2.68b**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -185,7 +185,64 @@ for `stroke-width` on SVG geometry, but Chrome serialises the computed value as
 gets NaN and will quietly report nothing rather than fail. Multiply the viewBox
 figure by the element's own scale instead.
 
-### Still open: the freeze Zeghreit reported
+### The freeze Zeghreit reported: unexplained, but no longer unrecoverable (2.68b)
+
+He gets a bloom ring in the 2D view that never closes, repeatably, on a phone,
+and — confirmed by him — **it does not clear until a reload**. That last fact is
+what makes it a freeze rather than a stuck menu: `uvSecondPointer` answers
+`if (toolRingActive) return true` to every press in the card, so with a ring
+standing nothing selects, nothing drags, no hold arms — including the empty-space
+hold that since v2.53 is the only way back to 3D.
+
+**The cause is still not found.** What was tried, all against the real app in a
+real browser rather than reasoned about, and all of it behaving correctly:
+
+- a press-and-hold with a real mouse, through Playwright;
+- the same with real touch events via CDP `Input.dispatchTouchEvent` with touch
+  emulation on — which is what exercises implicit capture;
+- the same under full phone emulation (`setDeviceMetricsOverride` with
+  `mobile: true`, so `pointer: coarse` and `hover: none` apply);
+- a `touchCancel` mid-hold, the routine phone case of the browser taking the
+  gesture;
+- a hold followed by a slide onto a seat and a lift, which is the real gesture;
+- op timings on a small mesh: nothing over 25ms, so not a cost cliff there.
+
+One promising theory was **measured and killed**: the ring's close runs from the
+canvas's pointerup, which `bloomToolRing` arranges by moving the pointer capture
+there in a try/catch whose comment says "fine without it" — plausibly false once
+the 2D card (z 12) covers the canvas. Forcing that exact failure (replacing the
+canvas's `setPointerCapture` with one that throws) still closes the ring cleanly,
+on this version *and* on the one before it. A missing capture is not the
+mechanism.
+
+So v2.68b does not claim a fix. It removes what made the state unrecoverable,
+and adds a rule that should have been there anyway:
+
+- **A press in the 2D card now CLOSES a standing ring** instead of being
+  swallowed while the ring stays — which is what the canvas has always done with
+  a second finger. Swallowing it was what turned a ring that failed to close
+  into a dead app: every later press got the same "busy". The press is consumed
+  rather than handled, so it selects nothing and starts no drag; it is the tap
+  that dismisses, and the next one works. Measured on a deliberately stranded
+  ring: before, two taps changed nothing and the card was dead; after, the first
+  tap closes the ring and the second selects normally.
+
+  The first draft of this guard tested whether the ring's own pointer was still
+  in `activePointers` and closed the ring only if not — **and the v2.61 probe
+  caught it**: a ring bloomed from this card never went through the canvas's
+  pointerdown, so its pointer is in neither tracker, and "has this ring's finger
+  gone?" answered yes while the finger was still on the glass. Worth keeping as
+  a lesson: a recovery rule that has to distinguish two states it cannot see
+  must be replaced by one that needs no such knowledge.
+- **A window-level backstop closes a ring whose pointer is released anywhere
+  else**, matching the "release that never arrives" backstop the drags have had
+  for versions. A ring cannot outlive the finger that opened it.
+
+If the freeze survives both, the cause is elsewhere and neither of these will
+have hidden it — the ring will still fail to close, it will just clear on the
+next touch.
+
+### Earlier note on the same report (2.68a)
 
 He reports the app repeatedly freezing when the bloom ring is opened by holding
 on the grey area of the 2D view, with the ring visible on screen at the time.
