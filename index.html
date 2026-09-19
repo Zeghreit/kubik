@@ -2281,7 +2281,11 @@
      substituted as raw tokens, and what survives that on an SVG geometry
      property is a plain var(), not arithmetic on one. applyUvViewBox writes
      both, from the same one number. */
-  #uvViewSvg { --uv-dot: 0.8; --uv-hit: 5; }
+  /* With units, for the reason applyUvViewBox spells out: these two feed CSS
+     geometry properties, where a bare number is valid in Blink and invalid in
+     WebKit - and an invalid substitution computes to zero rather than falling
+     back to anything. */
+  #uvViewSvg { --uv-dot: 0.8px; --uv-hit: 5px; }
   #uvViewSvg .uv-vertex {
     r: var(--uv-dot);
     fill: var(--text); fill-opacity: 0.92;
@@ -2720,7 +2724,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.68d</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.68e</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -41085,7 +41089,23 @@ function applyUvViewBox() {
      renderUvView: a zoom or a pan changes the viewBox without redrawing a
      single circle, which is the whole point of driving the view through it. */
   const dr = uvDotR();
-  uvViewSvgEl.style.setProperty('--uv-dot', String(dr));
+  /* 'px', NOT A BARE NUMBER (v2.68e, Zeghreit on an iPhone) - and this is a
+     correctness fix, not a tidiness one.
+
+     `r: var(--uv-dot)` with a bare number substitutes to `r: 0.8`. Blink
+     accepts that for an SVG geometry property and computes 0.8px, so it has
+     worked here since v2.48. WebKit requires the unit, and a declaration that
+     becomes invalid AFTER var() substitution does not fall back to the
+     earlier rule or to the r="0.8" presentation attribute the render still
+     writes: per spec it computes to unset, which for `r` is ZERO. Every dot
+     on that phone had radius nought - present in the DOM, selectable by
+     nothing, invisible to everyone. The same for --uv-hit, which collapsed
+     the touch stroke to the 1-unit initial width.
+
+     The tell was in this very function: --uv-num below has carried its 'px'
+     since v2.63, and the UDIM numbers were the one thing in the card that
+     rendered correctly on his screen. */
+  uvViewSvgEl.style.setProperty('--uv-dot', dr + 'px');
   /* AND THE SAME FOR EVERY STROKE (v2.68a) - see the note by .uv-edges. One
      number the stylesheet multiplies, rather than four properties written from
      here, so the widths stay visible and tunable in the CSS where they were
@@ -41099,7 +41119,7 @@ function applyUvViewBox() {
      a multiple of a radius that already follows the viewBox, the reach holds
      the same size ON SCREEN at every zoom, which is the whole rule being
      borrowed from the 3D dots. */
-  uvViewSvgEl.style.setProperty('--uv-hit', String(Math.round(dr * 625) / 100));
+  uvViewSvgEl.style.setProperty('--uv-hit', (Math.round(dr * 625) / 100) + 'px');
   /* The UDIM numbers by the same rule (v2.63): written in user units, so
      without this they would double on screen every time the box halved -
      but measured against the card, so UV_NUM_PX means what it says on any
