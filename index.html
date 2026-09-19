@@ -2139,7 +2139,39 @@
      --accent, which is mode-dependent - a UV layout has no business
      changing colour with whatever component mode you happened to open it
      from. */
-  #uvViewSvg .uv-square { fill: none; stroke: var(--text-dim); stroke-width: 0.4; stroke-dasharray: 2,1.5; }
+  /* THE UDIM SHEET (v2.63), which replaced the dashed 0..1 square. That
+     square was the only thing in this view that said "here is the edge",
+     and it was not telling the truth even before this slice: UV space does
+     not stop at 1, and a layout that runs off the tile is a layout, not an
+     error. Zeghreit: make it like the 3D viewport, leave only the UDIM
+     markings in the background. So: ten by ten tiles, 1001..1100, drawn
+     once behind everything, and nothing anywhere that stops a finger.
+
+     non-scaling-stroke because this is a RULER: a line that thickens as you
+     zoom in stops being one. The mesh above it keeps its own user-unit
+     strokes, which is what makes an island read as bigger when it is. */
+  #uvViewSvg .uv-udim {
+    fill: none; stroke: var(--text-dim); stroke-opacity: 0.28; stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+    /* A stroke is hit-testable by default, and this one crosses the whole
+       view: without this, a press that happened to land on a grid line
+       would have the path as its target. Every "is anything under the
+       finger?" branch would still answer no, but background that can be
+       aimed at is not background. */
+    pointer-events: none;
+  }
+  /* u=0 and v=0 - the origin the whole sheet is counted from, so they are
+     said a little louder than the rest of the grid. */
+  #uvViewSvg .uv-udim-axis { stroke-opacity: 0.6; stroke-width: 1.5; }
+  /* Sized from the viewBox by applyUvViewBox, the same rule the dots follow
+     since v2.60: a number that doubles every time you halve the box is not a
+     label, it is scenery. */
+  #uvViewSvg .uv-udim-num {
+    fill: var(--text-dim); fill-opacity: 0.5; font-size: var(--uv-num, 1.4px);
+    font-weight: 600; pointer-events: none;
+  }
+  /* Set by applyUvViewBox once a tile is too small to hold its own number. */
+  #uvViewSvg.uv-nums-off .uv-udim-num { display: none; }
   #uvViewSvg .uv-edges { fill: none; stroke: var(--text); stroke-width: 0.3; }
   /* Translucent per-island fill (v2.45) - islandColorHex, the same
      golden-angle palette "Show islands" already paints the 3D mesh with,
@@ -2238,8 +2270,9 @@
     stroke-linecap: round; cursor: pointer;
   }
   /* Magenta since v2.52, matching SEAM_COLOR (0xff3bd0) in the 3D viewport -
-     a literal hex rather than a computed one, the same tradeoff .uv-square
-     and .uv-edges above already made: nothing re-themes this card live
+     a literal hex rather than a computed one, the same tradeoff .uv-edges
+     above already made (.uv-square was named here too until v2.63 replaced
+     it with the UDIM sheet): nothing re-themes this card live
      today, and a seam is a property of the MESH, not of whichever mode
      opened this view. The two hexes have to be changed together; that is
      the price of the literal, and it has been paid once now. */
@@ -2630,7 +2663,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.62</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.63</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -38361,13 +38394,50 @@ const UV_VIEW_TRI_CAP = 20000;
 // pointer's on-screen movement back into a UV delta, and a second copy of
 // the same number would just be one more place for the two to drift apart.
 const UV_VIEW_PAD = 4;
-// How close a dragged island's own centre may come to the card's edge
-// (review finding, v2.45) - past this, its element sits fully behind the
-// dimmed backdrop, so a tap meant to grab it again instead closes the
-// whole view, and nothing short of Undo gets it back. Small on purpose:
-// this only stops an island from being LOST, it is not the 0..1 clamp
-// v2.43's own "what this doesn't do" list already declined to add.
-const UV_VIEW_CENTER_MARGIN = 2;
+/* THE SHEET (v2.63). UDIM is ten tiles by ten, 1001..1100, by definition -
+   so this is not a limit someone chose, it is the size of the thing being
+   drawn. One tile is the same 100 - 2*UV_VIEW_PAD units the 0..1 square
+   always was, which is why every existing u/v <-> SVG conversion in this
+   file keeps working untouched. */
+const UDIM_COLS = 10, UDIM_ROWS = 10;
+
+/* UV_VIEW_CENTER_MARGIN IS GONE (v2.63) - the clamp that held every drag
+   inside ONE TILE, on the grounds that past the card's edge a component
+   could not be reached again. Both drags are bounded by udimReach() now
+   instead: the whole ten-by-ten sheet plus the same margin the view itself
+   may pan past it. An island may be dragged into any UDIM tile, which is
+   the point of drawing a sheet at all, and the tile is no longer a wall.
+
+   IT IS NOT NO BOUND (review finding, and this is the whole reason a bound
+   survives). A first draft of this slice removed both clamps outright and
+   claimed "anything a drag can do, a pan can follow". False: the view is
+   bounded by the sheet and the drag was not, so one flick at a wide zoom
+   put an island tens of tiles off the sheet, where no pan reaches it, no
+   tap finds it, and only Undo - if nothing else has been done since -
+   brings it back. A component the user cannot get to again is worse than
+   any wall. The bound is the REACHABLE window, so the invariant the
+   comment above wanted is now actually true: everything a drag can do, a
+   pan can follow. */
+function udimReach() {
+  const b = udimBounds();
+  return { x0: b.x0 - UV_PAN_MARGIN, x1: b.x1 + UV_PAN_MARGIN,
+           y0: b.y0 - UV_PAN_MARGIN, y1: b.y1 + UV_PAN_MARGIN };
+}
+/* The delta a drag may actually take, given where the moved thing's own box
+   sits right now. Guarded per axis, the same way both clamps always were: a
+   selection wider than the whole reachable window makes the lower bound
+   exceed the upper one, and min(max()) over an inverted range pins the value
+   to one end - the group would teleport once and then refuse to move at all.
+   An axis that cannot be satisfied is simply left free. */
+function clampUvDelta(dx, dy, minX, minY, maxX, maxY) {
+  const R = udimReach();
+  const loX = R.x0 - minX, hiX = R.x1 - maxX;
+  const loY = R.y0 - minY, hiY = R.y1 - maxY;
+  return {
+    dx: loX <= hiX ? Math.min(Math.max(dx, loX), hiX) : dx,
+    dy: loY <= hiY ? Math.min(Math.max(dy, loY), hiY) : dy
+  };
+} 
 
 /* Pinch tuning (v2.47). MIN_DIST floors the two fingers' starting
    separation before it becomes a scale ratio's denominator - without it, a
@@ -38407,17 +38477,50 @@ function renderUvView(obj, ed) {
   // size, and it roughly halves the string a heavy mesh builds below.
   const r2 = (n) => n.toFixed(2);
 
-  // The 0..1 square itself, dashed, so the packed layout reads against the
-  // space it was packed into rather than floating with no reference frame.
-  // Coloured by a class, not an inline var() (see the CSS beside #uvView) -
-  // this file's other SVGs (#ringStar) do the same.
-  const square = document.createElementNS(NS, 'rect');
-  square.setAttribute('class', 'uv-square');
-  square.setAttribute('x', r2(toX(0)));
-  square.setAttribute('y', r2(toY(1)));
-  square.setAttribute('width', r2(toX(1) - toX(0)));
-  square.setAttribute('height', r2(toY(0) - toY(1)));
-  uvViewSvgEl.appendChild(square);
+  /* THE UDIM SHEET, drawn first so everything else sits on it (v2.63). Two
+     paths and a hundred numbers, built once per redraw: the grid is a
+     property of UV space, not of this mesh, so nothing about it depends on
+     what is being looked at. Coloured by classes, not inline var() - see
+     the CSS beside #uvView; this file's other SVGs (#ringStar) do the same.
+
+     The tile numbering is the standard one: 1001 + column + 10 * row, so
+     1001 is the 0..1 square every unwrap packs into, 1002 is the tile to
+     its right and 1011 the one above it. */
+  {
+    let grid = '', axes = '';
+    for (let c = 0; c <= UDIM_COLS; c++) {
+      const x = r2(toX(c));
+      (c === 0 ? (axes += `M${x},${r2(toY(0))}V${r2(toY(UDIM_ROWS))}`)
+               : (grid += `M${x},${r2(toY(0))}V${r2(toY(UDIM_ROWS))}`));
+    }
+    for (let r = 0; r <= UDIM_ROWS; r++) {
+      const y = r2(toY(r));
+      (r === 0 ? (axes += `M${r2(toX(0))},${y}H${r2(toX(UDIM_COLS))}`)
+               : (grid += `M${r2(toX(0))},${y}H${r2(toX(UDIM_COLS))}`));
+    }
+    const gp = document.createElementNS(NS, 'path');
+    gp.setAttribute('class', 'uv-udim');
+    gp.setAttribute('d', grid);
+    uvViewSvgEl.appendChild(gp);
+    const ap = document.createElementNS(NS, 'path');
+    ap.setAttribute('class', 'uv-udim uv-udim-axis');
+    ap.setAttribute('d', axes);
+    uvViewSvgEl.appendChild(ap);
+    /* Each number sits ON its tile's bottom-left corner, which is where
+       every other UV editor puts it and - since the glyphs grow up and to
+       the right of that point - keeps it inside its own tile at every zoom
+       without an inset that would have to be scaled as well. */
+    for (let r = 0; r < UDIM_ROWS; r++) {
+      for (let c = 0; c < UDIM_COLS; c++) {
+        const t = document.createElementNS(NS, 'text');
+        t.setAttribute('class', 'uv-udim-num');
+        t.setAttribute('x', r2(toX(c)));
+        t.setAttribute('y', r2(toY(r)));
+        t.textContent = String(1001 + c + 10 * r);
+        uvViewSvgEl.appendChild(t);
+      }
+    }
+  }
 
   const { attrIsland, count } = islandVertexMap(obj);
   const segsByIsland = new Array(count).fill('');
@@ -38611,7 +38714,8 @@ function refreshUvView(obj) {
 // is in when neither branch applies, is simply ignored.
 let uvViewObj = null;
 let uvDrag = null;
-// { mode, islandId, gEl, centerX, centerY,
+// { mode, islandIds, tapId, tapWasSelected, gEls, centerX, centerY,
+//   minX, minY, maxX, maxY,
 //   pointerId, startX, startY, lastSvgX, lastSvgY, dx, dy,
 //   startClientX, startClientY, lastClientX, lastClientY,
 //   pointerId2, p1, p2, startAngle, startDist, angleDeg, scale }
@@ -38788,7 +38892,14 @@ function openUvView() {
      that same gesture hasn't fired yet. Showing the overlay in the same
      tick risks that click landing on the backdrop and closing what it just
      opened; a tick later, the gesture is over. */
-  setTimeout(() => uvViewEl.classList.add('show'), 0);
+  setTimeout(() => {
+    uvViewEl.classList.add('show');
+    /* And only NOW can the card be measured (v2.63): everything above ran
+       while it was still display:none, so the tile numbers would have kept
+       the fallback size until the first pan. */
+    uvCardPx = 0;
+    applyUvViewBox();
+  }, 0);
 }
 
 // Client coordinates -> the SVG's own 0..100 viewBox space, through the
@@ -39122,15 +39233,9 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
     // around this same point rather than around wherever the two fingers
     // happen to be.
     centerX: (minX + maxX) / 2, centerY: (minY + maxY) / 2,
-    /* The union box's EDGES, kept alongside its centre (review finding,
-       v2.55). The clamp below used to hold the centre inside the card,
-       which is the same thing as holding the island inside it only while
-       the selection IS one island - v2.45's case. Two islands at opposite
-       ends make a box as wide as the layout, and clamping its centre lets
-       the far one travel well past the card with nothing able to reach it
-       again. The vertex drag has clamped the extremes since v2.48; this is
-       the same arithmetic, and the centre stays for what it is actually
-       for - the pinch pivot. */
+    /* The union box's EDGES, kept alongside its centre: the clamp above
+       reads them (v2.63 bounds the drag to the sheet), and the centre is
+       also the pinch pivot. */
     minX, minY, maxX, maxY,
     // Client-pixel start, kept alongside the SVG-space one above: the
     // tap-vs-drag decision in endUvDrag has to compare against a REAL
@@ -39225,20 +39330,13 @@ uvViewSvgEl.addEventListener('pointermove', (ev) => {
     const p = uvViewPoint(ev);
     uvDrag.lastSvgX = p.x; uvDrag.lastSvgY = p.y;
     let dx = p.x - uvDrag.startX, dy = p.y - uvDrag.startY;
-    /* Clamp on the delta, not on the rendered transform, so the value
-       actually committed on release is the exact one shown live during the
-       drag - and on the selection's EDGES rather than its centre (review
-       finding, v2.55: see the minX/maxX note in pointerdown). Guarded per
-       axis exactly as the vertex drag's own clamp is: a selection already
-       wider than the margin band makes the lower bound exceed the upper
-       one, and min(max()) over an inverted range silently pins the value
-       to one end - the group would teleport once and then refuse to move
-       at all. */
-    const M = UV_VIEW_CENTER_MARGIN;
-    const loX = M - uvDrag.minX, hiX = (100 - M) - uvDrag.maxX;
-    const loY = M - uvDrag.minY, hiY = (100 - M) - uvDrag.maxY;
-    if (loX <= hiX) dx = Math.min(Math.max(dx, loX), hiX);
-    if (loY <= hiY) dy = Math.min(Math.max(dy, loY), hiY);
+    /* Clamped to the SHEET, not to the tile (v2.63) - and on the selection's
+       edges rather than its centre, because two islands at opposite ends
+       make a box as wide as the layout and clamping its centre lets the far
+       one travel past everything. Clamped on the delta, not on the rendered
+       transform, so what is committed on release is exactly what was shown
+       during the drag. */
+    ({ dx, dy } = clampUvDelta(dx, dy, uvDrag.minX, uvDrag.minY, uvDrag.maxX, uvDrag.maxY));
     uvDrag.dx = dx; uvDrag.dy = dy;
     uvDrag.lastClientX = ev.clientX; uvDrag.lastClientY = ev.clientY;
     const tr = `translate(${dx.toFixed(2)},${dy.toFixed(2)})`;
@@ -39320,12 +39418,15 @@ function endUvVertexDrag(commit) {
     return;
   }
   const movedPx = Math.hypot(lastClientX - startClientX, lastClientY - startClientY);
-  // Real screen movement can still commit nothing once the margin clamp
-  // (see pointermove) has already pinned every selected vertex at the
-  // card's edge - dx/dy round to zero even though a finger travelled far
-  // past RING_MOVE_CANCEL_PX (review finding). Read as a drag that simply
-  // couldn't go anywhere, not a tap: the selection stays exactly as the
-  // provisional add/keep left it, but nothing is written to history.
+  /* Real screen movement can still commit nothing, when the clamp above has
+     already pinned the selection at the edge of the reachable window: dx/dy
+     round to zero although the finger travelled well past
+     RING_MOVE_CANCEL_PX. Read as a drag that could not go anywhere rather
+     than as a tap - the selection stays exactly as the provisional add left
+     it, and nothing is written to history. (An earlier draft of this note
+     blamed zooming OUT for the same symptom, which is backwards: card units
+     per pixel grow with the box, so zooming out makes the delta bigger, not
+     smaller.) */
   const clampedAway = Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01;
   if (movedPx <= RING_MOVE_CANCEL_PX) {
     // A tap, not a drag: pointerdown below provisionally added tapAi to
@@ -39411,14 +39512,10 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
   // deduped - two faces sharing an edge must not move their shared corner
   // twice.
   const ids = new Set();
-  // The screen-space box every selected dot's own centre sits in right
-  // now, so pointermove below can clamp the shared dx/dy against it - the
-  // same UV_VIEW_CENTER_MARGIN safeguard the island drag already has
-  // (review finding, v2.45) applies here for the identical reason: past
-  // the card's edge a dot is clipped by the SVG's own bounds, not just
-  // dimmed behind a backdrop, so nothing - not even a tap where it used to
-  // be - can reach it again. Found live in this slice's own testing (a
-  // vertex dragged just past u=1 already vanished), not by a review pass.
+  /* The box everything being dragged sits in right now, so pointermove can
+     clamp the shared delta against the reachable window (v2.63 - it used to
+     be the card's own edge, one tile wide). A vertex is its own centre; a
+     face is measured, which is the one getBBox this costs. */
   let minCx = Infinity, maxCx = -Infinity, minCy = Infinity, maxCy = -Infinity;
   const grow = (x0, y0, x1, y1) => {
     if (x0 < minCx) minCx = x0; if (x1 > maxCx) maxCx = x1;
@@ -39455,23 +39552,10 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
 uvViewSvgEl.addEventListener('pointermove', (ev) => {
   if (!uvVDrag || ev.pointerId !== uvVDrag.pointerId) return;
   const p = uvViewPoint(ev);
-  let dx = p.x - uvVDrag.startX, dy = p.y - uvVDrag.startY;
-  // Clamp on the delta, not on the rendered transform (same reasoning as
-  // the island drag's own clamp): what is shown live has to be the exact
-  // value commitUvVertexDrag writes on release. Guarded per axis (review
-  // finding) - a selection already wider than the 100-2*M margin band (a
-  // vertex dragged past u=0/1 earlier, or two vertices far enough apart)
-  // makes the lower bound exceed the upper one, and Math.min(Math.max(...))
-  // over an inverted [lo,hi] silently collapses to the fixed upper bound
-  // no matter where the finger goes - the selection would teleport once
-  // and then refuse to move at all. Skipping the clamp on an axis it can't
-  // satisfy just lets that axis move freely instead, same as an island too
-  // big for its own margin already implicitly would.
-  const M = UV_VIEW_CENTER_MARGIN;
-  const loX = M - uvVDrag.minCx, hiX = (100 - M) - uvVDrag.maxCx;
-  const loY = M - uvVDrag.minCy, hiY = (100 - M) - uvVDrag.maxCy;
-  if (loX <= hiX) dx = Math.min(Math.max(dx, loX), hiX);
-  if (loY <= hiY) dy = Math.min(Math.max(dy, loY), hiY);
+  // Same clamp as the island drag's, against the same reachable window
+  // (v2.63): what is shown live is exactly what commitUvVertexDrag writes.
+  const { dx, dy } = clampUvDelta(p.x - uvVDrag.startX, p.y - uvVDrag.startY,
+                                  uvVDrag.minCx, uvVDrag.minCy, uvVDrag.maxCx, uvVDrag.maxCy);
   uvVDrag.dx = dx; uvVDrag.dy = dy;
   uvVDrag.lastClientX = ev.clientX; uvVDrag.lastClientY = ev.clientY;
   const t = `translate(${dx.toFixed(2)},${dy.toFixed(2)})`;
@@ -39543,15 +39627,37 @@ function clearUvEmptyHoldTimer() {
    coordinate the rest of this file already computes through uvViewPoint's
    getScreenCTM (island/vertex/edge drag math, tap hit-testing via
    ev.target) keeps working unchanged: the content never moves, only the
-   window onto it does, which is what a viewBox is for. Bounded so you
-   cannot zoom out past the default framing (there is nothing past it to
-   see) or in past the point a triangle stops being a shape at all. */
-const UV_ZOOM_MIN = 8, UV_ZOOM_MAX = 100;
-// How far the box may drift past the 0..100 square while panning - just
-// enough to work right up to an edge-hugging island without it sitting
-// glued to the card's own border.
+   window onto it does, which is what a viewBox is for.
+
+   THE BOUNDS ARE THE SHEET NOW (v2.63), not the 0..1 tile. Zooming out used
+   to stop at the default framing on the grounds that there was nothing past
+   it to see; there are ninety-nine more tiles past it, and a layout may sit
+   in any of them. MAX frames the whole sheet with room to spare (ten tiles
+   of 92 units is 920); MIN is unchanged - past it a triangle stops being a
+   shape at all. */
+const UV_ZOOM_MIN = 8, UV_ZOOM_MAX = 1000;
+// How far the box may drift past the sheet while panning - just enough to
+// work right up to an edge-hugging island without it glued to the border.
 const UV_PAN_MARGIN = 20;
 let uvViewBox = { x: 0, y: 0, w: 100, h: 100 };
+/* HOW BIG A TILE NUMBER IS, IN REAL SCREEN PIXELS (review finding, v2.63).
+   The first draft wrote the font size as a hundredth of the box width, on
+   the reasoning that this holds still through a zoom - which it does, but at
+   a size nobody chose: user-units-per-pixel is the box width over the CARD's
+   width, so a hundredth of the box is always exactly a hundredth of the
+   card. That is 3.9px on a 390px phone - the one thing that makes a UDIM
+   sheet a UDIM sheet, rendered as a smudge, on the device this app is built
+   for first. Sizing against the measured card instead gives the same
+   zoom-invariance AND a size that is the same on every screen.
+
+   The card's width is measured lazily and cached: applyUvViewBox runs once
+   per frame of a pinch, and getBoundingClientRect right after writing the
+   viewBox attribute forces a layout each time. Whatever can change it -
+   opening the view, a redraw, a resize - sets uvCardPx back to 0. */
+const UV_NUM_PX = 11;
+// A tile too narrow to hold its own number is better off without one.
+const UV_NUM_MIN_TILE_PX = 64;
+let uvCardPx = 0;
 /* THE DOT'S RADIUS IN SVG UNITS (v2.60), which is not a constant because the
    unit is not: the viewBox is what maps this card's 0..100 onto the screen,
    so a fixed radius doubles on screen every time you halve the box. Scaled by
@@ -39579,6 +39685,22 @@ function applyUvViewBox() {
      the same size ON SCREEN at every zoom, which is the whole rule being
      borrowed from the 3D dots. */
   uvViewSvgEl.style.setProperty('--uv-hit', String(Math.round(dr * 625) / 100));
+  /* The UDIM numbers by the same rule (v2.63): written in user units, so
+     without this they would double on screen every time the box halved -
+     but measured against the card, so UV_NUM_PX means what it says on any
+     screen. See its declaration for why the measurement is cached. */
+  if (!uvCardPx) {
+    const r = uvViewSvgEl.getBoundingClientRect();
+    if (r.width) uvCardPx = r.width;
+  }
+  const pxPerUnit = uvCardPx ? uvCardPx / uvViewBox.w : 0;
+  uvViewSvgEl.style.setProperty('--uv-num',
+    (pxPerUnit ? Math.round(UV_NUM_PX / pxPerUnit * 100) / 100
+               : Math.round(uvViewBox.w) / 100) + 'px');
+  // Zoomed out far enough, a hundred numbers in tiles the size of the
+  // numbers themselves is noise, not a ruler.
+  uvViewSvgEl.classList.toggle('uv-nums-off',
+    pxPerUnit > 0 && pxPerUnit * (100 - 2 * UV_VIEW_PAD) < UV_NUM_MIN_TILE_PX);
   refreshUvStatus();   // v2.62: the zoom is one of the five things it reports
 }
 /* WHAT THE VIEW IS DOING, IN TWO SHORT LINES (v2.62). Zeghreit asked for
@@ -39634,11 +39756,31 @@ function resetUvViewBox() {
   uvViewBox = { x: 0, y: 0, w: 100, h: 100 };
   applyUvViewBox();
 }
+/* The whole UDIM sheet in this card's own units (v2.63). One tile is
+   100 - 2*UV_VIEW_PAD wide; tile 1001 is the square the view opens on, and V
+   counts UP the sheet while SVG's Y counts down, which is why the top edge
+   is the negative one. Derived rather than written down, so it cannot drift
+   from renderUvView's toX/toY. */
+function udimBounds() {
+  const span = 100 - 2 * UV_VIEW_PAD;
+  return {
+    x0: UV_VIEW_PAD, x1: UV_VIEW_PAD + UDIM_COLS * span,
+    y0: UV_VIEW_PAD - (UDIM_ROWS - 1) * span, y1: 100 - UV_VIEW_PAD
+  };
+}
 function clampUvViewBox() {
-  const maxX = 100 + UV_PAN_MARGIN - uvViewBox.w;
-  uvViewBox.x = Math.max(-UV_PAN_MARGIN, Math.min(maxX, uvViewBox.x));
-  const maxY = 100 + UV_PAN_MARGIN - uvViewBox.h;
-  uvViewBox.y = Math.max(-UV_PAN_MARGIN, Math.min(maxY, uvViewBox.y));
+  const b = udimBounds(), M = UV_PAN_MARGIN;
+  /* A box wider than the whole sheet plus its margins makes the lower bound
+     exceed the upper one, and min(max()) over an inverted range pins the
+     value to one end - the same trap the drag clamps used to guard against
+     per axis. Centre the sheet instead: that is what "zoomed out past
+     everything there is" should look like. */
+  const loX = b.x0 - M, hiX = b.x1 + M - uvViewBox.w;
+  uvViewBox.x = loX <= hiX ? Math.max(loX, Math.min(hiX, uvViewBox.x))
+                           : (b.x0 + b.x1) / 2 - uvViewBox.w / 2;
+  const loY = b.y0 - M, hiY = b.y1 + M - uvViewBox.h;
+  uvViewBox.y = loY <= hiY ? Math.max(loY, Math.min(hiY, uvViewBox.y))
+                           : (b.y0 + b.y1) / 2 - uvViewBox.h / 2;
 }
 // Scales the box around one fixed SVG-space point (svgX, svgY) - the mouse
 // wheel's own anchor, found the same way a wheel-zoom always is: whatever
@@ -43306,6 +43448,10 @@ function onResize() {
   renderer.setSize(w, h);
   updateStrokeResolution();
   refreshToolIndicator();
+  /* The 2D UV card resizes with the window too, and since v2.63 its tile
+     numbers are sized against a measurement of it. */
+  uvCardPx = 0;
+  if (uvViewObj) applyUvViewBox();
   /* The size changed, so the picture did. On-demand rendering will not
      notice on its own, and since v2.1 the loop may be asleep. */
   invalidate();
@@ -44340,6 +44486,8 @@ if (PICK_DEBUG) {
        move between - live flags rather than the records themselves, so a
        probe cannot reach in and steer a gesture it is meant to observe. */
     uvSecondPointer, promoteUvViewPinch, uvOtherPointer, UV_VIEW_PINCH_MIN_PX,
+    // v2.63: the sheet the view is a window onto.
+    UDIM_COLS, UDIM_ROWS, udimBounds, clampUvViewBox, UV_ZOOM_MAX, UV_ZOOM_MIN,
     // v2.62: the status line, and what it currently says.
     refreshUvStatus,
     get uvStatusText() { return uvViewStatusLEl.textContent + ' | ' + uvViewStatusREl.textContent; },

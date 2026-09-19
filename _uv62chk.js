@@ -69,9 +69,8 @@
     svg = document.getElementById('uvViewSvg');
     const islands = () => svg.querySelectorAll('.uv-island');
     ok('0.setup вид открыт', K.uvViewOpen && islands().length >= 2, 'islands=' + islands().length);
-    ok('0.setup версия 2.62',
-       (document.querySelector('.brand') || {}).textContent.indexOf('2.62') >= 0,
-       (document.querySelector('.brand') || {}).textContent);
+    const brand = (document.querySelector('.brand') || {}).textContent || '';
+    ok('0.setup версия не ниже 2.62', parseFloat((brand.match(/[\d.]+/) || [0])[0]) >= 2.62, brand);
     ok('0.setup строка состояния видна', K.uvStatusShown === true);
     mark('0');
 

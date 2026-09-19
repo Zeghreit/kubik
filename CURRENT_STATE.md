@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
-- Version at time of writing: **2.62**
+- Version at time of writing: **2.63**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,50 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## The 2D UV view stops being a box (2.63)
+
+Zeghreit: "take the bounding area out of the 2D UV view - make it like the 3D
+mode, leave only the UDIM markings in the background."
+
+The dashed 0..1 square is gone. In its place is the **UDIM sheet**: ten tiles
+by ten, 1001..1100, numbered the standard way (1001 + column + 10 x row), drawn
+behind everything, catching no pointer. The grid uses `non-scaling-stroke`
+because it is a ruler - a line that thickens as you zoom in stops being one -
+while the mesh above it keeps its user-unit strokes, which is what makes an
+island read as bigger when it is.
+
+**Nothing is a wall any more.**
+
+- The view pans and zooms across the whole sheet (`UV_ZOOM_MAX` 100 -> 1000,
+  `clampUvViewBox` rewritten around `udimBounds()`), where before it could not
+  leave the one tile it opened on.
+- A component can be dragged into any tile. `UV_VIEW_CENTER_MARGIN` and the
+  two drag clamps built on it are gone.
+
+**But a drag is still bounded - by what the VIEW can reach**, and that
+distinction is the whole of this slice's review finding. The first draft
+removed both clamps outright and claimed "anything a drag can do, a pan can
+follow". False: the view is bounded by the sheet and the drag was not, so one
+flick at a wide zoom put an island tens of tiles past the sheet, where no pan
+reaches it, no tap finds it, and only Undo - if nothing had been done since -
+brought it back. `udimReach()` (the sheet plus the same margin the view may pan
+past it) and `clampUvDelta` bound both drags to that window instead, so the
+claim is now true. A wall one tile wide was wrong; no wall at all was worse.
+
+**Numbers are sized in real screen pixels** (`UV_NUM_PX = 11`), not as a
+fraction of the viewBox. The first draft wrote a hundredth of the box width,
+which holds still through a zoom - but a hundredth of the box is always exactly
+a hundredth of the CARD, which is 3.9px on a 390px phone. `applyUvViewBox`
+measures the card once per open, redraw or resize (`uvCardPx`, invalidated at
+each) and scales from that, and hides the numbers entirely once a tile is under
+64px on screen, where a hundred labels in tiles their own size are noise rather
+than a ruler.
+
+Worth knowing, from the same review: because every material map is
+`RepeatWrapping` and the mask shader already calls `fract()`, moving an island
+from tile 1001 to 1002 changes nothing in the 3D view today. The sheet is
+honest about UV space; it is ahead of what the renderer does with it.
 
 ## The 2D view says where it is, and Undo keeps your place (2.62)
 
