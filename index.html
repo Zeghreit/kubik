@@ -2663,7 +2663,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.64</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.65</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -35249,6 +35249,17 @@ const ICON = {
      is what a swept circle looks like from the side. */
   tube:       '<path d="M4 16.4c3.6-9.4 11.6 2.6 16-6.2M4 19.6c3.6-9.4 11.6 2.6 16-6.2"/><path d="M4 18a1.6 1.6 0 1 0 0-1.6"/><ellipse cx="20" cy="11.6" rx="1.5" ry="1.8"/>'
 };
+/* DERIVED GLYPHS (v2.65), built from the ones above rather than drawn again -
+   a mirrored arc and a turned axis are the same picture, and the pair only
+   means anything if the two halves are visibly each other's opposite. Written
+   after the literal because an object literal cannot read itself.
+
+   Why they exist: the island ring is direction-picked, so two seats showing
+   the SAME glyph side by side is precisely the thing that makes the direction
+   unlearnable - and Flip V was borrowing a left-right mirror to say
+   top-to-bottom, which is not a near-miss, it is the wrong axis. */
+ICON.rotateccw = '<g transform="translate(24,0) scale(-1,1)">' + ICON.rotate + '</g>';
+ICON.flipvert  = '<g transform="rotate(90 12 12)">' + ICON.flip + '</g>';
 
 // Wraps a pictogram in an svg at the size the caller needs.
 function icon(name, size) {
@@ -38932,8 +38943,23 @@ function uvViewPoint(ev) {
 // THEM against a small threshold let almost any tap through as a real,
 // history-writing edit); rotate and scale get their own thresholds
 // (v2.47), in their own units, for the identical reason.
+/* v2.65: whatever ends the drag ends the hold with it - a release, a cancel,
+   a mode switch, the view closing.
+
+   NOT the pinch promotion, which is worth saying because the obvious reading
+   is that it must be (review finding): uvSecondPointer keeps the drag alive
+   and turns it into a pinch on exactly the branch this timer is armed on - an
+   already-selected island - so endUvDrag never runs there and this never
+   fires. What covers that case is the timer's own `rec.mode !== 'translate'`
+   test, which is therefore not a backstop but the only guard. It holds
+   because startUvPinch sets the mode synchronously, in the same task, so the
+   timer can never see a half-promoted record. */
+function clearUvDragHold() {
+  if (uvDrag && uvDrag.holdTimer) { clearTimeout(uvDrag.holdTimer); uvDrag.holdTimer = null; }
+}
 function endUvDrag(commit) {
   if (!uvDrag) return;
+  clearUvDragHold();
   const { islandIds, dx, dy, gEls, centerX, centerY,
     startClientX, startClientY, lastClientX, lastClientY,
     mode, angleDeg, scale, tapId, tapWasSelected, slop } = uvDrag;
@@ -39032,6 +39058,149 @@ function commitUvIslandTransform(islandIds, dxSvg, dySvg, angleDeg, scale, cxSvg
     (want.size > 1 ? ' ' + want.size : '') + many);
   refreshUvView(obj);
 }
+
+/* THE ISLAND TRANSFORMS (v2.65), which are the first of the "operations and
+   menus in 2D" Zeghreit asked for: rotate a quarter turn either way, mirror in
+   U, mirror in V. The discrete twin of the pinch - the pinch is for landing on
+   a value by eye, these four are for the values you cannot land on by eye and
+   would never want approximated.
+
+   Written in UV space directly rather than through commitUvIslandTransform:
+   that one carries a UNIFORM scale, and a mirror is a scale of -1 on one axis
+   only, so bending it into that shape would mean giving the drag's commit a
+   term the drag can never produce.
+
+   THE PIVOT IS THE SELECTION'S OWN UV BOX CENTRE, and that choice is what
+   makes these reversible: rotating a box a quarter turn about its own centre
+   leaves that centre where it was (the box just swaps width for height), so
+   four Rotate 90s land exactly where they started, and two Flip Us do. A pivot
+   taken from anywhere else - the tile, the origin, the finger - would drift.
+
+   The matrix is [a b c d] applied to the offset from the pivot: u' = a*du +
+   b*dv, v' = c*du + d*dv. Screen direction, not UV direction, is what the
+   labels promise, and V points UP in UV while screen Y points down - so it is
+   worth one worked example rather than a sign to take on trust: rotcw sends a
+   UV offset of (1,0) to (0,-1). (1,0) is one tile to the RIGHT on screen and
+   (0,-1) is one tile DOWN, and right-going-to-down is what anyone looking at
+   the screen calls clockwise. */
+const UV_ISLAND_XFORMS = {
+  rotcw:  { label: 'Rotate 90\u00b0',  icon: 'rotate',    m: [0, 1, -1, 0] },
+  rotccw: { label: 'Rotate -90\u00b0', icon: 'rotateccw', m: [0, -1, 1, 0] },
+  flipu:  { label: 'Flip U',        icon: 'flip',      m: [-1, 0, 0, 1] },
+  flipv:  { label: 'Flip V',        icon: 'flipvert',  m: [1, 0, 0, -1] }
+};
+function uvIslandXform(kind) {
+  const spec = UV_ISLAND_XFORMS[kind];
+  const obj = uvViewObj;
+  if (!spec || !obj || !obj.mesh || !obj.mesh.geometry) return false;
+  /* The ring can outlive the mode that opened it (review finding): the header
+     sits above this view and stays usable, so a second finger can switch to
+     Vertex mode while the island ring is still open - and setUvCompMode empties
+     uvIslandSel on the way. Guarded here, in the op, rather than by closing the
+     ring from those teardown paths: closeUvView is itself reachable FROM a ring
+     seat, so a teardown that closes rings re-enters the one that is closing. */
+  if (uvCompMode !== 'island') { toast('Island mode only'); return false; }
+  if (!uvIslandSel.size) { toast('Select an island first'); return false; }
+  let ed;
+  try { ed = toEditable(obj.mesh); }
+  catch (e) { console.warn('uvIslandXform: toEditable failed', e); return false; }
+  if (!ed.uvs || !ed.uvs.length) return false;
+  const { attrIsland } = islandVertexMap(obj);
+  const want = uvIslandSel;
+  /* The box first, in one pass, then the transform in a second - the pivot has
+     to be the box of the WHOLE selection, so it cannot be known while the
+     first vertex is already being moved. Non-finite UV is skipped rather than
+     allowed to poison the box into NaN, the same guard renderUvView uses. */
+  let minU = Infinity, minV = Infinity, maxU = -Infinity, maxV = -Infinity, n = 0;
+  for (let ai = 0; ai < attrIsland.length; ai++) {
+    if (!want.has(attrIsland[ai])) continue;
+    const u = ed.uvs[ai * 2], v = ed.uvs[ai * 2 + 1];
+    if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
+    if (u < minU) minU = u;
+    if (u > maxU) maxU = u;
+    if (v < minV) minV = v;
+    if (v > maxV) maxV = v;
+    n++;
+  }
+  if (!n) { toast('Nothing to transform'); return false; }
+  const pu = (minU + maxU) / 2, pv = (minV + maxV) / 2;
+  const a = spec.m[0], b = spec.m[1], c = spec.m[2], d = spec.m[3];
+  /* AND IT HAS TO LAND SOMEWHERE THE VIEW CAN GO (review finding, v2.65).
+     The box-centre pivot holds the CENTRE still, not the extent: a selection
+     w by h comes back h by w, so a rotation reaches (w-h)/2 further along the
+     short axis. Two islands a sheet apart in U, rotated, put one of them four
+     tiles BELOW the sheet - where no pan reaches it, no tap finds it and only
+     Undo brings it back. That is the exact hole clampUvDelta exists to close
+     for the drag this op is the discrete twin of, walked in through another
+     door.
+
+     The correction is a pure translation, and it is computed from the box
+     rather than measured after the fact: a signed axis permutation maps the
+     old box's corners onto the new box exactly, so the offset is known before
+     a single vertex moves and folds into the one pass that moves them. Being
+     a translation, it cannot disturb the reversibility above for anything
+     already inside the sheet - there the offset is zero. An axis whose span
+     exceeds the whole window is left alone rather than pinned to one end, the
+     same guard clampUvDelta makes per axis. */
+  let offU = 0, offV = 0;
+  {
+    let nMinU = Infinity, nMinV = Infinity, nMaxU = -Infinity, nMaxV = -Infinity;
+    [[minU, minV], [maxU, minV], [minU, maxV], [maxU, maxV]].forEach(p => {
+      const du = p[0] - pu, dv = p[1] - pv;
+      const u2 = pu + a * du + b * dv, v2 = pv + c * du + d * dv;
+      if (u2 < nMinU) nMinU = u2;
+      if (u2 > nMaxU) nMaxU = u2;
+      if (v2 < nMinV) nMinV = v2;
+      if (v2 > nMaxV) nMaxV = v2;
+    });
+    const R = udimReachUV();
+    if (nMaxU - nMinU <= R.u1 - R.u0) {
+      if (nMinU < R.u0) offU = R.u0 - nMinU;
+      else if (nMaxU > R.u1) offU = R.u1 - nMaxU;
+    }
+    if (nMaxV - nMinV <= R.v1 - R.v0) {
+      if (nMinV < R.v0) offV = R.v0 - nMinV;
+      else if (nMaxV > R.v1) offV = R.v1 - nMaxV;
+    }
+  }
+  let moved = 0;
+  for (let ai = 0; ai < attrIsland.length; ai++) {
+    if (!want.has(attrIsland[ai])) continue;
+    const du = ed.uvs[ai * 2] - pu, dv = ed.uvs[ai * 2 + 1] - pv;
+    if (!Number.isFinite(du) || !Number.isFinite(dv)) continue;
+    ed.uvs[ai * 2] = pu + a * du + b * dv + offU;
+    ed.uvs[ai * 2 + 1] = pv + c * du + d * dv + offV;
+    moved++;
+  }
+  if (!moved) return false;
+  rebuildFromEditable(obj, ed);
+  finishMeshEdit(obj, spec.label + (want.size > 1 ? ' \u00b7 ' + want.size + ' islands' : ''));
+  refreshUvView(obj);
+  return true;
+}
+
+/* ISLAND MODE'S OWN DOOR (v2.65), opened by holding the selection you already
+   have - which is the same gesture and the same rule the 3D viewport's tool
+   ring uses, and the same one edge mode in this view has used since v2.50. The
+   seats come from UV_ISLAND_XFORMS rather than being written out again, so a
+   transform cannot exist without a way to reach it or the other way round.
+
+   Four of eight seats used. This is where the rest of "operations and menus in
+   2D" goes - exact scale, align, pack - which is the reason the ring exists at
+   all rather than these three hanging off some new control. */
+const HUB_TOOLS_UV2D_ISLAND = Object.keys(UV_ISLAND_XFORMS).map((k, i) => ({
+  key: 'uvx-' + k, icon: UV_ISLAND_XFORMS[k].icon, label: UV_ISLAND_XFORMS[k].label,
+  seat: i, run: () => uvIslandXform(k)
+}));
+/* AND IT HAS TO LIVE HERE, not up with the other HUB_TOOLS_* arrays (v2.65,
+   found on the stand). It is BUILT from UV_ISLAND_XFORMS at module-evaluation
+   time, so standing above the table meant `Cannot access 'UV_ISLAND_XFORMS'
+   before initialization` - and that is not a small failure: the whole file
+   stops evaluating, so the app never starts. node --check cannot see it (the
+   syntax is fine) and _verify.py passed; what it looked like from the stand was
+   a probe that spun on __kubik and reported "boot timeout", the same words a
+   flaky Chrome produces. HUB_TOOLS_UV2D_MODE already lives down here, so this
+   is the house pattern for a UV ring, not an exception to it. */
 
 /* THE 2D VIEW SHOWS THE ACTIVE OBJECT (v2.53), whichever way the active
    object changed - a tap in the outliner, a tap in the 3D viewport before
@@ -39264,7 +39433,37 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
     slop: tapSlopPx(ev),
     pointerId2: null, p1: null, p2: null,
     startAngle: 0, angleSeeded: false, startDist: 0, angleDeg: 0, scale: 1,
+    holdTimer: null,   // v2.65 - see the arming just below
   };
+  /* AND A HOLD ON IT OPENS THE DOOR (v2.65), but only on an island that was
+     ALREADY selected - the same gate the two-finger pinch exception uses, and
+     the same rule the 3D viewport's ring follows: you hold what you have
+     picked. A hold on an unselected island stays what it was, a drag that
+     picks it up.
+
+     THE HOLD CANCELS AT THE SAME DISTANCE THE TAP DOES (review finding), and
+     not at the rings' usual RING_MOVE_CANCEL_PX. Two different numbers over
+     the same gesture left a dead band, 8px < d <= 22px, where a press was
+     still a TAP on release but had already stopped being a hold: a thumb roll
+     of 11px - the exact figure v2.64's own note records - gave no ring, and
+     then the tap branch deselected the island, and because this timer is armed
+     only on an ALREADY selected island the next press could not arm it either.
+     A failed hold cost two more presses and flipped the selection twice. With
+     one threshold the band does not exist: everything this view still calls a
+     tap is still a hold. */
+  if (tapWasSelected) {
+    const rec = uvDrag, px = ev.clientX, py = ev.clientY, pid = ev.pointerId;
+    uvDrag.holdTimer = setTimeout(() => {
+      // A different drag by now, or the same one promoted to a pinch: not a
+      // hold either way. Identity, not truthiness - uvDrag may have been
+      // replaced between the arming and the firing.
+      if (uvDrag !== rec || rec.mode !== 'translate') return;
+      rec.holdTimer = null;
+      endUvDrag(false);          // a hold was never a drag, nor a tap
+      uvPointers.delete(pid);    // bloomToolRing takes the capture (v2.61)
+      bloomToolRing(px, py, HUB_TOOLS_UV2D_ISLAND, pid, { x: px, y: py });
+    }, TOOL_RING_HOLD_MS);
+  }
   // Explicit capture, not the implicit one touch gets for free - the same
   // MUST-FIX class the mode-hold button hit in v2.43: a mouse never gets an
   // implicit capture at all, so without this, dragging off the island with
@@ -39346,6 +39545,16 @@ uvViewSvgEl.addEventListener('pointermove', (ev) => {
   if (!uvDrag) return;
   if (uvDrag.mode === 'translate') {
     if (ev.pointerId !== uvDrag.pointerId) return;
+    /* Moved far enough that it is no longer a hold (v2.65) - this pointer's
+       own tap slop, which is also what decides tap-vs-drag on release, so the
+       two cannot disagree about one gesture. See the arming for why. The drag
+       itself carries on either way. */
+    if (uvDrag.holdTimer &&
+        Math.hypot(ev.clientX - uvDrag.startClientX, ev.clientY - uvDrag.startClientY)
+          > uvDrag.slop) {
+      clearTimeout(uvDrag.holdTimer);
+      uvDrag.holdTimer = null;
+    }
     const p = uvViewPoint(ev);
     uvDrag.lastSvgX = p.x; uvDrag.lastSvgY = p.y;
     let dx = p.x - uvDrag.startX, dy = p.y - uvDrag.startY;
@@ -39379,10 +39588,19 @@ uvViewSvgEl.addEventListener('pointerup', (ev) => {
        toggling it (v2.64) - read here rather than inside endUvDrag, because
        the second tap must never run the toggle at all, the same way the 3D
        viewport's reader returns before handleTap. Cancelled, not committed:
-       that backs out this tap's own provisional add, so the island stays
-       exactly as the FIRST tap left it - selected. Only a gesture that did
-       not move is a tap, measured against the same threshold endUvDrag's own
-       tap branch uses. */
+       that backs out this tap's own provisional add, so the island is left
+       exactly as the FIRST tap left it.
+
+       Which is not always "selected" (review finding, v2.65 corrected this
+       note): tap one on an UNSELECTED island selects it and the double tap
+       keeps it; tap one on an already-selected island DESELECTS it, and the
+       double tap keeps that too - so double-tapping something you had picked
+       frames it and drops it from the selection. That is the 3D viewport's
+       behaviour as well, where the first tap of a double tap also toggles,
+       and it is left alone deliberately rather than made into a special case
+       the other reader does not have. Only a gesture that did not move is a
+       tap, measured against the same threshold endUvDrag's own tap branch
+       uses. */
     if (Math.hypot(ev.clientX - uvDrag.startClientX, ev.clientY - uvDrag.startClientY)
           <= uvDrag.slop && uvIsDoubleTap(ev, 'i:' + uvDrag.tapId)) {
       // The island under the FINGER, not gEls[0] - that is the first member of
@@ -39917,6 +40135,17 @@ function resetUvViewBox() {
    counts UP the sheet while SVG's Y counts down, which is why the top edge
    is the negative one. Derived rather than written down, so it cannot drift
    from renderUvView's toX/toY. */
+/* THE REACHABLE WINDOW IN UV, which is udimReach() read through the same
+   toX/toY the sheet is drawn with, inverted (v2.65). Card units are what the
+   pointer code works in; a transform works in UV, and needs the same answer. */
+function udimReachUV() {
+  const R = udimReach(), span = 100 - 2 * UV_VIEW_PAD;
+  return {
+    u0: (R.x0 - UV_VIEW_PAD) / span, u1: (R.x1 - UV_VIEW_PAD) / span,
+    // Y is flipped, so the card's TOP edge is the high v and its bottom the low.
+    v0: 1 - (R.y1 - UV_VIEW_PAD) / span, v1: 1 - (R.y0 - UV_VIEW_PAD) / span
+  };
+}
 function udimBounds() {
   const span = 100 - 2 * UV_VIEW_PAD;
   return {
@@ -44674,6 +44903,9 @@ if (PICK_DEBUG) {
        move between - live flags rather than the records themselves, so a
        probe cannot reach in and steer a gesture it is meant to observe. */
     uvSecondPointer, promoteUvViewPinch, uvOtherPointer, UV_VIEW_PINCH_MIN_PX,
+    // v2.65: the island door and the four transforms behind it.
+    uvIslandXform, UV_ISLAND_XFORMS, HUB_TOOLS_UV2D_ISLAND,
+    get uvDragHoldArmed() { return !!(uvDrag && uvDrag.holdTimer); },
     // v2.64: the double tap that frames, and the framing itself.
     /* uvIsDoubleTap MUTATES what it reads - it is the gesture, not a flag -
        so unlike the v2.61 exports beside it a harness can steer this one, and
@@ -44681,6 +44913,8 @@ if (PICK_DEBUG) {
        poisoning the next real gesture. */
     uvIsDoubleTap, uvForgetTap, frameUvBox, frameUvElement, frameUvAll, UV_FRAME_PAD,
     tapSlopPx,
+    // v2.65: the reachable window, in UV - what a transform has to land in.
+    udimReachUV, udimReach, clampUvDelta,
     // v2.63: the sheet the view is a window onto.
     UDIM_COLS, UDIM_ROWS, udimBounds, clampUvViewBox, UV_ZOOM_MAX, UV_ZOOM_MIN,
     // v2.62: the status line, and what it currently says.

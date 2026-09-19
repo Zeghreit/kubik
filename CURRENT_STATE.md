@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
-- Version at time of writing: **2.64**
+- Version at time of writing: **2.65**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,77 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## Island mode gets a door, and four transforms behind it (2.65)
+
+The first of "operations and menus in 2D". **Hold an island you have already
+selected and a ring blooms** with Rotate 90°, Rotate -90°, Flip U, Flip V -
+the same gesture and the same rule the 3D viewport's tool ring uses, and the
+one edge mode in this view has used since v2.50: you hold what you have picked.
+
+These four are the discrete twin of the pinch. The pinch is for landing on a
+value by eye; these are for the values you cannot land on by eye and would
+never want approximated.
+
+**The pivot is the selection's own UV box centre**, and that choice is what
+makes them reversible: a box rotated a quarter turn about its own centre keeps
+that centre (it only swaps width for height), so four Rotate 90s land exactly
+where they started and two Flip Us do. A pivot taken from the tile, the origin
+or the finger would drift. A group rotates as one, about one shared box - two
+islands swap places rather than each spinning where it stands.
+
+Written in UV space rather than through `commitUvIslandTransform`, which
+carries a UNIFORM scale: a mirror is -1 on one axis only, and bending the
+drag's own commit into that shape would give it a term the drag can never
+produce.
+
+`HUB_TOOLS_UV2D_ISLAND` is built from the table, so a transform cannot exist
+without a way to reach it or the other way round. Four of eight seats used -
+this is where the rest of the 2D operations go.
+
+### Fixed on the way
+
+- **A rotation could throw an island off the reachable sheet** - the same hole
+  v2.63's review closed for the drag, walked in through another door. The pivot
+  holds the CENTRE, not the extent: a selection w by h comes back h by w, so it
+  reaches (w-h)/2 further along the short axis. Two islands a sheet apart in U,
+  rotated, put one of them four tiles below the sheet, where no pan reaches it.
+  The correction is a pure translation into `udimReachUV()`, computed from the
+  box's corners before a single vertex moves - and being a translation it
+  cannot disturb the reversibility above, since for anything already inside the
+  sheet it is zero.
+- **A failed hold deselected the island and then refused to re-arm.** The hold
+  cancelled at the rings' 8px while the tap slop is 22, so a thumb roll of
+  11px - the exact figure v2.64's note records - left a dead band: no ring, and
+  then the tap branch deselected, and because the timer only arms on an ALREADY
+  selected island the next press could not arm either. A failed hold cost two
+  more presses and flipped the selection twice. One threshold now: everything
+  this view still calls a tap is still a hold.
+- **The ring showed two pairs of identical glyphs**, and Flip V borrowed a
+  left-right mirror to say top-to-bottom. A direction-picked ring with the same
+  picture at two seats is the one thing that makes direction unlearnable.
+  `ICON.rotateccw` and `ICON.flipvert` are derived from the two they were
+  duplicating - a mirrored arc and a turned axis - so the pair reads as
+  opposites.
+- The ring can outlive the mode that opened it (the header stays usable above
+  this view), so the op guards on `uvCompMode` itself rather than the teardown
+  paths closing rings - `closeUvView` is reachable FROM a ring seat, and a
+  teardown that closes rings re-enters the one that is closing.
+
+### And a load-time failure the stand caught before any of that
+
+`HUB_TOOLS_UV2D_ISLAND` is built from `UV_ISLAND_XFORMS` and was written ABOVE
+it, with the other `HUB_TOOLS_*` arrays: `Cannot access 'UV_ISLAND_XFORMS'
+before initialization` at module-evaluation time, so the whole file stopped
+evaluating and the app never started. `node --check` cannot see it - the syntax
+is perfect - and `_verify.py` passed. What it looked like from the stand was a
+probe spinning on `__kubik` and reporting "boot timeout", which is the same
+thing a flaky Chrome produces, and it took two runs before that was doubted.
+
+**So: a boot timeout means run `_err61chk` first, not a second time.** Five
+lines, one run, and it names the error and the line. `HUB_TOOLS_UV2D_MODE`
+already lived down in the UV section, so a UV ring belonging there is the house
+pattern rather than an exception.
 
 ## A double tap frames, in the 2D UV view (2.64)
 
