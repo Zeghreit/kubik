@@ -82,11 +82,19 @@
       const t = K.uvStatusText;
       ok('1.says  называет вид компонент', t.indexOf('Island') === 0, t);
       ok('1.says  и что ничего не выбрано', t.indexOf('nothing selected') > 0, t);
-      ok('1.says  зум 100% при обычном кадре', t.indexOf('100%') > 0, t);
+      /* НЕ 100% (v2.69). Сброс показывает тайл 1001 целиком в кадре, который
+         несёт пропорции элемента: на высоком экране это ровно 100 в ширину и
+         100%, на широком - 100/aspect и меньше 100%. Проверяем правило, а не
+         число, которое оно давало на квадрате. */
+      const wReset = K.uvAspect() >= 1 ? 100 : 100 / K.uvAspect();
+      ok('1.says  зум отвечает ширине кадра',
+         t.indexOf(Math.round(10000 / wReset) + '%') > 0, t + ' w=' + K.uvViewBoxNow.w);
+      ok('1.says  и сброс дал именно этот кадр', Math.abs(K.uvViewBoxNow.w - wReset) < 1e-6,
+         'w=' + K.uvViewBoxNow.w + ' ждали ' + wReset);
       /* Глубины Undo/Redo тут БОЛЬШЕ НЕТ (ревью): она устаревала после любого
          пуша, не менявшего экземпляр объекта, и могла противоречить самой
          кнопке, стоящей рядом. Справа только зум. */
-      ok('1.says  справа только зум', /\| 100%$/.test(t) && !/⤺|⤻/.test(t), t);
+      ok('1.says  справа только зум', /\| \d+%$/.test(t) && !/⤺|⤻/.test(t), t);
 
       /* И строка стоит ВЫШЕ полосы кнопок: #quickRow (Undo/Redo, z13) и
          #hubBtn (z16) рисуются поверх этого вида, так что первый черновик
@@ -108,9 +116,13 @@
       tap(isl[1], 302);
       await wait(20);
       ok('2.live  и второй остров тоже', K.uvStatusText.indexOf('2 selected') > 0, K.uvStatusText);
+        const wLive = K.uvViewBoxNow.w;
       K.zoomUvViewBoxAt(0.5, 50, 50);
       await wait(20);
-      ok('2.live  зум подхвачен', K.uvStatusText.indexOf('200%') > 0, K.uvStatusText);
+      // Вдвое ближе, чем было - а каким было, решает форма экрана (v2.69).
+      ok('2.live  зум подхвачен',
+         K.uvStatusText.indexOf(Math.round(10000 / (wLive / 2)) + '%') > 0,
+         K.uvStatusText + ' было w=' + wLive);
       ok('2.live  и выбор при этом не потерян', K.uvStatusText.indexOf('2 selected') > 0, K.uvStatusText);
     }
     mark('2');
@@ -146,10 +158,13 @@
       const uv1 = uvSnapshot();
       ok('4.undo  перенос записался', !uvSame(uv0, uv1));
       // Зумимся и выбираем - чтобы было что терять.
+      const wWas = K.uvViewBoxNow.w;
       K.zoomUvViewBoxAt(0.5, 50, 50);
       await wait(20);
       const wZoom = K.uvViewBoxNow.w;
-      ok('4.undo  вид приближён', Math.abs(wZoom - 50) < 1e-6, 'w=' + wZoom);
+      // Относительно, не абсолютно (v2.69): 50 было следствием квадрата.
+      ok('4.undo  вид приближён', Math.abs(wZoom - wWas / 2) < 1e-6,
+         'w=' + wZoom + ' было ' + wWas);
       const idBefore = A.activeObjectId;
       K.undo();
       await wait(120);
@@ -161,7 +176,8 @@
          JSON.stringify(K.uvIslandSel));
       ok('4.undo  и строка это говорит', K.uvStatusText.indexOf('nothing selected') > 0,
          K.uvStatusText);
-      ok('4.undo  зум в строке тоже прежний', K.uvStatusText.indexOf('200%') > 0, K.uvStatusText);
+      ok('4.undo  зум в строке тоже прежний',
+         K.uvStatusText.indexOf(Math.round(10000 / wZoom) + '%') > 0, K.uvStatusText);
       K.redo();
       await wait(120);
       ok('4.undo  Redo вернул правку', uvSame(uv1, uvSnapshot()));
@@ -175,6 +191,9 @@
     {
       K.zoomUvViewBoxAt(0.5, 50, 50);
       await wait(20);
+      /* Снимаем пропорции ДО переключения (v2.69): у нового куба развёртки нет,
+         поэтому после переключения svg скрыт, и uvAspect честно отвечает 1. */
+      const aBefore = K.uvAspect();
       const second = K.createPrimitiveObject('cube', { h: 1, v: 1 }, 'Cube2', new T.Vector3(3, 0, 0));
       A.activeObjectId = second.id;
       A.selectedObjectIds = new Set([second.id]);
@@ -182,8 +201,11 @@
       await wait(120);
       ok('5.switch вид переехал на новый объект', K.uvViewTarget === second.id,
          'target=' + K.uvViewTarget);
-      ok('5.switch и кадр сброшен', Math.abs(K.uvViewBoxNow.w - 100) < 1e-6,
-         'w=' + K.uvViewBoxNow.w);
+      // Сброшен - значит в кадре снова весь тайл 1001, а его ширина зависит
+      // от формы экрана с v2.69.
+      ok('5.switch и кадр сброшен',
+         Math.abs(K.uvViewBoxNow.w - (aBefore >= 1 ? 100 : 100 / aBefore)) < 1e-6,
+         'w=' + K.uvViewBoxNow.w + ' aspect=' + aBefore);
     }
     mark('5');
 

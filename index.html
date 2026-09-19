@@ -2075,8 +2075,8 @@
      new to learn. The card here is the SVG itself rather than a scrollable
      list - the UV square is the whole point of the screen. */
   /* FULLSCREEN, NOT A BIGGER CARD (v2.51). 560px was sized for a read-only
-     preview; precise vertex/edge work wants the largest square the screen
-     can give it. padding shrinks with it - the original 20px here plus the
+     preview; precise vertex/edge work wants the screen itself - all of it
+     since v2.69, where the svg stopped being a square inside it. padding shrinks with it - the original 20px here plus the
      card's own 16px was a comfortable margin around a phone-width card and
      a wasteful one around a screen-filling one. */
   /* A VIEW, NOT A CARD (v2.53). It was a modal over a dimmed viewport: its
@@ -2102,44 +2102,28 @@
     padding: 0; width: 100%; height: 100%;
     display: flex; flex-direction: column;
   }
-  /* The largest square that fits BOTH axes, centred - not just width:100%
-     (v2.43's own rule, fine for a card capped at 560px wide, wrong once the
-     card can be wider than it is tall). A flex:1 wrapper hands this its
-     available box; min-height:0 is the standard fix for a flex child that
-     would otherwise refuse to shrink below its content's natural size.
-     container-type:size turns that box into a query container so the svg
-     below can size itself off it in BOTH axes at once. */
-  /* BOTTOM-ALIGNED, NOT CENTRED (v2.68a, Zeghreit on a phone). The square is
-     the largest that fits both axes, so on a tall phone it is width-limited and
-     the wrapper has height left over - centring split that surplus in two and
-     left a band of dead card above the sheet AND another below it, with the
-     lower one sitting between the sheet and the controls like a gap nobody
-     asked for. Measured at 412x915: an 828-tall wrapper holding a 412 square,
-     so 208px of nothing at each end.
-     All of the surplus now collects at the top, under the header, where there
-     is already a header to explain it - and the sheet's bottom edge lines up
-     with the status line and the button band below it, one gap, the same on
-     every phone. The padding is that gap: container-type:size measures the
-     CONTENT box, so it comes off the square's size rather than being added
-     outside it, and the square cannot grow back into it. */
+  /* THE SVG IS THE VIEW (v2.69). Until here it was the largest SQUARE that
+     fits both axes - the right answer for a card, the wrong one for a thing
+     that replaced the 3D viewport at v2.53. On Zeghreit's phone that square
+     was 412x412 inside a 412x915 view: 55% of the screen was surround, and
+     the layout he opened it for had the rest.
+     The element takes the whole wrapper now and uvViewBox carries the
+     element's aspect instead (see syncUvBoxH), so a UV cell is still square
+     while the full height is used. A flex:1 wrapper hands this its available
+     box; min-height:0 is the standard fix for a flex child that would
+     otherwise refuse to shrink below its content's natural size.
+     container-type:size turns that box into a query container, and those
+     units measure the CONTENT box - which is why the 10px comes off the
+     svg's height rather than being added outside it, leaving one gap between
+     the sheet and the status line and the band below it, the same on every
+     phone (v2.68a, where it was the surviving one of two). */
   #uvViewSvgWrap {
-    flex: 1; min-height: 0; display: flex; align-items: flex-end; justify-content: center;
+    flex: 1; min-height: 0; display: flex;
     padding-bottom: 10px;
     container-type: size;
   }
-  /* width/height:auto + aspect-ratio (the v2.51 original here, review
-     finding) is NOT the same rule as the comment above promises: with
-     height:100% definite, aspect-ratio only computes width, and once
-     max-width:100% clamps that computed width back down - the only case
-     that actually mattered, a portrait/narrow card - CSS Sizing 4 does not
-     feed the clamp back into height. The svg came out tall and narrow
-     instead of square, letterboxing the actual UV square inside it. min()
-     of both container-query axes is the direct expression of "largest
-     square fitting both" instead of a one-axis-then-clamp approximation of
-     it, and needs no aspect-ratio at all since both sides are computed the
-     same way. */
   #uvViewSvg {
-    width: min(100cqw, 100cqh); height: min(100cqw, 100cqh); background: var(--panel2);
+    width: 100cqw; height: 100cqh; background: var(--panel2);
     border: var(--rule) solid var(--line);
     /* Own gesture from here down (v2.45: dragging an island; v2.51: panning
        and pinch-zooming the view itself), not the browser's - without this,
@@ -2724,7 +2708,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.68e</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.69</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -39035,6 +39019,9 @@ function refreshUvView(obj) {
     const islands = islandVertexMap(obj).count;
     uvIslandSel.forEach(i => { if (i < 0 || i >= islands) uvIslandSel.delete(i); });
   }
+  // Whether there was a layout a moment ago, read before the toggle below
+  // changes the answer (v2.69).
+  const wasOk = uvViewSvgEl.style.display !== 'none';
   const res = renderUvView(obj, ed);
   uvViewSvgEl.style.display = res.ok ? '' : 'none';
   uvViewEmptyEl.style.display = res.ok ? 'none' : '';
@@ -39045,6 +39032,23 @@ function refreshUvView(obj) {
     uvViewEmptyEl.textContent = res.tooHeavy
       ? 'Too many triangles to preview here.'
       : 'No UV yet on this object — run Unwrap first.';
+  }
+  /* A REDRAW IS THE THIRD THING THAT RESIZES THE SVG (review finding, v2.69),
+     and the only one that changes its ASPECT rather than its pixel size: the
+     status band carries some 90px of margin and is shown with res.ok, so a
+     flip of that flag resizes the flex:1 wrapper under the svg. Nothing else
+     watches for it - onResize keys on the 3D viewport's own size and returns
+     early when that has not changed - and without this the view opened on an
+     object with no UV kept the square box resetUvViewBox gave it while
+     display:none, then letterboxed the layout Unwrap had just made and jumped
+     on the first pan.
+     A layout that has just APPEARED is framed, not merely clamped: that
+     transition IS Unwrap run from inside the view, and it is the same moment
+     openUvView frames for. A redraw with a layout on both sides is every op
+     in this view, and must not move the camera. */
+  if (res.ok !== wasOk) {
+    uvCardPx = 0; uvCardPxH = 0;
+    if (res.ok) frameUvAll(true);
   }
 }
 
@@ -39248,8 +39252,13 @@ function openUvView() {
     /* And only NOW can the card be measured (v2.63): everything above ran
        while it was still display:none, so the tile numbers would have kept
        the fallback size until the first pan. */
-    uvCardPx = 0;
-    applyUvViewBox();
+    uvCardPx = 0; uvCardPxH = 0;
+    /* AND IT OPENS ON THE LAYOUT, NOT THE SHEET (v2.69). The islands are what
+       you came here for, and on anything but a cube they are a small part of
+       tile 1001 - which was itself a small part of the view. Quiet, because
+       opening a view is not an op with a word to say; guarded by res.ok
+       because a hidden svg measures zero and frames nothing. */
+    if (res.ok) frameUvAll(true); else applyUvViewBox();
   }, 0);
 }
 
@@ -41046,7 +41055,14 @@ function clearUvEmptyHoldTimer() {
    it to see; there are ninety-nine more tiles past it, and a layout may sit
    in any of them. MAX frames the whole sheet with room to spare (ten tiles
    of 92 units is 920); MIN is unchanged - past it a triangle stops being a
-   shape at all. */
+   shape at all.
+
+   BOTH ARE THE NARROW AXIS (v2.69), and are read through uvZoomW rather than
+   used raw: h is w times the view's aspect now, so a cap on w alone stops a
+   WIDE view at h = 1000 * 0.56 = 562 against a 920-tall sheet - the sheet
+   would not fit at the far end any more, and frameUvAll on a full-sheet
+   layout would toast "part of it is off the sheet" about a layout that is
+   entirely on it. */
 const UV_ZOOM_MIN = 8, UV_ZOOM_MAX = 1000;
 // How far the box may drift past the sheet while panning - just enough to
 // work right up to an edge-hugging island without it glued to the border.
@@ -41070,6 +41086,69 @@ const UV_NUM_PX = 11;
 // A tile too narrow to hold its own number is better off without one.
 const UV_NUM_MIN_TILE_PX = 64;
 let uvCardPx = 0;
+/* AND ITS HEIGHT (v2.69), because the view is not square any more. #uvViewSvg
+   fills the whole wrapper now, so the box has to carry the element's aspect or
+   every cell in the layout would be stretched by the difference. w stays the
+   number every zoom, frame, pan and clamp is written in; h is derived from it.
+   Measured beside the width, by the same lazy cache, invalidated by the same
+   three events - opening the view, a redraw, a resize. */
+let uvCardPxH = 0;
+function uvAspect() {
+  if (!uvCardPx || !uvCardPxH) {
+    /* THE CONTENT BOX, NOT THE BORDER BOX (measured, v2.69). An SVG's viewport
+       is its content area, and this element has a 2px border: feeding the
+       border box's 512x663 into the aspect made the viewBox 0.2% taller than
+       the viewport, preserveAspectRatio="meet" took the smaller scale, and the
+       view letterboxed by 1.2px at the bottom. Small, and exactly the kind of
+       small that compounds - the whole point of this version is that the
+       element and the box agree. getBoundingClientRect is the border box on
+       every engine; the border widths come off it explicitly rather than
+       through clientWidth, which SVG2 added and older WebKit does not answer
+       for an svg. */
+    const r = uvViewSvgEl.getBoundingClientRect();
+    const cs = getComputedStyle(uvViewSvgEl);
+    const bw = (parseFloat(cs.borderLeftWidth) || 0) + (parseFloat(cs.borderRightWidth) || 0);
+    const bh = (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.borderBottomWidth) || 0);
+    const w = r.width - bw, h = r.height - bh;
+    if (w > 0 && h > 0) { uvCardPx = w; uvCardPxH = h; }
+  }
+  /* 1 while unmeasured - a square box, which is the old behaviour. That is NOT
+     a promise that nothing is corrected afterwards (review finding):
+     resetUvViewBox runs from openUvView while the view is still display:none
+     and gets exactly that square. What closes it is that the measurement is
+     dropped and the box re-derived the moment the view is shown - and again
+     whenever a redraw changes the svg's size, which is refreshUvView's job. */
+  return uvCardPx && uvCardPxH ? uvCardPxH / uvCardPx : 1;
+}
+/* h follows w around the box's own vertical CENTRE, not its top edge: a rotate
+   or a keyboard opening changes the aspect mid-session, and anchoring at the
+   top would slide the layout out from under the finger. Called from
+   clampUvViewBox, which every writer of the box already ends with, so there is
+   one place that knows this rule and no way to write a box that breaks it. */
+/* THE ZOOM BOUNDS, PUT ON WHICHEVER AXIS IS NARROWER (v2.69). See
+   UV_ZOOM_MIN/MAX's own note: those two numbers were chosen while w was the
+   only number there was. Dividing by min(1, aspect) makes them the SMALL
+   side's bounds on any shape of screen - so the far end always clears the
+   920-unit sheet and the near end always stops a triangle from becoming a
+   line, whether the view is taller than it is wide or the other way round. */
+function uvZoomW() {
+  const k = Math.min(1, uvAspect());
+  return { min: UV_ZOOM_MIN / k, max: UV_ZOOM_MAX / k };
+}
+/* THE WIDTH THE viewBox ACTUALLY MAPS ONTO (v2.69) - the svg's CONTENT box,
+   which is its border box less the 2px border on each side. A pan and a pinch
+   both turn screen pixels into card units with this number, and both were
+   reading the border box: on a 412-wide card that ran the content 0.8% behind
+   the finger, growing with the length of the drag. Pre-existing since v2.51
+   and harmless while nothing else knew the difference; uvAspect knows it now,
+   and two numbers for one width is how they drift. */
+function uvPxWidth(rect) { uvAspect(); return uvCardPx || rect.width; }
+function syncUvBoxH() {
+  const want = uvViewBox.w * uvAspect();
+  if (Math.abs(want - uvViewBox.h) < 1e-9) return;
+  uvViewBox.y += (uvViewBox.h - want) / 2;
+  uvViewBox.h = want;
+}
 /* THE DOT'S RADIUS IN SVG UNITS (v2.60), which is not a constant because the
    unit is not: the viewBox is what maps this card's 0..100 onto the screen,
    so a fixed radius doubles on screen every time you halve the box. Scaled by
@@ -41124,10 +41203,7 @@ function applyUvViewBox() {
      without this they would double on screen every time the box halved -
      but measured against the card, so UV_NUM_PX means what it says on any
      screen. See its declaration for why the measurement is cached. */
-  if (!uvCardPx) {
-    const r = uvViewSvgEl.getBoundingClientRect();
-    if (r.width) uvCardPx = r.width;
-  }
+  uvAspect();   // v2.69: measures and caches BOTH axes now; see its declaration
   const pxPerUnit = uvCardPx ? uvCardPx / uvViewBox.w : 0;
   uvViewSvgEl.style.setProperty('--uv-num',
     (pxPerUnit ? Math.round(UV_NUM_PX / pxPerUnit * 100) / 100
@@ -41178,7 +41254,8 @@ function refreshUvStatus() {
      mid-pinch, so it is the one thing on this line nobody needs right then. */
   const left = uvPinchReadout !== null ? kind + ' · ' + uvPinchReadout
     : kind + ' · ' + (sel ? sel + ' selected' : 'nothing selected');
-  // The box is square and starts at 100 wide, so one number says it all.
+  // Zoom is the WIDTH's business (v2.69): h follows w, so one number still
+  // says it all now that the box is no longer square.
   const zoom = Math.round(10000 / uvViewBox.w);
   const right = zoom + '%';
   const both = left + '\n' + right;
@@ -41230,17 +41307,23 @@ function uvForgetTap() { uvLastTap = null; }
    see what it sits next to - the point of framing an island rather than just
    zooming to it. */
 const UV_FRAME_PAD = 1.25;
-/* Frames a box given in the card's own units. Square, because the card is and
-   the whole file keeps w === h; floored at UV_ZOOM_MIN so framing a single
-   vertex dot does not ask for a zoom no view can hold, capped at
-   UV_ZOOM_MAX, and clamped to the sheet like every other way of moving the
-   view. */
+/* Frames a box given in the card's own units, in the view's own aspect (v2.69
+   - it is no longer square, and the file no longer keeps w === h). Floored at
+   UV_ZOOM_MIN so framing a single vertex dot does not ask for a zoom no view
+   can hold, capped at UV_ZOOM_MAX, and clamped to the sheet like every other
+   way of moving the view. */
 function frameUvBox(minX, minY, maxX, maxY, what) {
   if (!(maxX >= minX) || !(maxY >= minY)) return false;   // NaN-safe
-  const span = Math.max(maxX - minX, maxY - minY, 0);
-  const size = Math.min(Math.max(span * UV_FRAME_PAD, UV_ZOOM_MIN), UV_ZOOM_MAX);
-  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
-  uvViewBox = { x: cx - size / 2, y: cy - size / 2, w: size, h: size };
+  /* BOTH SPANS, NOT THE LARGER OF THE TWO (v2.69). While the box was square
+     one number did for both axes. Now h is w times the aspect, so the width
+     has to be whichever of the two demands more of it - and what the vertical
+     span demands is its own height divided by that aspect. */
+  const a = uvAspect();
+  const span = Math.max(maxX - minX, (maxY - minY) / a, 0);
+  const Z = uvZoomW();
+  const w = Math.min(Math.max(span * UV_FRAME_PAD, Z.min), Z.max);
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2, h = w * a;
+  uvViewBox = { x: cx - w / 2, y: cy - h / 2, w: w, h: h };
   clampUvViewBox();
   applyUvViewBox();
   /* AND THEN CHECK THAT IT WORKED (review finding). Everything a drag can
@@ -41304,7 +41387,15 @@ function frameUvAll(quiet) {
 // App.showIslands (before it became automatic) were given; it has no
 // business surviving past the object you were looking at it on.
 function resetUvViewBox() {
-  uvViewBox = { x: 0, y: 0, w: 100, h: 100 };
+  /* TILE 1001, WHOLE, IN A VIEW THAT IS NOT SQUARE (v2.69). The smallest box
+     carrying the element's aspect that still contains the 100x100 tile: on a
+     phone that is width-limited and the box is taller than the tile, on a wide
+     desktop it is height-limited and wider, and on neither is the tile cropped
+     - which is what this function has always promised. */
+  const a = uvAspect();
+  const w = a >= 1 ? 100 : 100 / a, h = w * a;
+  uvViewBox = { x: 50 - w / 2, y: 50 - h / 2, w: w, h: h };
+  clampUvViewBox();
   applyUvViewBox();
 }
 /* The whole UDIM sheet in this card's own units (v2.63). One tile is
@@ -41331,6 +41422,7 @@ function udimBounds() {
   };
 }
 function clampUvViewBox() {
+  syncUvBoxH();   // v2.69: h is w times the view's aspect, always, everywhere
   const b = udimBounds(), M = UV_PAN_MARGIN;
   /* A box wider than the whole sheet plus its margins makes the lower bound
      exceed the upper one, and min(max()) over an inverted range pins the
@@ -41348,7 +41440,8 @@ function clampUvViewBox() {
 // wheel's own anchor, found the same way a wheel-zoom always is: whatever
 // is under the cursor stays under the cursor.
 function zoomUvViewBoxAt(factor, svgX, svgY) {
-  const newW = Math.max(UV_ZOOM_MIN, Math.min(UV_ZOOM_MAX, uvViewBox.w * factor));
+  const Z = uvZoomW();   // v2.69: the bounds belong to the narrow axis
+  const newW = Math.max(Z.min, Math.min(Z.max, uvViewBox.w * factor));
   const actual = newW / uvViewBox.w;   // the CLAMPED ratio, not the raw wheel factor
   uvViewBox.x = svgX - (svgX - uvViewBox.x) * actual;
   uvViewBox.y = svgY - (svgY - uvViewBox.y) * actual;
@@ -41400,7 +41493,7 @@ function startUvPan(ev) {
     // fresh from getScreenCTM every move - cheaper, and exactly right here
     // since nothing else changes uvViewBox.w mid-pan (zoom is a separate
     // gesture, wheel or the pinch below, neither live at the same time).
-    scale: uvViewBox.w / rect.width
+    scale: uvViewBox.w / uvPxWidth(rect)
   };
 }
 function updateUvPan(ev) {
@@ -41459,7 +41552,7 @@ function startUvPinchView(ev, firstClientX, firstClientY, firstPointerId) {
     startMidClientX: midX, startMidClientY: midY,
     startBox: { x: uvViewBox.x, y: uvViewBox.y, w: uvViewBox.w, h: uvViewBox.h },
     anchorX: anchor.x, anchorY: anchor.y,
-    rectWidth: rect.width,
+    rectWidth: uvPxWidth(rect),
     lastP1: { x: firstClientX, y: firstClientY },
     lastP2: { x: ev.clientX, y: ev.clientY }
   };
@@ -41478,7 +41571,8 @@ function updateUvPinchView(ev) {
   // means the box shrinks - so the ratio is startDist/dist, not the other
   // way round.
   const ratio = startDist / dist;
-  const newW = Math.max(UV_ZOOM_MIN, Math.min(UV_ZOOM_MAX, startBox.w * ratio));
+  const Z = uvZoomW();   // v2.69: the bounds belong to the narrow axis
+  const newW = Math.max(Z.min, Math.min(Z.max, startBox.w * ratio));
   const actual = newW / startBox.w;   // the CLAMPED ratio
   const newH = startBox.h * actual;
   let x = anchorX - (anchorX - startBox.x) * actual;
@@ -41715,23 +41809,26 @@ function armUvEmptyHold(ev) {
 // for "the finger moved away" (v2.51: which starts a pan, or hands off to
 // the pinch above once a second finger is already live) or "the finger
 // lifted before the hold fired".
-/* THE STRIPS BESIDE THE SQUARE ARE PART OF THE VIEW (review finding,
-   v2.53). The SVG is the largest square that fits, so on a tall phone
-   roughly a third of the screen is card, not square. Until v2.53 a tap
-   there closed the card (it was the backdrop); now the backdrop is gone,
-   and without this those strips did nothing at all - no hold, no way out,
-   on a third of the screen. The press arms the same empty-space hold the
-   square's own "nothing under the finger" branches arm, and the capture
-   inside armUvEmptyHold hands the rest of the gesture to the SVG's
-   listeners below.
+/* WHATEVER IS NOT THE SVG IS STILL PART OF THE VIEW (review finding,
+   v2.53; the strips it was written for went at v2.69). The SVG used to be
+   the largest square that fits, so on a tall phone roughly a third of the
+   screen was card and not square, and once v2.53 took the backdrop away a
+   tap there did nothing at all - no hold, no way out, on a third of the
+   screen. The svg fills the wrapper now, so what is left over is the wrap's
+   own 10px of padding, the status band, and the object-with-no-UV state
+   where the svg is display:none and the wrap has the screen to itself.
+   Smaller, and still not allowed to be dead: the press arms the same
+   empty-space hold the svg's own "nothing under the finger" branches arm,
+   and the capture inside armUvEmptyHold hands the rest of the gesture to
+   the SVG's listeners below.
 
    IT NAMED THE WRONG ELEMENTS (review finding, v2.61), which made every
    line of this listener dead and left that third of the screen with no
    hold, no ring and no way out of the view at all - precisely the hole
    v2.53 wrote it to close. #uvViewCard is a full-size flex column and
    #uvViewSvgWrap is its flex:1 child, so both the card and #uvView are
-   covered edge to edge and neither is ever the target; the strips beside
-   the square ARE the wrap. Naming what this listener must not have - the
+   covered edge to edge and neither is ever the target; what is left over
+   IS the wrap. Naming what this listener must not have - the
    square itself - is both correct and one thing fewer to keep in step with
    the markup. It also covers the object-with-no-UV state, where the svg is
    display:none and the wrap has the screen to itself (review finding, v2.61:
@@ -45088,8 +45185,17 @@ function onResize() {
   refreshToolIndicator();
   /* The 2D UV card resizes with the window too, and since v2.63 its tile
      numbers are sized against a measurement of it. */
-  uvCardPx = 0;
-  if (uvViewObj) applyUvViewBox();
+  uvCardPx = 0; uvCardPxH = 0;
+  /* v2.69: a rotate changes the ASPECT, not only the pixel width, so the box
+     is re-derived rather than merely re-applied - clampUvViewBox is where that
+     rule lives. */
+  /* ...but only while there IS an svg to measure (review finding, v2.69): on
+     an object with no UV it is display:none, uvAspect would read zeros, fall
+     back to 1 and syncUvBoxH would square a box that was correct. The next
+     redraw that brings the layout back re-derives it anyway. */
+  if (uvViewObj && uvViewSvgEl.style.display !== 'none') {
+    clampUvViewBox(); applyUvViewBox();
+  }
   /* The size changed, so the picture did. On-demand rendering will not
      notice on its own, and since v2.1 the loop may be asleep. */
   invalidate();
@@ -46221,6 +46327,9 @@ if (PICK_DEBUG) {
     udimReachUV, udimReach, clampUvDelta,
     // v2.63: the sheet the view is a window onto.
     UDIM_COLS, UDIM_ROWS, udimBounds, clampUvViewBox, UV_ZOOM_MAX, UV_ZOOM_MIN,
+    // v2.69: the view's aspect, the rule that holds h to it, and the zoom
+    // bounds that follow from it.
+    uvAspect, syncUvBoxH, uvZoomW,
     // v2.62: the status line, and what it currently says.
     refreshUvStatus,
     get uvStatusText() { return uvViewStatusLEl.textContent + ' | ' + uvViewStatusREl.textContent; },

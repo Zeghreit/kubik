@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
-- Version at time of writing: **2.68b**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~46,480 lines)
+- Version at time of writing: **2.69**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,85 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## The 2D UV view takes the whole screen (2.69)
+
+**What it looked like before.** `#uvView` has replaced the 3D viewport since
+v2.53 - fixed, inset 0, opaque - but `#uvViewSvg` inside it was still sized as
+a CARD: the largest SQUARE that fits both axes. On Zeghreit's phone that is
+412x412 inside a 412x915 view. Fifty-five per cent of the screen was surround,
+and the layout he opened the view to edit had the rest. It then opened framed
+on tile 1001, so a character's islands - a fraction of that tile - were a
+fraction of a fraction.
+
+**The rule that replaced it.** The svg fills the wrapper (`100cqw x 100cqh`),
+and `uvViewBox` carries the element's aspect: **`h = w * aspect`, where aspect
+is the svg's CONTENT height over its content width**. `w` stays the number
+every zoom, frame, pan and clamp is written in; `h` is derived from it and is
+never written independently.
+
+- `uvAspect()` measures both axes and caches them, the same lazy cache
+  `uvCardPx` has had since v2.63 - and it measures the **content** box, border
+  excluded. An svg's viewport is its content area; feeding the border box in
+  made the viewBox 0.2% taller than the viewport and
+  `preserveAspectRatio="meet"` letterboxed 1.2px off the bottom.
+- `syncUvBoxH()` holds `h` to the rule, anchored on the box's own vertical
+  CENTRE, and lives at the top of `clampUvViewBox()`. That is the whole of the
+  enforcement: **every writer of the box already ends with a clamp**, so there
+  is no way to write a box that breaks the rule. (Checked: frameUvBox,
+  resetUvViewBox, zoomUvViewBoxAt, updateUvPan, updateUvPinchView - all five.)
+- `frameUvBox` picks `w` from whichever span demands more of it -
+  `max(spanX, spanY / aspect)` - not from the larger raw span.
+- `resetUvViewBox` still shows tile 1001 whole: `w = 100` on a tall view,
+  `w = 100 / aspect` on a wide one.
+- **It opens framed on the layout.** `openUvView`'s trailing tick calls
+  `frameUvAll(true)` instead of just applying the box.
+
+**The zoom bounds moved to the narrow axis.** `UV_ZOOM_MAX = 1000` was chosen
+so the 920-unit sheet fits at the far end, back when `w` was the only number.
+With `h = w * aspect`, capping `w` alone stops a wide desktop view at `h = 562`
+against a 920-tall sheet - the sheet stops fitting, and `frameUvAll` on a
+full-sheet layout toasts "part of it is off the sheet" about a layout entirely
+on it. `uvZoomW()` divides both bounds by `min(1, aspect)`, which puts them on
+whichever side is smaller. Both bounds, both orientations, one formula.
+
+**A redraw is the third thing that resizes the svg**, and the only one that
+changes its ASPECT rather than its pixel size: the status band carries ~90px of
+margin and is shown with `res.ok`, so flipping that flag resizes the `flex:1`
+wrapper. `onResize` keys on the 3D viewport's own size and returns early, so
+nothing else was watching. `refreshUvView` now drops the measurement when
+`res.ok` flips, and frames the layout when one has just APPEARED - that
+transition is Unwrap run from inside the view. Without it: open the view on an
+un-unwrapped object, Unwrap from inside it, and the layout arrived letterboxed
+into a square band and jumped on the first pan. `onResize`'s own clamp is
+guarded on the svg being visible, or it would square a correct box by measuring
+a `display:none` element.
+
+**Also fixed here because this version made it load-bearing**: the pan and the
+pinch converted screen pixels to card units with `rect.width`, the BORDER box,
+while the viewBox maps onto the content box - 0.8% of drag length, growing.
+`uvPxWidth()` is the one number now.
+
+**Measured**, `_uv69chk.py` (run it in both shapes: `py -3 _uv69chk.py` and
+`py -3 _uv69chk.py index.html 1000 520`):
+
+- the svg's width IS the wrapper's, its height is the wrapper's less the 10px
+  gap, and on a tall view it is not a square;
+- the box's aspect is the element's, the screen CTM scales both axes by the
+  same number, and `CTM.a * w` equals the content width exactly - no letterbox;
+- it opens with the layout filling 80% of its limiting axis, none of it off
+  screen (the square gave 26% of the screen height on a cube);
+- reset shows tile 1001 whole and square on screen in both shapes;
+- `h = w * aspect` survives a zoom in, a zoom past each end, a pan and a bare
+  clamp; the whole 920 sheet fits at the far end in both shapes; the narrow
+  side stops at `UV_ZOOM_MIN` exactly.
+
+**Four older probes had the square written into them** and were updated to
+assert the rule rather than the numbers it used to produce: `_uv62chk` (the
+status line's "100%" and "200%" at the default frame), `_uv63chk` (the far end
+is `UV_ZOOM_MAX`; the default frame is `w === 100`), `_uv64chk` (a framed
+island is within `spanOf * PAD` - it is within `max(spanX, spanY/aspect) *
+PAD`). None of them was a regression; all four now pass in both shapes.
 
 ## Two phone fixes: where the sheet sits, and how thick an edge is (2.68a)
 

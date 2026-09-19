@@ -128,9 +128,16 @@
       ok('2.isl   вид приблизился', box().w < w0, 'w ' + w0 + ' -> ' + box().w);
       ok('2.isl   остров целиком в кадре', frameHolds(fresh),
          'коробка ' + spanOf(fresh).toFixed(2) + ' кадр ' + box().w.toFixed(2));
-      ok('2.isl   и кадр не намного больше него',
-         box().w <= Math.max(spanOf(fresh) * K.UV_FRAME_PAD, K.UV_ZOOM_MIN) + 1e-6,
-         'w=' + box().w.toFixed(2) + ' остров=' + spanOf(fresh).toFixed(2));
+      /* «Не намного больше» считается по ОБЕИМ сторонам (v2.69): высота кадра
+         теперь w*aspect, поэтому вертикальный размах острова требует своей
+         ширины - spanY/aspect, - и на широком экране именно он решает. */
+      {
+        const bb = fresh.getBBox(), a = K.uvAspect();
+        const need = Math.max(bb.width, bb.height / a);
+        ok('2.isl   и кадр не намного больше него',
+           box().w <= Math.max(need * K.UV_FRAME_PAD, K.uvZoomW().min) + 1e-6,
+           'w=' + box().w.toFixed(2) + ' нужно=' + need.toFixed(2) + ' aspect=' + a.toFixed(2));
+      }
       ok('2.isl   первый тап выбрал его, второй выбор не снял',
          K.uvIslandSel.indexOf(id0) >= 0, JSON.stringify(K.uvIslandSel));
       ok('2.isl   и в UV ничего не записалось', uvSame(uv0, uvSnapshot()));
