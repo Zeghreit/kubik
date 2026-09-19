@@ -2195,7 +2195,14 @@
      already does for --uv-dot. Same rule as the 3D viewport's dots, and the
      same rule this card adopted for its own dots in v2.60; the edges were
      simply never brought along. */
-  #uvViewSvg .uv-edges { fill: none; stroke: var(--text); stroke-width: calc(var(--uv-sw, 1) * 0.3); }
+  /* HELD BACK (v2.68d). At full --text this wireframe is the brightest thing
+     in the card, and in vertex mode the dots - same colour, sitting exactly on
+     its junctions - vanish into it. The layout still has to be readable, so
+     this is opacity rather than a thinner line: the shape stays, the shout
+     goes. A SELECTED island keeps most of its voice, because there the
+     wireframe IS the answer to "which one did I pick". */
+  #uvViewSvg .uv-edges { fill: none; stroke: var(--text); stroke-opacity: 0.42;
+                         stroke-width: calc(var(--uv-sw, 1) * 0.3); }
   /* Translucent per-island fill (v2.45) - islandColorHex, the same
      golden-angle palette "Show islands" already paints the 3D mesh with,
      so an island reads as one colour in both views. Low opacity so the
@@ -2211,7 +2218,8 @@
      solid it reads and that its outline goes to the accent, the same two
      moves .uv-vertex.selected already makes. */
   #uvViewSvg .uv-island.selected .uv-fill { fill-opacity: 0.8; }
-  #uvViewSvg .uv-island.selected .uv-edges { stroke: var(--accent); stroke-width: calc(var(--uv-sw, 1) * 0.5); }
+  #uvViewSvg .uv-island.selected .uv-edges { stroke: var(--accent); stroke-opacity: 0.95;
+                                             stroke-width: calc(var(--uv-sw, 1) * 0.5); }
   /* FACE MODE (v2.55). One path per face group, invisible until selected -
      it is a hit target first and a highlight second, which is why it needs
      `pointer-events: fill` said out loud: a fill-opacity of 0 is still
@@ -2288,10 +2296,35 @@
      line, and a line is already easier to land a tap on along its length
      than a point is, so it does not need nearly as much padding to reach a
      comfortable touch target. */
-  #uvViewSvg .uv-edge {
+  /* PAINT AND REACH ARE TWO NUMBERS NOW (v2.68d) - the same split .uv-vertex
+     has used since v2.48, finally applied to the line. One stroke was being
+     asked to be both the thing you see and the thing you can hit, and a
+     comfortable touch target meant a 7.4px line on a 412 card: THICKER THAN A
+     VERTEX DOT IS WIDE, which is what Zeghreit called too thick. Measured, not
+     guessed - getComputedStyle serialises these as calc(1.8), so parseFloat
+     reports NaN and a probe that trusts it silently says nothing (the trap the
+     note above .uv-vertex already records).
+
+     The GROUP carries the class and the data, so closest('.uv-edge') from
+     either child, querySelectorAll('.uv-edge') in paintUvEdgeSelection and the
+     [data-key] lookup in the hold all keep working untouched. */
+  #uvViewSvg .uv-edge { cursor: pointer; }
+  /* --uv-hit, not a multiple of the stroke: the reach of a tap is ONE
+     question with one answer, and applyUvViewBox already writes that answer
+     for the dots (dot radius x 6.25, which holds constant on screen through
+     the zoom). A line borrowing it lands a 20.6px target on a 412 card -
+     exactly what a vertex has - instead of the 9px a separately chosen
+     multiplier measured at. Plain var(), never arithmetic on one: see the
+     note above .uv-vertex for what calc() on an SVG geometry property does
+     with an unregistered custom property. */
+  #uvViewSvg .uv-edge .hit {
+    stroke: transparent; stroke-width: var(--uv-hit);
+    stroke-linecap: round; fill: none; pointer-events: all;
+  }
+  #uvViewSvg .uv-edge .ink {
     stroke: var(--text-dim); stroke-opacity: 0.55;
-    stroke-width: calc(var(--uv-sw, 1) * 1.8);
-    stroke-linecap: round; cursor: pointer;
+    stroke-width: calc(var(--uv-sw, 1) * 0.55);
+    stroke-linecap: round; fill: none; pointer-events: none;
   }
   /* Magenta since v2.52, matching SEAM_COLOR (0xff3bd0) in the 3D viewport -
      a literal hex rather than a computed one, the same tradeoff .uv-edges
@@ -2300,8 +2333,8 @@
      today, and a seam is a property of the MESH, not of whichever mode
      opened this view. The two hexes have to be changed together; that is
      the price of the literal, and it has been paid once now. */
-  #uvViewSvg .uv-edge.seamed { stroke: #ff3bd0; stroke-opacity: 0.95; stroke-width: calc(var(--uv-sw, 1) * 2.2); }
-  #uvViewSvg .uv-edge.selected { stroke: var(--accent); stroke-opacity: 1; stroke-width: calc(var(--uv-sw, 1) * 2.6); }
+  #uvViewSvg .uv-edge.seamed .ink { stroke: #ff3bd0; stroke-opacity: 0.95; stroke-width: calc(var(--uv-sw, 1) * 0.9); }
+  #uvViewSvg .uv-edge.selected .ink { stroke: var(--accent); stroke-opacity: 1; stroke-width: calc(var(--uv-sw, 1) * 1.1); }
   #uvViewEmpty { padding: 24px 8px; text-align: center; color: var(--text-dim); }
   /* Dim, small, and out of the way - it is a label, not a control.
 
@@ -2687,7 +2720,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.68c</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.68d</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -38940,13 +38973,22 @@ function renderUvView(obj, ed) {
             seamed = !!seams[creaseKeyFor(logicalPos(obj, la), logicalPos(obj, lb))];
           }
         }
-        const line = document.createElementNS(NS, 'line');
-        line.setAttribute('class', 'uv-edge' + (seamed ? ' seamed' : '') +
+        /* Two lines in a group (v2.68d): a transparent wide one to catch the
+           finger, a thin one to see. `eg` and not `g` - `g` is the face group
+           this walk is already inside, and shadowing it here would be silent. */
+        const eg = document.createElementNS(NS, 'g');
+        eg.setAttribute('class', 'uv-edge' + (seamed ? ' seamed' : '') +
           (uvEdgeSel.has(key) ? ' selected' : ''));
-        line.setAttribute('x1', r2(toX(ua))); line.setAttribute('y1', r2(toY(va)));
-        line.setAttribute('x2', r2(toX(ub))); line.setAttribute('y2', r2(toY(vb)));
-        line.dataset.a = String(a); line.dataset.b = String(b); line.dataset.key = key;
-        uvViewSvgEl.appendChild(line);
+        eg.dataset.a = String(a); eg.dataset.b = String(b); eg.dataset.key = key;
+        const ex1 = r2(toX(ua)), ey1 = r2(toY(va)), ex2 = r2(toX(ub)), ey2 = r2(toY(vb));
+        ['hit', 'ink'].forEach(cls => {
+          const ln = document.createElementNS(NS, 'line');
+          ln.setAttribute('class', cls);
+          ln.setAttribute('x1', ex1); ln.setAttribute('y1', ey1);
+          ln.setAttribute('x2', ex2); ln.setAttribute('y2', ey2);
+          eg.appendChild(ln);
+        });
+        uvViewSvgEl.appendChild(eg);
       }
     }));
   }
@@ -39185,6 +39227,7 @@ function openUvView() {
   uvViewStatusEl.style.display = res.ok ? '' : 'none';   // v2.62
   uvStatusLast = '';
   refreshUvStatus();
+  refreshObjComponentBtn();   // v2.68d: the slab says 'uv - island' from frame one
   if (!res.ok) {
     uvViewEmptyEl.textContent = res.tooHeavy
       ? 'Too many triangles to preview here.'
@@ -45592,7 +45635,16 @@ function refreshObjComponentBtn() {
        (v2.53). The mode button is that view's component switch now, and the
        card's own toggle - the only place the kind was ever written down -
        went with the header row it sat in. */
-    if (hn) hn.textContent = isObj ? 'Object' : (uvViewObj ? 'uv \u00b7 ' + uvCompMode : App.mode);
+    /* THE CARD WINS, and that is the whole fix of v2.68d. Written as
+       isObj-first since v2.53, this read 'Object' whenever App.mode was
+       object - which is exactly the state the 2D card is opened FROM, so the
+       branch below it had never once run and the slab reported the 3D mode
+       while the card covered the screen. The kind was legible nowhere but the
+       status line, which is why the vertices looked absent rather than
+       unselected. The card is the thing you are looking at; it names itself
+       first. */
+    if (hn) hn.textContent = uvViewObj ? ('uv \u00b7 ' + uvCompMode)
+                                       : (isObj ? 'Object' : App.mode);
     // Soft is the glyph gaining a hollow centre (a2.106), not a longer
     // word - the block must not grow with the state it reports.
     const hc = document.querySelector('#hdrMode .hdr-glyph');
