@@ -2687,7 +2687,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.68b</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.68c</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -37439,6 +37439,124 @@ function clearToolRingTimer() {
   if (toolRingTimer) { clearTimeout(toolRingTimer); toolRingTimer = null; }
 }
 
+/* ===== THE RING FLIGHT RECORDER (v2.68c) - ?debug=1 ONLY =====
+   v2.68b enforced that a ring cannot outlive the finger that opened it,
+   wherever the release is heard, and the freeze survived it. Five emulated
+   reproductions - mouse hold, real touch through CDP, touchCancel mid-hold,
+   full phone metrics, a refused pointer capture - all behave. Six theories
+   have now been argued and none measured. So this version stops arguing and
+   RECORDS: every pointer event the window hears, every bloom and every
+   close, each stamped with the pointer bookkeeping at that instant, in a
+   60-slot buffer.
+
+   It reports itself. A watchdog wakes twice a second; a ring still standing
+   2.5s after the last event anyone heard is the freeze, and the buffer goes
+   to the on-screen console - eruda, already loaded under this same flag -
+   as ONE block, plus a short vibration, so the phone in the hand says "look
+   now" instead of the evidence scrolling past. K.ringDump() prints the same
+   on demand.
+
+   This decides nothing. No guard, no close, no state the app reads. If the
+   recorder is wrong, the app behaves exactly as v2.68b did. */
+const RING_TRACE = [];
+const RING_TRACE_MAX = 60;
+const RING_T0 = performance.now();
+let ringLastEventT = 0;
+let ringStuckSeen = false;
+
+function ringTgt(t) {
+  if (!t) return '?';
+  if (t === window) return 'window';
+  if (t === document) return 'document';
+  if (t.id) return '#' + t.id;
+  const c = (typeof t.className === 'string') ? t.className.split(' ')[0] : '';
+  return (t.tagName || '?').toLowerCase() + (c ? '.' + c : '');
+}
+
+/* uvPointers is declared some 3800 lines below this, so a const read here is
+   in its temporal dead zone until the file finishes evaluating - and `typeof`
+   does NOT save you from a TDZ the way it saves you from an undeclared name.
+   Nothing traces during evaluation, but the try is one line and the alternative
+   is a recorder that can take the app down. */
+function rtrace(k, d) {
+  if (!PICK_DEBUG) return;
+  const e = { t: Math.round(performance.now() - RING_T0), k: k };
+  if (d) for (const p in d) e[p] = d[p];
+  e.R = toolRingActive ? (toolRingActive.pointerId === undefined ? 'door' : 'p' + toolRingActive.pointerId) : '-';
+  e.ap = activePointers.size;
+  try { e.uv = uvPointers.size; } catch (_) { e.uv = -1; }
+  RING_TRACE.push(e);
+  if (RING_TRACE.length > RING_TRACE_MAX) RING_TRACE.shift();
+  ringLastEventT = e.t;
+}
+
+function ringDump(tag) {
+  const now = Math.round(performance.now() - RING_T0);
+  let el = -1;
+  try { el = touchToolRingEl.innerHTML.length; } catch (_) {}
+  const r = toolRingActive
+    ? ('OPEN pid=' + toolRingActive.pointerId + ' hov=' + toolRingActive.hoveredIndex +
+       ' age=' + Math.round(performance.now() - (toolRingActive.openedAt || 0)) + 'ms')
+    : 'none';
+  const head = '[ring] ' + (tag || 'dump') + ' @' + now + 'ms  ring=' + r +
+               '  el=' + el + '  ap=' + activePointers.size +
+               '  orbit=' + orbit.enabled + '  vis=' + document.visibilityState;
+  const lines = RING_TRACE.map(function (e) {
+    let s = String(e.t);
+    while (s.length < 6) s = ' ' + s;
+    s += '  ' + e.k;
+    for (const p in e) if (p !== 't' && p !== 'k') s += ' ' + p + '=' + e[p];
+    return s;
+  });
+  console.warn(head + '\n' + lines.join('\n'));
+  return head;
+}
+
+/* The taps. Capture phase, so a listener that stops propagation downstream
+   cannot hide an event from the record, and passive, so the recorder can
+   never be the thing that blocks a gesture. pointermove is the one signal
+   worth having and the one that would flood a 60-slot buffer, so it is
+   recorded only while a ring stands and only four times a second: a finger
+   still moving means the ring is alive, not stuck, which is exactly what
+   the watchdog below needs to tell apart. */
+if (PICK_DEBUG) {
+  ['pointerdown', 'pointerup', 'pointercancel',
+   'gotpointercapture', 'lostpointercapture',
+   'touchend', 'touchcancel', 'contextmenu'].forEach(function (type) {
+    window.addEventListener(type, function (ev) {
+      rtrace(type, { id: (ev.pointerId === undefined ? '-' : ev.pointerId),
+                     on: ringTgt(ev.target) });
+    }, { capture: true, passive: true });
+  });
+  let ringLastMoveT = -1e9;
+  window.addEventListener('pointermove', function (ev) {
+    if (!toolRingActive) return;
+    const t = performance.now() - RING_T0;
+    if (t - ringLastMoveT < 250) return;
+    ringLastMoveT = t;
+    rtrace('move', { id: ev.pointerId, on: ringTgt(ev.target) });
+  }, { capture: true, passive: true });
+  document.addEventListener('visibilitychange', function () {
+    rtrace('visibility', { s: document.visibilityState });
+  });
+  window.addEventListener('blur', function () { rtrace('blur'); });
+  window.addEventListener('focus', function () { rtrace('focus'); });
+  setInterval(function () {
+    if (!toolRingActive) { ringStuckSeen = false; return; }
+    /* A ring opened from a BUTTON (pointerId undefined - the pivot and geo
+       doors) is meant to stand there waiting for a tap; silence is its normal
+       state, not a freeze. Only a ring that was opened by a finger owes that
+       finger a release, and that is the only ring this watchdog judges. */
+    if (toolRingActive.pointerId === undefined) return;
+    if (ringStuckSeen) return;
+    const quiet = Math.round(performance.now() - RING_T0) - ringLastEventT;
+    if (quiet < 2500) return;
+    ringStuckSeen = true;
+    ringDump('STUCK quiet=' + quiet + 'ms');
+    try { navigator.vibrate && navigator.vibrate([40, 60, 40]); } catch (_) {}
+  }, 500);
+}
+
 /* Where each tool sits on the ring, in degrees, 0 = right and rising
    anticlockwise (the same convention the placement below uses).
 
@@ -37954,8 +38072,15 @@ function bloomToolRing(x, y, tools, pointerId, aim) {
                      env,
                      aimX: aim ? aim.x - rect.left : cx,
                      aimY: aim ? aim.y - rect.top : cy };
+  let ringCapOk = -1;
   if (pointerId !== undefined) {
-    try { renderer.domElement.setPointerCapture(pointerId); } catch (e) { /* fine without it */ }
+    try { renderer.domElement.setPointerCapture(pointerId); ringCapOk = 1; }
+    catch (e) { ringCapOk = 0; /* fine without it */ }
+  }
+  if (PICK_DEBUG) {
+    toolRingActive.openedAt = performance.now();
+    rtrace('BLOOM', { id: (pointerId === undefined ? 'door' : pointerId),
+                      seats: tools.length, cap: ringCapOk });
   }
   orbit.enabled = false;
   directCandidate = null;   // committed to the ring now, not to a drag
@@ -38398,6 +38523,8 @@ function placeRingLabel(idx) {
 function closeToolRing(run) {
   if (!toolRingActive) return;
   const pid = toolRingActive.pointerId;
+  rtrace('CLOSE', { run: (run ? 1 : 0), hov: toolRingActive.hoveredIndex,
+                    age: Math.round(performance.now() - (toolRingActive.openedAt || 0)) });
   // Removed first, so the guard cannot see the press that is closing it.
   if (toolRingActive.stickyGuard) {
     document.removeEventListener('pointerdown', toolRingActive.stickyGuard, true);
@@ -45931,6 +46058,8 @@ if (PICK_DEBUG) {
     // so a renamed chip key cannot quietly turn its Round sections into no-ops.
     vertexBevelSelection, OP_SPECS,
     bloomToolRing, updateToolRingHover, closeToolRing, placeRingLabel,
+    // v2.68c: the flight recorder, for the stand and for a phone with eruda.
+    ringDump, RING_TRACE,
     currentHubTools, HUB_TOOLS_WORLD,
     // a2.109: a seat's word can be a function now, so anything reading one
     // from outside needs the same unwrap the ring itself uses.

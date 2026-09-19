@@ -116,7 +116,10 @@
     {
       const keys = Object.keys(K.UV_ISLAND_XFORMS);
       ok('1.ring  четыре трансформа', keys.length === 4, keys.join(','));
-      ok('1.ring  и столько же мест', K.HUB_TOOLS_UV2D_ISLAND.length === 4);
+      // Не «ровно четыре»: с v2.66 в кольце ещё и выравнивания. Важно, что на
+      // каждый трансформ есть место и они идут первыми.
+      ok('1.ring  мест не меньше', K.HUB_TOOLS_UV2D_ISLAND.length >= 4,
+         'seats=' + K.HUB_TOOLS_UV2D_ISLAND.length);
       ok('1.ring  места названы по ним',
          keys.every((k, i) => K.HUB_TOOLS_UV2D_ISLAND[i].key === 'uvx-' + k),
          K.HUB_TOOLS_UV2D_ISLAND.map(t => t.key).join(','));
