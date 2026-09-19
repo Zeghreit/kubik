@@ -2663,7 +2663,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.65</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.66</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -35259,6 +35259,15 @@ const ICON = {
    unlearnable - and Flip V was borrowing a left-right mirror to say
    top-to-bottom, which is not a near-miss, it is the wrong axis. */
 ICON.rotateccw = '<g transform="translate(24,0) scale(-1,1)">' + ICON.rotate + '</g>';
+/* The four align glyphs (v2.66): a solid edge - the one being aligned TO - and
+   an arrow travelling into it. Written out rather than derived by rotation
+   because an arrowhead built from two strokes does not survive a rotate() with
+   its line caps looking the same, and four short strings are cheaper to read
+   than the transform that would save them. */
+ICON.alignleft   = '<path d="M4 4v16"/><path d="M20 12H9"/><path d="M13 8l-4 4 4 4"/>';
+ICON.alignright  = '<path d="M20 4v16"/><path d="M4 12h11"/><path d="M11 8l4 4-4 4"/>';
+ICON.aligntop    = '<path d="M4 4h16"/><path d="M12 20V9"/><path d="M8 13l4-4 4 4"/>';
+ICON.alignbottom = '<path d="M4 20h16"/><path d="M12 4v11"/><path d="M8 11l4 4 4-4"/>';
 ICON.flipvert  = '<g transform="rotate(90 12 12)">' + ICON.flip + '</g>';
 
 // Wraps a pictogram in an svg at the size the caller needs.
@@ -37192,8 +37201,8 @@ const HUB_TOOLS_UV = [
 /* The 2D UV editor's own empty-space door (v2.50) - the only way back to
    the 3D viewport from inside #uvView now that entering UV mode no longer
    closes the card for you the way the pre-v2.49 mode-hold ring's UV seat
-   used to. A ring with one seat rather than a bare button, and since v2.53
-   the ONLY way out of the 2D view at all - the backdrop that used to close
+   used to. A ring rather than a bare button - one seat at first, two since
+   v2.66 added Pack, and since v2.53 the way out of the 2D view at all - the backdrop that used to close
    it on a tap is gone with the card itself - because
    Zeghreit's own request named the empty-space bloom menu specifically,
    matching the world ring's shape in the 3D viewport - so a future seat
@@ -37204,7 +37213,14 @@ const HUB_TOOLS_UV = [
    same handlers), and its seam ops already branch on uvViewObj - see
    markSeamSelection. */
 const HUB_TOOLS_UV2D_WORLD = [
-  { key: 'to3d', icon: 'object', label: '3D', seat: 0, run: closeUvView }
+  { key: 'to3d', icon: 'object', label: '3D', seat: 0, run: closeUvView },
+  /* v2.66. This ring is the one reachable from every component mode and is
+     about the VIEW rather than about a selection, which is exactly what Pack
+     is: it lays out every island there is. Seat 2 rather than 1 so the two are
+     not neighbours - "back to 3D" and "rewrite the whole layout" are the two
+     things here you would least like to hit by accident on the way to the
+     other. */
+  { key: 'uvpack', icon: 'grid', label: 'Pack all', seat: 2, run: uvPackAll }
 ];
 
 function currentHubTools() {
@@ -38745,7 +38761,7 @@ let uvDrag = null;
 // the 3D viewport is the interaction shape - a mode toggle, tap to
 // select, drag the whole current selection together - just addressed in
 // UV's own space instead of the mesh's.
-let uvCompMode = 'island'; // 'island' | 'vertex'
+let uvCompMode = 'island'; // 'island' | 'vertex' | 'edge' | 'face'
 // Selected attribute-vertex indices in vertex mode. A plain Set, like
 // App.selectedElements - cleared whenever the card opens, closes, or the
 // mode toggle changes, since a selection from one mode (or one object)
@@ -39179,19 +39195,252 @@ function uvIslandXform(kind) {
   return true;
 }
 
+/* DID THAT ACTUALLY CHANGE THE DOCUMENT (v2.66, review finding)? Asked as
+   float32, because that is the only precision the answer survives in:
+   rebuildFromEditable puts ed.uvs through a Float32BufferAttribute and
+   serializeDoc reads it straight back off, so a difference finer than one
+   float32 step at that magnitude is gone before pushHistory ever sees it.
+
+   Why it matters, and why an absolute epsilon was the wrong tool: pushHistory
+   DROPS a step whose document matches the current one, while finishMeshEdit
+   toasts regardless - so an op that moved nothing storable reports an edit that
+   is not there, and the next Undo takes the step BEFORE it. One float32 step is
+   0.06 of a millionth at u≈1 and a thousand times finer near the origin; no
+   single number in UV units is the same test at both ends. */
+function uvsChangedAsStored(before, uvs) {
+  if (!before || before.length !== uvs.length) return true;
+  for (let i = 0; i < uvs.length; i++) {
+    if (Math.fround(before[i]) !== Math.fround(uvs[i])) return true;
+  }
+  return false;
+}
+
+/* ALIGNING A GROUP (v2.66), the other half of what Zeghreit asked for under
+   island transforms. Every selected island slides until its own box's chosen
+   edge sits on the SELECTION's box edge - a pure translation per island, no
+   scaling, so nothing changes size to line up. The island that already defines
+   that edge does not move, which is what makes the result predictable: you can
+   see in advance which one everything else is coming to.
+
+   Needs two islands to mean anything, and says so rather than quietly doing
+   nothing to one.
+
+   REACH: every island moves INTO the union of the boxes it was already part of,
+   so no island can end up outside that union - but the union being reachable is
+   a PREMISE, not a fact (review finding), and the app does not guarantee it.
+   commitUvIslandTransform applies the pinch's scale with no reach bound at all
+   (UV_PINCH_MAX_SCALE is 20, and two pinches compose), and an imported mesh can
+   arrive with tiled UVs at u=16 as a matter of course. Align a small island to
+   the right edge of one of those and it lands fifty tiles off the sheet, where
+   no pan reaches it - the very thing v2.65's correction exists to prevent.
+
+   So this refuses instead of correcting. Correcting would mean sliding the
+   whole group back onto the sheet, which moves a layout the user may well have
+   put out there deliberately - a tiled floor's UVs are not a mistake to be
+   tidied - and clamping each island separately would mean not aligning them,
+   silently, which is worse than saying no. */
+const UV_ALIGN = {
+  left:   { label: 'Align left',   icon: 'alignleft',   axis: 'u', at: 'min' },
+  right:  { label: 'Align right',  icon: 'alignright',  axis: 'u', at: 'max' },
+  bottom: { label: 'Align bottom', icon: 'alignbottom', axis: 'v', at: 'min' },
+  top:    { label: 'Align top',    icon: 'aligntop',    axis: 'v', at: 'max' }
+};
+function uvAlignIslands(kind) {
+  const spec = UV_ALIGN[kind];
+  const obj = uvViewObj;
+  if (!spec || !obj || !obj.mesh || !obj.mesh.geometry) return false;
+  if (uvCompMode !== 'island') { toast('Island mode only'); return false; }
+  if (uvIslandSel.size < 2) { toast('Select two or more islands'); return false; }
+  let ed;
+  try { ed = toEditable(obj.mesh); }
+  catch (e) { console.warn('uvAlignIslands: toEditable failed', e); return false; }
+  if (!ed.uvs || !ed.uvs.length) return false;
+  const { attrIsland } = islandVertexMap(obj);
+  // One pass for every selected island's own box; the group's box is their
+  // union, so it needs no pass of its own.
+  const boxes = new Map();
+  for (let ai = 0; ai < attrIsland.length; ai++) {
+    const isl = attrIsland[ai];
+    if (!uvIslandSel.has(isl)) continue;
+    const u = ed.uvs[ai * 2], v = ed.uvs[ai * 2 + 1];
+    if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
+    const b = boxes.get(isl);
+    if (!b) { boxes.set(isl, { minU: u, maxU: u, minV: v, maxV: v }); continue; }
+    if (u < b.minU) b.minU = u;
+    if (u > b.maxU) b.maxU = u;
+    if (v < b.minV) b.minV = v;
+    if (v > b.maxV) b.maxV = v;
+  }
+  // Two were selected but only one has usable UV: "nothing to align" reads as
+  // a bug, so say which it is (review finding).
+  if (boxes.size < 2) { toast('Only one island has UV to align'); return false; }
+  let gMinU = Infinity, gMaxU = -Infinity, gMinV = Infinity, gMaxV = -Infinity;
+  boxes.forEach(b => {
+    if (b.minU < gMinU) gMinU = b.minU;
+    if (b.maxU > gMaxU) gMaxU = b.maxU;
+    if (b.minV < gMinV) gMinV = b.minV;
+    if (b.maxV > gMaxV) gMaxV = b.maxV;
+  });
+  /* The union has to be somewhere the view can go - see the REACH note above.
+     Checked before anything moves, so a refusal costs nothing. */
+  {
+    const R = udimReachUV();
+    if (gMinU < R.u0 || gMaxU > R.u1 || gMinV < R.v0 || gMaxV > R.v1) {
+      toast('Align: the selection reaches past the sheet');
+      return false;
+    }
+  }
+  const off = new Map();
+  boxes.forEach((b, isl) => {
+    let du = 0, dv = 0;
+    if (spec.axis === 'u') du = spec.at === 'min' ? gMinU - b.minU : gMaxU - b.maxU;
+    else dv = spec.at === 'min' ? gMinV - b.minV : gMaxV - b.maxV;
+    off.set(isl, [du, dv]);
+  });
+  // Kept to compare against once the offsets are in - see uvsChangedAsStored.
+  const wasUvs = Array.prototype.slice.call(ed.uvs);
+  let moved = 0;
+  for (let ai = 0; ai < attrIsland.length; ai++) {
+    const o = off.get(attrIsland[ai]);
+    if (!o) continue;
+    const u = ed.uvs[ai * 2], v = ed.uvs[ai * 2 + 1];
+    if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
+    ed.uvs[ai * 2] = u + o[0];
+    ed.uvs[ai * 2 + 1] = v + o[1];
+    moved++;
+  }
+  if (!moved) return false;
+  /* ALREADY ALIGNED IS NOT AN EDIT (found on the stand, sharpened by review).
+     Every offset zero is the common case on a fresh unwrap, where the shelf
+     pack leaves whole rows sharing an edge. Asked of the STORED values rather
+     than of the offsets, so the answer is the one pushHistory will give. */
+  if (!uvsChangedAsStored(wasUvs, ed.uvs)) {
+    toast(spec.label + ' \u00b7 already aligned');
+    return false;
+  }
+  rebuildFromEditable(obj, ed);
+  finishMeshEdit(obj, spec.label + ' \u00b7 ' + boxes.size + ' islands');
+  refreshUvView(obj);
+  return true;
+}
+
+/* PACKING THE WHOLE SHEET (v2.66) - "\u0443\u043f\u0430\u043a\u043e\u0432\u0430\u0442\u044c" from the layout list. Reuses
+   packIslandUVs, the shelf packer unwrapSelection already lays a fresh
+   projection out with, so the two cannot disagree about what a tidy layout
+   looks like - and it is the reason this op is short: the only new work is
+   measuring the islands as they stand NOW rather than as a projection just
+   left them.
+
+   IT PACKS EVERYTHING, SELECTION OR NOT, and belongs in the empty-space ring
+   rather than the island one for exactly that reason. Packing a subset into
+   the 0..1 square would lay it straight over the islands that were not
+   selected, which is not a tidier layout by any reading - and "Pack" means the
+   whole square in every editor that has the word.
+
+   WHICH ALSO MEANS IT PULLS EVERY TILE BACK INTO 1001 (review finding, worth
+   saying out loud rather than leaving to be discovered). v2.63 made the other
+   ninety-nine tiles reachable and parking islands out there a normal way to
+   organise - and this is the one op that undoes that in a tap. It is kept that
+   way on purpose: "pack into the square" is what the word means everywhere
+   else, a tile-aware pack would need a per-tile texture the renderer does not
+   have yet (every map is RepeatWrapping), and it is one Undo. If UDIM pages
+   ever become real, this is the op that has to learn about them first. */
+function uvPackAll() {
+  const obj = uvViewObj;
+  if (!obj || !obj.mesh || !obj.mesh.geometry) return false;
+  let ed;
+  try { ed = toEditable(obj.mesh); }
+  catch (e) { console.warn('uvPackAll: toEditable failed', e); return false; }
+  if (!ed.uvs || !ed.uvs.length) { toast('No UV to pack'); return false; }
+  const { attrIsland, count } = islandVertexMap(obj);
+  const ids = [], bounds = [];
+  for (let i = 0; i < count; i++) { ids.push(null); bounds.push(null); }
+  for (let ai = 0; ai < attrIsland.length; ai++) {
+    const isl = attrIsland[ai];
+    if (isl < 0 || isl >= count) continue;
+    const u = ed.uvs[ai * 2], v = ed.uvs[ai * 2 + 1];
+    if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
+    if (!ids[isl]) { ids[isl] = []; bounds[isl] = { minU: u, maxU: u, minV: v, maxV: v }; }
+    ids[isl].push(ai);
+    const b = bounds[isl];
+    if (u < b.minU) b.minU = u;
+    if (u > b.maxU) b.maxU = u;
+    if (v < b.minV) b.minV = v;
+    if (v > b.maxV) b.maxV = v;
+  }
+  /* Only islands with at least one finite vertex go in, and the two arrays
+     have to stay parallel - packIslandUVs indexes one by the other's position,
+     so a hole in either would place an island's vertices at another's slot. */
+  const keepIds = [], keepBounds = [];
+  for (let i = 0; i < count; i++) {
+    if (ids[i] && ids[i].length) { keepIds.push(ids[i]); keepBounds.push(bounds[i]); }
+  }
+  if (!keepIds.length) { toast('Nothing to pack'); return false; }
+  const wasUvs = Array.prototype.slice.call(ed.uvs);
+  packIslandUVs(ed.uvs, keepIds, keepBounds);
+  /* A SECOND PACK IS USUALLY A REAL RELAYOUT, not a no-op - the stand measured
+     0.32 of a tile of movement on the second run, and the earlier claim here
+     that it converges exactly was wrong. shelfPack's gutter is ADDITIVE and
+     does not scale with the fitted scale, and a row wraps on
+     w * scale + gutter: after the first pack the islands are already smaller,
+     so the same gutter is a bigger share of each row, the wrapping can fall
+     differently, and the bisection settles on a different scale. Packing twice
+     is a legitimate second layout, and it says so.
+
+     The guard below is still needed and still fires: an island whose UVs
+     collapse to a single point places at exactly the same numbers every run
+     (its (u - minU) is 0), and any layout that does repeat bit-for-bit would
+     otherwise toast an edit that pushHistory drops - and then the next Undo
+     takes the step BEFORE it. Same test, same reason, as the align guard
+     above; what changed is only the claim about how often it is reached. */
+  if (!uvsChangedAsStored(wasUvs, ed.uvs)) {
+    toast('Already packed');
+    return false;
+  }
+  rebuildFromEditable(obj, ed);
+  finishMeshEdit(obj, 'Packed ' + keepIds.length +
+    (keepIds.length === 1 ? ' island' : ' islands'));
+  refreshUvView(obj);
+  /* AND THE VIEW FOLLOWS IT (review finding). This op moves EVERYTHING, so a
+     view panned to tile 1012 is left looking at bare grid while the toast
+     reports a pack that happened somewhere else entirely. Framing after an op
+     that relocates the whole layout is not the same decision as v2.62's "an
+     undo is not a switch, keep the framing" - there the thing you were looking
+     at stayed where it was. Quietly, so the pack's own word is the one left on
+     screen. */
+  frameUvAll(true);
+  return true;
+}
+
 /* ISLAND MODE'S OWN DOOR (v2.65), opened by holding the selection you already
    have - which is the same gesture and the same rule the 3D viewport's tool
    ring uses, and the same one edge mode in this view has used since v2.50. The
    seats come from UV_ISLAND_XFORMS rather than being written out again, so a
    transform cannot exist without a way to reach it or the other way round.
 
-   Four of eight seats used. This is where the rest of "operations and menus in
-   2D" goes - exact scale, align, pack - which is the reason the ring exists at
-   all rather than these three hanging off some new control. */
+   All eight seats used as of v2.66: four transforms, four alignments. Pack went
+   to the WORLD ring instead, because it is about every island there is rather
+   than about a selection. Anything after this - exact scale, texel density -
+   goes behind a door on one of these seats, since a ring holds eight. */
 const HUB_TOOLS_UV2D_ISLAND = Object.keys(UV_ISLAND_XFORMS).map((k, i) => ({
   key: 'uvx-' + k, icon: UV_ISLAND_XFORMS[k].icon, label: UV_ISLAND_XFORMS[k].label,
   seat: i, run: () => uvIslandXform(k)
-}));
+})).concat(Object.keys(UV_ALIGN).map((k, i) => ({
+  /* The other four seats (v2.66), which fills this ring. Both halves are
+     generated from their own table for the same reason: a transform or an
+     alignment cannot exist without a way to reach it, or the other way round.
+     A ring holds eight, so anything after this - exact scale, texel density -
+     goes behind a door on one of these seats rather than beside them. */
+  key: 'uva-' + k, icon: UV_ALIGN[k].icon, label: UV_ALIGN[k].label,
+  /* Hatched with one island selected (review finding) - which is the state this
+     ring is MOST often opened from, since the hold only arms on an island that
+     is already picked. The house rule since a2.112 is that a bearing never
+     empties and an op with nothing to act on shows as unavailable instead;
+     four live-looking seats that answer with a toast is the thing that rule
+     exists to prevent. */
+  enabled: () => uvIslandSel.size > 1,
+  seat: 4 + i, run: () => uvAlignIslands(k)
+})));
 /* AND IT HAS TO LIVE HERE, not up with the other HUB_TOOLS_* arrays (v2.65,
    found on the stand). It is BUILT from UV_ISLAND_XFORMS at module-evaluation
    time, so standing above the table meant `Cannot access 'UV_ISLAND_XFORMS'
@@ -40103,7 +40352,7 @@ function frameUvElement(el, what, point) {
    would be framing ninety-nine tiles of nothing. Reads the drawn elements
    rather than the UVs, so it needs no toEditable and cannot disagree with
    what is on screen. */
-function frameUvAll() {
+function frameUvAll(quiet) {
   const gs = uvViewSvgEl.querySelectorAll('.uv-island');
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   gs.forEach(g => {
@@ -40119,8 +40368,13 @@ function frameUvAll() {
   });
   // Nothing drawn at all (an object with no UV): say so rather than moving
   // the view in silence.
-  if (minX === Infinity) { resetUvViewBox(); toast('Nothing to frame'); return false; }
-  return frameUvBox(minX, minY, maxX, maxY, 'Framed the layout');
+  if (minX === Infinity) {
+    resetUvViewBox();
+    if (!quiet) toast('Nothing to frame');
+    return false;
+  }
+  // quiet (v2.66): called by an op that has its own word to say.
+  return frameUvBox(minX, minY, maxX, maxY, quiet ? '' : 'Framed the layout');
 }
 // Called by openUvView and closeUvView (v2.51) - a zoom or pan is a way of
 // LOOKING, not document data, the same reasoning App.xraySelection and
@@ -44903,6 +45157,8 @@ if (PICK_DEBUG) {
        move between - live flags rather than the records themselves, so a
        probe cannot reach in and steer a gesture it is meant to observe. */
     uvSecondPointer, promoteUvViewPinch, uvOtherPointer, UV_VIEW_PINCH_MIN_PX,
+    // v2.66: layout - align a group, pack the sheet.
+    uvAlignIslands, UV_ALIGN, uvPackAll,
     // v2.65: the island door and the four transforms behind it.
     uvIslandXform, UV_ISLAND_XFORMS, HUB_TOOLS_UV2D_ISLAND,
     get uvDragHoldArmed() { return !!(uvDrag && uvDrag.holdTimer); },

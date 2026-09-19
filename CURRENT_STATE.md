@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
-- Version at time of writing: **2.65**
+- Version at time of writing: **2.66**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,95 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## Aligning a group, and packing the sheet (2.66)
+
+The rest of "operations and menus in 2D": the island ring's four empty seats
+become **Align left / right / bottom / top**, and the empty-space ring gains
+**Pack all**. That fills the island ring - eight of eight - so everything after
+this goes behind a door on one of those seats, not beside them.
+
+**Align slides each selected island until its own box's chosen edge sits on the
+SELECTION's box edge.** A pure translation per island, never a scale, so
+nothing changes size to line up - and the island that already defines that edge
+does not move, which is what makes it predictable: you can see in advance which
+one everything else is coming to. It needs two islands to mean anything and
+says so rather than quietly doing nothing to one.
+
+**Pack packs EVERYTHING, selection or not**, which is why it lives in the
+empty-space ring rather than the island one. Packing a subset into the 0..1
+square would lay it straight over the islands that were not selected, which is
+not a tidier layout by any reading, and "Pack" means the whole square in every
+editor that has the word. It reuses `packIslandUVs` - the same shelf packer a
+fresh unwrap lays its projection out with - so the two cannot disagree about
+what a tidy layout looks like.
+
+Both are generated from their own table (`UV_ALIGN`, alongside v2.65's
+`UV_ISLAND_XFORMS`), so an operation cannot exist without a way to reach it or
+the other way round.
+
+### Already-aligned is not an edit
+
+`pushHistory` DROPS a step whose document matches the current one, and the
+toast fires regardless - so an op that moved nothing storable announced an edit
+that was not there, and **the next Undo took the step before it**. On a fresh
+unwrap this is the common case, not an edge: the shelf pack leaves whole rows
+sharing an edge already.
+
+The test is `uvsChangedAsStored`, which compares through `Math.fround` - it
+asks of the STORED float32 values, so the answer is the one `pushHistory` will
+give. No single number in UV units could do this: one float32 step is 0.06 of a
+millionth at u about 1 and a thousand times finer near the origin, so a fixed
+epsilon is the wrong test at one end or the other.
+
+### Align refuses rather than corrects
+
+v2.65's rotation fix pulled an out-of-reach result back onto the sheet. Align
+does the opposite and refuses. The difference is whose layout it is: every
+island moves INTO the union of the boxes it was already part of, so the union
+being reachable is a PREMISE - and the app does not guarantee it.
+`commitUvIslandTransform` applies the pinch's scale with no reach bound at all,
+and an imported mesh can arrive with tiled UVs at u=16 as a matter of course.
+Correcting would mean sliding the whole group back onto the sheet, and a tiled
+floor's UVs out at u=16 are not a mistake to be tidied; clamping each island
+separately would mean not aligning them, silently, which is worse than saying
+no.
+
+### Fixed on the way
+
+- **Pack left the view looking at bare grid.** It moves EVERYTHING, so a view
+  panned to tile 1012 kept its framing while the layout it was reporting
+  happened somewhere else entirely. It now frames quietly after the op, so the
+  pack's own word is the one left on screen. This is not a reversal of v2.62's
+  "an undo is not a switch, keep the framing" - there the thing you were
+  looking at stayed where it was.
+- **Pack pulls every tile back into 1001,** which is worth saying out loud
+  rather than leaving to be discovered: v2.63 made the other ninety-nine tiles
+  reachable and parking islands out there a normal way to organise, and this is
+  the one op that undoes that in a tap. Kept that way on purpose - a tile-aware
+  pack would need a per-tile texture the renderer does not have (every map is
+  RepeatWrapping), and it is one Undo.
+- **The four align seats are hatched with one island selected** - which is the
+  state this ring is MOST often opened from, since the hold only arms on an
+  island already picked. Four live-looking seats that answer with a toast is
+  exactly what the a2.112 rule about bearings exists to prevent.
+- **Two selected but only one with usable UV** said "nothing to align", which
+  reads as a bug. It now names which it is.
+
+### What the stand corrected about the code's own comment
+
+A review finding said a second Pack converges exactly and therefore refuses.
+The stand measured 0.32 of a tile of movement on the second run, so the comment
+claiming that was wrong and has been rewritten. `shelfPack`'s gutter is
+ADDITIVE and does not scale with the fitted scale, and a row wraps on
+`w * scale + gutter`: after the first pack the islands are smaller, the same
+gutter is a bigger share of each row, the wrapping can fall differently, and
+the bisection settles elsewhere. **Packing twice is a legitimate second
+layout.** The guard is still right and still fires - an island whose UVs
+collapse to a point places at the same numbers every run - and the probe now
+tests the invariant that actually holds: the return value, the UV movement and
+the history step agree with each other. It was their disagreement that ate the
+wrong Undo.
 
 ## Island mode gets a door, and four transforms behind it (2.65)
 
