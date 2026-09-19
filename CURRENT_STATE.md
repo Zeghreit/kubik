@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
-- Version at time of writing: **2.67**
+- Version at time of writing: **2.68**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,101 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## Exact scale, as a pinch that sticks (2.68)
+
+The last of "операции и меню в 2D", and Zeghreit chose the shape: not a numeric
+field behind a ring door, but **the pinch itself holding still at exact values**.
+The scale snaps to ⅓, ½, ⅔, 1, 1½, 2, 3, 4, 8 and the rotation to multiples of
+15°, with the live figure on the status line and a short tap when a band is
+entered. It costs no ring seat, adds nothing to the screen that was not already
+there, and works with one gesture on a phone — which a field with a keyboard
+over the view does not.
+
+**It is snapped in exactly one place**, inside `updateUvPinchTransform`, which is
+the only thing that writes `uvDrag.scale` and `uvDrag.angleDeg` after a gesture
+starts — and `endUvDrag`'s commit reads those same two fields. So the number
+under the fingers and the number written into the UV are the same by
+construction, rather than by two calculations agreeing. Snapping in the commit
+instead would show a moving island landing somewhere it had not been.
+
+The win is composition: two ×2 pinches are ×4 to the last bit, measured. Turning
+an island 45° without resizing it — which by hand is impossible — is now just a
+pinch that stays inside the ×1 band.
+
+### The table lost two entries to geometry
+
+A pinch's scale is the ratio of the fingers' separation now to what it was, so a
+band of 3% around a target `t` is **0.06 · t · startDist pixels of finger
+travel** — proportional to the target. From a normal 50px fingertip gap the ×2
+band is 6px wide and the ×⅛ band is under half a pixel; reaching ×⅛ at all would
+mean bringing the fingertips 6px apart, which is below `UV_PINCH_MIN_DIST` before
+it is below the width of a finger. ×⅛ and ×¼ were targets that could not be hit,
+so they are gone. Shrinking a long way is two pinches of ×½, which composition
+makes exact anyway.
+
+The same arithmetic is why the window is **relative**: it is independent of the
+view's zoom (the zoom cancels out of a ratio of separations), though not equal in
+finger travel at both ends of the value range. The first draft of that comment
+claimed both, and the review caught it.
+
+### Hysteresis, because a hard edge is a flicker
+
+With one edge, a fingertip resting near it and trembling a pixel crosses it every
+frame: the island jumps 3% back and forth. The band a gesture is **already in**
+is 1.6× wider than the band it took to enter. This is the only state in the snap
+and it cannot drift — the raw value is still recomputed from the fingers every
+frame, the widening keys on one target, and leaving the wide band drops the
+target and re-evaluates.
+
+### Fixed on the way (all four from the two review passes)
+
+- **A lost pointer capture did not end the gesture** — and `uvDrag = null` lives
+  in exactly one place, so the record was stranded. That is not cosmetic:
+  `uvSecondPointer` answers "busy" to every later press, so nothing in the card
+  could be selected, dragged, held or ringed again, the empty-space hold that is
+  the way out of the view included. The only escape was the mode button above the
+  card. `lostpointercapture` now cancels the drag that owned that pointer — v2.68's
+  own comment had claimed this case was covered, which it was not.
+- **Every pinch buzzed on its first move, and every band buzzed twice.** A pinch
+  begins at scale 1 and angle 0, and 0 IS a multiple of 15, so the combined
+  snap key was "snapped" before the person had done anything; and because a pure
+  scale keeps the angle inside the 0° band the whole time, that same key counted
+  as snapped on the way OUT of every scale band too. The test is now per field,
+  and gated on the gesture having actually done something.
+- **The buzz is rate-limited to one per 120ms.** `navigator.vibrate` restarts the
+  motor rather than queueing, so a fast spread through ×1½, ×2, ×3 and ×4 in
+  eight frames was not four taps but one continuous rumble that said nothing.
+  Turning one finger around the other sweeps six multiples of 15° as a
+  by-product.
+- **The status line named two of the commit's three parts.** `endUvDrag` decides
+  on translate, rotate AND scale; the readout knew only the last two. A pinch
+  that had already dragged the island 40px before the second finger landed, and
+  then held its separation inside the ×1 band, left the line reading "1
+  selected" while a real move was pending — and a "×2 snap" pinch wrote that
+  move alongside the scale without saying so. The line now says "moved" too.
+- **The readout was cleared but the line was not repainted.** The only repaint on
+  the commit path is at the end of `commitUvIslandTransform`, and four early
+  returns sit above it, so a pinch whose commit found nothing to move left
+  "×2 snap" on screen with no fingers on the glass.
+- **Returning to ×1 was the one snap with no feedback.** Gating on "is the
+  gesture doing something *this frame*" meant that snapping to exactly 1 made
+  `scaled` false in the same frame, so the line blanked and nothing buzzed —
+  while the identical motion with the pair also turned 20° did buzz, because an
+  unrelated field kept the gate open. It is now "has this gesture *ever* done
+  something", sticky for the rest of the gesture.
+
+### What the probe itself taught
+
+Two of the failures in this version's own probe were the probe's, and both are
+worth remembering. A capture-loss test that dropped only **one** of the two
+fingers left the other registered in `uvPointers`, so the next section's first
+finger was read as a *second* finger and its whole scenario silently did nothing
+— the assertion that caught it was a weak one ("something is selected") that had
+been passing while the card listened to nobody. And a blind `K.undo()` after an
+op that legitimately wrote no step took someone else's step, which is the same
+trap v2.66 recorded and it is worth stating as a rule: **never undo without
+checking that a step was written.**
 
 ## Texel density and stretch to square (2.67)
 

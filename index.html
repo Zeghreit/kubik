@@ -2663,7 +2663,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.67</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.68</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -38499,6 +38499,110 @@ const UV_PINCH_MIN_SCALE = 0.05;
 const UV_PINCH_MAX_SCALE = 20;
 const UV_PINCH_MIN_ANGLE_DEG = 1;
 const UV_PINCH_MIN_SCALE_DELTA = 0.02;
+/* EXACT SCALE, AS A PINCH THAT STICKS (v2.68) - Zeghreit's "точный
+   масштаб", and his choice between this and a numeric field behind a ring
+   door. The pinch stays a pinch; it just holds still at the values you would
+   otherwise never land on. Nothing here costs a ring seat, nothing appears on
+   screen that was not already there, and it works with one gesture on a phone -
+   which a field with a keyboard over the view does not.
+
+   The labels are the point of the table, not decoration: a third shown as
+   "x0.33" is the very thing this feature exists to stop being. Values are the
+   ones that mean something when you are fitting islands to each other and to
+   the tile - halves, thirds, quarters and doublings.
+
+   Both figures below are the ENTRY window. Once a band is held the exit window
+   is 1.6 times wider (UV_SNAP_EXIT), so the fraction that sticks while you are
+   inside one is correspondingly larger than the fraction it takes to get in.
+
+   THE WINDOW IS RELATIVE, which makes it independent of the view's zoom: the
+   scale is a ratio of two finger separations, so the zoom cancels out of it
+   entirely and a band is the same finger travel whether the sheet is drawn at
+   40% or 900%. It is NOT the same travel at both ends of the value range -
+   0.06 · t · startDist pixels is proportional to the target, so ×4's band is wide
+   and ×⅓'s is narrow (review finding; the first note here claimed otherwise,
+   and the table above lost two entries because of it). An absolute window would
+   be worse in both directions at once: inescapable near ×⅓ and invisible near
+   ×8.
+   Nine narrow bands are the only scales this makes unreachable, which is why no
+   modifier to defeat the snap is needed - and there is no modifier to give on a
+   touch screen anyway. */
+/* ×⅛ AND ×¼ ARE NOT IN THIS TABLE, and the reason is geometry rather than taste
+   (review finding - the first draft had them). A pinch's scale is the ratio of
+   the fingers' separation now to what it was, so a band of three percent around
+   a target t is 0.06 · t · startDist PIXELS of finger travel: proportional to the
+   TARGET. Starting from a normal 50-pixel fingertip gap, the ×2 band is six
+   pixels wide and the ×⅛ band is under half a pixel - and reaching ×⅛ at all
+   would mean bringing the fingertips 6 pixels apart, which is below
+   UV_PINCH_MIN_DIST before it is below the width of a finger. They were targets
+   that could not be hit.
+   Shrinking a long way is done by pinching in twice instead, and composition is
+   exactly what this feature makes reliable: ×½ then ×½ is ×¼ to the last bit.
+   ×⅓ and ×½ stay, narrow but reachable - and the hysteresis below is what makes
+   a narrow band usable rather than twitchy. */
+const UV_SNAP_SCALES = [
+  { v: 1 / 3, s: '×⅓' }, { v: 0.5, s: '×½' }, { v: 2 / 3, s: '×⅔' },
+  { v: 1, s: '×1' }, { v: 1.5, s: '×1½' }, { v: 2, s: '×2' },
+  { v: 3, s: '×3' }, { v: 4, s: '×4' }, { v: 8, s: '×8' }
+];
+const UV_SNAP_SCALE_REL = 0.03;
+/* HOW MUCH WIDER THE BAND IS ON THE WAY OUT (review finding). With one hard
+   edge, a fingertip resting near it and trembling a pixel crosses it every
+   frame: the island jumps three percent back and forth and the phone buzzes on
+   every crossing. So the band a gesture is ALREADY IN is 1.6 times wider than
+   the one it takes to enter. This is the one piece of state in the snap, and it
+   cannot drift: the raw value is still recomputed from the fingers every frame,
+   the widening applies to one target only, and leaving the wide band drops the
+   target and re-evaluates from scratch. */
+const UV_SNAP_EXIT = 1.6;
+/* AND NO MORE THAN ONE TAP THIS OFTEN (v2.68a, review finding). navigator.vibrate
+   RESTARTS the motor rather than queueing, so several taps inside a few frames
+   are not several taps - they are one continuous rumble that says nothing. And
+   they are easy to provoke: a fast spread crosses x1.5, x2, x3 and x4 in about
+   eight frames, and turning one finger around the other sweeps six multiples of
+   fifteen as a by-product. A band entered inside this window still snaps and
+   still shows on the line; it just does not buzz. */
+const UV_SNAP_BUZZ_MS = 120;
+let uvSnapBuzzAt = 0;
+/* The angle snaps to fifteens, in a window of three degrees - so six degrees of
+   every fifteen stick and nine are free. Wider would make an ordinary turn feel
+   notched; the ring's own Rotate 90 is still there for the one value worth a
+   seat, and this is for 30 and 45, which no seat will ever carry. */
+const UV_SNAP_ANGLE_DEG = 15;
+const UV_SNAP_ANGLE_WIN = 3;
+/* Both return the snapped value AND whether they snapped, because the caller
+   needs the second for the readout and the tap on entry - and neither can be
+   inferred from the number afterwards, since a pinch can legitimately arrive at
+   exactly 2 on its own. `held` is the target this gesture is currently sitting
+   on, or null; it is what widens that one band on the way out. */
+function snapUvScale(raw, held) {
+  for (let i = 0; i < UV_SNAP_SCALES.length; i++) {
+    const t = UV_SNAP_SCALES[i];
+    const win = (held === t.v) ? UV_SNAP_SCALE_REL * UV_SNAP_EXIT : UV_SNAP_SCALE_REL;
+    if (Math.abs(raw / t.v - 1) <= win) {
+      return { value: t.v, snapped: true, label: t.s };
+    }
+  }
+  return { value: raw, snapped: false, label: '×' + raw.toFixed(2) };
+}
+function snapUvAngle(raw, held) {
+  const n = Math.round(raw / UV_SNAP_ANGLE_DEG);
+  const t = n * UV_SNAP_ANGLE_DEG;
+  /* Measured on the value as it stands, not wrapped again: updateUvPinchTransform
+     has already folded it into [-180, 180), and 180 and -180 are the same turn,
+     so the multiple nearest either one is the same multiple. */
+  const win = (held === t) ? UV_SNAP_ANGLE_WIN * UV_SNAP_EXIT : UV_SNAP_ANGLE_WIN;
+  if (Math.abs(raw - t) <= win) {
+    return { value: t, snapped: true, label: t + '°' };
+  }
+  return { value: raw, snapped: false, label: Math.round(raw) + '°' };
+}
+/* What the status line says WHILE a pinch is running (v2.68), or null when none
+   is. The line already exists (v2.62) and already refreshes on every repaint, so
+   the live figure costs one field and one branch rather than a widget: the thing
+   a person needs while two fingers are on the glass is the number, not the
+   selection count they set up before starting. */
+let uvPinchReadout = null;
 
 /* One <g class="uv-island"> per island instead of the single all-triangles
    path v2.43 drew: a translucent fill (islandColorHex - the same
@@ -38998,6 +39102,20 @@ function endUvDrag(commit) {
     mode, angleDeg, scale, tapId, tapWasSelected, slop } = uvDrag;
   gEls.forEach(el => { el.classList.remove('dragging'); el.removeAttribute('transform'); });
   uvDrag = null;
+  /* Before either branch below, and before the repaints in them (v2.68): a
+     readout left standing would sit on the status line until the next thing
+     happened to change it, reporting a pinch that is over. Cleared on the
+     cancel path too, and since v2.68a a lost capture reaches that path - see
+     the lostpointercapture listener, which is where this claim was wrong.
+
+     REPAINTED HERE TOO, not left to the commit (review finding). Clearing the
+     variable is not clearing the line: the only repaint on the commit path is
+     the one at the end of commitUvIslandTransform, and four early returns sit
+     above it - so a pinch whose commit found nothing to move left "x2 snap" on
+     screen with no fingers on the glass. One call, on every path, costs nothing
+     and cannot be skipped. */
+  uvPinchReadout = null;
+  refreshUvStatus();
   if (!commit) {
     // Cancelled: undo pointerdown's provisional add, so an aborted gesture
     // leaves the selection exactly as it found it - the same rule
@@ -40256,13 +40374,13 @@ function updateUvPinchTransform() {
   const dxv = p2.x - p1.x, dyv = p2.y - p1.y;
   const rawDist = Math.hypot(dxv, dyv);
   const dist = Math.max(rawDist, UV_PINCH_MIN_DIST);
-  uvDrag.scale = Math.min(Math.max(dist / uvDrag.startDist, UV_PINCH_MIN_SCALE), UV_PINCH_MAX_SCALE);
+  const rawScale = Math.min(Math.max(dist / uvDrag.startDist, UV_PINCH_MIN_SCALE), UV_PINCH_MAX_SCALE);
   // Angle only means something once the fingers have spread past the same
   // floor the distance is clamped to (review finding, v2.47) - below that,
   // this frame just keeps whatever angle the gesture already had, rather
   // than repaint with noise. The first frame that clears the floor seeds
   // startAngle instead of measuring against it, matching startUvPinch's own
-  // deferral when the pinch began close together. Wrapped into (-180, 180]
+  // deferral when the pinch began close together. Wrapped into [-180, 180)
   // before storing: raw atan2 output straddles the branch cut for an
   // ordinary horizontal pinch with the second finger to the left of the
   // first, so a sub-degree wobble there would otherwise read as a ~360deg
@@ -40278,6 +40396,87 @@ function updateUvPinchTransform() {
       const a = (angle - uvDrag.startAngle) * 180 / Math.PI;
       uvDrag.angleDeg = ((a + 180) % 360 + 360) % 360 - 180;
     }
+  }
+  /* SNAPPED HERE AND NOWHERE ELSE (v2.68). Nothing writes uvDrag.scale or
+     uvDrag.angleDeg after the gesture starts except this function - the record's
+     own literal and startUvPinch set them to 1 and 0 and never touch them again
+     - and endUvDrag's commit reads those same two fields - so snapping at this one point is what makes the finger's
+     preview and the UV that gets written the same number by construction. Doing
+     it in the commit instead would show a moving island landing somewhere it
+     had not been.
+
+     Both fields are recomputed from the raw finger positions every frame, so
+     storing the snapped value cannot accumulate: the snap is a fixed point of
+     itself, and leaving a band gives the raw value back exactly, with no drift.
+     There IS hysteresis, deliberately - see UV_SNAP_EXIT, which makes the band
+     you are in 1.6 times wider than the band it took to enter, so leaving takes
+     4.8% rather than 3%. (An earlier draft of this note said "no hysteresis",
+     contradicting the constant two hundred lines above it.) */
+  {
+    const sc = snapUvScale(rawScale, uvDrag.heldScale);
+    const an = snapUvAngle(uvDrag.angleDeg, uvDrag.heldAngle);
+    uvDrag.scale = sc.value;
+    uvDrag.angleDeg = an.value;
+    /* HAS THIS GESTURE DONE ANYTHING YET? The same two thresholds endUvDrag
+       reads for the scale and the angle, so the line cannot report a scale or a
+       turn that will not be written. It is what keeps the first frame quiet: a
+       pinch begins at a scale of 1 and an angle of 0, and 0 IS a multiple of
+       fifteen, so without this the phone tapped and the line read "×1 snap" the
+       instant a second finger landed, before the person had done anything. */
+    const scaled = Math.abs(uvDrag.scale - 1) > UV_PINCH_MIN_SCALE_DELTA;
+    const turned = Math.abs(uvDrag.angleDeg) > UV_PINCH_MIN_ANGLE_DEG;
+    /* EVER, not just this frame (v2.68a, review finding). Gating on the current
+       frame made the most visible snap the feature has the only one with no
+       feedback: coming back to ×1 from ×1.10 puts the island's size back by up
+       to three percent, and since snapping to 1 makes `scaled` false in that
+       same frame, the line blanked and nothing buzzed - while the identical
+       motion with the pair also turned twenty degrees did buzz, because an
+       unrelated field kept the gate open. Sticky for the rest of the gesture:
+       once you have done something, the line keeps showing what you are doing
+       rather than flicking back to the selection count whenever you pass
+       through ×1. */
+    if (scaled || turned) uvDrag.everDid = true;
+    const doing = !!uvDrag.everDid;
+    /* ONE TAP PER BAND ENTERED, per field. Compared field by field rather than
+       on a combined key (review finding): with a pure scale the angle sits
+       inside the 0° band the whole time, so any combined key that counted
+       "either field is snapped" also buzzed on the way OUT of every scale band.
+       Leaving a band is not an event worth a buzz; arriving at one is - and no
+       more often than UV_SNAP_BUZZ_MS, because the motor cannot say two things
+       in a tenth of a second. */
+    const enteredScale = sc.snapped && sc.value !== uvDrag.heldScale;
+    const enteredAngle = an.snapped && an.value !== uvDrag.heldAngle;
+    if (doing && (enteredScale || enteredAngle) && navigator.vibrate) {
+      const now = (performance && performance.now) ? performance.now() : Date.now();
+      if (now - uvSnapBuzzAt >= UV_SNAP_BUZZ_MS) {
+        uvSnapBuzzAt = now;
+        try { navigator.vibrate(8); } catch (e) {}
+      }
+    }
+    // Held AFTER the comparison, and unconditionally - the widened exit band
+    // has to follow the fingers even on the frames the readout stays quiet.
+    uvDrag.heldScale = sc.snapped ? sc.value : null;
+    uvDrag.heldAngle = an.snapped ? an.value : null;
+    /* THE LINE NAMES ALL THREE PARTS OF WHAT WILL BE COMMITTED (review finding).
+       endUvDrag decides on three flags and this used to know about two: a pinch
+       that had already dragged the island forty pixels before the second finger
+       landed, and then held its separation inside the ×1 band, left the line
+       reading "1 selected" while a real move was pending - and a "×2 snap"
+       pinch wrote that same move alongside the scale without saying so. The
+       translate is the frozen dx/dy startUvPinch kept, so it is known here
+       exactly as endUvDrag will read it.
+       The angle joins only once it would be committed, so a pure scale is not
+       reported as "0deg". */
+    const movedPx = Math.hypot(uvDrag.lastClientX - uvDrag.startClientX,
+                               uvDrag.lastClientY - uvDrag.startClientY);
+    const translated = movedPx > uvDrag.slop;
+    if (translated) uvDrag.everDid = true;
+    const parts = [];
+    if (scaled || uvDrag.everDid) parts.push(sc.label + (sc.snapped ? ' snap' : ''));
+    if (turned) parts.push(an.label + (an.snapped ? ' snap' : ''));
+    if (translated) parts.push('moved');
+    uvPinchReadout = (doing || translated) && parts.length ? parts.join(' \u00b7 ') : null;
+    refreshUvStatus();
   }
   const { dx, dy, centerX: cx, centerY: cy, angleDeg, scale } = uvDrag;
   // Same three-step "rotate/scale about a point" recipe v2.43a's icon
@@ -40753,7 +40952,11 @@ function refreshUvStatus() {
             : uvCompMode === 'edge'   ? uvEdgeSel.size
             : uvFaceSel.size;
   const kind = uvCompMode.charAt(0).toUpperCase() + uvCompMode.slice(1);
-  const left = kind + ' · ' + (sel ? sel + ' selected' : 'nothing selected');
+  /* While two fingers are scaling an island, the number IS the status (v2.68).
+     The selection count is what you set up before starting and cannot change
+     mid-pinch, so it is the one thing on this line nobody needs right then. */
+  const left = uvPinchReadout !== null ? kind + ' · ' + uvPinchReadout
+    : kind + ' · ' + (sel ? sel + ' selected' : 'nothing selected');
   // The box is square and starts at 100 wide, so one number says it all.
   const zoom = Math.round(10000 / uvViewBox.w);
   const right = zoom + '%';
@@ -41351,6 +41554,26 @@ uvViewSvgEl.addEventListener('pointerup', (ev) => {
    below stops being able to hear that pointer. Deleting twice is free. */
 uvViewSvgEl.addEventListener('lostpointercapture', (ev) => {
   uvPointers.delete(ev.pointerId);
+  /* AND IT ENDS THE GESTURE THAT OWNED THAT POINTER (v2.68a, review finding -
+     v2.68's own comment claimed this was already covered, and it was not).
+     `uvDrag = null` happens in exactly one place, endUvDrag, so a capture that
+     moves away without a pointerup or pointercancel retargeted here leaves the
+     record standing for ever - and a standing record is not a cosmetic problem:
+     uvSecondPointer answers `if (uvDrag) return true` to every later press, so
+     nothing in the card can be selected, dragged, held or ringed again, the
+     empty-space hold that is the way out of the view included. The only escape
+     was the mode button above the card.
+
+     Cancelled rather than committed: a gesture whose pointer was taken away did
+     not finish, and writing an edit from coordinates that stopped arriving is
+     how a lost capture becomes a wrong transform. The deliberate hand-offs -
+     the hold that blooms a ring - call endUvDrag(false) themselves BEFORE
+     stealing the capture, so by the time this fires uvDrag is already null and
+     this is a no-op for them. */
+  if (uvDrag && (ev.pointerId === uvDrag.pointerId || ev.pointerId === uvDrag.pointerId2)) {
+    endUvDrag(false);
+  }
+  if (uvVDrag && ev.pointerId === uvVDrag.pointerId) endUvVertexDrag(false);
 });
 uvViewSvgEl.addEventListener('pointercancel', (ev) => {
   uvPointers.delete(ev.pointerId);
@@ -45660,6 +45883,26 @@ if (PICK_DEBUG) {
     uvAlignIslands, UV_ALIGN, uvPackAll,
     uvIslandAreas, uvEvenDensity, uvStretchToSquare,
     UV_DENSITY_MAX_LOSS,
+    // v2.68: the pinch that sticks to exact values.
+    snapUvScale, snapUvAngle, UV_SNAP_SCALES, UV_SNAP_SCALE_REL,
+    UV_SNAP_ANGLE_DEG, UV_SNAP_ANGLE_WIN,
+    UV_SNAP_EXIT, UV_SNAP_BUZZ_MS,
+    /* How many fingers the view currently believes are down (v2.68a). A count,
+       not the map: a probe has to be able to check that a gesture left nothing
+       behind - a stranded entry makes the NEXT first finger read as a second
+       one - without being able to reach in and edit the queue it is watching. */
+    get uvPointerCount() { return uvPointers.size; },
+    get uvPinchReadout() { return uvPinchReadout; },
+    /* A COPY of the live pinch's two numbers, never the record (v2.68) - the
+       same rule v2.61's exports follow: a probe has to be able to watch the
+       gesture move without being able to steer the gesture it is observing.
+       Null unless a pinch is actually running, so "is there one" and "what does
+       it say" are one question. */
+    get uvPinchNow() {
+      return (uvDrag && uvDrag.mode === 'pinch')
+        ? { scale: uvDrag.scale, angleDeg: uvDrag.angleDeg, snapKey: uvDrag.snapKey || null }
+        : null;
+    },
     uvsChangedAsStored,
     /* The glyph table itself (v2.67). A ring seat naming an icon that does not
        exist draws an empty button, which nothing else can see - node --check
