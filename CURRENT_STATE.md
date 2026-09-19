@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~46,480 lines)
-- Version at time of writing: **2.69**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~46,663 lines)
+- Version at time of writing: **2.69a**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,97 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## The wireframe follows the vertex, and the view loses its frame (2.69a)
+
+Two things Zeghreit asked for on a phone, one behaviour and one look.
+
+### What is attached to a vertex moves with it
+
+**Before:** a vertex drag moved the DOT - a `transform` on the circle - and the
+island's fill and wireframe under it stood still until the commit, where
+`refreshUvView` redrew everything. His words: "сначала тащится вертекс, а потом
+за ним достраивается юви". The dot led and the shape snapped after it.
+
+A transform cannot fix that. The triangles around a dragged vertex do not
+*move*, they **deform** - one corner goes and two stay - so the path has to be
+built again, and rebuilding a whole island on every `pointermove` is what the
+transform was avoiding.
+
+**The rule:** for the length of the gesture an island's triangles are split
+into two STRINGS. The ones with no dragged corner become a path string once, at
+the start, and that string never changes. The ones with a dragged corner are
+rebuilt per frame, and the two are concatenated into the ONE path that was
+already there. The per-frame *building* is the size of the fan under the
+finger, not the size of the island.
+
+- `uvTriPaths(tris, uvs, moving, dx, dy)` writes the same two shapes
+  `renderUvView` writes - `M..L..` three times for the wireframe, `M..L..L..Z`
+  for the fill - with `moving` corners offset and the rest where the UV says.
+- `uvToX` / `uvToY` were hoisted out of `renderUvView` so there is one copy of
+  UV → card units, not two that can drift.
+- `uvIslandTris[island]` caches the triangles the render drew from, beside
+  `uvFaceVerts`, and is dropped at the top of every `renderUvView`.
+- `startUvLiveParts` / `updateUvLiveParts` / `endUvLiveParts`, hooked into the
+  vertex/face drag. **`endUvLiveParts` is the first line of
+  `endUvVertexDrag`**, and that is load-bearing: `uvVDrag = null` happens in
+  exactly one place, so every way a drag can end - pointerup, pointercancel,
+  `lostpointercapture`, a second finger promoting to a pinch, a mode switch, an
+  object switch, closing the view - restores the saved `d`.
+
+**Two things a reviewer was right about, both fixed before ship:**
+
+1. **One path, not two.** The first draft put the moving fan in a *cloned*
+   pair of paths. A fill drawn as one path composites its triangles together;
+   split across two, the boundary becomes a real path edge - a hairline
+   outlining the moving fan - and a fan folded back over its own island doubles
+   from 35% to 58% opacity and snaps back on release. On a change whose whole
+   point is how the drag looks, that is the wrong trade. One path re-parses the
+   full `d` per frame instead, and the measurement below says that is free.
+2. **A tap must not pay for a drag.** `startUvLiveParts` was on `pointerdown`,
+   so every tap paid a `toEditable` plus a rebuild of nearly the whole island -
+   and a tap is how a selection is built in this view, one dot at a time. It is
+   deferred to the first `pointermove` past the tap threshold, guarded by
+   `liveTried` so a failed split is not retried every frame.
+
+**Measured** (`_uv69achk.py`, headless Chrome on the software rasteriser, so
+pessimistic):
+
+| island | press | first move (the split) | per frame |
+|---|---|---|---|
+| 168 triangles | — | — | 0.05ms |
+| 3,968 triangles, 1 moving | 0.2ms | 22.9ms, one-off | 0.72ms |
+
+`UV_VIEW_TRI_CAP` is 20,000. At a quarter of it a drag frame costs under a
+millisecond, which is what settles the one-path question.
+
+The probe also pins, mid-gesture and on the path string itself - the only place
+"what is on screen right now" lives: a press alone splits nothing; the first
+move splits once; the moving set is the fan and not the island; no triangle is
+lost or drawn twice; the wireframe IS at the dragged corner while the finger is
+still down; an unselected neighbour of a moving triangle has not moved; the dot
+and the corner carry the same delta; a commit redraws to the same triangle
+count with the corner where it was dropped; and a `pointercancel` leaves the
+`d` byte-identical with nothing written to the UVs.
+
+### The view has no frame
+
+`#uvViewSvg` carried `background: var(--panel2)` and a 2px border. That was the
+house pattern while this was a card inside a modal. Since v2.53 it IS the view
+- it replaces the 3D viewport - and at v2.69 it grew to fill the screen, at
+which point a raised slab with a rule round it stopped reading as a control and
+started reading as a box drawn over the app. Zeghreit: "серый конверт слишком
+выделяется... выбивается из общего дизайна."
+
+It sits on `--bg` now, the same ground the 3D viewport stands on, and the UDIM
+sheet's own lines are the only structure in it. The edges of the working area
+are where the header stops and the status line starts - exactly where the 3D
+viewport's are.
+
+The border going makes `uvAspect`'s and `uvPxWidth`'s border subtraction
+subtract zero. Both stay: a viewport IS a content box, and the next padding or
+border put on this element would otherwise reintroduce v2.69's 1.2px letterbox
+silently. Their comments say so rather than still claiming a 2px border.
 
 ## The 2D UV view takes the whole screen (2.69)
 

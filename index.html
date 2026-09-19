@@ -2122,9 +2122,19 @@
     padding-bottom: 10px;
     container-type: size;
   }
+  /* NO PANEL AND NO BORDER (v2.69a, Zeghreit: "серый конверт слишком
+     выделяется... выбивается из общего дизайна"). While this was a card
+     inside a modal, a raised surface with an edge was the house pattern and
+     the right answer. Since v2.53 it IS the view - it replaces the 3D
+     viewport - and at v2.69 it grew to fill the screen, at which point a
+     --panel2 slab with a 2px rule around it stopped reading as a control and
+     started reading as a box drawn over the app. It sits on --bg now, the
+     same ground the 3D viewport stands on, and the UDIM sheet's own lines are
+     the only structure in it. The edges of the working area are where the
+     header stops and the status line starts, which is exactly where the 3D
+     viewport's are. */
   #uvViewSvg {
-    width: 100cqw; height: 100cqh; background: var(--panel2);
-    border: var(--rule) solid var(--line);
+    width: 100cqw; height: 100cqh;
     /* Own gesture from here down (v2.45: dragging an island; v2.51: panning
        and pinch-zooming the view itself), not the browser's - without this,
        the first pointer move on touch starts a page scroll instead, the
@@ -2708,7 +2718,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.69</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.69a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -38616,6 +38626,13 @@ const UV_VIEW_PAD = 4;
    always was, which is why every existing u/v <-> SVG conversion in this
    file keeps working untouched. */
 const UDIM_COLS = 10, UDIM_ROWS = 10;
+/* UV -> THE CARD'S OWN UNITS. One tile is 100 - 2*UV_VIEW_PAD wide, and V
+   points up while SVG's Y points down. These two lived inside renderUvView
+   until v2.69a, which was fine while the render was the only thing that drew:
+   the live vertex drag rebuilds the same paths between redraws now, and a
+   second copy of this formula is exactly the kind of pair that drifts. */
+function uvToX(u) { return UV_VIEW_PAD + u * (100 - 2 * UV_VIEW_PAD); }
+function uvToY(v) { return UV_VIEW_PAD + (1 - v) * (100 - 2 * UV_VIEW_PAD); }
 
 /* UV_VIEW_CENTER_MARGIN IS GONE (v2.63) - the clamp that held every drag
    inside ONE TILE, on the grounds that past the card's edge a component
@@ -38786,13 +38803,15 @@ let uvPinchReadout = null;
 function renderUvView(obj, ed) {
   const NS = 'http://www.w3.org/2000/svg';
   uvViewSvgEl.innerHTML = '';
+  // Dropped before the early returns below, so a redraw that draws nothing
+  // cannot leave the live drag holding the last object's triangles (v2.69a).
+  uvIslandTris = [];
   if (!ed.uvs || !ed.uvs.length) return { ok: false };
   const triCount = ed.groups.reduce((n, g) => n + g.triangles.length, 0);
   if (triCount > UV_VIEW_TRI_CAP) return { ok: false, tooHeavy: true };
 
-  const PAD = UV_VIEW_PAD;
-  const toX = (u) => PAD + u * (100 - 2 * PAD);
-  const toY = (v) => PAD + (1 - v) * (100 - 2 * PAD); // UV's V points up; SVG's Y points down.
+  // Local names for the two above (v2.69a), so the walk below reads unchanged.
+  const toX = uvToX, toY = uvToY;
   // 2dp is already finer than a device pixel at the card's own on-screen
   // size, and it roughly halves the string a heavy mesh builds below.
   const r2 = (n) => n.toFixed(2);
@@ -38859,6 +38878,12 @@ function renderUvView(obj, ed) {
       if (island < 0 || island >= count) return; // topo/ed disagree: skip rather than guess
       const sp = t.map(ai => [ed.uvs[ai * 2], ed.uvs[ai * 2 + 1]]);
       if (!sp.every(([u, v]) => Number.isFinite(u) && Number.isFinite(v))) return;
+      /* The triangle itself, kept per island (v2.69a) - the drag below needs
+         to rebuild these two paths and cannot read them back out of a `d`
+         string. The array is the one ed.groups already holds, not a copy:
+         three numbers per triangle, and a heavy mesh is capped at
+         UV_VIEW_TRI_CAP anyway. */
+      (uvIslandTris[island] || (uvIslandTris[island] = [])).push(t);
       const scr = sp.map(([u, v]) => [r2(toX(u)), r2(toY(v))]);
       // Every triangle edge - a shared edge between two triangles is drawn
       // twice on top of itself, which costs nothing to look at and saves
@@ -39124,6 +39149,8 @@ let uvFaceSel = new Set();
    already walking every triangle. A face drag needs this list the instant
    it starts, and deriving it there would mean a toEditable per gesture. */
 let uvFaceVerts = [];
+// Per island, the triangles it is drawn from - see renderUvView's walk.
+let uvIslandTris = [];
 
 // Switches between the whole-island gesture (v2.45/v2.47), per-vertex
 // editing (v2.48) and per-edge selection (v2.50), and always drops whatever
@@ -40809,8 +40836,133 @@ function paintUvCompSelection() {
   });
   refreshUvStatus();   // v2.62
 }
+/* THE WIREFRAME FOLLOWS THE VERTEX (v2.69a, Zeghreit: "сначала тащится
+   вертекс, а потом за ним достраивается юви - хотелось бы чтобы за вертексом
+   сразу следовало то, что с ним связано").
+
+   Until here a vertex drag moved the DOT and nothing else: a transform on the
+   circle, while the island's fill and wireframe under it stood still until the
+   commit, where refreshUvView redrew the lot. The dot led, the shape snapped
+   after it.
+
+   A transform cannot fix that. The triangles around a dragged vertex do not
+   MOVE, they DEFORM - one corner goes and two stay - so the path has to be
+   built again. Rebuilding the whole island every frame is what the transform
+   was avoiding: an island can be thousands of triangles and this runs on every
+   pointermove.
+
+   So the island's triangles are split in TWO STRINGS, not two paths. The ones
+   with no dragged corner are turned into a path string once, at the start of
+   the gesture, and that string never changes again. The ones that have a
+   dragged corner are rebuilt per frame, and the two are concatenated into the
+   ONE path that was already there. The per-frame work of BUILDING is the size
+   of what is moving - the fan around the finger - not the size of the island,
+   which is the whole point.
+
+   TWO PATHS WAS THE FIRST DRAFT, and a reviewer was right about it (v2.69a):
+   a fill drawn as one path has its triangles composited together, so adjacent
+   triangles show no seam and an overlap is flattened by the fill rule. Split
+   across two paths, the boundary between the still half and the moving half
+   becomes a real path edge - two 35%-opacity coverages meeting, which draws a
+   hairline around the moving fan - and a fan folded back over its own island
+   doubles to 58% and then snaps back on release. On a change whose whole
+   purpose is how the drag LOOKS, that is the wrong trade. One path costs a
+   re-parse of the full `d` per frame instead; see the probe's own timing.
+
+   The split is undone by endUvLiveParts, which restores the saved `d` in every
+   case: a commit redraws from scratch a moment later and does not care, but a
+   tap, a cancel, a double tap and a delta the clamp pinned to nothing all end
+   the gesture with no redraw behind them. That teardown is only safe because
+   `uvVDrag = null` happens in exactly ONE place, endUvVertexDrag, whose first
+   line is endUvLiveParts() - every way a drag can end goes through it. If a
+   second place ever nulls uvVDrag, it owes this the same call. */
+let uvLiveParts = null;
+/* The two path strings for a set of triangles, in the same shapes renderUvView
+   writes them - one M/L per triangle edge for the wireframe, one M/L/L/Z for
+   the fill - with `moving` corners offset by dx/dy and the rest where the UV
+   says. Locals rather than arrays per triangle: this is the inner loop. */
+function uvTriPaths(tris, uvs, moving, dx, dy) {
+  let fill = '', edges = '';
+  for (let k = 0; k < tris.length; k++) {
+    const t = tris[k], a0 = t[0], a1 = t[1], a2 = t[2];
+    const u0 = uvs[a0 * 2], v0 = uvs[a0 * 2 + 1];
+    const u1 = uvs[a1 * 2], v1 = uvs[a1 * 2 + 1];
+    const u2 = uvs[a2 * 2], v2 = uvs[a2 * 2 + 1];
+    // The same finiteness gate the render applies - a NaN UV would otherwise
+    // put the literal string "NaN" into a path and blank the whole island.
+    if (!(Number.isFinite(u0) && Number.isFinite(v0) && Number.isFinite(u1) &&
+          Number.isFinite(v1) && Number.isFinite(u2) && Number.isFinite(v2))) continue;
+    const x0 = (uvToX(u0) + (moving.has(a0) ? dx : 0)).toFixed(2);
+    const y0 = (uvToY(v0) + (moving.has(a0) ? dy : 0)).toFixed(2);
+    const x1 = (uvToX(u1) + (moving.has(a1) ? dx : 0)).toFixed(2);
+    const y1 = (uvToY(v1) + (moving.has(a1) ? dy : 0)).toFixed(2);
+    const x2 = (uvToX(u2) + (moving.has(a2) ? dx : 0)).toFixed(2);
+    const y2 = (uvToY(v2) + (moving.has(a2) ? dy : 0)).toFixed(2);
+    edges += 'M' + x0 + ',' + y0 + 'L' + x1 + ',' + y1 +
+             'M' + x1 + ',' + y1 + 'L' + x2 + ',' + y2 +
+             'M' + x2 + ',' + y2 + 'L' + x0 + ',' + y0;
+    fill += 'M' + x0 + ',' + y0 + 'L' + x1 + ',' + y1 + 'L' + x2 + ',' + y2 + 'Z';
+  }
+  return { fill, edges };
+}
+function startUvLiveParts(moving) {
+  uvLiveParts = null;
+  const obj = uvViewObj;
+  if (!obj || !obj.mesh || !moving || !moving.size || !uvIslandTris.length) return;
+  /* One toEditable per GESTURE - the same read commitUvVertexDrag ends with,
+     and the price of speaking UV instead of screen coordinates. Per frame it
+     would be unaffordable; once on pointerdown it is not. */
+  let ed;
+  try { ed = toEditable(obj.mesh); }
+  catch (e) { console.warn('startUvLiveParts: toEditable failed', e); return; }
+  if (!ed.uvs || !ed.uvs.length) return;
+  const parts = [];
+  for (let i = 0; i < uvIslandTris.length; i++) {
+    const tris = uvIslandTris[i];
+    if (!tris) continue;
+    const dyn = [], still = [];
+    for (let k = 0; k < tris.length; k++) {
+      const t = tris[k];
+      (moving.has(t[0]) || moving.has(t[1]) || moving.has(t[2]) ? dyn : still).push(t);
+    }
+    if (!dyn.length) continue;   // this island has nothing in the gesture
+    const g = uvViewSvgEl.querySelector('.uv-island[data-island="' + i + '"]');
+    if (!g) continue;
+    const fill = g.querySelector('.uv-fill'), edges = g.querySelector('.uv-edges');
+    if (!fill || !edges) continue;
+    // The still half, turned into its strings once and then left alone.
+    const s = uvTriPaths(still, ed.uvs, moving, 0, 0);
+    parts.push({
+      tris: dyn, uvs: ed.uvs, moving, fill, edges,
+      fillD: fill.getAttribute('d'), edgesD: edges.getAttribute('d'),
+      stillFill: s.fill, stillEdges: s.edges
+    });
+  }
+  if (!parts.length) return;
+  uvLiveParts = parts;
+  updateUvLiveParts(0, 0);
+}
+function updateUvLiveParts(dx, dy) {
+  if (!uvLiveParts) return;
+  for (let i = 0; i < uvLiveParts.length; i++) {
+    const p = uvLiveParts[i];
+    const s = uvTriPaths(p.tris, p.uvs, p.moving, dx, dy);
+    p.fill.setAttribute('d', p.stillFill + s.fill);
+    p.edges.setAttribute('d', p.stillEdges + s.edges);
+  }
+}
+function endUvLiveParts() {
+  if (!uvLiveParts) return;
+  for (let i = 0; i < uvLiveParts.length; i++) {
+    const p = uvLiveParts[i];
+    p.fill.setAttribute('d', p.fillD);
+    p.edges.setAttribute('d', p.edgesD);
+  }
+  uvLiveParts = null;
+}
 function endUvVertexDrag(commit) {
   if (!uvVDrag) return;
+  endUvLiveParts();   // v2.69a: the split is over, whatever ends the gesture
   const { ids, els, dx, dy, startClientX, startClientY, lastClientX, lastClientY,
     tapAi, tapWasSelected, tapFace, slop } = uvVDrag;
   // Which set this gesture's tap belongs to (v2.55) - faces and vertices
@@ -40954,6 +41106,12 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
     startClientX: ev.clientX, startClientY: ev.clientY,
     lastClientX: ev.clientX, lastClientY: ev.clientY,
     slop: tapSlopPx(ev),   // see the same field on uvDrag (v2.64)
+    /* The set itself, for startUvLiveParts, which does not run yet (review
+       finding, v2.69a). Splitting here would put a toEditable and a rebuild of
+       nearly the whole island on every TAP - and a tap is how a selection is
+       built in this view, one dot at a time. Deferred to the first move that
+       passes the tap threshold below, where it is known to be a drag. */
+    idSet: ids, liveTried: false,
     tapAi: tapId, tapWasSelected, tapFace: isFace,
   };
   try { uvViewSvgEl.setPointerCapture(ev.pointerId); } catch (e) {}
@@ -40968,8 +41126,20 @@ uvViewSvgEl.addEventListener('pointermove', (ev) => {
                                   uvVDrag.minCx, uvVDrag.minCy, uvVDrag.maxCx, uvVDrag.maxCy);
   uvVDrag.dx = dx; uvVDrag.dy = dy;
   uvVDrag.lastClientX = ev.clientX; uvVDrag.lastClientY = ev.clientY;
+  /* This is a DRAG now, so the island can be split (v2.69a). Once: liveTried
+     stops the walk running again every frame when there was nothing to split
+     - an island that is not drawn, or a selection the render does not know. */
+  if (!uvVDrag.liveTried &&
+      Math.hypot(ev.clientX - uvVDrag.startClientX,
+                 ev.clientY - uvVDrag.startClientY) > uvVDrag.slop) {
+    uvVDrag.liveTried = true;
+    startUvLiveParts(uvVDrag.idSet);
+  }
   const t = `translate(${dx.toFixed(2)},${dy.toFixed(2)})`;
   uvVDrag.els.forEach(el => el.setAttribute('transform', t));
+  /* And everything attached to them (v2.69a). The same dx/dy the transform
+     above uses, so the dot and the corner it is drawn on cannot disagree. */
+  updateUvLiveParts(dx, dy);
 });
 uvViewSvgEl.addEventListener('pointerup', (ev) => {
   if (!uvVDrag || ev.pointerId !== uvVDrag.pointerId) return;
@@ -41096,15 +41266,18 @@ let uvCardPxH = 0;
 function uvAspect() {
   if (!uvCardPx || !uvCardPxH) {
     /* THE CONTENT BOX, NOT THE BORDER BOX (measured, v2.69). An SVG's viewport
-       is its content area, and this element has a 2px border: feeding the
-       border box's 512x663 into the aspect made the viewBox 0.2% taller than
-       the viewport, preserveAspectRatio="meet" took the smaller scale, and the
-       view letterboxed by 1.2px at the bottom. Small, and exactly the kind of
-       small that compounds - the whole point of this version is that the
-       element and the box agree. getBoundingClientRect is the border box on
-       every engine; the border widths come off it explicitly rather than
-       through clientWidth, which SVG2 added and older WebKit does not answer
-       for an svg. */
+       is its content area. This element had a 2px border at the time, and
+       feeding the border box's 512x663 into the aspect made the viewBox 0.2%
+       taller than the viewport: preserveAspectRatio="meet" took the smaller
+       scale and letterboxed 1.2px off the bottom.
+       THE BORDER WENT AT v2.69a, so the two boxes coincide today and this
+       correction subtracts zero. It stays because the rule it states is the
+       true one - a viewport is a content box - and the next padding or border
+       anyone puts on this element would otherwise reintroduce the same
+       1.2px silently. getBoundingClientRect is the border box on every engine;
+       the border widths come off it explicitly rather than through
+       clientWidth, which SVG2 added and older WebKit does not answer for an
+       svg. */
     const r = uvViewSvgEl.getBoundingClientRect();
     const cs = getComputedStyle(uvViewSvgEl);
     const bw = (parseFloat(cs.borderLeftWidth) || 0) + (parseFloat(cs.borderRightWidth) || 0);
@@ -41135,13 +41308,14 @@ function uvZoomW() {
   const k = Math.min(1, uvAspect());
   return { min: UV_ZOOM_MIN / k, max: UV_ZOOM_MAX / k };
 }
-/* THE WIDTH THE viewBox ACTUALLY MAPS ONTO (v2.69) - the svg's CONTENT box,
-   which is its border box less the 2px border on each side. A pan and a pinch
-   both turn screen pixels into card units with this number, and both were
-   reading the border box: on a 412-wide card that ran the content 0.8% behind
-   the finger, growing with the length of the drag. Pre-existing since v2.51
-   and harmless while nothing else knew the difference; uvAspect knows it now,
-   and two numbers for one width is how they drift. */
+/* THE WIDTH THE viewBox ACTUALLY MAPS ONTO (v2.69) - the svg's CONTENT box. A
+   pan and a pinch both turn screen pixels into card units with this number,
+   and both were reading the border box: with the 2px border this element had
+   then, that ran the content 0.8% behind the finger on a 412-wide card,
+   growing with the length of the drag. The border went at v2.69a and the two
+   are the same number today; this stays for the same reason uvAspect's
+   subtraction does, and because two numbers for one width is how they drift
+   apart the moment one of them is right. */
 function uvPxWidth(rect) { uvAspect(); return uvCardPx || rect.width; }
 function syncUvBoxH() {
   const want = uvViewBox.w * uvAspect();
@@ -46374,6 +46548,15 @@ if (PICK_DEBUG) {
     startUvPinch, updateUvPinchTransform,
     setUvCompMode, cycleUvCompMode, HUB_TOOLS_UV2D_MODE, reconcileUvViewTarget,
     modeButtonTap, commitUvVertexDrag,
+    // v2.69a: the live split a vertex/face drag deforms the island through.
+    uvToX, uvToY, uvTriPaths, updateUvLiveParts,
+    get uvLivePartCount() { return uvLiveParts ? uvLiveParts.length : 0; },
+    // How many triangles a frame of the drag actually rebuilds - the number
+    // the whole split exists to keep small.
+    get uvLiveMovingTris() {
+      return uvLiveParts ? uvLiveParts.reduce((n, p) => n + p.tris.length, 0) : 0;
+    },
+    get uvIslandTriCounts() { return uvIslandTris.map(a => a ? a.length : 0); },
     get uvCompMode() { return uvCompMode; },
     get uvSel() { return Array.from(uvSel); },
     get uvViewOpen() { return uvViewEl.classList.contains('show'); },
