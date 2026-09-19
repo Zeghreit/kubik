@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~42,250 lines)
-- Version at time of writing: **2.68**
+- Version at time of writing: **2.68a**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,64 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## Two phone fixes: where the sheet sits, and how thick an edge is (2.68a)
+
+Both from Zeghreit testing v2.61–v2.68 on the phone, both measured in a real
+browser at 412x915 rather than reasoned about.
+
+**The square is bottom-aligned in its wrapper, not centred.** It is the largest
+square that fits both axes, so on a tall phone it is width-limited and the
+wrapper has height to spare — and centring split that surplus in two, leaving a
+band of dead card above the sheet AND another below it, the lower one sitting
+between the sheet and the controls like a gap nobody asked for. Measured: an
+828-tall wrapper holding a 412 square, so 208px of nothing at each end. The
+surplus now collects at the top, under the header, where there is already a
+header to explain it, and the sheet's bottom edge lines up with the status line
+and the button band, one gap on every phone. The 10px gap is `padding-bottom` on
+the wrapper: `container-type: size` measures the CONTENT box, so it comes off the
+square's size rather than being added outside it, and the square cannot grow back
+into it.
+
+**Every stroke in the 2D view now holds its width on screen.** A width written in
+viewBox units is a width in UV SPACE, so zooming in magnified it: at 377% the
+selected edges were finger-thick slabs covering the geometry under them.
+`--uv-sw` is `viewBox.w / 100` — 1 at the default framing, so the numbers in the
+stylesheet still read as the ones that were tuned by eye — and `applyUvViewBox`
+rewrites it on every zoom and pan, exactly as it already did for `--uv-dot`.
+Measured after: a selected edge is 10.7 screen px at 100%, at 377% and at 1000%.
+This is the same rule the 3D viewport's dots follow and the one this card adopted
+for its own dots in v2.60; the edges were simply never brought along.
+
+One implementation note worth keeping: `calc()` with a custom property does work
+for `stroke-width` on SVG geometry, but Chrome serialises the computed value as
+`calc(0.26px)` — so a probe that does `parseFloat(getComputedStyle(el).strokeWidth)`
+gets NaN and will quietly report nothing rather than fail. Multiply the viewBox
+figure by the element's own scale instead.
+
+### Still open: the freeze Zeghreit reported
+
+He reports the app repeatedly freezing when the bloom ring is opened by holding
+on the grey area of the 2D view, with the ring visible on screen at the time.
+**Not reproduced**, and the attempts are worth recording so the next session does
+not repeat them:
+
+- A real press-and-hold with a real mouse, through Playwright against a local
+  server: ring opens, closes on release, `uvPointerCount` back to 0.
+- The same with real touch events via CDP (`Input.dispatchTouchEvent`, touch
+  emulation on), which is what exercises implicit capture: same result.
+- The same followed by `touchCancel` instead of a lift — the routine phone case
+  of the browser taking the gesture: the ring closes, the card is still alive.
+- Op timings on a small mesh: nothing over 25ms.
+
+So the two obvious shapes — a stuck ring leaving `toolRingActive` set (which
+would make `uvSecondPointer` answer "busy" to every later press and is what "the
+app froze" looks like from outside), and a performance cliff in one of the layout
+ops — are both unconfirmed. The next step is Zeghreit's own answer to one
+question: whether the app comes back after a few seconds or stays dead until a
+reload. Dead until reload points at the stuck-gesture family; recovering points
+at a cost cliff on a character-sized mesh, which the small-mesh timings above
+would not show.
 
 ## Exact scale, as a pinch that sticks (2.68)
 

@@ -2109,8 +2109,22 @@
      would otherwise refuse to shrink below its content's natural size.
      container-type:size turns that box into a query container so the svg
      below can size itself off it in BOTH axes at once. */
+  /* BOTTOM-ALIGNED, NOT CENTRED (v2.68a, Zeghreit on a phone). The square is
+     the largest that fits both axes, so on a tall phone it is width-limited and
+     the wrapper has height left over - centring split that surplus in two and
+     left a band of dead card above the sheet AND another below it, with the
+     lower one sitting between the sheet and the controls like a gap nobody
+     asked for. Measured at 412x915: an 828-tall wrapper holding a 412 square,
+     so 208px of nothing at each end.
+     All of the surplus now collects at the top, under the header, where there
+     is already a header to explain it - and the sheet's bottom edge lines up
+     with the status line and the button band below it, one gap, the same on
+     every phone. The padding is that gap: container-type:size measures the
+     CONTENT box, so it comes off the square's size rather than being added
+     outside it, and the square cannot grow back into it. */
   #uvViewSvgWrap {
-    flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+    flex: 1; min-height: 0; display: flex; align-items: flex-end; justify-content: center;
+    padding-bottom: 10px;
     container-type: size;
   }
   /* width/height:auto + aspect-ratio (the v2.51 original here, review
@@ -2172,7 +2186,16 @@
   }
   /* Set by applyUvViewBox once a tile is too small to hold its own number. */
   #uvViewSvg.uv-nums-off .uv-udim-num { display: none; }
-  #uvViewSvg .uv-edges { fill: none; stroke: var(--text); stroke-width: 0.3; }
+  /* EVERY STROKE IN HERE IS SCALED BY --uv-sw (v2.68a). A width written in
+     viewBox units is a width in UV space, so zooming in magnified it: at 377%
+     the selected edges were finger-thick slabs that hid the geometry under
+     them, which is what Zeghreit reported. --uv-sw is viewBox.w/100 - 1 at the
+     default framing, so these numbers still read as the ones that were tuned by
+     eye - and applyUvViewBox rewrites it on every zoom and pan, exactly as it
+     already does for --uv-dot. Same rule as the 3D viewport's dots, and the
+     same rule this card adopted for its own dots in v2.60; the edges were
+     simply never brought along. */
+  #uvViewSvg .uv-edges { fill: none; stroke: var(--text); stroke-width: calc(var(--uv-sw, 1) * 0.3); }
   /* Translucent per-island fill (v2.45) - islandColorHex, the same
      golden-angle palette "Show islands" already paints the 3D mesh with,
      so an island reads as one colour in both views. Low opacity so the
@@ -2188,7 +2211,7 @@
      solid it reads and that its outline goes to the accent, the same two
      moves .uv-vertex.selected already makes. */
   #uvViewSvg .uv-island.selected .uv-fill { fill-opacity: 0.8; }
-  #uvViewSvg .uv-island.selected .uv-edges { stroke: var(--accent); stroke-width: 0.5; }
+  #uvViewSvg .uv-island.selected .uv-edges { stroke: var(--accent); stroke-width: calc(var(--uv-sw, 1) * 0.5); }
   /* FACE MODE (v2.55). One path per face group, invisible until selected -
      it is a hit target first and a highlight second, which is why it needs
      `pointer-events: fill` said out loud: a fill-opacity of 0 is still
@@ -2266,7 +2289,8 @@
      than a point is, so it does not need nearly as much padding to reach a
      comfortable touch target. */
   #uvViewSvg .uv-edge {
-    stroke: var(--text-dim); stroke-opacity: 0.55; stroke-width: 1.8;
+    stroke: var(--text-dim); stroke-opacity: 0.55;
+    stroke-width: calc(var(--uv-sw, 1) * 1.8);
     stroke-linecap: round; cursor: pointer;
   }
   /* Magenta since v2.52, matching SEAM_COLOR (0xff3bd0) in the 3D viewport -
@@ -2276,8 +2300,8 @@
      today, and a seam is a property of the MESH, not of whichever mode
      opened this view. The two hexes have to be changed together; that is
      the price of the literal, and it has been paid once now. */
-  #uvViewSvg .uv-edge.seamed { stroke: #ff3bd0; stroke-opacity: 0.95; stroke-width: 2.2; }
-  #uvViewSvg .uv-edge.selected { stroke: var(--accent); stroke-opacity: 1; stroke-width: 2.6; }
+  #uvViewSvg .uv-edge.seamed { stroke: #ff3bd0; stroke-opacity: 0.95; stroke-width: calc(var(--uv-sw, 1) * 2.2); }
+  #uvViewSvg .uv-edge.selected { stroke: var(--accent); stroke-opacity: 1; stroke-width: calc(var(--uv-sw, 1) * 2.6); }
   #uvViewEmpty { padding: 24px 8px; text-align: center; color: var(--text-dim); }
   /* Dim, small, and out of the way - it is a label, not a control.
 
@@ -2663,7 +2687,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.68</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.68a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -40892,6 +40916,13 @@ function applyUvViewBox() {
      single circle, which is the whole point of driving the view through it. */
   const dr = uvDotR();
   uvViewSvgEl.style.setProperty('--uv-dot', String(dr));
+  /* AND THE SAME FOR EVERY STROKE (v2.68a) - see the note by .uv-edges. One
+     number the stylesheet multiplies, rather than four properties written from
+     here, so the widths stay visible and tunable in the CSS where they were
+     chosen by eye. Four decimals because a deep zoom drives this well below
+     0.01, and a value rounded to two would step visibly as it crossed. */
+  uvViewSvgEl.style.setProperty('--uv-sw',
+    String(Math.max(Math.round(uvViewBox.w * 100) / 10000, 0.0001)));
   /* The reach scales with the dot, not against it. r plus half the stroke is
      how far a tap may land, and 6.25x the radius puts that at 3.3 units at
      the default framing - exactly what the old r=3.2 disc had. Because it is
