@@ -151,6 +151,123 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
 
+## Cut separates, Weld joins (2.71)
+
+### The fan is the whole idea
+
+A **UV point** is a connected RUN of the faces around one logical mesh vertex,
+bounded by the seams (and the mesh's own open edges) that reach that vertex.
+`uvFanRunsAt` is the walk: union-find over the faces at the vertex, joining two
+faces when they share an edge AT that vertex which is not seamed.
+
+Everything follows from it. Cut two edges through a vertex and its faces fall
+into two runs: two points, two dots, two things a finger can pick up. Cut ONE
+edge ending at it - a dart tip - and the faces still ring round the far side,
+so it stays one point and the dart does not open there. That is what a dart is,
+and it is not special-cased anywhere.
+
+**It costs no new vertices.** `separateGroupVertices` has given every face group
+private copies of its corners since v2.28, so the two sides of any edge are
+already distinct attribute vertices holding equal UVs. A cut writes UVs.
+Nothing is added, nothing is reindexed, the 3D mesh is not touched.
+
+### Cut
+
+`markSeamSelectionUv(true)` - the seam seat in the edge ring, which has always
+routed here when the 2D view is open. It marks the seam as before, and now also
+runs `uvSeparateFans` over the vertices the NEW seams reach, stepping each run
+a hair along its own way out.
+
+- **The direction is a mean of UNIT vectors** toward the run's neighbours,
+  negated - not a mean of their positions. A fan with one far corner and one
+  near one points at the far one under a positional mean, and on a sliver that
+  put the step through the fan's own edge. Every neighbour gets one vote.
+- **The step is `UV_CUT_GAP` (0.18) times the NEAREST neighbour's distance**,
+  not the mean, so it cannot outrun the shortest edge it has to stay inside.
+- **0.18 was measured, not chosen.** At 0.12 the closest pair of pieces at a
+  12x8 sphere's vertex landed 1.42 card units apart against a dot diameter of
+  1.76 - still one dot to a tap, which is the v2.69c loose end this closes. The
+  guarantee holds at the zoom the view opens on; zoom out far enough and any
+  two points share a dot, which is what the zoom is for.
+- Measured: no triangle turns over on a 12x8 sphere's fan.
+
+Clearing the same seam runs the same walk with `gap` 0, and each run is written
+**its own average**. Cut every edge at a vertex and clear it again and every UV
+in the mesh is back bit for bit as stored.
+
+### Weld
+
+`uvWeldSelection`, vertex mode, on the 2D view's first component ring
+(`HUB_TOOLS_UV2D_VERT`, one seat, hatched until two points are picked; a hold on
+an already-picked dot opens it, the island ring's arming line for line).
+
+Melts the picked points **of one mesh vertex** into their average - two points
+of two different vertices are two places on the model, and welding those is a
+modelling edit one mode away. Then it clears the seams that have become
+pointless: a seam goes only when BOTH its ends came out **whole**, meaning every
+attribute copy of that vertex now holds one UV.
+
+It does NOT bring the rest of the other island with it. Two islands welded at
+one vertex are one island hinged at a point, and everything round it is still
+stretched. That is Merge's job (v2.56) and Relax's (v2.70).
+
+### What the review caught, and it was all real
+
+fable, fifth outing, three findings, all fixed before ship:
+
+1. **The join wrote the average over EVERY run at the vertex.** Right only when
+   the clear left a single run. Clear one cut of four and the other three runs
+   were dragged onto the mean with it - corners of islands nobody had touched
+   pulled to a point between them, across seams still standing. Each run now
+   writes its own average; a run the clear did not change writes back what it
+   already held. Regression test: clearing one cut of four moves exactly two
+   attribute vertices.
+2. **The step direction averaged neighbour POSITIONS** - see above.
+3. **A Weld that moved nothing could still drop seams.** "Whole" asks whether
+   every copy holds one UV, and a vertex can be whole and thoroughly seamed: 3D
+   Mark Seam and the auto-seamer write the dictionary and never touch a UV. A
+   cube seamed on all twelve edges and not re-unwrapped has every corner whole,
+   so picking two of three stacked dots dropped all three seams and merged three
+   islands off a gesture that wrote nothing. A weld that wrote nothing now
+   clears nothing.
+
+Also fixed from the same review: a selection mixing cut and uncut edges stepped
+the already-cut ones a second time on every press. Only the keys that actually
+flip are handed to the split now.
+
+### Known, and not fixed here
+
+- **A cut at an interior vertex makes the faces overlap, not a gap.** The fan
+  round an interior vertex tiles the full turn, so a run stepping away from its
+  own faces steps into another run's. The dots separate - which is what the
+  step is for - but the triangles near that vertex overlap until something
+  moves them. Relax will not fix it either: the runs are separate points and
+  both are on their island's boundary.
+- **`uvFanRunsAt` joins across a non-manifold edge that `computeUVIslands`
+  cuts.** The walk skips an edge with fewer than two faces; the island walk
+  skips one with other than exactly two. A fin hinged on an edge is its own
+  island but is not its own run, so its copy of the vertex travels with a
+  neighbour and never separates.
+- **A quad's diagonal can be cut.** 2D edge mode draws one line per unique
+  triangle edge, so the diagonal is pickable and `toggleSeamKeys` stores a key
+  for it. `uvLogicalsOfSeamKeys` walks `topo.edges`, which holds only edges on
+  some face's outline, so the diagonal is never found and nothing separates -
+  and the dead key sits in the dictionary until a later retriangulation makes
+  that diagonal a real edge and it silently becomes a seam.
+- **The cut and the seam are one history step**, pushed by `pushHistory` rather
+  than `finishMeshEdit`. Not reviewed by opus - the weekly limit for that model
+  was reached before its report landed - so the exact Undo behaviour of a cut
+  is measured by the probe (one press, one step) and not read by a second pair
+  of eyes.
+
+### Numbers
+
+12x8 sphere, one interior vertex, six edges cut: 1 dot becomes 4, islands stay
+1, closest pair 2.1+ card units against a 1.76 diameter, no flips, one history
+step. Clearing all six: back to 1 dot, drift 0.00. Clearing one of six: 4 dots
+become 3, two attribute vertices move. Weld of the four pieces: one dot, six
+seams closed, one history step. Probe `_uv271chk.py`, port 8975, 19 checks.
+
 ## Relax - the inside of an island, its outline held still (2.70)
 
 A seat on `HUB_TOOLS_UV2D_WORLD` at bearing 6, beside Pack all / Even
