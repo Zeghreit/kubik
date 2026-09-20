@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~46,914 lines)
-- Version at time of writing: **2.69c**
+- Version at time of writing: **2.71a**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -254,11 +254,42 @@ flip are handed to the split now.
   some face's outline, so the diagonal is never found and nothing separates -
   and the dead key sits in the dictionary until a later retriangulation makes
   that diagonal a real edge and it silently becomes a seam.
-- **The cut and the seam are one history step**, pushed by `pushHistory` rather
-  than `finishMeshEdit`. Not reviewed by opus - the weekly limit for that model
-  was reached before its report landed - so the exact Undo behaviour of a cut
-  is measured by the probe (one press, one step) and not read by a second pair
-  of eyes.
+- **The cut and the seam are one history step**, and since v2.71a by the same
+  route every other mesh op takes. `pushHistory` is what `finishSceneEdit`
+  calls, so the count did not change - the probe still reads one press, one
+  step - and Undo restores both halves because `pushHistory` snapshots the
+  whole document, seam dictionary and UVs together.
+
+### The owed review, done by reading (2.71a)
+
+v2.71 shipped without its opus pass - the week's allowance for that model ran
+out before the report landed - so its four open questions were answered against
+the code instead. Two were already sound and two were the same bug wearing two
+faces: **Cut did not have Weld's manners.**
+
+- **`toEditable` was asked AFTER the seam was toggled**, in a try that
+  swallowed the failure into `ed = null` and carried on. A press that could not
+  separate anything still wrote the seam, still wrote a history step and still
+  said "Cut". `uvWeldSelection` has always asked first and refused; Cut now
+  does the same. The state was unreachable - the only throw in `toEditable` is
+  the curve backstop, and `refreshUvView` meets it first, so no edge could have
+  been selected - but an unreachable incoherent state is one line from a
+  reachable one.
+- **The tail was its own**: `refreshElementColors` + `pushHistory` + `toast`,
+  so a press that rebuilt the geometry skipped `refreshUI`, `hideRadialMenu`
+  and the `?debug=1` winding audit. It now leaves by `finishMeshEdit`, like
+  Weld and like the 3D `markSeamSelection`.
+
+The other two answered themselves. **The history step**: `pushHistory` takes
+`serializeDoc()`, a whole-document snapshot, so the seam dictionary and the UVs
+are in one step and Undo returns both halves. **The hold**: `uvVDrag = null`
+lives in exactly one place, `endUvVertexDrag`, the timer is cleared on the same
+line, and the hold is only armed on an ALREADY selected dot - so the cancel
+path can never un-pick anything. Face mode arming a ring whose only seat is
+hatched stands as written: grey with a reason beats missing.
+
+Probe unchanged and still PASS, 19 checks - which is the point: this was a
+change of manners, not of behaviour.
 
 ### Numbers
 

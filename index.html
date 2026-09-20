@@ -2770,7 +2770,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.69c</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.71a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -20127,6 +20127,19 @@ function markSeamSelectionUv(on) {
      back. Asked before the toggle, because after it the answer is gone. */
   const seamsNow = seamSet(obj);
   const fresh = keys.filter(k => on ? !seamsNow[k] : !!seamsNow[k]);
+  /* THE EDITABLE BEFORE THE TOGGLE (v2.71a). It used to be taken after, in a
+     try that swallowed the failure into `ed = null` and carried on - so a
+     press that could not separate anything still wrote the seam, still wrote
+     a history step, and still said "Cut", with nothing split and no word
+     about it. uvWeldSelection has asked first and refused since it was
+     written; this is the same shape. The only throw in toEditable is the
+     curve backstop, and refreshUvView meets that one first, so no edge could
+     have been selected to get here - the incoherent state was unreachable,
+     and is now unreachable by construction rather than by argument. */
+  let ed;
+  try { ed = toEditable(obj.mesh); }
+  catch (e) { console.warn('markSeamSelectionUv: toEditable failed', e);
+              toast('Cannot edit that object'); return; }
   const { changed, want } = toggleSeamKeys(obj, keys, on);
   if (!changed) {
     toast(want ? 'Already cut' : 'No seams on that edge');
@@ -20140,10 +20153,7 @@ function markSeamSelectionUv(on) {
      and each run steps a hair out of its own way. Clearing the seam runs the
      same walk with no gap, which puts them back. */
   let split = 0;
-  let ed = null;
-  try { ed = toEditable(obj.mesh); }
-  catch (e) { ed = null; }
-  if (ed && ed.uvs && ed.uvs.length) {
+  if (ed.uvs && ed.uvs.length) {
     const wasUvs = ed.uvs.slice();
     const isl = computeUVIslands(obj);
     split = uvSeparateFans(obj, ed, topo,
@@ -20153,13 +20163,17 @@ function markSeamSelectionUv(on) {
     if (split && uvsChangedAsStored(wasUvs, ed.uvs)) rebuildFromEditable(obj, ed);
     else split = 0;
   }
-  refreshElementColors(obj);   // keeps the 3D wireframe in sync for later
+  /* AND OUT BY finishMeshEdit (v2.71a). This used to end on its own
+     refreshElementColors + pushHistory + toast, so a press that REBUILT the
+     geometry skipped refreshUI, hideRadialMenu and - the one that matters -
+     the ?debug=1 winding audit, which is what a rebuild is meant to be asked
+     about. Still exactly one history step: finishSceneEdit pushes once. */
+  finishMeshEdit(obj,
+    (want ? 'Cut · ' + changed + ' edge' + (changed === 1 ? '' : 's')
+          : changed + ' seam' + (changed === 1 ? '' : 's') + ' cleared') +
+    (split ? ' · ' + split + ' point' + (split === 1 ? '' : 's') +
+             (want ? ' split' : ' joined') : ''));
   refreshUvView(obj);
-  pushHistory();
-  toast((want ? 'Cut \u00b7 ' + changed + ' edge' + (changed === 1 ? '' : 's')
-              : changed + ' seam' + (changed === 1 ? '' : 's') + ' cleared') +
-        (split ? ' \u00b7 ' + split + ' point' + (split === 1 ? '' : 's') +
-                 (want ? ' split' : ' joined') : ''));
 }
 
 /* THE SIMILARITY THAT MAKES TWO ISLANDS ONE SHEET (v2.56).
