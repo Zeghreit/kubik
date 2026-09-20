@@ -151,6 +151,113 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
 
+## Relax - the inside of an island, its outline held still (2.70)
+
+A seat on `HUB_TOOLS_UV2D_WORLD` at bearing 6, beside Pack all / Even
+density / Stretch to square but not in their row: those three rewrite where
+the islands SIT, this one rewrites what is inside one and cannot move an
+outline. It is also the only seat on that ring that reads the selection -
+selected islands if there are any, all of them if not - and **the toast names
+which**, because the mode can change under a ring that outlived it and
+`setUvCompMode` empties `uvIslandSel` on the way, which silently widens one
+island into all of them.
+
+### What it does
+
+Every INTERIOR UV point is nudged, one at a time, to where its own fan of
+triangles is less distorted. Boundary points never move.
+
+- **The boundary is the UV edge count.** An edge carried by exactly two of
+  the island's triangles is interior; one triangle, or three at a
+  non-manifold junction, pins both its ends. A seam is pinned without a line
+  of seam code: its two sides are one logical vertex at two UVs, so they are
+  two points, each on a single-triangle edge.
+- **A point is a weld group** (2.69b's law), keyed on logical vertex plus UV
+  quantised at 1e-6, and every ai of the group is written. The key is built
+  INSIDE the per-island loop and must stay there: hoisted out it would weld
+  two islands that put a point on one spot.
+- **The search**: four probes per point per sweep (+u, -u, +v, -v) at a
+  per-point step that starts at 0.3 of the point's mean UV edge, grows 1.6x
+  on a success and halves on a failure. A probe is taken ONLY if it lowers
+  that point's fan energy, which is what makes the op monotone - it cannot
+  produce an island worse than the one it was given, and a run cut off by
+  the 300ms budget leaves a result that is better, not half-finished.
+- **Sweeps** stop after three quiet ones, at 60, or on the budget.
+
+### The energy, and the two drafts that were wrong
+
+`uvRelaxTriE`: `W_DENSITY * (J + 1/J) + W_SHEAR * ((a + c) / J)` per
+triangle, area-weighted, with the island's 3D corners pre-scaled so its
+surface area equals its UV area. `a`, `b`, `c` are the first fundamental
+form invariants of the UV -> surface map, `J = sqrt(ac - b^2)` is the area
+ratio. W_DENSITY 1, W_SHEAR 0.05. At an isometry it reads 2.1.
+
+Texel density variation on a 12x8 sphere, unwrap -> after one press:
+
+| energy | density | stretch |
+| --- | --- | --- |
+| mean-value harmonic (conformal) | 0.28 -> 0.50 | down |
+| Sander L2 stretch | 0.28 -> 0.38 | down 27% |
+| shear at 0.25 | 0.28 -> 0.38 | down |
+| **shipped, shear at 0.05** | **0.28 -> 0.26** | **down 24%** |
+
+All four lowered shear. Only the last lowered it without charging for it in
+density. A sphere cannot be both equal-area and unsheared - that is Gauss,
+not an implementation problem - so the ratio is a decision, and it was made
+by measuring. A cylinder is developable and has no trade to make: there
+every measure improves together whatever the weights, which is the fixture
+that says the weights are not hiding anything.
+
+### No fold, and folds undone
+
+Stretch energy is infinite where a triangle's UV area is zero, and it is
+BLIND to which side of zero it is on - it squares the area - so the wall
+alone does not stop a probe that jumps. Each triangle is therefore scored
+against the island's own area-weighted majority winding. Two things follow:
+
+- a probe that would turn a triangle over is refused, always;
+- a fold the op was HANDED costs infinity, and infinity is a thing every
+  probe wants to leave. A folded point widens its step by 1.7 instead of
+  halving it (halving walks it calmly down to the floor still folded), gets
+  the four diagonals as well as the axes, and gets one shot at the middle of
+  its own fan. Measured: one interior point dragged 1.5 edges across its
+  neighbours comes back and the island ends with no folds; a fully scrambled
+  48x32 sphere goes 127 folds to 51.
+
+**A folded point is not a quiet sweep.** It contributes no gain by
+definition - its energy is infinite, so there is no finite difference to add
+- and it needs up to eight sweeps of widening. Three quiet sweeps arrive
+first, and the op used to stop and say "Already relaxed" over a fold that is
+on the screen.
+
+### Known, and not fixed here
+
+- **A pinched boundary triangle can own the convergence test.** A triangle's
+  energy grows without bound as its UV area shrinks, and one unfixable
+  outline triangle at 1e-4 of its fair area can be 13x the rest of the
+  island - so a real 1% interior improvement reads as rounding and the op
+  stops early or says "Already relaxed". Both `UV_RELAX_GAIN_EPS` and
+  `UV_RELAX_MIN_DROP` are relative to that total.
+- **A dart is not a boundary.** A seam that does not split the island, cut
+  without re-unwrapping, has both sides at the same UV, so it is one point
+  per vertex and its edges count twice: interior, and it moves. Nothing
+  tears - the group moves together - but the header's "a seam stays a seam"
+  is about seams that separate.
+- **A non-manifold edge with one degenerate member reads as manifold**,
+  because the degenerate triangle is dropped before the edge counts.
+- **The budget is checked every fourth sweep**, so past it each remaining
+  island still gets up to four full sweeps. On ~300k triangles the first
+  check lands near 600ms.
+- `computeLogicalOf` is paid again on every press (1.8-4.0ms at 12k
+  triangles) although `islandVertexMap` has already built the topology.
+
+### Numbers
+
+12x8 sphere: 104 points, 66 interior, 28 sweeps, 12.8ms. 48x32 sphere:
+1,568 points, 1,410 interior, 37 sweeps, 92ms solve / 161ms press, no flips,
+p75/p25 density 1.103 -> 1.091. Probe `_uv270chk.py`, port 8974, 27 checks
+over five fixtures.
+
 ## Two loose ends, closed (2.69c)
 
 ### An Undo that undid nothing
