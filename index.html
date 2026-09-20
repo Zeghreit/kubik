@@ -2290,12 +2290,18 @@
      would have had to be nearly exact. An unregistered custom property is
      substituted as raw tokens, and what survives that on an SVG geometry
      property is a plain var(), not arithmetic on one. applyUvViewBox writes
-     both, from the same one number. */
-  /* With units, for the reason applyUvViewBox spells out: these two feed CSS
-     geometry properties, where a bare number is valid in Blink and invalid in
-     WebKit - and an invalid substitution computes to zero rather than falling
-     back to anything. */
-  #uvViewSvg { --uv-dot: 0.8px; --uv-hit: 5px; }
+     all three, from the same one number. */
+  /* WITH UNITS, for the reason applyUvViewBox spells out. --uv-dot and
+     --uv-ring feed a CSS GEOMETRY property (`r`), where a bare number is valid
+     in Blink and invalid in WebKit - and an invalid substitution computes to
+     zero rather than falling back to anything, which is what left every dot
+     on an iPhone at radius nought until v2.68e. --uv-hit feeds stroke-width,
+     which does accept a bare number; it carries its unit anyway, because a
+     line here that is right for two of three reasons is a line the next
+     person has to re-derive. (--uv-sw is the deliberate exception: it is
+     MULTIPLIED in calc(), which needs a unitless number, and it never touches
+     a geometry property.) */
+  #uvViewSvg { --uv-dot: 0.8px; --uv-hit: 5px; --uv-ring: 2.08px; }
   #uvViewSvg .uv-vertex {
     r: var(--uv-dot);
     fill: var(--text); fill-opacity: 0.92;
@@ -2320,6 +2326,21 @@
   #uvViewSvg[data-kind="edge"]   { --accent: #46e1ff; }
   #uvViewSvg[data-kind="face"]   { --accent: #b48cff; }
   #uvViewSvg .uv-vertex.dragging { cursor: grabbing; }
+  /* TWO POINTS ON ONE SPOT (v2.69c). Two ISLANDS can land a UV point at the
+     same place - marking a seam without re-unwrapping is the everyday way to
+     get one - and since v2.69b there is exactly one dot per point, so the
+     second point sits under the first with nothing on screen saying so. They
+     are genuinely two points and must stay two, so this is a sign and not a
+     weld: a ring around the spot, meaning "there is more here than you can
+     see". It catches nothing - what a finger lands on is still the dot
+     underneath - and it is deliberately quiet, because on a packed layout it
+     never appears at all. */
+  #uvViewSvg .uv-vertex-split {
+    r: var(--uv-ring);
+    fill: none; stroke: var(--text-dim); stroke-opacity: 0.8;
+    stroke-width: calc(var(--uv-sw, 1) * 0.7);
+    pointer-events: none;
+  }
   /* Edge mode (v2.50) - the same generous-hit-target reasoning as .uv-vertex
      above, spent as stroke-width instead of a disc radius: an edge is a
      line, and a line is already easier to land a tap on along its length
@@ -2749,7 +2770,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.69b</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.69c</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -39023,7 +39044,45 @@ function renderUvView(obj, ed) {
        to twelve identical dots on one spot. The map is built from the triangle
        walk, so a vertex no triangle actually uses - dead data an op left
        behind - still gets no dot, which is what the per-ai walk here was for.
-       Insertion order is first-seen order, so paint order is unchanged. */
+       Insertion order is first-seen order, so paint order is unchanged.
+
+       NO TWO DOTS OF ONE ISLAND share a position; two ISLANDS still can, and
+       v2.69b's first draft of this note claimed otherwise. A seam marked
+       without re-unwrapping is the everyday way to get it, the ring below
+       says where, and the tap ambiguity that stack carries is NOT gone: a tap
+       there resolves to the later-drawn dot and there is no way to reach the
+       one under it. That is a real limit, written down rather than implied,
+       and it belongs with cut/weld. */
+    /* WHERE TWO POINTS LAND ON ONE SPOT (v2.69c), counted before anything is
+       drawn so the rings can go in FIRST and sit behind every dot. The weld
+       key carries the island, so two islands meeting at one UV are two groups
+       here - which is right, and is exactly the case nothing was saying. */
+    const atPos = new Map();
+    uvWeldGroup.forEach((ais, ai) => {
+      const u = ed.uvs[ai * 2], v = ed.uvs[ai * 2 + 1];
+      if (!Number.isFinite(u) || !Number.isFinite(v)) return;
+      const k = r2(toX(u)) + ',' + r2(toY(v));
+      atPos.set(k, (atPos.get(k) || 0) + 1);
+    });
+    const ringR = String(Math.round(uvDotR() * 260) / 100);
+    atPos.forEach((n, k) => {
+      if (n < 2) return;
+      const i = k.indexOf(',');
+      const ring = document.createElementNS(NS, 'circle');
+      ring.setAttribute('class', 'uv-vertex-split');
+      ring.setAttribute('cx', k.slice(0, i));
+      ring.setAttribute('cy', k.slice(i + 1));
+      /* THE ATTRIBUTE IS INERT, and saying otherwise is how v2.68e happened
+         (review finding). An author stylesheet's `r` beats a presentation
+         attribute, `--uv-ring` always resolves because the stylesheet gives it
+         a default, and a var() that DID become invalid would compute to unset
+         - which for `r` is zero - rather than fall back to this. It is written
+         because a renderer with no CSS at all is the only reader left for it,
+         and because the dots have carried the same one since v2.48. */
+      ring.setAttribute('r', ringR);
+      ring.dataset.n = String(n);
+      uvViewSvgEl.appendChild(ring);
+    });
     uvWeldGroup.forEach((ais, ai) => {
       const u = ed.uvs[ai * 2], v = ed.uvs[ai * 2 + 1];
       if (!Number.isFinite(u) || !Number.isFinite(v)) return;
@@ -39518,6 +39577,35 @@ function endUvDrag(commit) {
     }
     return;
   }
+  /* AND A GESTURE THE CLAMP PINNED TO NOTHING COMMITS NOTHING (v2.69c) - the
+     guard endUvVertexDrag has carried since v2.63, which this path never got.
+     The three thresholds above are read in SCREEN pixels; the delta is read in
+     card units after clampUvDelta has held the selection inside the reachable
+     window. Drag an island that is already against the sheet's edge and the
+     the finger travels well past the slop while dx/dy round to zero - and
+     commitUvIslandTransform counts `moved` in attribute vertices, which an
+     island always has, so it pushed a history step named "Moved UV island"
+     over UVs identical to the ones before it. An Undo that undoes nothing is
+     the same confident lie as a toast about an op that did not run.
+
+     ONE CONDITION, NOT TWO (review finding): the first draft read
+     `mode === 'translate' || (!rotated && !scaled)`, and the left half could
+     never be the deciding term - a translate leaves angleDeg at 0 and scale at
+     1, so the right half is already true for it. A disjunct that cannot decide
+     anything reads as if it guards a case that exists.
+
+     A pinch passes while it actually turned or scaled: its dx/dy are frozen at
+     whatever the pre-pinch translate had reached, and the transform lives in
+     the other two terms. A pinch that turned less than
+     UV_PINCH_MIN_ANGLE_DEG and scaled less than UV_PINCH_MIN_SCALE_DELTA now
+     writes nothing where before it committed that sub-threshold amount -
+     which is what those two constants are for.
+
+     Note the clamp this guards against is the TRANSLATE path's: clampUvDelta
+     runs on dx/dy only, and a pinch can still scale an island off the sheet.
+     Pre-existing, and not this guard's business. */
+  const wentNowhere = Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01;
+  if (wentNowhere && !rotated && !scaled) return;
   commitUvIslandTransform(islandIds, dx, dy, mode === 'translate' ? 0 : angleDeg,
     mode === 'translate' ? 1 : scale, centerX, centerY);
 }
@@ -41520,6 +41608,12 @@ function applyUvViewBox() {
      the same size ON SCREEN at every zoom, which is the whole rule being
      borrowed from the 3D dots. */
   uvViewSvgEl.style.setProperty('--uv-hit', (Math.round(dr * 625) / 100) + 'px');
+  /* AND THE OVERLAP RING (v2.69c), by the same rule and for the same reason:
+     written from here so it holds its size on screen through the zoom, with
+     its unit, because `r: calc(var(--uv-dot) * 2.6)` is precisely the
+     arithmetic-on-a-var() that computes to nothing on an SVG geometry
+     property - see the note above this function and the one by .uv-vertex. */
+  uvViewSvgEl.style.setProperty('--uv-ring', (Math.round(dr * 260) / 100) + 'px');
   /* The UDIM numbers by the same rule (v2.63): written in user units, so
      without this they would double on screen every time the box halved -
      but measured against the card, so UV_NUM_PX means what it says on any
@@ -46709,6 +46803,11 @@ if (PICK_DEBUG) {
     get uvWeldPoints() { return uvWeldGroup.size; },
     uvWeldGroupOf(ai) { const g = uvWeldGroup.get(ai); return g ? g.slice() : null; },
     uvWeldRepOf(ai) { return ai >= 0 && ai < uvWeldOf.length ? uvWeldOf[ai] : -1; },
+    // v2.69c: the spots where two islands put a point in the same place.
+    get uvSplitRings() {
+      return Array.from(uvViewSvgEl.querySelectorAll('.uv-vertex-split'))
+        .map(el => ({ x: +el.getAttribute('cx'), y: +el.getAttribute('cy'), n: +el.dataset.n }));
+    },
     get uvCompMode() { return uvCompMode; },
     get uvSel() { return Array.from(uvSel); },
     get uvViewOpen() { return uvViewEl.classList.contains('show'); },

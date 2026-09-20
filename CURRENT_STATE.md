@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~46,815 lines)
-- Version at time of writing: **2.69b**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~46,914 lines)
+- Version at time of writing: **2.69c**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,67 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## Two loose ends, closed (2.69c)
+
+### An Undo that undid nothing
+
+`endUvVertexDrag` has had a `clampedAway` guard since v2.63; `endUvDrag` — the
+ISLAND drag — never got one. The three thresholds it reads (`translated`,
+`rotated`, `scaled`) are measured in **screen pixels**, while `dx`/`dy` are card
+units that `clampUvDelta` has already held inside the reachable window. Drag an
+island that is already against the sheet's edge and the finger travels
+hundreds of pixels while `dx`/`dy` round to zero — and
+`commitUvIslandTransform` counts its `moved` in **attribute vertices**, which an
+island always has, so `if (!moved) return` could never fire. It pushed a history
+step named "Moved UV island" over UVs identical to the ones before it.
+
+```js
+const wentNowhere = Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01;
+if (wentNowhere && !rotated && !scaled) return;
+```
+
+A pinch passes while it actually turned or scaled — its `dx`/`dy` are frozen at
+whatever the pre-pinch translate reached and the transform lives in the other
+two terms. A pinch under BOTH thresholds now writes nothing where it used to
+commit that sub-threshold amount, which is what those two constants are for.
+
+**Measured** (`_uv69cchk`): the first drag left pins the island at x = −16, the
+edge of the reachable window, and writes one history step; a second identical
+drag writes none, moves nothing and says nothing; a drag that *can* go
+somewhere still commits.
+
+*(The first draft read `mode === 'translate' || (!rotated && !scaled)`. Review
+finding: a translate leaves `angleDeg` at 0 and `scale` at 1, so the left half
+could never be the deciding term — a disjunct that cannot decide anything reads
+as if it guards a case that exists.)*
+
+### Two points on one spot now say so
+
+v2.69b welded the attribute vertices of one UV point into one dot. Two
+**islands** can still land a point on the same place — marking a seam without
+re-unwrapping is the everyday way — and after v2.69b the second point sits
+under the first with nothing on screen saying so.
+
+They are genuinely two points and must stay two, so this is a sign, not a weld:
+a ring (`.uv-vertex-split`) around the spot, drawn before every dot so it sits
+behind them, `pointer-events: none` so what a finger lands on is still the dot.
+Its radius comes from `--uv-ring`, written by `applyUvViewBox` beside
+`--uv-dot` **with its unit** — the v2.68e rule, because `r` is a geometry
+property.
+
+**Measured** (`_uv69cchk`): a freshly unwrapped sphere shows 104 dots and **0
+rings**. Seam every edge without re-unwrapping and the same layout becomes 96
+islands, 360 dots and **92 rings** — the same 92 positions v2.69b measured as
+stacks, now correctly read as 92 places where islands meet. Every ring sits on
+a dot, carries `data-n` ≥ 2, catches nothing, and is behind every dot.
+
+### Still open at a ring
+
+**A tap on a ringed spot always resolves to the later-drawn dot**, and there is
+no way to reach the one beneath it. v2.69b's note claimed the stacking question
+was gone; it is gone *within* an island. This is a real limit, and it belongs
+with cut/weld.
 
 ## What looks like one vertex IS one vertex (2.69b)
 
