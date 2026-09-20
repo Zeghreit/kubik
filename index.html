@@ -19698,6 +19698,410 @@ function markSeamSelection(on) {
 // the 2D editor's other selections (island drag, vertex drag) do not
 // mirror across symmetry either, and this stays consistent with them
 // rather than being the one 2D operation that does.
+/* CUT AND WELD - the seam as a thing you can see (v2.71).
+
+   A seam has always been topology here: mark it and computeUVIslands stops
+   walking across it, so the island splits and can be dragged apart. What it
+   never was is VISIBLE. The two sides of a fresh cut hold the same UV, so
+   the dots sit on each other, nothing on the sheet moves, and v2.69c had to
+   draw a ring round the spot to say a second point was hiding there.
+
+   So: a cut SEPARATES. Marking a seam now also walks the vertices the seam
+   touches and splits each one's fan of faces into the pieces the seams
+   actually leave it in, moving each piece a hair outward along its own way
+   out. Nothing else about the layout moves. Clearing the seam brings them
+   back together, exactly, which is what makes the two the same button.
+
+   THE FAN IS THE WHOLE IDEA. A UV point is not a vertex and it is not an
+   attribute vertex either: it is a CONNECTED RUN of the faces around one
+   mesh vertex, bounded by the seams (and by the mesh's own open edges) that
+   reach that vertex. Cut two edges through a vertex and its faces fall into
+   two runs, which is two UV points, which is two dots you can pick up
+   separately. Cut ONE edge ending at it - a dart tip - and the faces still
+   form a single ring round the far side, so it is still one point and the
+   dart does not open there. That is not a limitation being worked around,
+   it is what a dart is, and it falls straight out of the walk.
+
+   IT COSTS NO NEW VERTICES. separateGroupVertices already gives every face
+   group private copies of its corners (v2.28), so the two sides of any edge
+   are already different attribute vertices holding equal UVs. A cut writes
+   UVs. Nothing is added, nothing is reindexed, and the mesh in 3D is not
+   touched at all. */
+/* The step, as a share of the vertex's own mean neighbour distance. Measured
+   rather than chosen: at 0.12 the closest pair of pieces at a 12x8 sphere's
+   vertex landed 1.42 card units apart against a dot diameter of 1.76, so the
+   two dots still overlapped and the tap still could not tell them apart -
+   which is the whole loose end this version closes. 0.18 clears it with room
+   to spare. The guarantee is at the zoom the view opens on; zoom out far
+   enough and any two points share a dot, which is what the zoom is for. */
+const UV_CUT_GAP = 0.18;
+/* What the last Weld actually did, for a probe to read rather than infer. */
+let uvWeldLast = null;
+
+/* Every face group that touches each of these logical vertices, as a map
+   from logical vertex to an array of group indices. Built in one pass over
+   the topology rather than per vertex, because the caller has a handful of
+   vertices and the mesh has thousands of faces. */
+function uvFacesAtLogical(topo, wanted) {
+  const out = new Map();
+  wanted.forEach(l => out.set(l, []));
+  for (let gi = 0; gi < topo.faceGroups.length; gi++) {
+    const lv = topo.faceGroups[gi].logicalVerts;
+    for (let i = 0; i < lv.length; i++) {
+      const arr = out.get(lv[i]);
+      if (arr) arr.push(gi);
+    }
+  }
+  return out;
+}
+
+/* The runs of faces around one logical vertex, split by the seams and the
+   open edges that reach it. Two faces belong to the same run when they meet
+   along an edge AT THIS VERTEX that is not seamed - so the walk is over the
+   edges incident to L, not over the faces, and an edge carried by one face
+   only (the mesh's own border) joins nothing, which is correct: a border is
+   a cut the model came with.
+
+   `edgeFaces` is computeUVIslands's own map, logical edge key to the face
+   groups touching it; the seam test is the same creaseKeyFor the seam
+   dictionary is keyed on. Returns an array of arrays of group indices, one
+   per run. One run means this vertex is one UV point and nothing here
+   splits it. */
+function uvFanRunsAt(obj, topo, L, faces, edgeFaces, seams) {
+  if (faces.length < 2) return [faces.slice()];
+  const idx = new Map();
+  faces.forEach((gi, i) => idx.set(gi, i));
+  const parent = faces.map((_, i) => i);
+  const find = i => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+  const join = (i, j) => { const a = find(i), b = find(j); if (a !== b) parent[a] = b; };
+  /* The other end of every edge that reaches L, taken from the faces
+     themselves - topo.edges is the OUTLINE edge list and a vertex deep
+     inside a face's triangulation is not on it. */
+  const others = new Set();
+  faces.forEach(gi => {
+    const lv = topo.faceGroups[gi].logicalVerts;
+    for (let i = 0; i < lv.length; i++) if (lv[i] !== L) others.add(lv[i]);
+  });
+  others.forEach(X => {
+    const key = L < X ? L + '_' + X : X + '_' + L;
+    const fs = edgeFaces && edgeFaces.get ? edgeFaces.get(key) : null;
+    if (!fs || fs.length < 2) return;
+    const ck = creaseKeyFor(logicalPos(obj, L), logicalPos(obj, X));
+    if (ck && seams[ck]) return;          // a seam joins nothing
+    let first = -1;
+    for (let i = 0; i < fs.length; i++) {
+      if (!idx.has(fs[i])) continue;
+      if (first < 0) first = idx.get(fs[i]); else join(first, idx.get(fs[i]));
+    }
+  });
+  const byRoot = new Map();
+  for (let i = 0; i < faces.length; i++) {
+    const r = find(i);
+    let a = byRoot.get(r);
+    if (!a) { a = []; byRoot.set(r, a); }
+    a.push(faces[i]);
+  }
+  return Array.from(byRoot.values());
+}
+
+/* The attribute vertices one face group owns at one logical vertex. */
+function uvAisOfGroupAt(ed, topo, gi, L) {
+  const out = [];
+  const tris = ed.groups[gi] ? ed.groups[gi].triangles : null;
+  if (!tris) return out;
+  const seen = new Set();
+  for (let t = 0; t < tris.length; t++) {
+    for (let c = 0; c < 3; c++) {
+      const ai = tris[t][c];
+      if (topo.logicalOf[ai] === L && !seen.has(ai)) { seen.add(ai); out.push(ai); }
+    }
+  }
+  return out;
+}
+
+/* SEPARATE, or bring back together, every vertex in `touched`. With `gap`
+   above zero each run of faces moves a hair along its own way out - the
+   direction from the middle of its neighbours towards the vertex, which
+   points out of the run by construction and needs no winding, no normal and
+   no special case for a vertex on the island's edge. With `gap` at zero
+   every run is written the same UV, the average of what the runs hold now.
+
+   THAT INVERSE IS EXACT WHEN THE WAYS OUT CANCEL, which at a regular fan
+   they do: measured on a 12x8 sphere, cutting every edge at one vertex and
+   then clearing the same seam put every UV in the mesh back bit for bit as
+   stored. It is not exact in general - the pieces of a lopsided fan do not
+   step out symmetrically, and their average is then a fraction of one gap
+   from where the point began. Undo is the guaranteed inverse. This is the
+   honest one: it puts the pieces back together without claiming to know
+   where they were before anybody dragged them.
+
+   The step is a share of the vertex's own neighbourhood, so a dense mesh
+   opens a small gap and a coarse one a large - and it is measured to the
+   NEIGHBOURS rather than taken from the sheet, because a sheet-sized
+   constant is a different gesture on a 12-face cube and a 3,000-face head.
+
+   Returns how many vertices actually had more than one run; a dart tip has
+   one and is left exactly where it was. */
+function uvSeparateFans(obj, ed, topo, touched, edgeFaces, seams, gap) {
+  const U = ed.uvs;
+  const facesAt = uvFacesAtLogical(topo, touched);
+  let split = 0;
+  touched.forEach(L => {
+    const faces = facesAt.get(L);
+    if (!faces || faces.length < 2) return;
+    const runs = uvFanRunsAt(obj, topo, L, faces, edgeFaces, seams);
+    /* ONE RUN IS THE WHOLE POINT OF THE JOIN, and the first draft returned
+       here for both directions, which made clearing a seam do nothing at
+       all: the walk runs AFTER the seam dictionary has changed, so on the
+       way back the pieces are already one run by the time anybody asks. A
+       separation needs two runs to have something to separate; a join needs
+       one to have something to join. */
+    if (runs.length < (gap > 0 ? 2 : 1)) return;
+    split++;
+    /* Both passes read the CURRENT UVs before either writes, so the runs
+       cannot drift apart one at a time. */
+    const plan = [];
+    runs.forEach(run => {
+      const ais = [];
+      run.forEach(gi => uvAisOfGroupAt(ed, topo, gi, L).forEach(ai => ais.push(ai)));
+      if (!ais.length) return;
+      let u = 0, v = 0, n = 0;
+      for (let i = 0; i < ais.length; i++) {
+        const uu = U[ais[i] * 2], vv = U[ais[i] * 2 + 1];
+        if (!Number.isFinite(uu) || !Number.isFinite(vv)) continue;
+        u += uu; v += vv; n++;
+      }
+      if (!n) return;
+      u /= n; v /= n;
+      /* UNIT VECTORS, NOT POSITIONS, and the step is the NEAREST neighbour
+         rather than the mean of them - both learned from the adversarial
+         review, both about the same fan. Average the neighbours' positions
+         and a run with one far corner and one near one points at the far
+         one: on a fan of a long sliver and two short triangles the mean sat
+         beyond the fan's own edge and the step went straight through it, a
+         fold, from the op that is meant to open one. A mean of DIRECTIONS
+         cannot do that - every neighbour gets one vote regardless of how
+         far away it is - and a step measured against the CLOSEST neighbour
+         cannot outrun the shortest edge it has to stay inside of. */
+      let nx = 0, ny = 0, nn = 0, near = Infinity;
+      run.forEach(gi => {
+        const tris = ed.groups[gi] ? ed.groups[gi].triangles : null;
+        if (!tris) return;
+        for (let t = 0; t < tris.length; t++) {
+          for (let c = 0; c < 3; c++) {
+            const ai = tris[t][c];
+            if (topo.logicalOf[ai] === L) continue;
+            const uu = U[ai * 2], vv = U[ai * 2 + 1];
+            if (!Number.isFinite(uu) || !Number.isFinite(vv)) continue;
+            const d = Math.hypot(uu - u, vv - v);
+            if (!(d > 1e-12)) continue;
+            nx += (uu - u) / d; ny += (vv - v) / d; nn++;
+            if (d < near) near = d;
+          }
+        }
+      });
+      plan.push({ ais: ais, u: u, v: v, dx: nn ? -nx / nn : 0, dy: nn ? -ny / nn : 0,
+                  reach: nn && near < Infinity ? near : 0 });
+    });
+    if (plan.length < (gap > 0 ? 2 : 1)) return;
+    plan.forEach(pl => {
+      let tu, tv;
+      if (gap > 0) {
+        const len = Math.hypot(pl.dx, pl.dy);
+        /* A run whose neighbours point every way at once - a closed ring of
+           faces, which is the far side of a dart - has no way out to go
+           along, so it stays. */
+        if (!(len > 1e-12) || !(pl.reach > 0)) { tu = pl.u; tv = pl.v; }
+        else { tu = pl.u + (pl.dx / len) * pl.reach * gap; tv = pl.v + (pl.dy / len) * pl.reach * gap; }
+      } else {
+        /* ITS OWN AVERAGE, NOT EVERYBODY'S (review finding, and it was a bad
+           one). This used to write the mean over ALL the runs to all of
+           them, which is right only when the clear left a single run - and
+           silently welded across every seam still standing when it did not.
+           Clear one of the four cuts at a vertex and the other three runs
+           were dragged onto the mean with it, corners of islands nobody had
+           touched pulled to a point between them. A run's own average is
+           what "join what this seam was keeping apart" means: a run that
+           the clear did not change averages the one place it already is,
+           and writes it back unchanged. */
+        tu = pl.u; tv = pl.v;
+      }
+      if (!Number.isFinite(tu) || !Number.isFinite(tv)) return;
+      for (let i = 0; i < pl.ais.length; i++) {
+        U[pl.ais[i] * 2] = tu;
+        U[pl.ais[i] * 2 + 1] = tv;
+      }
+    });
+  });
+  return split;
+}
+
+/* The logical vertices at the ends of a list of seam keys. The seam key is
+   built from POSITIONS, so this goes back through the same posKey the key
+   was made with rather than trying to parse it. */
+function uvLogicalsOfSeamKeys(obj, topo, keys) {
+  const want = new Set(keys);
+  const out = new Set();
+  const n = topo.logicalGroups.length;
+  const posOf = [];
+  for (let l = 0; l < n; l++) posOf.push(logicalPos(obj, l));
+  for (let i = 0; i < topo.edges.length; i++) {
+    const a = topo.edges[i][0], b = topo.edges[i][1];
+    const k = creaseKeyFor(posOf[a], posOf[b]);
+    if (k && want.has(k)) { out.add(a); out.add(b); }
+  }
+  return out;
+}
+
+/* WELD - the point-level half, and the one a cut cannot do for you.
+
+   Cut and its own undo work on EDGES and put every run of a vertex back
+   where the average says. This takes whatever points are picked, of one
+   mesh vertex, wherever they have got to since - two sides of a seam
+   dragged a sheet apart, an island rotated, a vertex pulled by hand - and
+   melts them into one. It is the 3D Weld's gesture, in 2D: what you picked
+   is what sticks together.
+
+   AND IT CLEARS THE SEAM IT MADE POINTLESS. A vertex whose every attribute
+   copy now holds one UV is not on a seam any more in any sense that shows;
+   leaving the key behind would keep the islands apart for a cut that is no
+   longer there, and the next Unwrap would tear it open again. So a seam
+   whose BOTH ends came out whole is cleared - and only then, because a seam
+   welded at one end and open at the other is a dart, which is a real thing
+   and must survive.
+
+   WHAT IT DOES NOT DO is bring the rest of the other island with it. Two
+   islands welded at one vertex are one island hinged at a point, and
+   everything around it is still where it was, which is stretched. That is
+   Merge's job (v2.56, a similarity fitted to the shared edges) and Relax's
+   (v2.70, the interior), and saying so here is cheaper than half-doing
+   either. */
+function uvWeldSelection() {
+  const obj = uvViewObj;
+  if (!obj || !obj.mesh || !obj.mesh.geometry) return false;
+  if (uvCompMode !== 'vertex') { toast('Weld works in Vertex mode'); return false; }
+  if (uvSel.size < 2) { toast('Select two points first'); return false; }
+  const topo = obj.mesh.userData.topo;
+  if (!topo) { toast('Select two points first'); return false; }
+  let ed;
+  try { ed = toEditable(obj.mesh); }
+  catch (e) { console.warn('uvWeldSelection: toEditable failed', e); return false; }
+  if (!ed.uvs || !ed.uvs.length) { toast('Unwrap first'); return false; }
+  const byL = new Map();
+  uvSel.forEach(rep => {
+    const L = topo.logicalOf[rep];
+    if (L === undefined) return;
+    let a = byL.get(L);
+    if (!a) { a = []; byL.set(L, a); }
+    a.push(rep);
+  });
+  const was = ed.uvs.slice();
+  const touched = [];
+  let welded = 0;
+  byL.forEach((reps, L) => {
+    /* Two picked dots of ONE mesh vertex. Two dots of two different
+       vertices are two different places on the model and welding them would
+       be a modelling edit, not a UV one - that is 3D Weld, and it is one
+       mode away. */
+    if (reps.length < 2) return;
+    const ids = new Set();
+    let u = 0, v = 0, n = 0;
+    for (let i = 0; i < reps.length; i++) {
+      addWeldedAis(ids, reps[i]);
+      const uu = ed.uvs[reps[i] * 2], vv = ed.uvs[reps[i] * 2 + 1];
+      if (!Number.isFinite(uu) || !Number.isFinite(vv)) continue;
+      u += uu; v += vv; n++;
+    }
+    if (!n || ids.size < 2) return;
+    u /= n; v /= n;
+    ids.forEach(ai => { ed.uvs[ai * 2] = u; ed.uvs[ai * 2 + 1] = v; });
+    welded++;
+    touched.push(L);
+  });
+  if (!welded) { toast('Two points of one vertex, please'); return false; }
+  /* Whole means EVERY copy, not every picked one: a vertex where three
+     seams meet has three runs, and welding two of them leaves it seamed.
+
+     AND THE FAR END COUNTS TOO. A seam runs between two vertices and only
+     goes away when BOTH are whole - so the question has to be asked of the
+     neighbours as well, not only of the ones that were welded. The first
+     draft asked it of the welded vertices alone and cleared nothing, every
+     time: the far end of each seam was whole all along - it was never split
+     - and simply was not on the list of vertices being asked. */
+  const cand = new Set(touched);
+  {
+    const fa = uvFacesAtLogical(topo, new Set(touched));
+    touched.forEach(L => (fa.get(L) || []).forEach(gi => {
+      const lv = topo.faceGroups[gi].logicalVerts;
+      for (let i = 0; i < lv.length; i++) cand.add(lv[i]);
+    }));
+  }
+  const whole = new Set();
+  cand.forEach(L => {
+    const g = topo.logicalGroups[L];
+    if (!g || !g.length) return;
+    const u = ed.uvs[g[0] * 2], v = ed.uvs[g[0] * 2 + 1];
+    for (let i = 1; i < g.length; i++) {
+      if (ed.uvs[g[i] * 2] !== u || ed.uvs[g[i] * 2 + 1] !== v) return;
+    }
+    whole.add(L);
+  });
+  const seams = seamSet(obj);
+  const drop = [];
+  /* Which seams reach a vertex that is now whole at BOTH ends. Walked over
+     the faces at the welded vertices rather than over topo.edges, so that
+     the same one pass serves this and the wholeness question above.
+
+     A face's logicalVerts holds every corner of the face, so some of the
+     pairs this offers are diagonals rather than edges. They cost a key
+     build and fail the seams lookup, because a seam key is a pair of
+     POSITIONS and a quad's diagonal does not have another edge's. */
+  if (whole.size) {
+    /* Only the seams AT the welded vertices. A seam somewhere else that
+       happens to be whole is somebody's dart and none of this op's
+       business. */
+    const facesAt = uvFacesAtLogical(topo, new Set(touched));
+    const seen = new Set();
+    touched.forEach(L => {
+      if (!whole.has(L)) return;
+      const fs = facesAt.get(L) || [];
+      fs.forEach(gi => {
+        const lv = topo.faceGroups[gi].logicalVerts;
+        for (let i = 0; i < lv.length; i++) {
+          const X = lv[i];
+          if (X === L || !whole.has(X)) continue;
+          const pk = L < X ? L + '_' + X : X + '_' + L;
+          if (seen.has(pk)) continue;
+          seen.add(pk);
+          const k = creaseKeyFor(logicalPos(obj, L), logicalPos(obj, X));
+          if (k && seams[k]) drop.push(k);
+        }
+      });
+    });
+  }
+  /* A WELD THAT MOVED NOTHING CLEARS NOTHING (review finding). "Whole"
+     asks whether every copy of a vertex holds one UV, and a vertex can be
+     whole while thoroughly seamed: 3D Mark Seam and the auto-seamer write
+     the dictionary and never touch a UV, so a cube seamed on all twelve
+     edges and NOT re-unwrapped has every corner whole and every seam real.
+     Picking two of the three stacked dots there and pressing Weld used to
+     drop all three seams and merge three islands, off a gesture that moved
+     not one number. The test that tells the two apart is whether this weld
+     actually wrote something. */
+  const moved = uvsChangedAsStored(was, ed.uvs);
+  if (!moved) drop.length = 0;
+  uvWeldLast = { welded: welded, whole: whole.size, dropped: drop.length,
+                 picked: uvSel.size, groups: byL.size, moved: !!moved };
+  if (!moved && !drop.length) { toast('Already welded'); return false; }
+  if (moved) rebuildFromEditable(obj, ed);
+  if (drop.length) toggleSeamKeys(obj, drop, false);
+  refreshElementColors(obj);
+  finishMeshEdit(obj, 'Weld · ' + welded + (welded === 1 ? ' point' : ' points') +
+                 (drop.length ? ' · ' + drop.length + ' seam' + (drop.length === 1 ? '' : 's') + ' closed' : ''));
+  refreshUvView(obj);
+  return true;
+}
+
 function markSeamSelectionUv(on) {
   const obj = uvViewObj;
   if (!obj || !obj.mesh || !obj.mesh.geometry) return;
@@ -19715,15 +20119,47 @@ function markSeamSelectionUv(on) {
   const keys = Array.from(keySet);
   if (!keys.length) { toast('Nothing to seam there'); return; }
 
+  /* ONLY THE EDGES THAT ACTUALLY FLIP (review finding). A selection can
+     hold edges that are already cut and edges that are not, and the split
+     below must hear about only the ones this press changed - otherwise a
+     Cut that happens to include an already-cut edge steps its ends a second
+     time, and every press after that a third, and the drift never comes
+     back. Asked before the toggle, because after it the answer is gone. */
+  const seamsNow = seamSet(obj);
+  const fresh = keys.filter(k => on ? !seamsNow[k] : !!seamsNow[k]);
   const { changed, want } = toggleSeamKeys(obj, keys, on);
   if (!changed) {
-    toast(want ? 'Already seamed' : 'No seams on that edge');
+    toast(want ? 'Already cut' : 'No seams on that edge');
     return;
+  }
+  /* AND THE CUT SEPARATES (v2.71). The seam above is topology - it is what
+     computeUVIslands stops walking across - and until this ran, that was the
+     whole of it: the two sides kept the same UV, so nothing on the sheet
+     moved and the dots sat on top of each other. Now every vertex the seam
+     reaches has its fan of faces split into the runs the seams leave it in,
+     and each run steps a hair out of its own way. Clearing the seam runs the
+     same walk with no gap, which puts them back. */
+  let split = 0;
+  let ed = null;
+  try { ed = toEditable(obj.mesh); }
+  catch (e) { ed = null; }
+  if (ed && ed.uvs && ed.uvs.length) {
+    const wasUvs = ed.uvs.slice();
+    const isl = computeUVIslands(obj);
+    split = uvSeparateFans(obj, ed, topo,
+                           uvLogicalsOfSeamKeys(obj, topo, fresh),
+                           isl ? isl.edgeFaces : null, seamSet(obj),
+                           want ? UV_CUT_GAP : 0);
+    if (split && uvsChangedAsStored(wasUvs, ed.uvs)) rebuildFromEditable(obj, ed);
+    else split = 0;
   }
   refreshElementColors(obj);   // keeps the 3D wireframe in sync for later
   refreshUvView(obj);
   pushHistory();
-  toast(want ? changed + ' edge(s) seamed' : changed + ' seam(s) cleared');
+  toast((want ? 'Cut \u00b7 ' + changed + ' edge' + (changed === 1 ? '' : 's')
+              : changed + ' seam' + (changed === 1 ? '' : 's') + ' cleared') +
+        (split ? ' \u00b7 ' + split + ' point' + (split === 1 ? '' : 's') +
+                 (want ? ' split' : ' joined') : ''));
 }
 
 /* THE SIMILARITY THAT MAKES TWO ISLANDS ONE SHEET (v2.56).
@@ -41100,6 +41536,16 @@ function uvRelax() {
   return true;
 }
 
+/* VERTEX MODE'S OWN DOOR (v2.71), and the first one it has ever had - a hold
+   in this mode did nothing at all until there was something to put behind it.
+   Same gate as the island ring's: you hold what you have already picked. One
+   seat, because one op is what exists; the ring code does not care and a
+   second seat costs a line. */
+const HUB_TOOLS_UV2D_VERT = [
+  { key: 'uvweld', icon: 'weld', label: 'Weld', seat: 0,
+    enabled: () => uvSel.size > 1, run: uvWeldSelection }
+];
+
 const HUB_TOOLS_UV2D_ISLAND = Object.keys(UV_ISLAND_XFORMS).map((k, i) => ({
   key: 'uvx-' + k, icon: UV_ISLAND_XFORMS[k].icon, label: UV_ISLAND_XFORMS[k].label,
   seat: i, run: () => uvIslandXform(k)
@@ -41790,6 +42236,9 @@ function endUvLiveParts() {
 function endUvVertexDrag(commit) {
   if (!uvVDrag) return;
   endUvLiveParts();   // v2.69a: the split is over, whatever ends the gesture
+  /* And the hold, whatever ends it (v2.71) - a timer that outlives its drag
+     blooms a ring over a gesture that is already finished. */
+  if (uvVDrag.holdTimer) { clearTimeout(uvVDrag.holdTimer); uvVDrag.holdTimer = null; }
   const { ids, els, dx, dy, startClientX, startClientY, lastClientX, lastClientY,
     tapAi, tapWasSelected, tapFace, slop } = uvVDrag;
   // Which set this gesture's tap belongs to (v2.55) - faces and vertices
@@ -41953,7 +42402,26 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
        passes the tap threshold below, where it is known to be a drag. */
     idSet: ids, liveTried: false,
     tapAi: tapId, tapWasSelected, tapFace: isFace,
+    holdTimer: null,
   };
+  /* AND A HOLD OPENS VERTEX MODE'S DOOR (v2.71) - the island ring's arming,
+     line for line, including the two things that cost v2.65 a review: the
+     gate on an ALREADY selected element, so a hold on an unpicked dot stays
+     the drag that picks it up; and the cancel at the TAP's threshold rather
+     than the rings' own, which is what keeps the 8..22px dead band from
+     coming back. Face mode arms it too and finds the seat hatched, which is
+     the honest answer to "can I weld a face" - no, and here is why it is
+     grey rather than missing. */
+  if (tapWasSelected) {
+    const rec = uvVDrag, hx = ev.clientX, hy = ev.clientY, hid = ev.pointerId;
+    uvVDrag.holdTimer = setTimeout(() => {
+      if (uvVDrag !== rec) return;
+      rec.holdTimer = null;
+      endUvVertexDrag(false);    // a hold was never a drag, nor a tap
+      uvPointers.delete(hid);    // bloomToolRing takes the capture (v2.61)
+      bloomToolRing(hx, hy, HUB_TOOLS_UV2D_VERT, hid, { x: hx, y: hy });
+    }, TOOL_RING_HOLD_MS);
+  }
   try { uvViewSvgEl.setPointerCapture(ev.pointerId); } catch (e) {}
   ev.preventDefault();
 });
@@ -41969,6 +42437,15 @@ uvViewSvgEl.addEventListener('pointermove', (ev) => {
   /* This is a DRAG now, so the island can be split (v2.69a). Once: liveTried
      stops the walk running again every frame when there was nothing to split
      - an island that is not drawn, or a selection the render does not know. */
+  /* Past the tap's own threshold this is a drag, so the hold is off (v2.71).
+     Decided at the same line the live split decides the same thing, with the
+     same number, so the two can never disagree about what this gesture is. */
+  if (uvVDrag.holdTimer &&
+      Math.hypot(ev.clientX - uvVDrag.startClientX,
+                 ev.clientY - uvVDrag.startClientY) > uvVDrag.slop) {
+    clearTimeout(uvVDrag.holdTimer);
+    uvVDrag.holdTimer = null;
+  }
   if (!uvVDrag.liveTried &&
       Math.hypot(ev.clientX - uvVDrag.startClientX,
                  ev.clientY - uvVDrag.startClientY) > uvVDrag.slop) {
@@ -47335,6 +47812,9 @@ if (PICK_DEBUG) {
     ICON,
     // v2.65: the island door and the four transforms behind it.
     uvIslandXform, UV_ISLAND_XFORMS, HUB_TOOLS_UV2D_ISLAND,
+    // v2.71: cut separates, weld joins.
+    uvWeldSelection, uvSeparateFans, uvFanRunsAt, HUB_TOOLS_UV2D_VERT, UV_CUT_GAP,
+    get uvWeldLast() { return uvWeldLast; },
     // v2.70: relax, its solver, and the numbers it reports.
     uvRelax, uvRelaxRun, uvRelaxTriE, get uvRelaxLast() { return uvRelaxLast; },
     UV_RELAX_SWEEP_CAP, UV_RELAX_BUDGET_MS,
