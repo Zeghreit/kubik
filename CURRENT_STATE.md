@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~46,663 lines)
-- Version at time of writing: **2.69a**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~46,815 lines)
+- Version at time of writing: **2.69b**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -150,6 +150,89 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## What looks like one vertex IS one vertex (2.69b)
+
+Two reports off the phone — "выделенный вертекс не выделяется цветом" and
+"перемещаемый вертекс тянется отдельно от эджей... как будто отшивается от
+острова" — and **one cause under both**.
+
+### The measurement that found it
+
+An attribute vertex (`ai`) is a corner of a face group, not a point of the
+mesh: flat shading gives every corner its own index. On a 12x8 sphere,
+measured:
+
+- **360 dots drawn at 104 distinct positions.**
+- **92 of those positions held more than one dot; the deepest held twelve.**
+- **Every one of those stacks was a single logical mesh vertex** (0 mixed).
+- A drag moved **1 of the 12** triangles meeting at that point.
+- A selected dot computed to **#d5dce4** against an unselected **#eef1f4**.
+
+So the app was drawing one UV point up to twelve times and treating the copies
+as twelve different vertices. Dragging one moved a twelfth of the fan and the
+island tore; the selected one was painted under eleven unselected copies of
+itself — and even uncovered it would not have shown, because `--accent` is
+white unless the document is in an ARMED 3D component mode, and this view's
+`data-mode` reads `uv` the whole time it is open.
+
+### The weld map
+
+`uvWeldOf[ai]` gives the ai that stands for a UV point; `uvWeldGroup.get(rep)`
+gives every ai the point owns. Built inside `renderUvView`'s island walk, which
+already has both the island and the drawn position of every corner. The key is
+**island + logical mesh vertex + drawn position**:
+
+- same mesh vertex at the same UV **is** the same UV point, by definition;
+- a seam (same mesh vertex, UVs far apart) stays two points;
+- two different mesh vertices that happen to coincide stay two points;
+- `logicalOf` missing leaves the ai a point of its own rather than a guess.
+
+The key is zoom-invariant: `uvToX`/`uvToY` are pure functions of u/v over
+compile-time constants, and the zoom lives entirely in the viewBox.
+
+What follows from it:
+
+- **One circle per point**, not per ai — 360 dots became 104. `data-n` on each
+  dot says how many ais it stands for.
+- **`uvSel` holds representatives only**, so the count means points. It is
+  normalised through the map after every redraw, since an op that moves UVs can
+  change which ai stands for a point and a stale entry would be an invisible
+  selection that a drag still carried.
+- **A vertex or face drag expands through `addWeldedAis`** — measured
+  mid-gesture: 12 corners at the dragged spot, **0 left behind**, all 12 at the
+  new one, and after the commit the twelve ais are still one point.
+- **A corner whose triangle the walk skipped still gets a dot** (review
+  finding): one NaN UV takes a whole triangle out of the walk, and the good
+  corners around it are exactly what someone would drag the damage back with.
+
+### The accent says which kind you are picking
+
+`#uvViewSvg[data-kind]` sets `--accent` to the three colours the 3D modes
+already use — vertex `#d9ff3d`, edge `#46e1ff`, face `#b48cff` — so "what am I
+picking" is one colour everywhere in the app. Island keeps the white, having no
+3D counterpart. `renderUvView` writes `data-kind`, so it cannot drift from what
+is drawn. Measured: a selected dot goes `rgb(238,241,244)` → `rgb(217,255,61)`.
+
+### Also, from the review
+
+- **The toast counts dots, not ais.** `ids` is the welded expansion now, so a
+  commit that counted what it wrote said "Moved 12 UV vertices" directly above
+  a status line reading "1 selected". Both branches name the gesture now.
+- `uvFaceVerts` is dropped with the other two maps before `renderUvView`'s
+  early returns. It could not bite, but an inventory naming two of three is how
+  the next slice trips.
+
+### Known, and not fixed here
+
+- **The touch targets overlap where the layout crowds.** Reach is 3.3 units on
+  a grid whose points are 7 apart — exactly touching — and a sphere's poles are
+  far tighter. Where two dots are closer than a reach, the later-drawn one
+  takes the tap. The answer is the zoom: the reach holds its size on screen, so
+  zooming in pulls the points apart in reach terms. Measured, not guessed.
+- **A seam marked but not re-unwrapped still stacks two dots on one spot** —
+  they are genuinely two islands, so they are two points, but nothing on screen
+  says so. `data-n` already carries what an overlap indicator would need.
 
 ## The wireframe follows the vertex, and the view loses its frame (2.69a)
 

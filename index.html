@@ -2146,7 +2146,13 @@
      (#ringStar polyline is the same shape), and it keeps the wireframe off
      --accent, which is mode-dependent - a UV layout has no business
      changing colour with whatever component mode you happened to open it
-     from. */
+     from.
+
+     THE SELECTION DOES, THOUGH (v2.69b): --accent is set per kind on
+     #uvViewSvg further down, so a selected vertex is lime, a selected edge
+     cyan and a selected face violet - the 3D modes' own three colours. This
+     rule is about the WIREFRAME, which is still --text and still does not
+     change with the mode. */
   /* THE UDIM SHEET (v2.63), which replaced the dashed 0..1 square. That
      square was the only thing in this view that said "here is the edge",
      and it was not telling the truth even before this slice: UV space does
@@ -2240,8 +2246,10 @@
      sized to look right) is hard to grab by touch. r=3.2 in the card's own
      0..100 viewBox is close to the 44px minimum #geoBar already uses for a
      touch target at this card's default on-screen size (min(560px,100%)).
-     Two DIFFERENT attribute vertices can legitimately share one screen
-     position (an internal, non-seam edge between two face groups that
+     Two different LOGICAL vertices can legitimately share one screen
+     position (since v2.69b; before it, two attribute vertices of the SAME
+     logical vertex could too, and usually did - that stack is what the weld
+     map removed) (an internal, non-seam edge between two face groups that
      unwrapped to the same spot) - the later one in paint order sits on top
      and is what a tap there reaches; picking the other one is out of scope
      for this slice, the same tradeoff Blender's own overlapping-vertex
@@ -2260,6 +2268,14 @@
      makes that stroke hit-test even though it paints nothing - the default
      `visiblePainted` would ignore it. Radius 0.8 + half of a 5.0 stroke is
      3.3 of reach, which is what the old disc had.
+
+     THE REACHES OVERLAP WHERE THE LAYOUT CROWDS (measured, v2.69b): 3.3 units
+     of reach on a grid whose points are 7 apart is exactly touching, and a
+     sphere's poles are far tighter than that. Where two dots are closer than a
+     reach, the later-drawn one takes the tap wherever the two strokes overlap.
+     The answer is the zoom - the reach holds its size on SCREEN, so zooming in
+     pulls the points apart in reach terms - and not a smaller target, which
+     was measured and chosen.
 
      And `--uv-dot` is rewritten by applyUvViewBox in step with the viewBox,
      so both the dot and its reach hold a constant size on screen through
@@ -2288,6 +2304,21 @@
     cursor: grab;
   }
   #uvViewSvg .uv-vertex.selected { fill: var(--accent); fill-opacity: 1; }
+  /* AND --accent HAS TO BE A COLOUR (v2.69b, Zeghreit: "выделенный вертекс не
+     выделяется цветом"). Measured: a selected dot computed to #d5dce4 against
+     an unselected #eef1f4 - two greys a hair apart. Not a bug in the class,
+     which was applied correctly; --accent is white unless the document is in
+     an ARMED 3D component mode, and the 2D view never is - `data-mode` reads
+     "uv" the whole time it is open.
+     These are the three colours the 3D modes already use for the same three
+     kinds (see the :root[data-mode=...][data-armed] rules), so "what am I
+     picking" is one colour everywhere in the app rather than two vocabularies.
+     Scoped to this element, so the 3D theme is untouched; island keeps the
+     white, having no 3D counterpart to borrow from. renderUvView writes
+     data-kind, which means it cannot drift from what is actually drawn. */
+  #uvViewSvg[data-kind="vertex"] { --accent: #d9ff3d; }
+  #uvViewSvg[data-kind="edge"]   { --accent: #46e1ff; }
+  #uvViewSvg[data-kind="face"]   { --accent: #b48cff; }
   #uvViewSvg .uv-vertex.dragging { cursor: grabbing; }
   /* Edge mode (v2.50) - the same generous-hit-target reasoning as .uv-vertex
      above, spent as stroke-width instead of a disc radius: an edge is a
@@ -2718,7 +2749,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.69a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.69b</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -38803,9 +38834,20 @@ let uvPinchReadout = null;
 function renderUvView(obj, ed) {
   const NS = 'http://www.w3.org/2000/svg';
   uvViewSvgEl.innerHTML = '';
-  // Dropped before the early returns below, so a redraw that draws nothing
-  // cannot leave the live drag holding the last object's triangles (v2.69a).
+  /* The kind, on the element, so the CSS can colour the accent by it
+     (v2.69b) - written here rather than in setUvCompMode because this runs on
+     every open and every redraw, and cannot disagree with what is drawn. */
+  uvViewSvgEl.dataset.kind = uvCompMode;
+  /* EVERY MAP THIS FUNCTION OWNS, dropped before the early returns below, so
+     a redraw that draws nothing cannot leave a gesture holding the last
+     object's indices. uvFaceVerts was assigned only after them until v2.69b -
+     harmless, because a face drag gates on finding a .uv-face element and an
+     early return empties the svg, but a list of what gets dropped that names
+     two of three is how the next slice trips. */
   uvIslandTris = [];
+  uvFaceVerts = [];
+  uvWeldOf = new Int32Array(0);
+  uvWeldGroup = new Map();
   if (!ed.uvs || !ed.uvs.length) return { ok: false };
   const triCount = ed.groups.reduce((n, g) => n + g.triangles.length, 0);
   if (triCount > UV_VIEW_TRI_CAP) return { ok: false, tooHeavy: true };
@@ -38862,6 +38904,16 @@ function renderUvView(obj, ed) {
   }
 
   const { attrIsland, count } = islandVertexMap(obj);
+  /* The weld map is built in the walk below, which already has both the
+     island and the drawn position of every corner (v2.69b). logicalOf can be
+     short or stale on a damaged topo - the edge branch below guards it the
+     same way - and an ai it cannot answer for is simply left as a point of its
+     own rather than welded to a guess. */
+  uvWeldOf = new Int32Array(ed.uvs.length / 2).fill(-1);
+  uvWeldGroup = new Map();
+  const weldTopo = obj.mesh.userData.topo;
+  const weldLogical = weldTopo && weldTopo.logicalOf;
+  const weldKey = new Map();
   const segsByIsland = new Array(count).fill('');
   const fillsByIsland = new Array(count).fill('');
   // Per FACE GROUP, for Face mode (v2.55) - built in the same walk rather
@@ -38885,6 +38937,18 @@ function renderUvView(obj, ed) {
          UV_VIEW_TRI_CAP anyway. */
       (uvIslandTris[island] || (uvIslandTris[island] = [])).push(t);
       const scr = sp.map(([u, v]) => [r2(toX(u)), r2(toY(v))]);
+      // v2.69b: same island, same mesh vertex, same drawn spot = one UV point.
+      for (let i = 0; i < 3; i++) {
+        const ai = t[i];
+        if (uvWeldOf[ai] >= 0) continue;   // already placed by another triangle
+        const lg = weldLogical ? weldLogical[ai] : undefined;
+        const key = island + '|' + (lg === undefined ? 'a' + ai : lg) +
+                    '|' + scr[i][0] + ',' + scr[i][1];
+        let r = weldKey.get(key);
+        if (r === undefined) { r = ai; weldKey.set(key, r); uvWeldGroup.set(r, []); }
+        uvWeldOf[ai] = r;
+        uvWeldGroup.get(r).push(ai);
+      }
       // Every triangle edge - a shared edge between two triangles is drawn
       // twice on top of itself, which costs nothing to look at and saves
       // the bookkeeping a dedup pass would need for a read-only outline.
@@ -38896,6 +38960,22 @@ function renderUvView(obj, ed) {
       fillsByGroup[gi] += `M${scr[0][0]},${scr[0][1]}L${scr[1][0]},${scr[1][1]}L${scr[2][0]},${scr[2][1]}Z`;
     });
   });
+
+  /* AND THE CORNERS OF A SKIPPED TRIANGLE (review finding, v2.69b). The walk
+     above drops a triangle whose island is out of range or any of whose three
+     corners has a non-finite UV - one NaN from a failed unwrap or a bad import
+     takes the whole triangle - and the weld map is filled inside it, so the
+     GOOD corners of that triangle would have lost their dots. The per-ai loop
+     this replaced drew them, and they are exactly the vertices someone would
+     want to drag the damage back into place with. Each one is its own point
+     until something welds it. */
+  ed.groups.forEach(g => g.triangles.forEach(t => t.forEach(ai => {
+    if (uvWeldOf[ai] >= 0) return;
+    const u = ed.uvs[ai * 2], v = ed.uvs[ai * 2 + 1];
+    if (!Number.isFinite(u) || !Number.isFinite(v)) return;
+    uvWeldOf[ai] = ai;
+    uvWeldGroup.set(ai, [ai]);
+  })));
 
   for (let i = 0; i < count; i++) {
     if (!fillsByIsland[i]) continue; // no finite-UV triangle landed in this island
@@ -38931,28 +39011,33 @@ function renderUvView(obj, ed) {
     }
   }
 
-  // One circle per attribute vertex with a finite UV (v2.48),
-  // vertex mode only - built from the same ed.groups walk as the fills
-  // above rather than 0..ed.uvs.length/2, so a vertex no triangle actually
-  // uses (dead data an op left behind) never gets a dot nothing can select
-  // meaningfully. Paint order is index order: last-drawn sits on top,
-  // which is what a tap resolves to when two attribute vertices share one
-  // screen position (see the .uv-vertex CSS comment).
+  /* One circle per UV POINT (v2.69b; it was one per attribute vertex from
+     v2.48 to v2.69a). Built from the weld map, which the walk above fills
+     from the triangles, so a vertex no triangle actually uses - dead data an
+     op left behind - still gets no dot nothing can select meaningfully.
+     Paint order is first-seen order, and no two dots share a position any
+     more, so the question of which of a stack a tap resolves to is gone. */
   if (uvCompMode === 'vertex') {
-    const seen = new Uint8Array(ed.uvs.length / 2);
-    ed.groups.forEach(g => g.triangles.forEach(t => t.forEach(ai => {
-      if (seen[ai]) return;
+    /* ONE CIRCLE PER UV POINT (v2.69b), from the weld map rather than one per
+       attribute vertex: the sphere above drew 360 for 104 points, stacking up
+       to twelve identical dots on one spot. The map is built from the triangle
+       walk, so a vertex no triangle actually uses - dead data an op left
+       behind - still gets no dot, which is what the per-ai walk here was for.
+       Insertion order is first-seen order, so paint order is unchanged. */
+    uvWeldGroup.forEach((ais, ai) => {
       const u = ed.uvs[ai * 2], v = ed.uvs[ai * 2 + 1];
       if (!Number.isFinite(u) || !Number.isFinite(v)) return;
-      seen[ai] = 1;
       const c = document.createElementNS(NS, 'circle');
       c.setAttribute('class', 'uv-vertex' + (uvSel.has(ai) ? ' selected' : ''));
       c.setAttribute('cx', r2(toX(u)));
       c.setAttribute('cy', r2(toY(v)));
       c.setAttribute('r', String(uvDotR()));
       c.dataset.ai = String(ai);
+      // How many attribute vertices this one dot stands for - the probe reads
+      // it, and it is the number this version exists to stop being twelve.
+      c.dataset.n = String(ais.length);
       uvViewSvgEl.appendChild(c);
-    })));
+    });
   }
 
   // One <line> per unique triangle edge, edge mode only (v2.50) - deduped
@@ -39052,6 +39137,24 @@ function refreshUvView(obj) {
   uvViewEmptyEl.style.display = res.ok ? 'none' : '';
   uvViewStatusEl.style.display = res.ok ? '' : 'none';   // v2.62
   uvStatusLast = '';   // the redraw may have pruned a selection out from under it
+  /* AND THROUGH THE WELD MAP (v2.69b), which the render has just rebuilt: an
+     op that moves UVs can change which ai stands for a point, and a uvSel
+     entry that is no longer a representative has no dot on screen - an
+     invisible selection that a drag would still carry. Normalised after the
+     render for that reason, so the classes it wrote are repainted from the
+     corrected set. */
+  if (uvSel.size) {
+    const keep = new Set();
+    uvSel.forEach(ai => {
+      const r = ai >= 0 && ai < uvWeldOf.length ? uvWeldOf[ai] : -1;
+      keep.add(r >= 0 ? r : ai);
+    });
+    if (keep.size !== uvSel.size || ![...keep].every(ai => uvSel.has(ai))) {
+      uvSel.clear();
+      keep.forEach(ai => uvSel.add(ai));
+      paintUvCompSelection();
+    }
+  }
   refreshUvStatus();
   if (!res.ok) {
     uvViewEmptyEl.textContent = res.tooHeavy
@@ -39151,6 +39254,37 @@ let uvFaceSel = new Set();
 let uvFaceVerts = [];
 // Per island, the triangles it is drawn from - see renderUvView's walk.
 let uvIslandTris = [];
+/* WHAT LOOKS LIKE ONE VERTEX IS ONE VERTEX (v2.69b). An attribute vertex is a
+   corner of a face group, not a point of the mesh: flat shading gives every
+   corner its own index, so one UV point is many `ai`s. Measured on a 12x8
+   sphere: 360 dots at 104 positions, 92 of those positions holding more than
+   one dot and the deepest holding TWELVE - and every one of those stacks was a
+   single logical mesh vertex. The app treated the twelve as twelve different
+   vertices, which is both of Zeghreit's reports at once: a drag moved ONE of
+   the twelve triangles meeting there and the island tore ("как будто
+   отшивается от острова"), and the selected dot was painted under eleven
+   unselected copies of itself.
+
+   So the ais at one UV point are welded into one DOT. The key is island +
+   logical mesh vertex + the drawn position: same mesh vertex at the same UV is
+   the same UV point by definition, while two DIFFERENT mesh vertices that
+   happen to land on the same spot are not, and are left alone. Tearing a UV
+   point apart on purpose is what the cut/weld tools on the brief are for; it
+   is not something a drag should do by accident.
+
+   uvWeldOf[ai] -> the ai that stands for that point (the first one the walk
+   meets); uvWeldGroup.get(rep) -> every ai the point owns. uvSel holds
+   representatives only, because they are the only ais with a dot. */
+let uvWeldOf = new Int32Array(0);
+let uvWeldGroup = new Map();
+// Every ai a UV point owns - what a drag has to move for the island to hold
+// together. Falls back to the ai itself if the map has not seen it.
+function addWeldedAis(set, ai) {
+  const r = ai >= 0 && ai < uvWeldOf.length ? uvWeldOf[ai] : -1;
+  const g = r >= 0 ? uvWeldGroup.get(r) : null;
+  if (g) { for (let i = 0; i < g.length; i++) set.add(g[i]); }
+  else set.add(ai);
+}
 
 // Switches between the whole-island gesture (v2.45/v2.47), per-vertex
 // editing (v2.48) and per-edge selection (v2.50), and always drops whatever
@@ -40999,8 +41133,14 @@ function endUvVertexDrag(commit) {
     return;
   }
   if (clampedAway) return;
+  /* THE WORD IS COUNTED IN DOTS (review finding, v2.69b), by both branches
+     now. Vertex mode used to let commitUvVertexDrag count what it wrote, which
+     since the weld map is every attribute vertex of every point: drag one dot
+     on a sphere and the toast said "Moved 12 UV vertices" over a status line
+     reading "1 selected". els is the dots the gesture actually held. */
   commitUvVertexDrag(ids, dx, dy,
-    tapFace ? (els.size === 1 ? 'Moved UV face' : 'Moved ' + els.size + ' UV faces') : undefined);
+    tapFace ? (els.size === 1 ? 'Moved UV face' : 'Moved ' + els.size + ' UV faces')
+            : (els.size === 1 ? 'Moved UV vertex' : 'Moved ' + els.size + ' UV vertices'));
 }
 // Same translate-only math commitUvIslandTransform uses for dx/dy, minus
 // the pivot/rotate/scale terms a single vertex or a loose group of them
@@ -41024,8 +41164,10 @@ function commitUvVertexDrag(ids, dxSvg, dySvg, what) {
   });
   if (!moved) return;
   rebuildFromEditable(obj, ed);
-  // `what` names the gesture when the caller knows better than the vertex
-  // count does - a face drag moves dozens of vertices and is one face.
+  /* `what` names the gesture, and since v2.69b both callers always pass it:
+     `moved` counts attribute vertices, and one UV point is up to twelve of
+     them. The fallback stays for a caller that has nothing better to say, and
+     it is the only place left that would ever print that number. */
   finishMeshEdit(obj, what || (moved === 1 ? 'Moved UV vertex' : `Moved ${moved} UV vertices`));
   refreshUvView(obj);
 }
@@ -41090,11 +41232,16 @@ uvViewSvgEl.addEventListener('pointerdown', (ev) => {
     el.classList.add('dragging', 'selected');
     if (isFace) {
       const verts = uvFaceVerts[id];
-      if (verts) verts.forEach(ai => ids.add(ai));
+      // Welded (v2.69b): a face's corner is shared with the faces around it,
+      // so moving the face without them would tear the island open behind it.
+      if (verts) verts.forEach(ai => addWeldedAis(ids, ai));
       const bb = el.getBBox();
       grow(bb.x, bb.y, bb.x + bb.width, bb.y + bb.height);
     } else {
-      ids.add(id);
+      /* Every ai this dot stands for (v2.69b). Moving only the tapped one
+         moved a single triangle's corner out of the twelve that met there -
+         "как будто отшивается от острова". */
+      addWeldedAis(ids, id);
       const cx = parseFloat(el.getAttribute('cx')), cy = parseFloat(el.getAttribute('cy'));
       grow(cx, cy, cx, cy);
     }
@@ -46557,6 +46704,11 @@ if (PICK_DEBUG) {
       return uvLiveParts ? uvLiveParts.reduce((n, p) => n + p.tris.length, 0) : 0;
     },
     get uvIslandTriCounts() { return uvIslandTris.map(a => a ? a.length : 0); },
+    // v2.69b: the weld map - how many ais one dot stands for.
+    addWeldedAis,
+    get uvWeldPoints() { return uvWeldGroup.size; },
+    uvWeldGroupOf(ai) { const g = uvWeldGroup.get(ai); return g ? g.slice() : null; },
+    uvWeldRepOf(ai) { return ai >= 0 && ai < uvWeldOf.length ? uvWeldOf[ai] : -1; },
     get uvCompMode() { return uvCompMode; },
     get uvSel() { return Array.from(uvSel); },
     get uvViewOpen() { return uvViewEl.classList.contains('show'); },
