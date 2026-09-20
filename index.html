@@ -35231,6 +35231,9 @@ const ICON = {
   del:     '<path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/>',
   smooth:  '<path d="M3 15c4 0 5-8 9-8s5 8 9 8"/>',
   flat:    '<path d="M3 18h6l6-12h6"/>',
+  /* Relax: a wavy row settling onto a straight one. Not the `smooth`
+     wave, which is shading and means something else in this app. */
+  relax:   '<path d="M3 8c3-4 6 4 9 0s6-4 9 0"/><path d="M3 16h18"/>',
   eye:     '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
   color:   '<path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.7-.9 1.4-1.8-.4-1.1.4-2.2 1.6-2.2H17a4 4 0 0 0 4-4c0-5.5-4-10-9-10z"/><circle cx="8" cy="11" r="1.1"/><circle cx="12" cy="8" r="1.1"/><circle cx="16" cy="11" r="1.1"/>',
   focus:   '<circle cx="12" cy="12" r="3"/><path d="M4 8V4h4M20 8V4h-4M4 16v4h4M20 16v4h-4"/>',
@@ -37344,7 +37347,13 @@ const HUB_TOOLS_UV2D_WORLD = [
      neighbours - reaching for one and landing on the other is one Undo, and
      seeing them together is what makes the difference between them legible. */
   { key: 'uvdensity', icon: 'density', label: 'Even density', seat: 3, run: uvEvenDensity },
-  { key: 'uvsquare', icon: 'tosquare', label: 'Stretch to square', seat: 4, run: uvStretchToSquare }
+  { key: 'uvsquare', icon: 'tosquare', label: 'Stretch to square', seat: 4, run: uvStretchToSquare },
+  /* v2.70, at 6 rather than in the row at 2-4. Those three rewrite where the
+     islands SIT; this one rewrites what is inside one and never moves its
+     outline, so seating it beside them would say they are the same kind of
+     thing. It is also the only seat here that reads the selection - see
+     uvRelax, which says why it is allowed to. */
+  { key: 'uvrelax', icon: 'relax', label: 'Relax', seat: 6, run: uvRelax }
 ];
 
 function currentHubTools() {
@@ -40495,6 +40504,602 @@ function uvStretchToSquare() {
    to the WORLD ring instead, because it is about every island there is rather
    than about a selection. Anything after this - exact scale, texel density -
    goes behind a door on one of these seats, since a ring holds eight. */
+/* RELAX - the INSIDE of an island, with its outline held still (v2.70).
+
+   The boundary stays exactly where it is and every INTERIOR UV point is
+   nudged, one at a time, to where the triangles around it are LESS DISTORTED.
+   The measure is a weighted pair of distortion terms (see uvRelaxTriE): per
+   triangle, the two singular values of the map from UV back to the surface,
+   density deciding and shear breaking the ties, each penalised for being
+   too big AND for being too small, area-weighted over the island, with the
+   surface pre-scaled so that an isometry - a layout with no distortion at all
+   - is what the energy's minimum means.
+
+   IT WAS WRITTEN THREE TIMES, AND THAT IS WHY THIS COMMENT IS LONG. Each
+   draft passed every test about tearing, flipping and the outline; the two
+   that were wrong were wrong about the one thing the op is FOR, and only a
+   number said so.
+
+   1. The textbook answer: fix the boundary, solve the interior as a mean-value
+      harmonic map (Floater). A handful of lines, converges in a few dozen
+      sweeps - and CONFORMAL, which buys angles with area. Measured on a 12x8
+      sphere the p95/p5 spread of texel density went 2.8 -> 6.2, and on a 48x32
+      one 1.7 -> 15.3. Between two and nine times WORSE at the thing it was
+      meant to fix.
+   2. Sander's L2 stretch, minimised by local search. Its own energy fell 27%
+      and the density spread still rose, 2.8 -> 3.7. Because sigma^2 + sigma^2
+      punishes a triangle that is too small in UV and says nothing at all about
+      one that is too big, so it is free to pay for a crowded corner by
+      inflating somewhere else, and half of it is the conformal pull again.
+   3. This one. E = (s1^2 + s2^2) + (1/s1^2 + 1/s2^2) - the second half is the
+      first half of the INVERSE map, so over-sampling costs exactly what
+      under-sampling costs and the minimum is an isometry rather than a
+      conformal map. Both terms come out of a, b, c without an eigenvector:
+      s1^2 + s2^2 = a + c, and 1/s1^2 + 1/s2^2 = (a + c) / (ac - b^2).
+
+   SO THE ENERGY IS THE POINT, and the method is chosen to serve it: each
+   interior point probes four steps, takes the best one that LOWERS the energy
+   of its own triangle fan, and halves its step when none does. That is slower
+   per sweep than solving a linear system and it buys two things no solver
+   here could:
+
+   - MONOTONE BY CONSTRUCTION. A step is taken only if it is an improvement,
+     so the island cannot come out worse than it went in. There is no
+     parameter that makes this op harmful, and stopping early - on the
+     millisecond budget, on a phone - leaves a result that is better than the
+     input rather than half of something.
+   - NO FLIP, EVER. Stretch energy is infinite where a triangle's UV area is
+     zero, which is the wall a fold has to climb; and because the energy is
+     BLIND to which side of that wall it is on - it squares the area - the
+     wall alone is not enough for a probe that jumps. So each triangle also
+     remembers the sign it started with, and a candidate that changes any sign
+     in the fan is refused outright.
+
+   A POINT IS NOT AN ATTRIBUTE VERTEX (v2.69b's law). Everything below works on
+   UV POINTS - one logical mesh vertex at one UV - and writes back to every ai
+   the point owns. Moving one ai would tear the island on the first sweep,
+   twelve ways at a sphere's pole.
+
+   A SEAM STAYS A SEAM without a line of seam code: the two sides of a seam are
+   one logical vertex at two UVs, so they are two points, and each sits on a UV
+   edge with a single triangle behind it - which is the test for boundary. Seam
+   points are pinned because they are boundary, not because anything here knows
+   what a seam is.
+
+   WHAT IT CANNOT DO is fix the outline. A bad island is bad at its edge too,
+   and this op is forbidden from touching that; unfold with a free boundary is
+   the other half and is not built. */
+const UV_RELAX_SWEEP_CAP = 60;
+const UV_RELAX_BUDGET_MS = 300;
+/* A sweep that buys less than this share of the island's energy is the last
+   one worth paying for. */
+const UV_RELAX_GAIN_EPS = 2e-4;
+/* The first probe, as a share of the mean UV edge around the point - so a
+   dense island probes finely and a coarse one does not crawl. */
+const UV_RELAX_STEP0 = 0.30;
+const UV_RELAX_STEP_MIN = 1e-7;
+/* A press that buys less than this is a press that did nothing, and the whole
+   difference between the two is a history step somebody has to Undo past. A
+   local search never stops dead - there is always one more point that can find
+   one more sliver of energy - so "it converged" has to be a number, not the
+   absence of a move. Measured: without this, the second press of a settled
+   island moved one point and pushed a step. */
+const UV_RELAX_MIN_DROP = 5e-4;
+/* Four axes then four diagonals; see the probe loop for who gets which. */
+const UV_RELAX_DIRS = [1, 0, -1, 0, 0, 1, 0, -1,
+                       0.70710678, 0.70710678, -0.70710678, 0.70710678,
+                       0.70710678, -0.70710678, -0.70710678, -0.70710678];
+let uvRelaxLast = null;
+
+/* The three invariants of one triangle's map from UV to the surface, written
+   into `o`: a = |Ss|^2, b = Ss.St, c = |St|^2, where Ss and St are the surface
+   derivatives with respect to u and v - each a 3-vector, each divided by twice
+   the UV area. `q` holds the three 3D corners, already scaled so that the
+   island's surface area equals its UV area; `sgn` is the sign the triangle's
+   UV area had when the island was read.
+
+   False means "no answer": a fold, a collapse, or a triangle that has turned
+   over since. Every caller treats that as infinite energy, which is the wall
+   that keeps a probe from stepping through a neighbour. */
+function uvRelaxTriABC(t, pts, o) {
+  const A = pts[t.a], B = pts[t.b], C = pts[t.c];
+  const s1 = A.u, t1 = A.v, s2 = B.u, t2 = B.v, s3 = C.u, t3 = C.v;
+  const d = (s2 - s1) * (t3 - t1) - (s3 - s1) * (t2 - t1);
+  if (!(d * t.sgn > 1e-18)) return false;
+  const q = t.q;
+  const k1 = (t2 - t3) / d, k2 = (t3 - t1) / d, k3 = (t1 - t2) / d;
+  const m1 = (s3 - s2) / d, m2 = (s1 - s3) / d, m3 = (s2 - s1) / d;
+  let a = 0, b = 0, c = 0;
+  for (let i = 0; i < 3; i++) {
+    const ss = q[i] * k1 + q[3 + i] * k2 + q[6 + i] * k3;
+    const stt = q[i] * m1 + q[3 + i] * m2 + q[6 + i] * m3;
+    a += ss * ss;
+    b += ss * stt;
+    c += stt * stt;
+  }
+  o[0] = a; o[1] = b; o[2] = c;
+  return true;
+}
+
+const UV_RELAX_ABC = new Float64Array(3);
+
+/* The energy the sweeps minimise, and it is split on purpose into the two
+   things that can be wrong with a triangle:
+
+   - DENSITY, J + 1/J, where J is the area ratio. Minimum 2 at J = 1, and it
+     climbs whichever way the triangle is wrong - too crowded or too spread.
+   - SHEAR, s1/s2 + s2/s1, which is (a + c) / J. Minimum 2 at a square.
+
+   A SPHERE CANNOT HAVE BOTH - that is Gauss, not an implementation problem -
+   so the ratio between these two weights is a decision about what Kubik wants,
+   and it was made by measuring rather than by taste. On a 12x8 sphere, the
+   variation in texel density across the island:
+
+     symmetric Dirichlet (the textbook weights)   0.28 -> 0.50
+     shear at 0.25                                0.28 -> 0.38
+     shear at 0.05                                0.28 -> 0.26
+
+   Every one of those lowered shear. Only the last one lowered shear without
+   charging for it in density, and on the 48x32 sphere it is the same story
+   (p75/p25 1.103 -> 1.091 where 0.25 gave 1.267). So: density decides, shear
+   breaks the ties. A checker that stays the same SIZE across the model is what
+   an artist notices; a checker that is slightly sheared is not.
+
+   A cylinder is developable, so it has no trade to make, and it is the fixture
+   that says these weights are not hiding anything: there both numbers improve
+   together whatever the ratio. */
+const UV_RELAX_W_DENSITY = 1;
+const UV_RELAX_W_SHEAR = 0.05;
+
+function uvRelaxTriE(t, pts) {
+  if (!uvRelaxTriABC(t, pts, UV_RELAX_ABC)) return Infinity;
+  const a = UV_RELAX_ABC[0], b = UV_RELAX_ABC[1], c = UV_RELAX_ABC[2];
+  const det = a * c - b * b;
+  if (!(det > 1e-24) || !Number.isFinite(det)) return Infinity;
+  const J = Math.sqrt(det);
+  if (!(J > 1e-12) || !Number.isFinite(J)) return Infinity;
+  return UV_RELAX_W_DENSITY * (J + 1 / J) + UV_RELAX_W_SHEAR * ((a + c) / J);
+}
+
+/* Sander's L2 stretch of the same triangle - reported, never minimised. It is
+   the number the texture literature quotes and the one draft 2 chased, kept so
+   that what this op does to it stays visible rather than assumed. */
+function uvRelaxTriL2(t, pts) {
+  if (!uvRelaxTriABC(t, pts, UV_RELAX_ABC)) return Infinity;
+  return (UV_RELAX_ABC[0] + UV_RELAX_ABC[2]) / 2;
+}
+
+/* Does the work and reports NUMBERS - every decision this op makes is a count
+   or a measurement somebody can read back off `__kubik.uvRelaxLast` rather
+   than reason about. */
+function uvRelaxRun(ed, attrIsland, logicalOf, want) {
+  const P = ed.positions, U = ed.uvs;
+  const st = { islands: 0, skipped: 0, points: 0, interior: 0, moved: 0,
+               sweeps: 0, capped: false, ms: 0, e0: 0, e1: 0, area: 0,
+               l2a: 0, l2b: 0, energy0: 0, energy1: 0, folds0: 0, folds1: 0,
+               stretch0: 0, stretch1: 0, why: '' };
+  const t0 = performance.now();
+  const byIsland = new Map();
+  for (let gi = 0; gi < ed.groups.length; gi++) {
+    const tris = ed.groups[gi].triangles;
+    for (let ti = 0; ti < tris.length; ti++) {
+      const isl = attrIsland[tris[ti][0]];
+      if (!(isl >= 0)) continue;
+      if (want && !want.has(isl)) continue;
+      let arr = byIsland.get(isl);
+      if (!arr) { arr = []; byIsland.set(isl, arr); }
+      arr.push(tris[ti]);
+    }
+  }
+  byIsland.forEach(function (tris) {
+    /* 1. THE POINTS. Keyed on logical vertex plus quantised UV, the same key
+       renderUvView's weld map uses with its drawn position replaced by the UV
+       itself; the island is not in the key because this runs INSIDE the
+       per-island loop, and it has to stay there - hoisted out, it would weld
+       two islands that happen to put a point on one spot, which is the very
+       thing v2.69c had to draw a ring around.
+
+       Nested maps rather than a string key, for the reason computeLogicalOf
+       gives - and rather than the scan this had first, which was fine while a
+       logical vertex carried one or two UVs and quadratic when it carried
+       100,000: a model scaled below the 1e-4 weld tolerance puts EVERY vertex
+       on one logical id (adversarial review), and a scan hangs the tab where
+       a map merely gives a wrong-looking answer about a model that is already
+       beyond saving. */
+    const pts = [], byLogical = new Map(), pointOf = new Map();
+    let bad = false;
+    for (let ti = 0; ti < tris.length && !bad; ti++) {
+      for (let c = 0; c < 3; c++) {
+        const ai = tris[ti][c];
+        if (pointOf.has(ai)) continue;
+        const u = U[ai * 2], v = U[ai * 2 + 1];
+        /* ONE NaN TAKES THE ISLAND, not the triangle: a non-finite UV in a
+           fan makes its whole energy non-finite, and a point that cannot be
+           scored cannot be improved. There is no partial answer to keep. */
+        if (!Number.isFinite(u) || !Number.isFinite(v)) { bad = true; break; }
+        const lid = logicalOf[ai];
+        let row = byLogical.get(lid);
+        if (!row) { row = new Map(); byLogical.set(lid, row); }
+        const qu = Math.round(u * 1e6), qv = Math.round(v * 1e6);
+        let col = row.get(qu);
+        if (!col) { col = new Map(); row.set(qu, col); }
+        let p = col.has(qv) ? col.get(qv) : -1;
+        if (p < 0) {
+          p = pts.length;
+          col.set(qv, p);
+          pts.push({ u: u, v: v, x: P[ai * 3], y: P[ai * 3 + 1], z: P[ai * 3 + 2],
+                     ais: [], ring: [], fixed: false, h: 0, h0: 0, done: false });
+        }
+        pts[p].ais.push(ai);
+        pointOf.set(ai, p);
+      }
+    }
+    if (bad) { st.skipped++; return; }
+    const n = pts.length;
+    st.points += n;
+    /* Three points is a triangle and a triangle is all outline. */
+    if (n < 4) return;
+    /* 2. TRIANGLES AND THE OUTLINE, in one pass. A UV edge carried by exactly
+       two triangles of this island is interior; anything else - one triangle,
+       or three at a non-manifold junction - pins both its ends. A triangle
+       that is degenerate in 3D or already collapsed in UV is dropped, and it
+       does not bump the edge counts either: it would report edges that are
+       not there, and the direction that error must fall is "pin more", never
+       "move something that should have stood still". */
+    const tri = [], edgeSeen = new Map();
+    for (let ti = 0; ti < tris.length; ti++) {
+      const t = tris[ti];
+      const p0 = pointOf.get(t[0]), p1 = pointOf.get(t[1]), p2 = pointOf.get(t[2]);
+      if (p0 === p1 || p1 === p2 || p2 === p0) continue;
+      const A = pts[p0], B = pts[p1], C = pts[p2];
+      const ax = B.x - A.x, ay = B.y - A.y, az = B.z - A.z;
+      const bx = C.x - A.x, by = C.y - A.y, bz = C.z - A.z;
+      const nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
+      const A3 = Math.sqrt(nx * nx + ny * ny + nz * nz) / 2;
+      const d = (B.u - A.u) * (C.v - A.v) - (C.u - A.u) * (B.v - A.v);
+      if (!(A3 > 1e-14) || !(Math.abs(d) > 1e-18)) continue;
+      const idx = tri.length;
+      tri.push({ a: p0, b: p1, c: p2, A3: A3, sgn: d > 0 ? 1 : -1,
+                 q: Float64Array.from([A.x, A.y, A.z, B.x, B.y, B.z, C.x, C.y, C.z]) });
+      A.ring.push(idx); B.ring.push(idx); C.ring.push(idx);
+      const e0 = p0 < p1 ? p0 * n + p1 : p1 * n + p0;
+      const e1 = p1 < p2 ? p1 * n + p2 : p2 * n + p1;
+      const e2 = p2 < p0 ? p2 * n + p0 : p0 * n + p2;
+      edgeSeen.set(e0, (edgeSeen.get(e0) || 0) + 1);
+      edgeSeen.set(e1, (edgeSeen.get(e1) || 0) + 1);
+      edgeSeen.set(e2, (edgeSeen.get(e2) || 0) + 1);
+    }
+    edgeSeen.forEach(function (cnt, k) {
+      if (cnt === 2) return;
+      pts[Math.floor(k / n)].fixed = true;
+      pts[k % n].fixed = true;
+    });
+    /* ONE ORIENTATION FOR THE ISLAND, not one per triangle. A fold is a
+       triangle whose UV winding disagrees with its neighbours', and if each
+       triangle kept the sign it happened to arrive with, a fold would be
+       frozen in: its energy would call the fold perfectly legal and refuse
+       every probe that led out of it. Measured - a scrambled island came back
+       with all 75 of its folds still there. Against the island's own majority
+       a fold costs infinity instead, and infinity is a thing every probe wants
+       to leave, which turns "never make a fold" into "never make one, and walk
+       out of the ones you were handed". Weighted by area, because a majority
+       of tiny triangles is not the island's orientation. */
+    {
+      let vp = 0, vn = 0;
+      for (let i = 0; i < tri.length; i++) {
+        if (tri[i].sgn > 0) vp += tri[i].A3; else vn += tri[i].A3;
+      }
+      const sgn = vn > vp ? -1 : 1;
+      for (let i = 0; i < tri.length; i++) tri[i].sgn = sgn;
+    }
+    /* SCALE THE SURFACE TO THE SHEET before anything is scored, and it is not
+       cosmetic. sigma is surface per UV, so the same island laid out at half
+       size reads four times the stretch everywhere - and the two halves of the
+       energy do not scale together: one goes as k^2 and the inverse one as
+       1/k^2. Leave it unmatched and the bigger half decides everything, which
+       is to say the op would quietly be a stretch-only one again at a small
+       scale and a squash-only one at a large. Matching the areas puts the
+       average triangle at sigma = 1, where the two halves balance and the
+       minimum is the isometry this op is after. It also makes the reported
+       number mean something: 1.00 is as good as this outline allows. */
+    {
+      let a3 = 0, a2 = 0;
+      for (let i = 0; i < tri.length; i++) {
+        const t = tri[i];
+        a3 += t.A3;
+        a2 += Math.abs((pts[t.b].u - pts[t.a].u) * (pts[t.c].v - pts[t.a].v) -
+                       (pts[t.c].u - pts[t.a].u) * (pts[t.b].v - pts[t.a].v)) / 2;
+      }
+      if (a3 > 0 && a2 > 0) {
+        const k = Math.sqrt(a2 / a3);
+        for (let i = 0; i < tri.length; i++) {
+          const q = tri[i].q;
+          for (let j = 0; j < 9; j++) q[j] *= k;
+          tri[i].A3 *= k * k;
+        }
+      }
+    }
+    /* 3. THE INTERIOR, and each point's own probe length. A point with fewer
+       than three triangles around it has no fan to flatten and is pinned. */
+    const interior = [];
+    for (let p = 0; p < n; p++) {
+      const q = pts[p];
+      if (q.fixed || q.ring.length < 3) { q.fixed = true; continue; }
+      let sum = 0, cnt = 0;
+      for (let r = 0; r < q.ring.length; r++) {
+        const t = tri[q.ring[r]];
+        const o1 = pts[t.a === p ? t.b : t.a], o2 = pts[t.c === p ? t.b : t.c];
+        sum += Math.hypot(o1.u - q.u, o1.v - q.v) + Math.hypot(o2.u - q.u, o2.v - q.v);
+        cnt += 2;
+      }
+      const mean = cnt ? sum / cnt : 0;
+      if (!(mean > 0)) { q.fixed = true; continue; }
+      q.h = mean * UV_RELAX_STEP0;
+      q.h0 = q.h;
+      interior.push(p);
+    }
+    st.interior += interior.length;
+    if (!interior.length) return;
+
+    const ringE = function (p) {
+      const rs = pts[p].ring;
+      let e = 0;
+      for (let r = 0; r < rs.length; r++) {
+        const t = tri[rs[r]];
+        const g = uvRelaxTriE(t, pts);
+        if (!(g < Infinity)) return Infinity;
+        e += g * t.A3;
+      }
+      return e;
+    };
+    /* THE SCORE IS A PAIR, NOT A NUMBER: how many triangles are folded, and
+       what the rest cost. A fold has no finite energy, and the first draft of
+       this stood a large constant in for it - which made the total so big that
+       every real improvement looked like rounding, and the convergence test
+       stopped the op after three sweeps. Counted separately, a fold is
+       compared as a fold and the energy stays an energy. Fewer folds always
+       wins; equal folds are settled on energy. */
+    const SC = new Float64Array(2);
+    const totalE = function (out) {
+      let e = 0, f = 0;
+      for (let i = 0; i < tri.length; i++) {
+        const g = uvRelaxTriE(tri[i], pts);
+        if (g < Infinity) e += g * tri[i].A3; else f++;
+      }
+      out[0] = e; out[1] = f;
+      return e;
+    };
+    const totalL2 = function () {
+      let e = 0;
+      for (let i = 0; i < tri.length; i++) {
+        const g = uvRelaxTriL2(tri[i], pts);
+        if (g < Infinity) e += g * tri[i].A3;
+      }
+      return e;
+    };
+    let area = 0;
+    for (let i = 0; i < tri.length; i++) area += tri[i].A3;
+
+    /* 4. THE SWEEPS. Four probes per point per sweep - plus u, minus u, plus
+       v, minus v - and the best one is taken only if it LOWERS the fan's
+       energy. A point that finds nothing halves its probe and tries again next
+       sweep; a point that succeeds lengthens it, so a long walk downhill does
+       not take a hundred sweeps to make. A point whose probe has shrunk below
+       the floor is finished and is not visited again. */
+    const eStart = totalE(SC), foldStart = SC[1], l2Start = totalL2();
+    let sweeps = 0, quiet = 0, foldsPrev = foldStart;
+    for (; sweeps < UV_RELAX_SWEEP_CAP; sweeps++) {
+      let gain = 0, live = 0, foldLive = 0;
+      const base = totalE(SC), foldsNow = SC[1];
+      for (let z = 0; z < interior.length; z++) {
+        const p = interior[z], q = pts[p];
+        if (q.done) continue;
+        live++;
+        const su = q.u, sv = q.v;
+        const e = ringE(p);
+        /* FOUR PROBES DOWNHILL, NINE OUT OF A FOLD. Four axis probes are
+           enough to walk an ordinary point downhill, because downhill is
+           where it already nearly is. A folded point is somewhere else
+           entirely: it was dragged ACROSS its neighbours, usually at an
+           angle, and every axis-aligned step of every length lands somewhere
+           still folded. Measured - one interior point poked 1.5 edges along
+           both axes at once stayed folded through thirteen sweeps of
+           widening. So a point with no finite energy gets the diagonals as
+           well, and the one candidate that is not a direction at all: the
+           middle of its own fan, which is where it belongs and the answer
+           this search would otherwise spend twenty sweeps creeping towards.
+           Nine probes, only for the points that are wrong, and every one of
+           them still has to pass the same test as any other. */
+        const folded = !Number.isFinite(e);
+        let bestE = e, bu = su, bv = sv;
+        for (let k = 0; k < (folded ? 9 : 4); k++) {
+          if (k === 8) {
+            let ax = 0, ay = 0, an = 0;
+            for (let r = 0; r < q.ring.length; r++) {
+              const t = tri[q.ring[r]];
+              const o1 = pts[t.a === p ? t.b : t.a], o2 = pts[t.c === p ? t.b : t.c];
+              ax += o1.u + o2.u; ay += o1.v + o2.v; an += 2;
+            }
+            if (!an) continue;
+            q.u = ax / an; q.v = ay / an;
+          } else {
+            q.u = su + UV_RELAX_DIRS[k * 2] * q.h;
+            q.v = sv + UV_RELAX_DIRS[k * 2 + 1] * q.h;
+          }
+          const c = ringE(p);
+          if (c < bestE) { bestE = c; bu = q.u; bv = q.v; }
+        }
+        q.u = bu; q.v = bv;
+        if (bestE < e) {
+          if (Number.isFinite(e)) gain += e - bestE;
+          q.h *= 1.6;
+        } else if (!Number.isFinite(e)) {
+          /* A POINT INSIDE A FOLD SEARCHES WIDER, NOT NARROWER. Everywhere
+             else a refused probe means "you overshot, try smaller"; here it
+             means the way out is further than the probe reached, and halving
+             walks the point calmly down to the floor and retires it still
+             folded. Measured: this is the difference between 40 of 75 folds
+             undone and all of them. It gives up at 64 times its own starting
+             step, which is wider than any fan it could legitimately belong
+             to. */
+          q.h *= 1.7;
+          if (q.h > q.h0 * 64) q.done = true; else foldLive++;
+        } else {
+          q.h *= 0.5;
+          if (q.h < UV_RELAX_STEP_MIN) q.done = true;
+        }
+      }
+      if (!live) { sweeps++; break; }
+      /* THREE QUIET SWEEPS, NOT ONE, and this cost a whole run to learn. A
+         sweep buys nothing in two completely different situations: the layout
+         is finished, or every probe is still too LONG and the points are busy
+         halving their way down to a step that fits. On a 48x32 sphere the
+         first sweep of a decent layout is the second kind - measured, it
+         stopped after ONE sweep having moved nothing at all and reported
+         itself converged. A run of quiet sweeps tells the two apart, because
+         halving ends: either a shorter probe starts finding ground, or the
+         probe hits the floor and the point retires and `live` falls to zero. */
+      /* AND A POINT STILL CLIMBING OUT OF A FOLD IS NOT A QUIET SWEEP, which
+         is the third thing a sweep of no gain can mean and the one that cost
+         the most to find (adversarial review). A folded point contributes no
+         gain BY DEFINITION - its energy is infinite, so there is no finite
+         difference to add - and it needs up to eight sweeps of widening to
+         reach the way out. Three quiet sweeps arrive first. Dragging one
+         interior point across its neighbours on an otherwise settled island
+         is enough: every other point fails at its own step, gain is nought
+         three times running, the op stops and says "Already relaxed" over a
+         visible fold. While any point is still widening, the sweep is not
+         quiet however little it bought. */
+      if (base > 0 && gain / base < UV_RELAX_GAIN_EPS && foldsNow === foldsPrev &&
+          !foldLive) quiet++;
+      else quiet = 0;
+      foldsPrev = foldsNow;
+      if (quiet >= 3) { sweeps++; break; }
+      if ((sweeps & 3) === 3 && performance.now() - t0 > UV_RELAX_BUDGET_MS) {
+        sweeps++; st.capped = true; break;
+      }
+    }
+    const eEnd = totalE(SC), foldEnd = SC[1], l2End = totalL2();
+    if (sweeps > st.sweeps) st.sweeps = sweeps;
+    /* 5. AND IT IS ONLY ALLOWED TO HELP, on the same pair the sweeps were
+       judged by: folds first, then energy. Every step was taken against it, so
+       this cannot fire - which is exactly why it is cheap to keep and would
+       have been expensive to leave out. Undoing a fold is allowed to RAISE the
+       energy, because the triangle it frees starts being counted at all.
+
+       An island that fails simply is not written: ed.uvs is touched in exactly
+       one place, below, inside the branch this gates. The first draft also
+       copied every point's UV beforehand and restored it here, which was two
+       arrays and a copy per island for a rollback of state that never left
+       this function (review finding). */
+    let okIsland = Number.isFinite(eEnd) &&
+                   (foldEnd < foldStart || (foldEnd === foldStart && eEnd <= eStart));
+    if (okIsland) {
+      for (let z = 0; z < interior.length && okIsland; z++) {
+        const q = pts[interior[z]];
+        if (!Number.isFinite(q.u) || !Number.isFinite(q.v)) okIsland = false;
+      }
+    }
+    if (!okIsland) { st.skipped++; return; }
+    st.e0 += eStart; st.e1 += eEnd;
+    st.l2a += l2Start; st.l2b += l2End;
+    st.folds0 += foldStart; st.folds1 += foldEnd;
+    st.area += area;
+    for (let z = 0; z < interior.length; z++) {
+      const q = pts[interior[z]];
+      let ch = false;
+      for (let r = 0; r < q.ais.length; r++) {
+        const ai = q.ais[r];
+        if (U[ai * 2] !== q.u || U[ai * 2 + 1] !== q.v) ch = true;
+        U[ai * 2] = q.u;
+        U[ai * 2 + 1] = q.v;
+      }
+      /* Points, not ais - the count a toast is allowed to say out loud
+         (v2.69b: "Moved 12 UV vertices" over a status line reading 1). */
+      if (ch) st.moved++;
+    }
+    st.islands++;
+  });
+  st.ms = performance.now() - t0;
+  /* Two headlines, both area-weighted over everything that was written.
+     `energy` is what the sweeps minimise: 2.1 at an isometry, given these
+     weights, and falling on every island that was committed - except where a
+     fold was undone, which starts a triangle being counted that was not.
+     `stretch` is the L2 number the literature quotes, 1 at an isometry, and it
+     is NOT what was minimised - it is reported precisely so that the day it
+     rises, it is visible rather than discovered later. */
+  if (st.area > 0) {
+    st.energy0 = st.e0 / st.area;
+    st.energy1 = st.e1 / st.area;
+    st.stretch0 = Math.sqrt(st.l2a / st.area);
+    st.stretch1 = Math.sqrt(st.l2b / st.area);
+  }
+  if (!st.moved) {
+    st.why = st.interior ? 'Already relaxed' :
+             (st.points ? 'Nothing inside to relax' : 'Nothing to relax');
+  }
+  return st;
+}
+
+/* THE SEAT. Islands if some are selected, every island if none are - the one
+   thing on HUB_TOOLS_UV2D_WORLD that looks at the selection at all, which is
+   written down here because "nothing on this ring looks at the selection" is
+   still the rule for the three layout ops beside it. The exception earns
+   itself: relax is the op you reach for AT an island you are already looking
+   at, and the ring that blooms on an island is full at 0-7.
+
+   AND THE TOAST SAYS WHICH IT DID (review finding). uvIslandXform refuses
+   outright when the mode has changed under a ring that outlived it; this one
+   cannot refuse, because with no selection it has a perfectly good job to do -
+   so the same sequence (island selected, empty-space ring open, a second
+   finger switches mode, setUvCompMode empties the selection) silently widens
+   one island into all of them. It is one Undo either way, but an edit you
+   cannot tell from the one you asked for is the part that costs. Naming the
+   scope in the toast is what makes them different. */
+function uvRelax() {
+  const obj = uvViewObj;
+  if (!obj || !obj.mesh || !obj.mesh.geometry) return false;
+  let ed;
+  try { ed = toEditable(obj.mesh); }
+  catch (e) { console.warn('uvRelax: toEditable failed', e); return false; }
+  if (!ed.uvs || !ed.uvs.length) { toast('Unwrap first'); return false; }
+  const { attrIsland } = islandVertexMap(obj);
+  const { logicalOf } = computeLogicalOf(obj.mesh.geometry.attributes.position);
+  const want = (uvCompMode === 'island' && uvIslandSel.size) ? uvIslandSel : null;
+  const wasUvs = ed.uvs.slice();
+  const st = uvRelaxRun(ed, attrIsland, logicalOf, want);
+  st.scope = want ? want.size : 0;
+  uvRelaxLast = st;
+  if (!st.moved) { toast(st.why || 'Nothing to relax'); return false; }
+  /* Settled, not finished - see UV_RELAX_MIN_DROP. A press that undid a fold
+     is never "nothing", however little energy it moved. */
+  if (st.folds1 >= st.folds0 && st.energy0 > 0 &&
+      (1 - st.energy1 / st.energy0) < UV_RELAX_MIN_DROP) {
+    toast('Already relaxed');
+    return false;
+  }
+  /* v2.69c's law: a toast without a history step behind it is a lie that the
+     NEXT Undo pays for. Asked as float32, because that is the precision the
+     answer survives the document in. */
+  if (!uvsChangedAsStored(wasUvs, ed.uvs)) { toast('Already relaxed'); return false; }
+  rebuildFromEditable(obj, ed);
+  /* The drop, not the count: "Relax - 66 points" says how much work was done
+     and nothing about whether it helped. The figure quoted is the energy the
+     op actually minimises, which is the only one it can promise went down. */
+  const drop = st.energy0 > 0 ? Math.round((1 - st.energy1 / st.energy0) * 100) : 0;
+  const scope = want ? (want.size > 1 ? want.size + ' islands' : 'this island')
+                     : (st.islands > 1 ? 'all ' + st.islands + ' islands' : 'this island');
+  finishMeshEdit(obj, 'Relax · ' + scope + ' · ' +
+                 (drop > 0 ? drop + '% less distortion'
+                           : st.moved + (st.moved === 1 ? ' point' : ' points')));
+  /* No frameUvAll. Even density and Stretch both move every island somewhere
+     new and the view has to follow; this one cannot move a boundary, so the
+     layout on screen is where it was and refitting it would be the op moving
+     something the user can see that it did not touch. */
+  refreshUvView(obj);
+  return true;
+}
+
 const HUB_TOOLS_UV2D_ISLAND = Object.keys(UV_ISLAND_XFORMS).map((k, i) => ({
   key: 'uvx-' + k, icon: UV_ISLAND_XFORMS[k].icon, label: UV_ISLAND_XFORMS[k].label,
   seat: i, run: () => uvIslandXform(k)
@@ -46730,6 +47335,9 @@ if (PICK_DEBUG) {
     ICON,
     // v2.65: the island door and the four transforms behind it.
     uvIslandXform, UV_ISLAND_XFORMS, HUB_TOOLS_UV2D_ISLAND,
+    // v2.70: relax, its solver, and the numbers it reports.
+    uvRelax, uvRelaxRun, uvRelaxTriE, get uvRelaxLast() { return uvRelaxLast; },
+    UV_RELAX_SWEEP_CAP, UV_RELAX_BUDGET_MS,
     get uvDragHoldArmed() { return !!(uvDrag && uvDrag.holdTimer); },
     // v2.64: the double tap that frames, and the framing itself.
     /* uvIsDoubleTap MUTATES what it reads - it is the gesture, not a flag -
