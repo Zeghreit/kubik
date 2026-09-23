@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~46,914 lines)
-- Version at time of writing: **2.71a**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~48,653 lines)
+- Version at time of writing: **2.72**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -298,6 +298,42 @@ change of manners, not of behaviour.
 step. Clearing all six: back to 1 dot, drift 0.00. Clearing one of six: 4 dots
 become 3, two attribute vertices move. Weld of the four pieces: one dot, six
 seams closed, one history step. Probe `_uv271chk.py`, port 8975, 19 checks.
+
+## Unfold - the outline too: LSCM, one island at a time (2.72)
+
+A seat on `HUB_TOOLS_UV2D_WORLD` at bearing 5, against Relax. Scope: the
+island selection when there is one, every island when not - Relax and Unfold
+are the two seats on that ring that read the selection. `uvUnfold` ->
+`uvUnfoldRun` (buckets by island, box per island) -> `uvIslandFabric(...,
+true)` (keeps triangles flat in UV; Relax passes nothing and still drops them)
+-> `uvUnfoldIsland` (LSCM rows, Jacobi-CG on the normal equations, warm start
+from the old UVs, similarity fit back).
+
+What the island must be, else refused BY NAME (`UV_UNFOLD_WHY`): one
+edge-connected piece with every point in a kept triangle ('pieces'), no edge
+on three faces ('nonmanifold'), consistent winding ('winding'), a boundary
+('closed'); a disk with holes is solved and then refused as 'closed' unless
+it came out conformal (a flat washer passes, a tube does not). CG must reach
+a 1e-6 residual inside `UV_UNFOLD_CG_CAP` / `UV_UNFOLD_MS` (2.5s per press)
+or it is 'unconverged' and nothing is written.
+
+What the answer must be, else the island keeps its UVs: no more folds than
+before; density spread (95th/5th percentile of 3D area per UV area, in
+length, collapsed triangles = infinite, over a fifth collapsed = infinite
+spread) at most `UV_UNFOLD_STRETCH` 1.05x worse - this is what stops it on
+curved caps; and a win: a fold removed, 1% of conformal energy, or density
+evened past the allowance. Handedness: the island's own when its signed
+area is clearly one way (`UV_UNFOLD_HAND` 0.2), else the solver's. Fit:
+least-squares rotation, centroid kept, UV AREA kept. New overlaps and
+leaving the sheet are reported in the toast ("may overlap - Pack"), never
+refused. Toast: scope first ("this island", "N selected", "all N islands"),
+then "K changed" when different, then the gain, then refusals by their
+commonest cause.
+
+Probes: `_uv272chk.py` (port 8976, 28 checks, in the app incl. the
+selection path) and `node _uv272fx.js` (20 hand-built fixtures: bowls,
+slit tube, pinched pair, 200x2 strip, mirrored, tetra +/- fin, banana,
+half-folded strip, orphan point, 60k tris, tube, washer, flipped face).
 
 ## Relax - the inside of an island, its outline held still (2.70)
 
