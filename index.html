@@ -2774,7 +2774,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.73</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.74</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -2844,6 +2844,9 @@
 
       <div class="drawer-sec">
         <div class="drawer-title">Models</div>
+        <div class="drawer-row">
+          <button id="btnNewScene" title="Start over with one cube - Undo brings this scene back">New scene</button>
+        </div>
         <div class="drawer-note" id="projCurrent" hidden></div>
         <div class="drawer-row">
           <input type="text" id="projName" placeholder="Name this model" maxlength="40" />
@@ -33493,6 +33496,29 @@ document.getElementById('btnProjSave').addEventListener('click', async () => {
   if (currentProject) { await saveProject(currentProject); return; }
   if (await saveProject(input.value)) input.value = '';
 });
+/* NEW SCENE (v2.74) - what the app boots into when there is nothing to come
+   back to: one cube, selected, and no saved model open. Built through
+   restoreDoc on the current document with its objects emptied, so every
+   half-finished setup bar, knife, curve draft and UV-view target is dropped
+   by the one function that already knows how, and the look of the scene -
+   environment, materials - carries over. It is ONE HISTORY STEP, not a reset
+   of history: a stray tap on a phone is one Undo away from the scene it
+   threw out, which is why this needs no confirm dialog. */
+function newScene() {
+  const doc = serializeDoc();
+  doc.objects = [];
+  restoreDoc(doc);
+  if (typeof setMode === 'function' && App.mode !== 'object') setMode('object');
+  const obj = createCubeObject('Cube 1', new THREE.Vector3(0, 0.5, 0));
+  App.activeObjectId = obj.id;
+  App.selectedObjectIds = new Set([obj.id]);
+  setCurrentProject('');
+  setDrawerOpen(false);
+  refreshUI();
+  pushHistory();
+  toast('New scene - Undo brings the old one back');
+}
+document.getElementById('btnNewScene').addEventListener('click', newScene);
 document.getElementById('btnProjSaveAs').addEventListener('click', async () => {
   const input = document.getElementById('projName');
   if (!input.value.trim()) { toast('Type a new name first'); input.focus(); return; }
@@ -48364,7 +48390,7 @@ if (PICK_DEBUG) {
        so a probe can look in both roads itself rather than believing the
        list, which is the only way to tell "moved" from "copied". */
     DOCDB_STORE, DOCMETA_STORE, PROJECT_PREFIX, saveProject, loadProject, deleteProject,
-    listProjects, readProject, migrateProjects,
+    listProjects, readProject, migrateProjects, newScene,
     get texLoaded() { return _texLoaded; },
     pooledMaterial, dressFromPool, applyFinish, pruneTextures, prunePool,
     /* v2.35: the picture channels. encodePicture is here because it is the

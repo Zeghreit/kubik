@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~48,653 lines)
-- Version at time of writing: **2.73**
+- Version at time of writing: **2.74**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -311,6 +311,14 @@ one), Enter with a name typed is Save as, and its row is outlined in the
 list (`.proj-row.cur`). With none set, Save is the old gesture (typed name).
 `syncProjectButtons()` redraws all of it. Probe `_proj273chk.py`, port 8977,
 10 checks.
+
+**New scene (2.74)**, top of the Models section: `newScene()` runs
+`restoreDoc` on the current document with `objects` emptied (so every open
+setup bar / knife / curve draft / UV target is dropped and environment and
+materials carry over), switches to object mode, creates `Cube 1` at
+(0, 0.5, 0) active and selected, clears the open model, closes the drawer,
+and pushes ONE history step - Undo brings the old scene back, which is why
+there is no confirm. Probe `_proj274chk.py`, port 8978, 8 checks.
 
 ## Unfold - the outline too: LSCM, one island at a time (2.72)
 
