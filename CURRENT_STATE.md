@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~48,653 lines)
-- Version at time of writing: **2.72**
+- Version at time of writing: **2.72a**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -311,7 +311,9 @@ from the old UVs, similarity fit back).
 
 What the island must be, else refused BY NAME (`UV_UNFOLD_WHY`): one
 edge-connected piece with every point in a kept triangle ('pieces'), no edge
-on three faces ('nonmanifold'), consistent winding ('winding'), a boundary
+on three faces ('nonmanifold'), a consistent side ('winding' - a face wound
+against its neighbours is turned round since 2.72a; only a Moebius-like
+surface is refused), a boundary
 ('closed'); a disk with holes is solved and then refused as 'closed' unless
 it came out conformal (a flat washer passes, a tube does not). CG must reach
 a 1e-6 residual inside `UV_UNFOLD_CG_CAP` / `UV_UNFOLD_MS` (2.5s per press)
@@ -330,8 +332,12 @@ refused. Toast: scope first ("this island", "N selected", "all N islands"),
 then "K changed" when different, then the gain, then refusals by their
 commonest cause.
 
-Probes: `_uv272chk.py` (port 8976, 28 checks, in the app incl. the
-selection path) and `node _uv272fx.js` (20 hand-built fixtures: bowls,
+Cut ignores a quad's diagonal since 2.72a (checked against `topo.edges`,
+"That runs inside a face"), and the Cut run walk joins only across an
+edge of exactly two faces, the island walk's rule.
+
+Probes: `_uv272chk.py` (port 8976, 31 checks, in the app incl. the
+selection path) and `node _uv272fx.js` (21 hand-built fixtures: bowls,
 slit tube, pinched pair, 200x2 strip, mirrored, tetra +/- fin, banana,
 half-folded strip, orphan point, 60k tris, tube, washer, flipped face).
 
@@ -422,11 +428,11 @@ on the screen.
   island - so a real 1% interior improvement reads as rounding and the op
   stops early or says "Already relaxed". Both `UV_RELAX_GAIN_EPS` and
   `UV_RELAX_MIN_DROP` are relative to that total.
-- **A dart is not a boundary.** A seam that does not split the island, cut
-  without re-unwrapping, has both sides at the same UV, so it is one point
-  per vertex and its edges count twice: interior, and it moves. Nothing
-  tears - the group moves together - but the header's "a seam stays a seam"
-  is about seams that separate.
+- **A dart IS a boundary since 2.72a.** `uvSeamSplitLogical` gives every
+  run of faces round a seamed vertex (uvFanRunsAt's runs, beyond the first)
+  a logical id of its own before Relax and Unfold build their fabric, so a
+  seam whose sides still share one UV is two points: Relax holds it, Unfold
+  opens it.
 - **A non-manifold edge with one degenerate member reads as manifold**,
   because the degenerate triangle is dropped before the edge counts.
 - **The budget is checked every fourth sweep**, so past it each remaining

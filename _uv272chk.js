@@ -335,6 +335,39 @@
        (s7.done === s7.islands || new RegExp(s7.done + ' changed').test(t7b)),
        t7b + '  (islands=' + s7.islands + ' done=' + s7.done + ')');
     mark('7');
+
+    // ---------------------------------------------------------------- 8
+    /* A DART (v2.72a). Two seamed edges in a line through the middle of a
+       6x6 plane: the island stays whole, the middle vertex has two runs of
+       faces, the two ends one each. The fabric's key must split exactly the
+       middle one - and nothing when there are no seams. */
+    const pl = openOn('plane', { h: 6, v: 6, x: 6, z: 6 }, 'Dart');
+    const pg = K.findObject(pl.id).mesh.geometry, ptopo = K.findObject(pl.id).mesh.userData.topo;
+    const pos = pg.attributes.position;
+    const Lat = (x, z) => { for (let i = 0; i < pos.count; i++)
+      if (Math.abs(pos.getX(i) - x) < 1e-6 && Math.abs(pos.getZ(i) - z) < 1e-6) return ptopo.logicalOf[i]; return -1; };
+    const La = Lat(0, -1), Lb = Lat(0, 0), Lc = Lat(0, 1);
+    const pobj = K.findObject(pl.id);
+    const base = K.computeLogicalOf(pos).logicalOf;
+    const distinct = a => new Set(Array.from(a)).size;
+    const d0 = distinct(K.uvSeamSplitLogical(pobj, K.toEditable(pobj.mesh), base));
+    const keys = [K.creaseKeyFor(K.logicalPos(pobj, La), K.logicalPos(pobj, Lb)),
+                  K.creaseKeyFor(K.logicalPos(pobj, Lb), K.logicalPos(pobj, Lc))];
+    K.toggleSeamKeys(pobj, keys, true);
+    const d1 = distinct(K.uvSeamSplitLogical(pobj, K.toEditable(pobj.mesh), base));
+    ok('8.no seams, no split', d0 === distinct(base), d0 + ' vs ' + distinct(base));
+    ok('8.a dart splits its middle vertex and only that', La >= 0 && Lc >= 0 && d1 === d0 + 1,
+       'ids ' + d0 + ' -> ' + d1 + '  L=' + [La, Lb, Lc].join(','));
+    /* Cut's diagonal guard reads topo.edges as LOGICAL outline edges: a
+       quad's side must be in it, its diagonal must not. */
+    const oset = new Set(ptopo.edges.map(e => e[0] < e[1] ? e[0] + '_' + e[1] : e[1] + '_' + e[0]));
+    const kk = (p, q) => p < q ? p + '_' + q : q + '_' + p;
+    const Ld = Lat(1, 0);
+    const Ldiag1 = Lat(1, 1), Ldiag2 = Lat(1, -1);
+    ok('8.an outline edge is an edge, a diagonal is not',
+       oset.has(kk(Lb, Ld)) && !(oset.has(kk(Lb, Ldiag1)) && oset.has(kk(Lb, Ldiag2))),
+       'side=' + oset.has(kk(Lb, Ld)) + ' diag=' + oset.has(kk(Lb, Ldiag1)) + '/' + oset.has(kk(Lb, Ldiag2)));
+    mark('8');
     finish();
   }
 

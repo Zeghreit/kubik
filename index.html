@@ -2770,7 +2770,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.72</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.72a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -19785,7 +19785,9 @@ function uvFanRunsAt(obj, topo, L, faces, edgeFaces, seams) {
   others.forEach(X => {
     const key = L < X ? L + '_' + X : X + '_' + L;
     const fs = edgeFaces && edgeFaces.get ? edgeFaces.get(key) : null;
-    if (!fs || fs.length < 2) return;
+    /* EXACTLY two, the island walk's own rule (v2.72a): computeUVIslands
+       cuts a non-manifold edge, so a run must not join across one. */
+    if (!fs || fs.length !== 2) return;
     const ck = creaseKeyFor(logicalPos(obj, L), logicalPos(obj, X));
     if (ck && seams[ck]) return;          // a seam joins nothing
     let first = -1;
@@ -20109,15 +20111,23 @@ function markSeamSelectionUv(on) {
   const topo = obj.mesh.userData.topo;
   if (!topo) { toast('Select an edge first'); return; }
   const keySet = new Set();
+  /* ONLY THE MESH'S OWN EDGES (v2.72a). The 2D view draws triangles, so a
+     quad's diagonal can be picked - and cutting it stored a seam key that
+     separated nothing and sat dead in the dictionary until some later
+     retriangulation made it real, far from the press that wrote it. */
+  const outline = new Set();
+  (topo.edges || []).forEach(e => outline.add(e[0] < e[1] ? e[0] + '_' + e[1] : e[1] + '_' + e[0]));
+  let inside = 0;
   uvEdgeSel.forEach(pairKey => {
     const [a, b] = pairKey.split('_').map(Number);
     const la = topo.logicalOf[a], lb = topo.logicalOf[b];
     if (la === undefined || lb === undefined) return;
+    if (!outline.has(la < lb ? la + '_' + lb : lb + '_' + la)) { inside++; return; }
     const k = creaseKeyFor(logicalPos(obj, la), logicalPos(obj, lb));
     if (k) keySet.add(k);
   });
   const keys = Array.from(keySet);
-  if (!keys.length) { toast('Nothing to seam there'); return; }
+  if (!keys.length) { toast(inside ? 'That runs inside a face - not an edge' : 'Nothing to seam there'); return; }
 
   /* ONLY THE EDGES THAT ACTUALLY FLIP (review finding). A selection can
      hold edges that are already cut and edges that are not, and the split
@@ -41519,6 +41529,46 @@ function uvRelaxRun(ed, attrIsland, logicalOf, want) {
   return st;
 }
 
+/* SEAMS SPLIT THE FABRIC (v2.72a). uvIslandFabric keys a point on logical
+   vertex plus UV, so a seam whose two sides still hold one UV - a dart marked
+   in 3D and never cut in the 2D view, which does not split the island - was
+   one point per vertex with its edges counted twice: interior. Relax moved
+   it, and Unfold could not open it, which on a curved cap is the whole reason
+   a dart is there. The fix is in the KEY, not in the fabric: every run of
+   faces round a seamed vertex beyond the first gets a logical id of its own,
+   the same runs uvFanRunsAt gives Cut, so "one point" means the same thing
+   to the cut and to the ops that read it. Returns logicalOf unchanged when
+   the mesh has no seams. */
+function uvSeamSplitLogical(obj, ed, logicalOf) {
+  const topo = obj.mesh.userData.topo, seams = obj.mesh.userData.seams;
+  if (!topo || !seams) return logicalOf;
+  let any = false;
+  for (const k in seams) { if (seams[k]) { any = true; break; } }
+  if (!any) return logicalOf;
+  const { edgeFaces } = computeUVIslands(obj);
+  const touched = new Set();
+  edgeFaces.forEach((gis, key) => {
+    const us = key.split('_');
+    const k = creaseKeyFor(logicalPos(obj, +us[0]), logicalPos(obj, +us[1]));
+    if (k && seams[k]) { touched.add(+us[0]); touched.add(+us[1]); }
+  });
+  if (!touched.size) return logicalOf;
+  const out = logicalOf.slice();
+  let next = 0;
+  for (let i = 0; i < out.length; i++) if (out[i] >= next) next = out[i] + 1;
+  const facesAt = uvFacesAtLogical(topo, touched);
+  touched.forEach(L => {
+    const faces = facesAt.get(L);
+    if (!faces || faces.length < 2) return;
+    const runs = uvFanRunsAt(obj, topo, L, faces, edgeFaces, seams);
+    for (let r = 1; r < runs.length; r++) {
+      const id = next++;
+      runs[r].forEach(gi => uvAisOfGroupAt(ed, topo, gi, L).forEach(ai => { out[ai] = id; }));
+    }
+  });
+  return out;
+}
+
 /* THE SEAT. Islands if some are selected, every island if none are - the one
    thing on HUB_TOOLS_UV2D_WORLD that looks at the selection, with Unfold
    (v2.72) the other, which is
@@ -41543,7 +41593,8 @@ function uvRelax() {
   catch (e) { console.warn('uvRelax: toEditable failed', e); return false; }
   if (!ed.uvs || !ed.uvs.length) { toast('Unwrap first'); return false; }
   const { attrIsland } = islandVertexMap(obj);
-  const { logicalOf } = computeLogicalOf(obj.mesh.geometry.attributes.position);
+  const logicalOf = uvSeamSplitLogical(obj, ed,
+    computeLogicalOf(obj.mesh.geometry.attributes.position).logicalOf);
   const want = (uvCompMode === 'island' && uvIslandSel.size) ? uvIslandSel : null;
   const wasUvs = ed.uvs.slice();
   const st = uvRelaxRun(ed, attrIsland, logicalOf, want);
@@ -41661,23 +41712,30 @@ function uvUnfoldIsland(pts, tri, deadline) {
   const Wx = new Float64Array(m * 3), Wy = new Float64Array(m * 3);
   const IA = new Int32Array(m * 3), TI = new Int32Array(m);
   let kept = 0;
-  for (let t = 0; t < m; t++) {
-    const T = tri[t], A = pts[T.a], B = pts[T.b], C = pts[T.c];
+  /* One row per triangle, written by frame() so a triangle found wound
+     against its neighbours (step 2) can be written again the other way
+     round (v2.72a). Returns false for a triangle with no height. */
+  function frame(slot, ia, ib, ic) {
+    const A = pts[ia], B = pts[ib], C = pts[ic];
     const ex = B.x - A.x, ey = B.y - A.y, ez = B.z - A.z;
     const L = Math.sqrt(ex * ex + ey * ey + ez * ez);
-    if (!(L > 1e-12)) continue;
+    if (!(L > 1e-12)) return false;
     const ux = ex / L, uy = ey / L, uz = ez / L;
     const dx = C.x - A.x, dy = C.y - A.y, dz = C.z - A.z;
     const px = dx * ux + dy * uy + dz * uz;
     const rx = dx - px * ux, ry = dy - px * uy, rz = dz - px * uz;
     const py = Math.sqrt(rx * rx + ry * ry + rz * rz);
-    if (!(py > 1e-12)) continue;
+    if (!(py > 1e-12)) return false;
     const w = 1 / Math.sqrt(L * py);          // 1/sqrt(2*area), area = L*py/2
-    const r = kept * 3;
-    IA[r] = T.a; IA[r + 1] = T.b; IA[r + 2] = T.c;
+    const r = slot * 3;
+    IA[r] = ia; IA[r + 1] = ib; IA[r + 2] = ic;
     Wx[r] = (px - L) * w; Wy[r] = py * w;     // x2 - x1
     Wx[r + 1] = -px * w;  Wy[r + 1] = -py * w; // x0 - x2
     Wx[r + 2] = L * w;    Wy[r + 2] = 0;      // x1 - x0
+    return true;
+  }
+  for (let t = 0; t < m; t++) {
+    if (!frame(kept, tri[t].a, tri[t].b, tri[t].c)) continue;
     TI[kept] = t;
     kept++;
   }
@@ -41696,7 +41754,7 @@ function uvUnfoldIsland(pts, tri, deadline) {
      at all and was written to the origin (finding 4). All three are refused
      by name: there is no single flattening to give. */
   const eCount = new Map(), eTri = new Map(), eDir = new Map();
-  let flipped = false;
+  const pairs = [];                         // t, u, 1 when walked the same way
   const par = new Int32Array(kept);
   for (let t = 0; t < kept; t++) par[t] = t;
   function root(t) {
@@ -41714,7 +41772,7 @@ function uvUnfoldIsland(pts, tri, deadline) {
       eCount.set(k, cnt);
       if (cnt === 1) { eTri.set(k, t); eDir.set(k, i < j); }
       else {
-        if (cnt === 2 && eDir.get(k) === (i < j)) flipped = true;
+        if (cnt === 2) pairs.push(t, eTri.get(k), eDir.get(k) === (i < j) ? 1 : 0);
         const ra = root(t), rb = root(eTri.get(k));
         if (ra !== rb) par[ra] = rb;
       }
@@ -41730,12 +41788,45 @@ function uvUnfoldIsland(pts, tri, deadline) {
     else if (cnt === 1) { onRim[Math.floor(k / n)] = 1; onRim[k % n] = 1; }
   });
   if (nonman) return { why: 'nonmanifold' };
-  /* ONE FACE WOUND AGAINST ITS NEIGHBOURS (fable, v2.72 second pass). Every
-     frame takes its handedness from its own triangle's winding, so a flipped
-     face asks for a mirrored piece in the middle of the answer: a flat sheet
-     with one reversed triangle came back with a permanent fold and a density
-     spread of 2.8, and was accepted once the original was damaged enough. */
-  if (flipped) return { why: 'winding' };
+  /* ONE FACE WOUND AGAINST ITS NEIGHBOURS (fable, v2.72). Every frame takes
+     its handedness from its own triangle's winding, so a flipped face asked
+     for a mirrored piece in the middle of the answer: a flat sheet with one
+     reversed triangle came back with a permanent fold. v2.72 refused it;
+     v2.72a turns it round. A walk over the shared edges gives every triangle
+     a side, the side holding more of the surface wins, and the rest have
+     their rows written the other way round. Only a surface with no
+     consistent side at all - a Moebius strip - is still refused. */
+  const side = new Int8Array(kept), nbr = [];
+  for (let t = 0; t < kept; t++) nbr.push([]);
+  for (let q = 0; q < pairs.length; q += 3) {
+    nbr[pairs[q]].push(pairs[q + 1], pairs[q + 2]);
+    nbr[pairs[q + 1]].push(pairs[q], pairs[q + 2]);
+  }
+  side[0] = 1;
+  const queue = [0];
+  let twisted = false;
+  for (let h = 0; h < queue.length && !twisted; h++) {
+    const t = queue[h], nb = nbr[t];
+    for (let q = 0; q < nb.length; q += 2) {
+      const u = nb[q], want = nb[q + 1] ? -side[t] : side[t];
+      if (!side[u]) { side[u] = want; queue.push(u); }
+      else if (side[u] !== want) { twisted = true; break; }
+    }
+  }
+  if (twisted) return { why: 'winding' };
+  let aNeg = 0, aAll = 0;
+  for (let t = 0; t < kept; t++) {
+    const a3 = tri[TI[t]].A3;
+    aAll += a3; if (side[t] < 0) aNeg += a3;
+  }
+  const major = aNeg > aAll / 2 ? -1 : 1;
+  let turned = 0;
+  for (let t = 0; t < kept; t++) {
+    if (side[t] === major) continue;
+    const r = t * 3;
+    if (!frame(t, IA[r], IA[r + 2], IA[r + 1])) return { why: 'degenerate' };
+    turned++;
+  }
   /* Euler characteristic of the kept triangles: 1 is a disk. Less is a disk
      with holes - a washer, a panel with a window - which flattens fine when
      it is flat, and a TUBE, which cannot flatten without crossing itself and
@@ -41779,10 +41870,10 @@ function uvUnfoldIsland(pts, tri, deadline) {
     const d = new Float64Array(kept);
     let sum = 0, abs = 0;
     for (let t = 0; t < kept; t++) {
-      const T = tri[TI[t]];
-      const au = a[T.a * 2], av = a[T.a * 2 + 1];
-      const val = (a[T.b * 2] - au) * (a[T.c * 2 + 1] - av) -
-                  (a[T.c * 2] - au) * (a[T.b * 2 + 1] - av);
+      const ta = IA[t * 3], tb = IA[t * 3 + 1], tc = IA[t * 3 + 2];
+      const au = a[ta * 2], av = a[ta * 2 + 1];
+      const val = (a[tb * 2] - au) * (a[tc * 2 + 1] - av) -
+                  (a[tc * 2] - au) * (a[tb * 2 + 1] - av);
       d[t] = val; sum += val; abs += Math.abs(val);
     }
     return { d: d, sum: sum, abs: abs };
@@ -42010,7 +42101,7 @@ function uvUnfoldIsland(pts, tri, deadline) {
     return Math.sqrt(hi / lo);
   }
   return {
-    uv: uv, pins: [b0, b1], boundary: nb, tris: kept, iters: it, mirrored: neg,
+    uv: uv, pins: [b0, b1], boundary: nb, tris: kept, iters: it, mirrored: neg, turned: turned,
     e0: conf(uv0), e1: conf(uv),
     folds0: folds(A0), folds1: folds(A1),
     d0: spread(A0), d1: spread(A1), why: ''
@@ -42025,7 +42116,7 @@ function uvUnfoldIsland(pts, tri, deadline) {
 const UV_UNFOLD_WHY = {
   closed:      ['Unfold needs a cut - seam an edge first', 'closed'],
   nonmanifold: ['Three faces share an edge - cut it first', 'non-manifold'],
-  winding:     ['A face points the wrong way - flip it first', 'flipped faces'],
+  winding:     ['That island has no one side - cut it first', 'twisted'],
   pieces:      ['That island is in pieces - it has no one shape', 'in pieces'],
   unconverged: ['Too big to flatten in one press', 'too big'],
   folded:      ['That would fold - relax it first', 'would fold'],
@@ -42160,7 +42251,8 @@ function uvUnfold() {
   catch (e) { console.warn('uvUnfold: toEditable failed', e); return false; }
   if (!ed.uvs || !ed.uvs.length) { toast('Unwrap first'); return false; }
   const { attrIsland } = islandVertexMap(obj);
-  const { logicalOf } = computeLogicalOf(obj.mesh.geometry.attributes.position);
+  const logicalOf = uvSeamSplitLogical(obj, ed,
+    computeLogicalOf(obj.mesh.geometry.attributes.position).logicalOf);
   const want = (uvCompMode === 'island' && uvIslandSel.size) ? uvIslandSel : null;
   const wasUvs = ed.uvs.slice();
   const st = uvUnfoldRun(ed, attrIsland, logicalOf, want);
@@ -48466,7 +48558,7 @@ if (PICK_DEBUG) {
     // v2.70: relax, its solver, and the numbers it reports.
     uvRelax, uvRelaxRun, uvRelaxTriE, get uvRelaxLast() { return uvRelaxLast; },
       // v2.72: unfold, its solver, the shared island fabric, its numbers.
-      uvUnfold, uvUnfoldRun, uvUnfoldIsland, uvIslandFabric,
+      uvUnfold, uvUnfoldRun, uvUnfoldIsland, uvIslandFabric, uvSeamSplitLogical, computeLogicalOf,
       get uvUnfoldLast() { return uvUnfoldLast; },
     UV_RELAX_SWEEP_CAP, UV_RELAX_BUDGET_MS,
     get uvDragHoldArmed() { return !!(uvDrag && uvDrag.holdTimer); },

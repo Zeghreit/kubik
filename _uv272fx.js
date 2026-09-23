@@ -155,5 +155,15 @@ seed = 12345; st = press(tube(0.05)); check('tube, damaged: needs a cut', st.don
   check('flat washer: still unfolds', st.done === 1 && r.d1 < 1.05, rep(r)); }
 { const Mf = grid(Mesh(), 6, 6, (i, j) => [i, j, 0, i * 0.1, j * 0.1]);
   Mf.T[20].reverse(); seed = 5; damage(Mf, 0.06);
-  r = island(Mf); check('one face wound backwards: refused by name', r.why === 'winding', rep(r)); }
+  r = island(Mf); st = press(Mf);
+  check('one face wound backwards: turned round and flattened (v2.72a)',
+        st.done === 1 && r.turned === 1 && r.folds1 === 0 && r.d1 < 1.01, rep(r) + ' turned ' + r.turned); }
+{ const Mb = Mesh(), top = [], bot = [], K2 = 24;       // Moebius strip: no one side
+  for (let i = 0; i < K2; i++) { const a = 2 * Math.PI * i / K2, h = 0.3;
+    const c = Math.cos(a / 2), s2 = Math.sin(a / 2);
+    top.push(vert(Mb, (1 + h * c) * Math.cos(a), (1 + h * c) * Math.sin(a), h * s2, i / K2, 0.1));
+    bot.push(vert(Mb, (1 - h * c) * Math.cos(a), (1 - h * c) * Math.sin(a), -h * s2, i / K2, 0)); }
+  for (let i = 0; i < K2 - 1; i++) quad(Mb, bot[i], bot[i + 1], top[i + 1], top[i]);
+  quad(Mb, bot[K2 - 1], top[0], bot[0], top[K2 - 1]);   // the half twist closes it
+  r = island(Mb); check('Moebius strip: refused as having no one side', r.why === 'winding', rep(r)); }
 console.log((fails ? 'FAIL ' : 'PASS ') + (n - fails) + '/' + n + ' (second pass)');
