@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~48,653 lines)
-- Version at time of writing: **2.72a**
+- Version at time of writing: **2.73**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -298,6 +298,19 @@ change of manners, not of behaviour.
 step. Clearing all six: back to 1 dot, drift 0.00. Clearing one of six: 4 dots
 become 3, two attribute vertices move. Weld of the four pieces: one dot, six
 seams closed, one history step. Probe `_uv271chk.py`, port 8975, 19 checks.
+
+## Save / Save as - the open model (2.73)
+
+Drawer, Models section. `currentProject` (persisted in localStorage as
+`kubik.currentProject`, so a reload that restores the autosave still knows
+it) is set by `saveProject` success and `loadProject`, cleared by opening a
+.json file and by deleting that model from the list. With one set: an
+"Editing "name"" note shows, Save writes over it with nothing typed, the
+"Save as" button appears and saves under the typed name (refuses an empty
+one), Enter with a name typed is Save as, and its row is outlined in the
+list (`.proj-row.cur`). With none set, Save is the old gesture (typed name).
+`syncProjectButtons()` redraws all of it. Probe `_proj273chk.py`, port 8977,
+10 checks.
 
 ## Unfold - the outline too: LSCM, one island at a time (2.72)
 

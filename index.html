@@ -1349,6 +1349,10 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .proj-del { width: 40px; padding: 0; justify-content: center; flex-shrink: 0; }
+  /* v2.73: the model Save writes over, marked in the list. */
+  .proj-row.cur .proj-open { border-color: var(--accent); color: var(--accent); }
+  #projCurrent { margin-bottom: 6px; color: var(--text); }
+  #btnProjSaveAs[hidden] { display: none; }
   .proj-del:hover { border-color: var(--danger); color: var(--danger); }
   #projName {
     flex: 1 1 120px; min-width: 100px; background: var(--panel2);
@@ -2770,7 +2774,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.72a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.73</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -2840,9 +2844,11 @@
 
       <div class="drawer-sec">
         <div class="drawer-title">Models</div>
+        <div class="drawer-note" id="projCurrent" hidden></div>
         <div class="drawer-row">
           <input type="text" id="projName" placeholder="Name this model" maxlength="40" />
           <button id="btnProjSave">Save</button>
+          <button id="btnProjSaveAs" hidden>Save as</button>
         </div>
         <div id="projList"></div>
         <div class="drawer-note">Kept inside the app, no files involved. Your last
@@ -33225,6 +33231,7 @@ async function saveProject(name) {
          live on, so the merged list does not show it twice. */
       try { localStorage.removeItem(PROJECT_PREFIX + clean); } catch (err) {}
       await refreshProjectList();
+      setCurrentProject(clean);
       toast('Saved "' + clean + '"');
       return true;
     }
@@ -33238,7 +33245,8 @@ async function saveProject(name) {
   try {
     localStorage.setItem(PROJECT_PREFIX + clean, JSON.stringify(rec));
     await refreshProjectList();
-    toast('Saved "' + clean + '"');
+    setCurrentProject(clean);
+      toast('Saved "' + clean + '"');
     return true;
   } catch (err) {
     /* The old ceiling, and on this road it really is about five megabytes,
@@ -33276,6 +33284,7 @@ async function loadProject(name) {
     App.history = [stripDocTextures(rec.doc)];
     App.historyIndex = 0;
     setDrawerOpen(false);
+    setCurrentProject(name);
     toast('Opened "' + name + '"');
   } catch (err) {
     toast('That model could not be read');
@@ -33406,6 +33415,38 @@ function restoreAutosave() {
    order, so without this the second delete's list could be overwritten by
    the first delete's - putting a row back that is no longer there, which
    then reports "That model could not be read" when tapped. */
+/* THE MODEL THIS SESSION IS EDITING (v2.73). Set by a save and by opening a
+   saved model, cleared by opening a file or deleting that model. With one
+   set, Save writes over it and Save as takes the typed name - before this,
+   updating a model meant typing its name again, exactly, every time. Kept
+   in localStorage beside the autosave, so a reload that restores the scene
+   still knows which saved model it is. */
+const PROJECT_CURRENT_KEY = 'kubik.currentProject';
+let currentProject = '';
+try { currentProject = localStorage.getItem(PROJECT_CURRENT_KEY) || ''; } catch (e) {}
+function setCurrentProject(name) {
+  currentProject = name || '';
+  try {
+    if (currentProject) localStorage.setItem(PROJECT_CURRENT_KEY, currentProject);
+    else localStorage.removeItem(PROJECT_CURRENT_KEY);
+  } catch (e) {}
+  syncProjectButtons();
+}
+function syncProjectButtons() {
+  const cur = document.getElementById('projCurrent');
+  const as = document.getElementById('btnProjSaveAs');
+  const save = document.getElementById('btnProjSave');
+  const input = document.getElementById('projName');
+  if (!cur || !as || !save || !input) return;
+  cur.hidden = !currentProject;
+  cur.textContent = currentProject ? 'Editing "' + currentProject + '"' : '';
+  as.hidden = !currentProject;
+  save.title = currentProject ? 'Save over "' + currentProject + '"' : 'Save under the name typed';
+  input.placeholder = currentProject ? 'New name, then Save as' : 'Name this model';
+  document.querySelectorAll('#projList .proj-row').forEach(r =>
+    r.classList.toggle('cur', r.dataset.name === currentProject));
+}
+
 let _projListGen = 0;
 async function refreshProjectList() {
   const el = document.getElementById('projList');
@@ -33424,6 +33465,7 @@ async function refreshProjectList() {
   items.forEach(it => {
     const row = document.createElement('div');
     row.className = 'proj-row';
+    row.dataset.name = it.name;
     const open = document.createElement('button');
     open.className = 'proj-open';
     open.textContent = it.name;
@@ -33433,21 +33475,37 @@ async function refreshProjectList() {
     del.className = 'proj-del';
     del.textContent = '\u2715';
     del.title = 'Delete "' + it.name + '"';
-    del.addEventListener('click', () => deleteProject(it.name));
+    del.addEventListener('click', async () => {
+      await deleteProject(it.name);
+      if (it.name === currentProject) setCurrentProject('');
+    });
     row.appendChild(open);
     row.appendChild(del);
     el.appendChild(row);
   });
+  syncProjectButtons();
 }
 
 document.getElementById('btnProjSave').addEventListener('click', async () => {
   const input = document.getElementById('projName');
+  /* v2.73: a model open means Save writes over it, no typing. None open is
+     the old gesture - save under the name typed. */
+  if (currentProject) { await saveProject(currentProject); return; }
+  if (await saveProject(input.value)) input.value = '';
+});
+document.getElementById('btnProjSaveAs').addEventListener('click', async () => {
+  const input = document.getElementById('projName');
+  if (!input.value.trim()) { toast('Type a new name first'); input.focus(); return; }
   if (await saveProject(input.value)) input.value = '';
 });
 document.getElementById('projName').addEventListener('keydown', (ev) => {
   ev.stopPropagation();
-  if (ev.key === 'Enter') document.getElementById('btnProjSave').click();
+  /* Enter with a name typed is Save as when a model is open - typing a name
+     and having it ignored would be the old bug the other way round. */
+  if (ev.key === 'Enter')
+    document.getElementById(currentProject && ev.target.value.trim() ? 'btnProjSaveAs' : 'btnProjSave').click();
 });
+syncProjectButtons();
 
 function saveProjectFile() {
   if (!_texLoaded) { toast('Pictures are still loading - try again in a moment'); return; }
@@ -33466,6 +33524,7 @@ document.getElementById('fileLoad').addEventListener('change', (ev) => {
       restoreDoc(doc);
       App.history = [stripDocTextures(doc)];
       App.historyIndex = 0;
+      setCurrentProject('');   // a file is not one of the saved models
       toast('Project loaded');
     } catch (err) {
       toast('Could not read project file');
