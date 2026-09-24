@@ -75,16 +75,15 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 3. **A selected edge with one or three faces gets no bevel strip and no
    refusal** — step 1 has already moved the neighbours.
    (`bevel-tears-open-ends.md`)
-4. **`opRefusal` is never cleared on the immediate path**, so Slide can show
-   Circularize's reason — "a confident wrong answer about the shape under
-   your finger". #2 on the stage-3 ranked list. (`command-layer-v238.md`)
-5. **`applyPendingOp` is not exception-safe**: `op.lastWhy` is written last,
-   so `confirmPendingOp` could commit a half-applied mesh. (`hardening-v23bc`)
+4. ~~`opRefusal` never cleared on the immediate path~~ **closed in v2.8b** -
+   Slide clears it first; re-checked by reading at v2.74a.
+5. ~~`applyPendingOp` not exception-safe~~ **closed** - it wraps
+   `applyPendingOpInner` in a try that restores the object state.
 6. **Box select over a cylinder takes the back half** — 18 of 24 vertices,
    pinned by a probe. The facing test does not work on organics.
    (`region-select-a2.76.md`, `heavy-mesh-plan.md` wall 4)
-7. **Connect on a quad's diagonal silently does nothing** — a silent no-op,
-   which this project calls the worst failure mode. (`crosstest-findings.md`)
+7. ~~Connect on a quad's diagonal does nothing~~ **not a bug at v2.74a** -
+   probe `_proj274a`: 1x1 plane, diagonal corners, faces 1->2, edges 4->5.
 8. **`edgeChains` drops edges silently on a branching selection**, and its
    `ringGroup` comparison is set-vs-cyclic. Two reviewer follow-ups, never
    closed. (`crosstest-findings.md`)
@@ -150,6 +149,30 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
   reserved in the file format), edge snapping while drawing, and a Lathe that
   sweeps an arc rather than a full turn.
+
+## New scene, and the name that goes with a step (2.74, 2.74a)
+
+**New scene** (top of the Models drawer) is `restoreDoc` on the current doc
+with `objects` emptied, then `Cube 1`, object mode, no saved model open, ONE
+history step - Undo brings the old scene back, so no confirm.
+
+**Each history step knows which saved model it is** (`_stepProject`,
+WeakMap doc -> name). A step is stamped with `currentProject` when it is
+pushed (and the step being left, if unstamped); a successful save re-binds
+the step on screen to the saved name (`bindStepToProject`). Undo/Redo call
+`carryProjectName(from, to)`: the name moves ONLY if the current name still
+equals the stamp of the step being left - so a Save as since then is not
+quietly undone - and it is never blanked except into a New scene step
+(`_sceneSteps`). Result: New scene -> Undo gives back "Editing X"; Redo
+clears it again.
+
+**Saving onto a taken name asks by toast** (`overwriteOk`): Save as, or Save
+with no model open, onto another existing model says `"X" already exists -
+tap again to replace it`; a second press within 4s replaces. Saving over the
+open model itself never asks.
+
+Probe `_proj274a.py` (8979), 12 checks, PASS; `_proj274chk`, `_proj273chk`
+re-run PASS.
 
 ## Cut separates, Weld joins (2.71)
 

@@ -2774,7 +2774,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.74</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.74a</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -32833,6 +32833,37 @@ const HISTORY_MIN_STEPS = 8;
 /* Remembered WITH the step rather than on it: a doc written to the autosave or
    to a .json must carry nothing this app invented. */
 const _stepCost = new WeakMap();
+/* WHICH SAVED MODEL A STEP BELONGS TO (v2.74a). New scene clears the open
+   model's name, and Undo brought the objects back without it - so Save asked
+   for a name again for a scene that had one. Each step remembers the name
+   that was open when it was made; Undo and Redo carry it across, but ONLY
+   while the name is still the one the step you are leaving had. A Save as
+   since then is a decision about the name, and a step back in the geometry
+   must not quietly undo it - Save would then write over the old model.
+   Read through try because currentProject is declared further down. */
+const _stepProject = new WeakMap();
+function _curProjectSafe() { try { return currentProject; } catch (e) { return null; } }
+function stampStep(doc) {
+  const cp = _curProjectSafe();
+  if (doc && cp !== null && !_stepProject.has(doc)) _stepProject.set(doc, cp);
+}
+/* A save binds the step on screen to the name it was saved under - that
+   step IS that model now. Carrying a name back never blanks it, except into
+   a New scene step: stepping back to before a first save is still the same
+   work, and Save asking for a name there would be the bug the other way. */
+const _sceneSteps = new WeakSet();
+function bindStepToProject(name) {
+  const d = App.history[App.historyIndex];
+  if (d) _stepProject.set(d, name);
+}
+function carryProjectName(from, to) {
+  if (!from || !to || !_stepProject.has(from) || !_stepProject.has(to)) return;
+  const cp = _curProjectSafe();
+  if (cp === null || _stepProject.get(from) !== cp) return;
+  const t = _stepProject.get(to);
+  if (t === cp) return;
+  if (t || _sceneSteps.has(to)) setCurrentProject(t);
+}
 
 /* O(objects), not O(vertices) - it reads the lengths of the big arrays instead
    of walking them, because this number only has to RANK steps against a
@@ -32975,6 +33006,8 @@ function pushHistory() {
      see the note above for why that beats both a string and a hash. */
   const cur = App.history[App.historyIndex];
   if (cur && sameDocModel(cur, doc)) { refreshUI(); return; }
+  stampStep(cur);
+  stampStep(doc);
   _stepCost.set(doc, estimateDocBytes(doc));
   App.history = App.history.slice(0, App.historyIndex + 1);
   App.history.push(doc);
@@ -33030,9 +33063,11 @@ function undo() {
      Cancel it and stop; a second press then means what it always meant. */
   if (App.pendingOp) { cancelPendingOp(); return; }
   if (App.historyIndex <= 0) return;
+  const _from = App.history[App.historyIndex];
   App.historyIndex--;
   restoreDoc(App.history[App.historyIndex], { keepAppearance: true, keepSelection: true });
   scheduleAutosave();   // or a reload resurrects the edit that was just undone
+  carryProjectName(_from, App.history[App.historyIndex]);
 }
 function redo() {
   /* NEITHER answer works here, which is why this is not undo's line copied
@@ -33060,9 +33095,11 @@ function redo() {
   // See undo: a preview is a preview whether or not the op calls itself live.
   if (App.pendingOp) { cancelPendingOp(); return; }
   if (App.historyIndex >= App.history.length - 1) return;
+  const _from = App.history[App.historyIndex];
   App.historyIndex++;
   restoreDoc(App.history[App.historyIndex], { keepAppearance: true, keepSelection: true });
   scheduleAutosave();
+  carryProjectName(_from, App.history[App.historyIndex]);
 }
 
 document.getElementById('btnUndo').addEventListener('click', undo);
@@ -33235,6 +33272,7 @@ async function saveProject(name) {
       try { localStorage.removeItem(PROJECT_PREFIX + clean); } catch (err) {}
       await refreshProjectList();
       setCurrentProject(clean);
+      bindStepToProject(clean);
       toast('Saved "' + clean + '"');
       return true;
     }
@@ -33489,12 +33527,30 @@ async function refreshProjectList() {
   syncProjectButtons();
 }
 
+/* SAVING ONTO A NAME THAT IS TAKEN (v2.74a). Save as - and Save with no
+   model open - wrote over a model of the same name without a word. The
+   first press now says so; a second press within four seconds replaces it.
+   No dialog: this app asks by toast, and the second tap is the answer. */
+let _overwriteArm = null;
+async function overwriteOk(name) {
+  const clean = (name || '').trim().slice(0, 40);
+  if (!clean || clean === currentProject) return true;
+  const items = await listProjects();
+  if (!items.some(it => it.name === clean)) return true;
+  if (_overwriteArm && _overwriteArm.name === clean && Date.now() - _overwriteArm.t < 4000) {
+    _overwriteArm = null;
+    return true;
+  }
+  _overwriteArm = { name: clean, t: Date.now() };
+  toast('"' + clean + '" already exists - tap again to replace it');
+  return false;
+}
 document.getElementById('btnProjSave').addEventListener('click', async () => {
   const input = document.getElementById('projName');
   /* v2.73: a model open means Save writes over it, no typing. None open is
      the old gesture - save under the name typed. */
   if (currentProject) { await saveProject(currentProject); return; }
-  if (await saveProject(input.value)) input.value = '';
+  if (await overwriteOk(input.value) && await saveProject(input.value)) input.value = '';
 });
 /* NEW SCENE (v2.74) - what the app boots into when there is nothing to come
    back to: one cube, selected, and no saved model open. Built through
@@ -33505,6 +33561,7 @@ document.getElementById('btnProjSave').addEventListener('click', async () => {
    of history: a stray tap on a phone is one Undo away from the scene it
    threw out, which is why this needs no confirm dialog. */
 function newScene() {
+  stampStep(App.history[App.historyIndex]);
   const doc = serializeDoc();
   doc.objects = [];
   restoreDoc(doc);
@@ -33516,13 +33573,14 @@ function newScene() {
   setDrawerOpen(false);
   refreshUI();
   pushHistory();
+  _sceneSteps.add(App.history[App.historyIndex]);
   toast('New scene - Undo brings the old one back');
 }
 document.getElementById('btnNewScene').addEventListener('click', newScene);
 document.getElementById('btnProjSaveAs').addEventListener('click', async () => {
   const input = document.getElementById('projName');
   if (!input.value.trim()) { toast('Type a new name first'); input.focus(); return; }
-  if (await saveProject(input.value)) input.value = '';
+  if (await overwriteOk(input.value) && await saveProject(input.value)) input.value = '';
 });
 document.getElementById('projName').addEventListener('keydown', (ev) => {
   ev.stopPropagation();
