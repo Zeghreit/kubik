@@ -172,8 +172,16 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
   nothing jumps); Smooth mirrors DIRECTION only, the other keeps its length.
   Chips **Auto / Corner** in the point bar; Corner again = Smooth, re-aligned
   to the visible handle. A tap on a handle does nothing.
-- **Loose ends:** inserting a point on the line gives it Auto, so near handled
-  points the shape shifts (no de Casteljau split); a doubled point's second
+- **Exact insert (2.76):** a tap on the line of a Bezier span whose end has
+  handles SPLITS it (`curveSplitSpan`, de Casteljau at the pick's own span
+  parameter `t`, clamped to 2-98%): the shape does not move, the new point is
+  Smooth, and an Auto end is frozen to Smooth (its handles would otherwise
+  follow the new neighbour). Between two Auto ends the old Auto insert runs,
+  so tap-only drawing never leaves frozen points. The freeze is permanent -
+  deleting the new point again is not a no-op (Undo is). `curveSpanCtl` is
+  the ONE description of a span's controls, shared by sampler and split.
+  Fixture `_cv276fx.js`, probe `_cv276.py` (8981).
+- **Loose ends:** a doubled point's second
   copy's out-handle is unreachable (pick keeps the lower index); no handles
   inside the Tube bar. Probe `_cv275.py` (8980), 37 checks.
 
@@ -868,6 +876,10 @@ gets NaN and will quietly report nothing rather than fail. Multiply the viewBox
 figure by the element's own scale instead.
 
 ### The freeze Zeghreit reported: unexplained, but no longer unrecoverable (2.68b)
+
+> **CLOSED (24.09.2026, v2.75):** Zeghreit reports the never-closing ring is
+> fixed. It is off the backlog. What follows is history — the recorder
+> (`RING_TRACE`, `ringDump`) is still in the code if it ever comes back.
 
 He gets a bloom ring in the 2D view that never closes, repeatably, on a phone,
 and — confirmed by him — **it does not clear until a reload**. That last fact is

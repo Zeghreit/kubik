@@ -2774,7 +2774,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.75</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.76</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -25130,6 +25130,7 @@ function pickCurveSpanOn(obj, ev, radPx) {
   const cv = obj.mesh.userData.kubikCurve;
   const W = [], S = [];
   const local = curveSamplePoints(cv, W, S);
+  const res = Math.max(1, Math.min(CURVE_RES_MAX, (cv.res | 0) || CURVE_RES_DEF));
   if (local.length < 2) return null;
   obj.mesh.updateMatrixWorld();
   const px = pointerPx(ev);
@@ -25144,10 +25145,18 @@ function pickCurveSpanOn(obj, ev, radPx) {
     t = Math.max(0, Math.min(1, t));
     const d = Math.hypot(a.x + vx * t - px.x, a.y + vy * t - px.y);
     if (d > radPx || (best && d >= best.d)) continue;
+    /* THE SPAN'S OWN PARAMETER (v2.76), for the exact insert: samples run
+       k/res along a span, so how far this one is into its span, plus how far
+       along the segment, over res. The span's first sample is found by
+       walking back while S agrees - spans can be skipped, so arithmetic on k
+       alone would not know where it starts. */
+    let k0 = k;
+    while (k0 > 0 && S[k0 - 1] === S[k]) k0--;
     best = {
       d: d, span: S[k],
       local: local[k].clone().lerp(local[k + 1], t),
-      w: W[k] + (W[k + 1] - W[k]) * t
+      w: W[k] + (W[k + 1] - W[k]) * t,
+      t: Math.min(1, ((k - k0) + t) / res)
     };
   }
   return best;
@@ -25788,9 +25797,12 @@ function finishCurveEdit(keep) {
    point and every path that lets them drift is a tube that changes thickness
    somewhere nobody asked it to. */
 
-function curveEditInsert(obj, span, local, w) {
+function curveEditInsert(obj, span, local, w, t) {
   const cv = obj.mesh.userData.kubikCurve;
   normaliseCurveRadii(cv);            // so the two are the same length first
+  // v2.76: beside a handled point, split the span so the shape stays put.
+  const split = curveSplitSpan(cv, span, t, w);
+  if (split >= 0) { rebuildCurveGeometry(obj); return split; }
   const at = Math.max(1, Math.min(cv.pts.length, span + 1));
   cv.pts.splice(at, 0, [local.x, local.y, local.z]);
   /* The new point takes the radius the tube ALREADY had at that spot, not 1.
@@ -26192,7 +26204,7 @@ function curveEditPointerUp(ev) {
   if (!fresh) { refreshUI(); return; }
   if (aimSpan) {
     editStepMark();
-    ce.sel = curveEditInsert(obj, aimSpan.span, aimSpan.local, aimSpan.w);
+    ce.sel = curveEditInsert(obj, aimSpan.span, aimSpan.local, aimSpan.w, aimSpan.t);
     curveEditChanged(true);
     refreshUI();
     return;
@@ -31126,6 +31138,72 @@ function curveAutoHandle(cv, i) {
   return { hIn: [-t[0], -t[1], -t[2]], hOut: t };
 }
 
+/* THE FOUR CONTROLS OF SPAN s (v2.76), in the one place that says what they
+   are. The sampler walks the spans through this and the exact insert splits
+   one through it, so the two cannot disagree about the curve they are on.
+   `P` are Vector3s, `H` the normalised handle rows, `closed` already
+   decided (n > 2). A set handle wins; an Auto end is the 1/6 term. */
+function curveSpanCtl(P, H, closed, s) {
+  const n = P.length;
+  const at = (i) => closed ? P[((i % n) + n) % n] : P[Math.max(0, Math.min(n - 1, i))];
+  const p0 = at(s - 1), p1 = at(s), p2 = at(s + 1), p3 = at(s + 2);
+  const h1 = H[s], h2 = H[closed ? (s + 1) % n : s + 1];
+  const c1 = h1 ? p1.clone().add(new THREE.Vector3().fromArray(h1.hOut))
+                : p1.clone().add(p2.clone().sub(p0).multiplyScalar(1 / 6));
+  const c2 = h2 ? p2.clone().add(new THREE.Vector3().fromArray(h2.hIn))
+                : p2.clone().sub(p3.clone().sub(p1).multiplyScalar(1 / 6));
+  return { p1: p1, c1: c1, c2: c2, p2: p2 };
+}
+
+/* PUT A POINT ON SPAN `span` AT PARAMETER t WITHOUT MOVING THE CURVE (v2.76).
+   Only when one end of the span already has handles of its own: there the
+   old Auto insert visibly bent the shape, and a split is the only honest
+   answer. De Casteljau at t gives the new point, its two handles (in line by
+   construction, so it is Smooth) and the shortened inner handles of the two
+   ends. An end that was Auto is frozen to explicit handles first - its Auto
+   handles would otherwise be recomputed from the new neighbour and bend the
+   very span the split just preserved. The ends' OTHER handles are untouched,
+   and so is every other span.
+
+   Between two Auto ends nothing is split and this returns -1: the point goes
+   in as Auto the way it always has, so drawing with taps alone still never
+   leaves a point that has stopped following its neighbours.
+
+   Pure: writes pts, radii and handles of `cv` together and nothing else.
+   `w` is the radius multiplier at the spot, from the pick. */
+function curveSplitSpan(cv, span, t, w) {
+  const W = normaliseCurveRadii(cv), H = cv.handles;
+  const n = (cv.pts || []).length;
+  if (cv.type !== 'bezier' || n < 2 || !Number.isFinite(t)) return -1;
+  const closed = !!cv.closed && n > 2;
+  const iA = span, iB = closed ? (span + 1) % n : span + 1;
+  if (span < 0 || iB >= n || iB === iA || (!H[iA] && !H[iB])) return -1;
+  /* Off the very ends: a point ON an end is a doubled point, which is a
+     corner. 2% rather than a hair (found in review): with a zero-length
+     handle at the end the new point sits ~3t^2 of the span away, so 1e-3
+     still fell inside the sampler's skip on a short span. A finger that near
+     an end is on the point's own grab radius anyway, and the point wins. */
+  t = Math.max(0.02, Math.min(0.98, t));
+  const P = cv.pts.map(a => new THREE.Vector3(a[0], a[1], a[2]));
+  const k = curveSpanCtl(P, H, closed, span);
+  const L = (a, b) => a.clone().lerp(b, t);
+  const q0 = L(k.p1, k.c1), q1 = L(k.c1, k.c2), q2 = L(k.c2, k.p2);
+  const r0 = L(q0, q1), r1 = L(q1, q2), m = L(r0, r1);
+  const off = (a, b) => [a.x - b.x, a.y - b.y, a.z - b.z];
+  // Frozen BEFORE the insert: Auto reads the neighbours, which are about to change.
+  const hA = H[iA] ? cloneCurveHandle(H[iA]) : Object.assign({ mode: 'smooth' }, curveAutoHandle(cv, iA));
+  const hB = H[iB] ? cloneCurveHandle(H[iB]) : Object.assign({ mode: 'smooth' }, curveAutoHandle(cv, iB));
+  hA.hOut = off(q0, k.p1);
+  hB.hIn = off(q2, k.p2);
+  const at = span + 1;
+  cv.pts.splice(at, 0, [m.x, m.y, m.z]);
+  W.splice(at, 0, Math.max(CURVE_R_MIN, Math.min(CURVE_R_MAX, w || 1)));
+  H.splice(at, 0, { mode: 'smooth', hIn: off(r0, m), hOut: off(r1, m) });
+  H[iA] = hA;
+  H[iB >= at ? iB + 1 : iB] = hB;
+  return at;
+}
+
 /* `outW`, when given, is filled with one radius multiplier per sample -
    by the SAME loop, deliberately. A second function that walked the spans
    again would be two descriptions of one thing, and the interesting cases
@@ -31200,7 +31278,8 @@ function curveSamplePoints(cv, outW, outS) {
   const out = [];
   let lastSpan = 0;
   for (let s = 0; s < spans; s++) {
-    const p0 = at(s - 1), p1 = at(s), p2 = at(s + 1), p3 = at(s + 2);
+    const K4 = curveSpanCtl(P, H, closed, s);
+    const p1 = K4.p1, p2 = K4.p2;
     /* A ZERO-LENGTH SPAN IS A CORNER, and sampling it draws a PETAL (found in
        review). Two control points on the same spot is how a Bezier is given a
        hard corner, and the 1/6 form on that span leaves p1 along the incoming
@@ -31214,13 +31293,8 @@ function curveSamplePoints(cv, outW, outS) {
        the same position twice and the 1/6 term collapses. */
     if (p1.distanceToSquared(p2) < 1e-12) continue;
     /* A HANDLE THAT WAS SET WINS; an Auto end is the 1/6 term exactly as it
-       always was (v2.75) - the same expression, so a curve with no handles
-       samples to the same numbers it did before handles existed. */
-    const h1 = H[s], h2 = H[closed ? (s + 1) % n : s + 1];
-    const c1 = h1 ? p1.clone().add(new THREE.Vector3().fromArray(h1.hOut))
-                  : p1.clone().add(p2.clone().sub(p0).multiplyScalar(1 / 6));
-    const c2 = h2 ? p2.clone().add(new THREE.Vector3().fromArray(h2.hIn))
-                  : p2.clone().sub(p3.clone().sub(p1).multiplyScalar(1 / 6));
+       always was (v2.75) - see curveSpanCtl, which the split shares. */
+    const c1 = K4.c1, c2 = K4.c2;
     /* LINEAR ALONG THE SPAN, not a spline like the shape itself. A
        Catmull-Rom through the radii would pass through every one of them too,
        but it can bulge BETWEEN them - set 1, 1, 0.2, 1, 1 and the two spans
@@ -48734,7 +48808,7 @@ if (PICK_DEBUG) {
     curveEditInsert, curveEditAppend, curveEditSelChanged,
     // v2.75: Bezier handles.
     normaliseCurveHandles, curveAutoHandle, curveHandlesShown, pickCurveHandle,
-    setCurveHandle, curveHandleChip,
+    setCurveHandle, curveHandleChip, curveSplitSpan, curveSpanCtl,
     /* v2.23: a face and a draw group are two different things. The map is
        the one source of truth for how many faces a mesh has. */
     publishFaces, publishFacesFromGroups, faceCount, faceRanges, mergeDrawGroups,
