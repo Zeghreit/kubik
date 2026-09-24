@@ -146,9 +146,36 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
   bevel normal." The best unbuilt idea in the doc set.
   (`wear-shading-prior-art.md` §5C)
 - **Warp the lookup, not the distance** — same doc, §5B.
-- **Curves** still lack draggable Bezier handles (`hIn`/`hOut` are already
-  reserved in the file format), edge snapping while drawing, and a Lathe that
-  sweeps an arc rather than a full turn.
+- **Curves** still lack edge snapping while drawing, and a Lathe that sweeps
+  an arc rather than a full turn.
+
+## Bezier handles on curves (2.75)
+
+- **Data:** `cv.handles`, one row per point beside `pts` and `radii`. `null`
+  = **Auto** (the old Catmull-Rom 1/6 handles from the neighbours, sampled by
+  the SAME expression - an all-Auto curve is byte-identical to 2.74a, node
+  fixture `_cv275fx.js`). Otherwise `{mode:'smooth'|'corner', hIn, hOut}`,
+  OFFSETS from the point in curve-local space. Older files have no field and
+  load as Auto. `normaliseCurveHandles` runs from `normaliseCurveRadii` (the
+  one funnel) and works IN PLACE - it keeps the array, because a step mark in
+  between left a caller writing into a dropped array (probe found it).
+- **Every copier of `radii` copies `handles`:** steps, editor Cancel
+  (`handles0`), save/load (curve and tube), duplicate, tube clone, tube setup
+  snapshot, `absorbCurveInto` (through the matrix's linear part,
+  `curveHandlesThrough`), Add points (`cd.handlesW`, world offsets; Back
+  truncates them; the draft previews with them).
+- **Editor:** handles show only on the SELECTED point, only in the plain point
+  editor (not hosted in a Tube bar), only on Bezier; an open end shows one,
+  a doubled point hides the side facing its twin (that span is skipped).
+  A handle is picked only when nearer than any point (ties go to the point).
+  Dragging a handle of an Auto point makes it **Smooth** (seeded from Auto, so
+  nothing jumps); Smooth mirrors DIRECTION only, the other keeps its length.
+  Chips **Auto / Corner** in the point bar; Corner again = Smooth, re-aligned
+  to the visible handle. A tap on a handle does nothing.
+- **Loose ends:** inserting a point on the line gives it Auto, so near handled
+  points the shape shifts (no de Casteljau split); a doubled point's second
+  copy's out-handle is unreachable (pick keeps the lower index); no handles
+  inside the Tube bar. Probe `_cv275.py` (8980), 37 checks.
 
 ## New scene, and the name that goes with a step (2.74, 2.74a)
 

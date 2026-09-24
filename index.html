@@ -2774,7 +2774,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.74a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.75</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -12351,7 +12351,8 @@ function cloneObjectInto(obj, name) {
     const cv = obj.mesh.userData.kubikCurve;
     const dup = createCurveObject(name, obj.mesh.position.clone(),
       cv.pts.map(a => new THREE.Vector3(a[0], a[1], a[2])),
-      { closed: cv.closed, type: cv.type, res: cv.res, radii: cv.radii });
+      { closed: cv.closed, type: cv.type, res: cv.res, radii: cv.radii,
+        handles: curveHandlesCopy(cv) });
     dup.mesh.quaternion.copy(obj.mesh.quaternion);
     dup.mesh.scale.copy(obj.mesh.scale);
     return dup;
@@ -12409,7 +12410,8 @@ function cloneObjectInto(obj, name) {
     newMesh.userData.kubikCurve = {
       pts: srcC.pts.map(a => [a[0], a[1], a[2]]),
       closed: !!srcC.closed, type: srcC.type, res: srcC.res,
-      radii: (srcC.radii || []).slice()
+      radii: (srcC.radii || []).slice(),
+      handles: curveHandlesCopy(srcC)
     };
   }
   scene.add(newMesh);
@@ -16848,6 +16850,11 @@ document.getElementById('opToggle').addEventListener('click', () => {
   if (App.curveEdit && !App.pendingOp) { curveEditDelete(); return; }
   if (App.curveDraw && !App.pendingOp) {
     if (App.curveDraw.pts.length) App.curveDraw.pts.pop();
+    /* v2.75 (found in review): the handles line up with the ORIGINAL points
+       by index, so a point taken back takes its handle too - otherwise the
+       next point tapped into that slot inherits a handle aimed elsewhere. */
+    { const hw = App.curveDraw.handlesW;
+      if (hw && hw.length > App.curveDraw.pts.length) hw.length = App.curveDraw.pts.length; }
     refreshCurvePreview();
     refreshCurveBar();
     return;
@@ -25181,6 +25188,122 @@ curveSelDot.visible = false;
 curveSelDot.frustumCulled = false;
 scene.add(curveSelDot);
 
+/* THE SELECTED POINT'S HANDLES (v2.75): a stick through the point and a dot
+   at each end, smaller than a point so the two never read as the same thing.
+   Only on the selected point - every point wearing two more targets would
+   leave a finger nothing it could hit on purpose. */
+const curveHandleMat = new THREE.PointsMaterial({
+  size: VERTEX_DOT_PX * 2.6 * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1),
+  color: 0xffffff, sizeAttenuation: false,
+  map: vertexDotTexture(), alphaTest: 0.4, transparent: true,
+  depthTest: false, depthWrite: false, fog: false
+});
+const curveHandleDots = new THREE.Points(new THREE.BufferGeometry(), curveHandleMat);
+curveHandleDots.renderOrder = 1001;
+curveHandleDots.visible = false;
+curveHandleDots.frustumCulled = false;
+scene.add(curveHandleDots);
+const curveHandleLineMat = new LineMaterial({
+  color: 0xffb454, linewidth: 1.5, worldUnits: false,
+  transparent: true, opacity: 0.9, depthTest: false, depthWrite: false
+});
+curveHandleLineMat.resolution.set(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
+const curveHandleLine = new Line2(new LineGeometry().setPositions([0, 0, 0, 0, 0, 0]), curveHandleLineMat);
+curveHandleLine.renderOrder = 1000;
+curveHandleLine.visible = false;
+curveHandleLine.frustumCulled = false;
+scene.add(curveHandleLine);
+gizmoStrokes.push(curveHandleLine);
+
+/* Which handles the selected point shows, in world space. None while hosted
+   (a tube's bar already hangs a radius ring on every point), none on a Poly
+   curve (it has no handles to use), and on an OPEN curve's ends only the one
+   that shapes a span - the other bends nothing and would be a dot that lies. */
+function curveHandlesShown() {
+  const ce = App.curveEdit, obj = curveEditObj();
+  if (!ce || ce.hosted || !obj || !hasCurveData(obj) || ce.sel < 0) return [];
+  const cv = curveDataOf(obj);
+  const P = cv.pts || [], n = P.length, i = ce.sel;
+  if (cv.type !== 'bezier' || n < 2 || i >= n) return [];
+  const H = normaliseCurveHandles(cv);
+  const h = H[i] || curveAutoHandle(cv, i);
+  const closed = !!cv.closed && n > 2;
+  /* A DOUBLED POINT's side facing its twin is a span the sampler skips, so a
+     handle there bends nothing (found in review) - the open-end rule again. */
+  const twin = (k) => { const q = P[closed ? ((k % n) + n) % n : k];
+    return !!q && Math.hypot(q[0] - P[i][0], q[1] - P[i][1], q[2] - P[i][2]) < 1e-6; };
+  const inOk = (closed || i > 0) && !twin(i - 1);
+  const outOk = (closed || i < n - 1) && !twin(i + 1);
+  obj.mesh.updateMatrixWorld();
+  const out = [];
+  [['in', h.hIn, inOk], ['out', h.hOut, outOk]].forEach(e => {
+    if (!e[2]) return;
+    const w = new THREE.Vector3(P[i][0] + e[1][0], P[i][1] + e[1][1], P[i][2] + e[1][2])
+      .applyMatrix4(obj.mesh.matrixWorld);
+    out.push({ i: i, which: e[0], world: w });
+  });
+  return out;
+}
+
+function refreshCurveHandleViz() {
+  const list = curveHandlesShown();
+  if (!list.length) { curveHandleDots.visible = false; curveHandleLine.visible = false; return; }
+  const obj = curveEditObj();
+  const mid = pointWorldOnCurve(obj, list[0].i);
+  const flat = [];
+  list.forEach(h => flat.push(h.world.x, h.world.y, h.world.z));
+  curveHandleMat.size = VERTEX_DOT_PX * 2.6 * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1);
+  curveHandleDots.geometry.dispose();
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(flat, 3));
+  curveHandleDots.geometry = g;
+  curveHandleDots.visible = true;
+  const inH = list.find(h => h.which === 'in'), outH = list.find(h => h.which === 'out');
+  const line = [];
+  [inH ? inH.world : mid, mid, outH ? outH.world : mid].forEach(v => line.push(v.x, v.y, v.z));
+  curveHandleLine.geometry.dispose();
+  curveHandleLine.geometry = new LineGeometry().setPositions(line);
+  curveHandleLine.visible = true;
+}
+
+/* THE HANDLE UNDER A PRESS, if it is nearer than any point. A handle that
+   sits on its own point loses the tie, so a collapsed handle never takes the
+   point away from the finger. */
+function pickCurveHandle(ev, pointHit) {
+  const px = pointerPx(ev);
+  let best = null;
+  curveHandlesShown().forEach(h => {
+    const sp = worldToScreenPx(h.world);
+    if (!sp) return;
+    const d = Math.hypot(sp.x - px.x, sp.y - px.y);
+    if (d <= GRAB_RADIUS_PX && (!best || d < best.d)) best = Object.assign({ d: d }, h);
+  });
+  if (best && pointHit && pointHit.d <= best.d) return null;
+  return best;
+}
+
+/* ONE HANDLE MOVED, and what the other one does about it. An Auto point
+   becomes Smooth the moment a handle is taken, seeded from what Auto was
+   showing so the rest of it does not jump. Smooth keeps the pair in one line
+   by turning the other handle to face the opposite way at ITS OWN length -
+   direction only, like Blender's Aligned - so you can make one side long and
+   the other short. Corner leaves the other alone. */
+function setCurveHandle(cv, i, which, off) {
+  const H = normaliseCurveHandles(cv);
+  const h = H[i] ? cloneCurveHandle(H[i])
+                 : Object.assign({ mode: 'smooth' }, curveAutoHandle(cv, i));
+  const key = which === 'in' ? 'hIn' : 'hOut', other = which === 'in' ? 'hOut' : 'hIn';
+  h[key] = [off[0], off[1], off[2]];
+  if (h.mode === 'smooth') {
+    const d = Math.hypot(off[0], off[1], off[2]);
+    let L = Math.hypot(h[other][0], h[other][1], h[other][2]);
+    if (L < 1e-9) L = d;
+    if (d > 1e-9) h[other] = off.map(c => -c / d * L);
+  }
+  H[i] = h;
+  return h;
+}
+
 function setCurveSelDot(w) {
   if (!w) { curveSelDot.visible = false; return; }
   curveSelMat.size = VERTEX_DOT_PX * 4.2 * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1);
@@ -25293,6 +25416,7 @@ function refreshCurvePreview() {
     } else {
       setCurveSelDot(null);
     }
+    refreshCurveHandleViz();
     /* THE SPINE OF A TUBE BEING EDITED (v2.20a). A curve object draws its own
        line; a tube's curve is data on the tube and has none - so the points
        hung in the air with the mesh around them and nothing joining them up.
@@ -25325,6 +25449,7 @@ function refreshCurvePreview() {
     return;
   }
   setCurveSelDot(null);
+  curveHandleDots.visible = false; curveHandleLine.visible = false;
   const list = cd.pts.slice();
   if (cd.live) list.push(cd.live.p);
   const flat = [];
@@ -25333,7 +25458,10 @@ function refreshCurvePreview() {
   // The DRAFT is the real curve, sampled the way the finished one will be, so
   // a Bezier looks like itself while it is being drawn rather than after.
   const sampled = curveSamplePoints({
-    pts: list.map(p => [p.x, p.y, p.z]), closed: cd.closed, type: cd.type, res: cd.res
+    pts: list.map(p => [p.x, p.y, p.z]), closed: cd.closed, type: cd.type, res: cd.res,
+    // v2.75: world offsets, the same space as these points. A copy, because
+    // the sampler normalises in place and the draft owns nothing.
+    handles: cloneCurveHandleList(cd.handlesW)
   });
   if (sampled.length >= 2) {
     const sf = [];
@@ -25432,7 +25560,10 @@ function startCurveDraw(editObj) {
     type: cv ? cv.type : 'bezier',
     res: cv ? cv.res : CURVE_RES_DEF,
     closed: cv ? !!cv.closed : false,
-    editId: editObj ? editObj.id : null
+    editId: editObj ? editObj.id : null,
+    /* The handles of the points it started with, as WORLD offsets (v2.75):
+       Apply resets the transform to identity, so world is what they become. */
+    handlesW: editObj ? curveHandlesThrough(cv, editObj.mesh.matrixWorld) : []
   };
   refreshCurvePreview();
   showCurveBar();
@@ -25531,6 +25662,7 @@ function curveEditMark() {
   ce.steps.push({
     pts: cv.pts.map(a => [a[0], a[1], a[2]]),
     radii: normaliseCurveRadii(cv).slice(),
+    handles: curveHandlesCopy(cv),
     sel: ce.sel
   });
   if (ce.steps.length > OP_STEPS_MAX) ce.steps.shift();
@@ -25544,8 +25676,10 @@ function curveEditStepBack() {
   const cv = curveDataOf(obj);
   cv.pts = st.pts.map(a => [a[0], a[1], a[2]]);
   cv.radii = st.radii.slice();
+  cv.handles = cloneCurveHandleList(st.handles);
   ce.sel = Math.min(st.sel, cv.pts.length - 1);
   ce.drag = null;
+  ce.hdrag = null;
   rebuildCurveGeometry(obj);
   refreshCurvePreview();
   refreshCurveEditBar();
@@ -25589,6 +25723,7 @@ function startCurveEdit(obj, host) {
     // has to be able to hand back what was there before any of it.
     pts0: cv.pts.map(a => [a[0], a[1], a[2]]),
     radii0: cv.radii.slice(),
+    handles0: curveHandlesCopy(cv),
     hosted: false,
     steps: []
   };
@@ -25636,6 +25771,7 @@ function finishCurveEdit(keep) {
     const cv = obj.mesh.userData.kubikCurve;
     cv.pts = ce.pts0.map(a => [a[0], a[1], a[2]]);
     cv.radii = ce.radii0.slice();
+    cv.handles = cloneCurveHandleList(ce.handles0);
     rebuildCurveGeometry(obj);
     /* The history is untouched by a discard - nothing was pushed - but the
        AUTOSAVE is not the history, and every drag has been in the live curve
@@ -25660,6 +25796,7 @@ function curveEditInsert(obj, span, local, w) {
   /* The new point takes the radius the tube ALREADY had at that spot, not 1.
      Inserting a point to bend a taper should not put a bulge in it. */
   cv.radii.splice(at, 0, Math.max(CURVE_R_MIN, Math.min(CURVE_R_MAX, w || 1)));
+  cv.handles.splice(at, 0, null);   // a new point starts on Auto
   rebuildCurveGeometry(obj);
   return at;
 }
@@ -25676,6 +25813,7 @@ function curveEditAppend(obj, local, head) {
   const near = !cv.radii.length ? 1
              : head ? cv.radii[0] : cv.radii[cv.radii.length - 1];
   cv.radii.splice(at, 0, near);
+  cv.handles.splice(at, 0, null);
   rebuildCurveGeometry(obj);
   return at;
 }
@@ -25697,12 +25835,14 @@ function curveEditDelete() {
   normaliseCurveRadii(cv);
   cv.pts.splice(ce.sel, 1);
   cv.radii.splice(ce.sel, 1);
+  cv.handles.splice(ce.sel, 1);
   /* A HELD DRAG IS AIMED AT A ROW NUMBER, and the rows have just moved
      (found in review). The bar is DOM, so a second finger on Delete point is
      never seen by the pointer tracker and the two-finger bail-out does not
      fire - the first finger carried on dragging whatever had slid into that
      index. Dropped, so the drag has to be taken again. */
   ce.drag = null;
+  ce.hdrag = null;
   ce.sel = Math.min(ce.sel, cv.pts.length - 1);
   rebuildCurveGeometry(obj);
   curveEditChanged(true);
@@ -25734,6 +25874,19 @@ function showCurveEditBar() {
     });
     el.appendChild(b);
   });
+  /* AUTO / CORNER (v2.75), for the selected point. Shown only when there is a
+     point whose handles mean something; refreshCurveEditBar keeps them honest
+     as the selection moves, without rebuilding the row under a finger. */
+  [['auto', 'Auto', 'Handles follow the neighbours again'],
+   ['corner', 'Corner', 'Break the pair - each handle moves on its own']].forEach(c => {
+    const b = document.createElement('button');
+    b.textContent = c[1];
+    b.title = c[2];
+    b.dataset.curveHandle = c[0];
+    if (c[0] === 'auto') b.style.marginLeft = '12px';
+    b.addEventListener('click', () => curveHandleChip(c[0]));
+    el.appendChild(b);
+  });
   const wrap = document.getElementById('opToggleWrap');
   const btn = document.getElementById('opToggle');
   wrap.style.display = 'inline-flex';
@@ -25755,6 +25908,62 @@ function refreshCurveEditBar() {
   const n = obj.mesh.userData.kubikCurve.pts.length;
   document.getElementById('opLabel').textContent =
     'Points · ' + n + (App.curveEdit.sel >= 0 ? ' · #' + (App.curveEdit.sel + 1) : '');
+  const cv = obj.mesh.userData.kubikCurve, sel = App.curveEdit.sel;
+  const on = sel >= 0 && sel < n && cv.type === 'bezier';
+  const h = on ? normaliseCurveHandles(cv)[sel] : null;
+  document.querySelectorAll('#opGrouping [data-curve-handle]').forEach(b => {
+    b.style.display = on ? '' : 'none';
+    b.classList.toggle('active', on && (b.dataset.curveHandle === 'auto'
+      ? !h : !!h && h.mode === 'corner'));
+  });
+}
+
+/* The two chips. Each one is a step, like every other edit at this bar.
+   Corner on an Auto point seeds the handles from Auto, so the shape holds
+   still and only the pair's behaviour changes. Corner again goes back to
+   Smooth, and lines the pair up on the way - keeping the OUT handle, since a
+   Smooth pair that does not point opposite ways would not be one. */
+function curveHandleChip(kind) {
+  const ce = App.curveEdit, obj = curveEditObj();
+  if (!ce || !obj || !hasCurveData(obj)) return;
+  const cv = curveDataOf(obj);
+  if (ce.sel < 0 || ce.sel >= (cv.pts || []).length) { toast('Tap a point first'); return; }
+  const H = normaliseCurveHandles(cv), i = ce.sel;
+  if (kind === 'auto') {
+    if (!H[i]) { toast('Already Auto'); return; }
+    editStepMark();
+    H[i] = null;
+    toast('Auto - handles follow the neighbours');
+  } else {
+    editStepMark();
+    const h = H[i] ? cloneCurveHandle(H[i])
+                   : Object.assign({ mode: 'smooth' }, curveAutoHandle(cv, i));
+    if (H[i] && h.mode === 'corner') {
+      h.mode = 'smooth';
+      H[i] = h;
+      /* KEEP THE ONE THAT SHAPES A SPAN (found in review). The last point of
+         an open curve has only its IN handle on screen; re-aligning to the
+         hidden OUT would swing the one you shaped. And a handle dragged onto
+         its point has no direction worth keeping - keep the other then. */
+      /* By what is ON SCREEN - the same test that draws them - so an open
+         end and a doubled point's hidden side both keep the visible one. */
+      const vis = curveHandlesShown().map(q => q.which);
+      let keep = vis.indexOf('out') < 0 && vis.indexOf('in') >= 0 ? 'in' : 'out';
+      const kv = keep === 'in' ? h.hIn : h.hOut, ov = keep === 'in' ? h.hOut : h.hIn;
+      const tiny = v => Math.hypot(v[0], v[1], v[2]) < 1e-6;
+      if (vis.length === 2 && tiny(kv) && !tiny(ov)) keep = keep === 'in' ? 'out' : 'in';
+      setCurveHandle(cv, i, keep, keep === 'in' ? h.hIn : h.hOut);
+      toast('Smooth - the handles stay in line');
+    } else {
+      h.mode = 'corner';
+      H[i] = h;
+      toast('Corner - each handle moves on its own');
+    }
+  }
+  ce.hdrag = null;
+  rebuildCurveGeometry(obj);
+  curveEditChanged();
+  refreshUI();
 }
 
 function hideCurveEditBar() {
@@ -25782,6 +25991,7 @@ function curveEditPointerDown(ev) {
   ce.tapSpan = null; ce.tapEnd = null;
   ce.tapId = obj.id;
   ce.tapN = ((obj.mesh.userData.kubikCurve || {}).pts || []).length;
+  ce.hdrag = null;
   /* THE RING FIRST, when there is one (v2.20). Inside a tube's bar every
      point wears a circle at its own thickness, and that circle is the radius
      handle - which is what frees the dot in the middle to mean "move this
@@ -25799,6 +26009,15 @@ function curveEditPointerDown(ev) {
     }
   }
   const hit = pickCurvePointOn(obj, ev, GRAB_RADIUS_PX);
+  /* A HANDLE OF THE SELECTED POINT (v2.75), when it is nearer than any point.
+     Claimed like a point - the camera stays still under it - and dragged the
+     same way, in the camera plane through where it was. */
+  const hh = pickCurveHandle(ev, hit);
+  if (hh) {
+    ce.drag = null;
+    ce.hdrag = { i: hh.i, which: hh.which, from: hh.world.clone() };
+    return true;
+  }
   /* THE PLANE FOLLOWS THE POINT. Captured on the press, in world space, so
      the drag happens in the plane the point is already in rather than in one
      through the origin. */
@@ -25867,6 +26086,21 @@ function curveEditPointerMove(ev) {
       Math.hypot(ev.clientX - ce.x0, ev.clientY - ce.y0) > tapDriftPx(ev)) {
     ce.moved = true;
   }
+  if (ce.moved && ce.hdrag) {
+    const cvh = obj.mesh.userData.kubikCurve;
+    const hd = ce.hdrag;
+    if (hd.i >= cvh.pts.length) { ce.hdrag = null; return; }
+    const q = cameraPlanePoint(ev, hd.from);
+    if (!q) return;
+    if (!ce.markedDrag) { ce.markedDrag = true; editStepMark(); }
+    obj.mesh.updateMatrixWorld();
+    const loc = obj.mesh.worldToLocal(q.clone());
+    const a = cvh.pts[hd.i];
+    setCurveHandle(cvh, hd.i, hd.which, [loc.x - a[0], loc.y - a[1], loc.z - a[2]]);
+    rebuildCurveGeometry(obj);
+    curveEditChanged();
+    return;
+  }
   if (!ce.moved || !ce.drag) return;
   const p3 = cameraPlanePoint(ev, ce.drag.from);
   if (!p3) return;
@@ -25900,6 +26134,17 @@ function curveEditPointerUp(ev) {
   if (tubeRadiusDrag) {
     endTubeRadiusDrag();
     ce.pid = null; ce.drag = null; ce.moved = false;
+    return;
+  }
+  /* A handle press ends here whatever it did: a drag has already written,
+     and a tap on a handle means nothing - it must not fall through and add a
+     point on the line it happens to sit over. */
+  if (ce.hdrag) {
+    const movedH = ce.moved;
+    ce.hdrag = null; ce.pid = null; ce.drag = null; ce.moved = false;
+    ce.togg = false; ce.markedDrag = false; ce.tapSpan = null; ce.tapEnd = null;
+    if (movedH) refreshCurveEditBar();   // Auto may have become Smooth
+    refreshUI();
     return;
   }
   const wasDrag = ce.moved && !!ce.drag;
@@ -25975,7 +26220,7 @@ function curveEditPointerUp(ev) {
 function endCurveGesture() {
   const ce = App.curveEdit;
   if (ce) {
-    ce.pid = null; ce.drag = null; ce.moved = false; ce.togg = false;
+    ce.pid = null; ce.drag = null; ce.hdrag = null; ce.moved = false; ce.togg = false;
     ce.markedDrag = false; ce.tapSpan = null; ce.tapEnd = null;
   }
   const cd = App.curveDraw;
@@ -26001,6 +26246,7 @@ function applyCurveDraw() {
   const pts = cd.pts.slice();
   const editId = cd.editId;
   const opts = { closed: cd.closed, type: cd.type, res: cd.res };
+  const handlesW = cd.handlesW || [];
   App.curveDraw = null;
   orbit.enabled = true;
   hideCurveBar();
@@ -26028,6 +26274,8 @@ function applyCurveDraw() {
     prev.mesh.quaternion.identity();
     prev.mesh.scale.set(1, 1, 1);
     prev.mesh.userData.kubikCurve.pts = local.map(p => [p.x, p.y, p.z]);
+    // Only the rows that are still there; Back may have popped some.
+    prev.mesh.userData.kubikCurve.handles = handlesW.slice(0, local.length);
     rebuildCurveGeometry(prev);
     obj = prev;
   } else {
@@ -28311,7 +28559,7 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     // The camera is taking over, so the half-placed point is not a point.
     if (App.knife) { App.knife.live = null; App.knife.pid = null; refreshKnifePreview(); }
     if (App.curveDraw) { App.curveDraw.live = null; App.curveDraw.pid = null; App.curveDraw.moved = false; refreshCurvePreview(); }
-    if (App.curveEdit) { App.curveEdit.pid = null; App.curveEdit.drag = null; App.curveEdit.moved = false; }
+    if (App.curveEdit) { App.curveEdit.pid = null; App.curveEdit.drag = null; App.curveEdit.hdrag = null; App.curveEdit.moved = false; }
     directCandidate = null;
     endAmountDrag();   // a2.102: a second finger is the camera, not the amount
     orbit.enabled = true;
@@ -28572,7 +28820,7 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
                   App.curveEdit.pid === ev.pointerId && activePointers.size === 1;
     trackPointerUp(ev);
     if (soloE) curveEditPointerUp(ev);
-    else { App.curveEdit.pid = null; App.curveEdit.drag = null; App.curveEdit.moved = false; }
+    else { App.curveEdit.pid = null; App.curveEdit.drag = null; App.curveEdit.hdrag = null; App.curveEdit.moved = false; }
     orbit.enabled = true;
     pointerDown = null;
     directCandidate = null;
@@ -30781,12 +31029,12 @@ function cubicPointAt(p0, c1, c2, p1, t, out) {
    count of the surface a Lathe or a Tube will build from it, which is why it
    sits on the bar next to the type rather than hidden in the drawer.
 
-   Bezier handles are DERIVED, not stored: the Catmull-Rom tangent through
+   Bezier handles are DERIVED by default: the Catmull-Rom tangent through
    each point, written as the two cubic control points either side of it
    (the standard 1/6 form). That is what keeps drawing to taps alone - you get
-   a real Bezier without touching a handle. The data model carries hIn/hOut
-   from the start, unused, so dragging handles can be added later without
-   changing a single saved file. */
+   a real Bezier without touching a handle. Since v2.75 a point can carry its
+   own (`cv.handles`, see normaliseCurveHandles); a point without them is
+   Auto and samples exactly as it always did. */
 /* A RADIUS PER CONTROL POINT (v2.18), as a MULTIPLIER rather than a length.
 
    Multipliers because the tube's own radius is still one number on one
@@ -30814,7 +31062,68 @@ function normaliseCurveRadii(cv) {
     out.push(Number.isFinite(v) ? Math.max(CURVE_R_MIN, Math.min(CURVE_R_MAX, v)) : 1);
   }
   cv.radii = out;
+  normaliseCurveHandles(cv);   // the same funnel, so the rows stay one per point
   return out;
+}
+
+/* BEZIER HANDLES (v2.75), one entry per point, beside `radii`. `null` is
+   AUTO - the handles worked out from the neighbours, which is what every
+   point had before this field existed, so an older file loads unchanged.
+   Otherwise { mode: 'smooth' | 'corner', hIn, hOut }, each an OFFSET from the
+   point in the curve's own space: dragging the point carries its handles with
+   it, and a transform on the object moves them like everything else in it. */
+function curveHandleFin3(a) {
+  const v = Array.isArray(a) ? a.map(Number) : [];
+  return [0, 1, 2].map(k => Number.isFinite(v[k]) ? v[k] : 0);
+}
+function cloneCurveHandle(h) {
+  if (!h || typeof h !== 'object') return null;
+  return { mode: h.mode === 'corner' ? 'corner' : 'smooth',
+           hIn: curveHandleFin3(h.hIn), hOut: curveHandleFin3(h.hOut) };
+}
+function cloneCurveHandleList(list) {
+  return (Array.isArray(list) ? list : []).map(cloneCurveHandle);
+}
+/* IN PLACE, keeping the array (found by the probe): every step mark and
+   every rebuild runs through here, and a fresh array each time left anyone
+   holding the list from a moment ago writing into one the curve had dropped -
+   the Corner chip marked a step, then set a handle nobody would ever read. */
+function normaliseCurveHandles(cv) {
+  const n = (cv.pts || []).length;
+  if (!Array.isArray(cv.handles)) cv.handles = [];
+  const H = cv.handles;
+  for (let i = 0; i < n; i++) H[i] = cloneCurveHandle(H[i]);
+  H.length = n;
+  return H;
+}
+// Deep copies for anything that keeps them: a step, a snapshot, a file.
+function curveHandlesCopy(cv) {
+  return cloneCurveHandleList(normaliseCurveHandles(cv));
+}
+/* Through a matrix: the offsets are directions, so they take the LINEAR part
+   only. Used where points cross from one object's space into another's. */
+function curveHandlesThrough(cv, m4) {
+  const m3 = new THREE.Matrix3().setFromMatrix4(m4);
+  const v = new THREE.Vector3();
+  return curveHandlesCopy(cv).map(h => {
+    if (!h) return null;
+    v.fromArray(h.hIn).applyMatrix3(m3);  h.hIn = [v.x, v.y, v.z];
+    v.fromArray(h.hOut).applyMatrix3(m3); h.hOut = [v.x, v.y, v.z];
+    return h;
+  });
+}
+/* What AUTO means for point i, as offsets - the same 1/6 Catmull-Rom term
+   the sampler writes, with the same neighbour rule, so a point switched from
+   Auto to Smooth or Corner starts exactly where it was and nothing jumps. */
+function curveAutoHandle(cv, i) {
+  const P = cv.pts || [];
+  const n = P.length;
+  const closed = !!cv.closed && n > 2;
+  const at = (k) => P[closed ? ((k % n) + n) % n : Math.max(0, Math.min(n - 1, k))];
+  const a = at(i - 1), b = at(i + 1);
+  if (!a || !b) return { hIn: [0, 0, 0], hOut: [0, 0, 0] };
+  const t = [0, 1, 2].map(k => (b[k] - a[k]) / 6);
+  return { hIn: [-t[0], -t[1], -t[2]], hOut: t };
 }
 
 /* `outW`, when given, is filled with one radius multiplier per sample -
@@ -30831,6 +31140,7 @@ function curveSamplePoints(cv, outW, outS) {
   const P = (cv.pts || []).map(a => new THREE.Vector3(a[0], a[1], a[2]));
   const n = P.length;
   const W = normaliseCurveRadii(cv);
+  const H = cv.handles;          // normalised by the line above
   const wOut = Array.isArray(outW) ? outW : null;
   const sOut = Array.isArray(outS) ? outS : null;
   if (wOut) wOut.length = 0;
@@ -30903,8 +31213,14 @@ function curveSamplePoints(cv, outW, outS) {
        side already clamp through the doubled point, because `at` hands them
        the same position twice and the 1/6 term collapses. */
     if (p1.distanceToSquared(p2) < 1e-12) continue;
-    const c1 = p1.clone().add(p2.clone().sub(p0).multiplyScalar(1 / 6));
-    const c2 = p2.clone().sub(p3.clone().sub(p1).multiplyScalar(1 / 6));
+    /* A HANDLE THAT WAS SET WINS; an Auto end is the 1/6 term exactly as it
+       always was (v2.75) - the same expression, so a curve with no handles
+       samples to the same numbers it did before handles existed. */
+    const h1 = H[s], h2 = H[closed ? (s + 1) % n : s + 1];
+    const c1 = h1 ? p1.clone().add(new THREE.Vector3().fromArray(h1.hOut))
+                  : p1.clone().add(p2.clone().sub(p0).multiplyScalar(1 / 6));
+    const c2 = h2 ? p2.clone().add(new THREE.Vector3().fromArray(h2.hIn))
+                  : p2.clone().sub(p3.clone().sub(p1).multiplyScalar(1 / 6));
     /* LINEAR ALONG THE SPAN, not a spline like the shape itself. A
        Catmull-Rom through the radii would pass through every one of them too,
        but it can bulge BETWEEN them - set 1, 1, 0.2, 1, 1 and the two spans
@@ -30981,7 +31297,8 @@ function createCurveObject(name, position, ptsLocal, opts) {
     res: Math.max(1, Math.min(CURVE_RES_MAX, (o.res | 0) || CURVE_RES_DEF)),
     // Normalised by rebuildCurveGeometry below, so a short list, a long one
     // and no list at all all arrive at one number per point.
-    radii: Array.isArray(o.radii) ? o.radii.slice() : []
+    radii: Array.isArray(o.radii) ? o.radii.slice() : [],
+    handles: cloneCurveHandleList(o.handles)
   };
   /* Its material joins the resize list, and disposeObject SPLICES IT OUT
      again. Every LineMaterial in the viewport needs its `resolution` kept in
@@ -32002,7 +32319,8 @@ function serializeDocBody() {
             closed: !!cv.closed,
             type: cv.type === 'poly' ? 'poly' : 'bezier',
             res: cv.res,
-            radii: normaliseCurveRadii(cv).slice()   // v2.18, copies again
+            radii: normaliseCurveRadii(cv).slice(),   // v2.18, copies again
+            handles: curveHandlesCopy(cv)             // v2.75
           }
         };
       }
@@ -32022,7 +32340,8 @@ function serializeDocBody() {
               closed: !!tcv.closed,
               type: tcv.type === 'poly' ? 'poly' : 'bezier',
               res: tcv.res,
-              radii: normaliseCurveRadii(tcv).slice()
+              radii: normaliseCurveRadii(tcv).slice(),
+              handles: curveHandlesCopy(tcv)
             } : null }
         : null;
       return {
@@ -32450,7 +32769,7 @@ function restoreDoc(doc, opts = {}) {
         new THREE.Vector3().fromArray(od.position),
         od.curve.pts.map(a => new THREE.Vector3(a[0], a[1], a[2])),
         { closed: od.curve.closed, type: od.curve.type, res: od.curve.res,
-          radii: od.curve.radii });
+          radii: od.curve.radii, handles: od.curve.handles });
       /* Its own id back, not the one createCurveObject minted. App.nextId is
          restored from the doc a few lines below, so the spent number costs
          nothing - and a curve keeping its id is what lets groups, the
@@ -32538,7 +32857,8 @@ function restoreDoc(doc, opts = {}) {
         closed: !!od.tube.cv.closed,
         type: od.tube.cv.type === 'poly' ? 'poly' : 'bezier',
         res: od.tube.cv.res,
-        radii: Array.isArray(od.tube.cv.radii) ? od.tube.cv.radii.slice() : []
+        radii: Array.isArray(od.tube.cv.radii) ? od.tube.cv.radii.slice() : [],
+        handles: cloneCurveHandleList(od.tube.cv.handles)
       };
       normaliseCurveRadii(mesh.userData.kubikCurve);
     }
@@ -36699,6 +37019,7 @@ const OP_SETUP = {
       // to and taken away from this bar now, and ✕ answers for all of it.
       return {
         radii: normaliseCurveRadii(cv).slice(),
+        handles: curveHandlesCopy(cv),
         pts: cv.pts.map(a => [a[0], a[1], a[2]]),
         res: cv.res
       };
@@ -36708,6 +37029,7 @@ const OP_SETUP = {
       if (!c || !snap) return;
       const cv = c.mesh.userData.kubikCurve;
       cv.radii = snap.radii.slice();
+      cv.handles = cloneCurveHandleList(snap.handles);
       cv.pts = snap.pts.map(a => [a[0], a[1], a[2]]);
       cv.res = snap.res;
       rebuildCurveGeometry(c);
@@ -37664,7 +37986,8 @@ function absorbCurveInto(tubeObj, curveObj) {
     closed: !!src.closed,
     type: src.type === 'poly' ? 'poly' : 'bezier',
     res: src.res,
-    radii: normaliseCurveRadii(src).slice()
+    radii: normaliseCurveRadii(src).slice(),
+    handles: curveHandlesThrough(src, toLocal)
   };
 }
 
@@ -48409,6 +48732,9 @@ if (PICK_DEBUG) {
     curveEditPointerDown, curveEditPointerMove, curveEditPointerUp,
     pickCurvePointOn, pickCurveSpanOn, curveEditObj,
     curveEditInsert, curveEditAppend, curveEditSelChanged,
+    // v2.75: Bezier handles.
+    normaliseCurveHandles, curveAutoHandle, curveHandlesShown, pickCurveHandle,
+    setCurveHandle, curveHandleChip,
     /* v2.23: a face and a draw group are two different things. The map is
        the one source of truth for how many faces a mesh has. */
     publishFaces, publishFacesFromGroups, faceCount, faceRanges, mergeDrawGroups,
