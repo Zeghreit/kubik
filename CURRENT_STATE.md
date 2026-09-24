@@ -164,14 +164,20 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
   snapshot, `absorbCurveInto` (through the matrix's linear part,
   `curveHandlesThrough`), Add points (`cd.handlesW`, world offsets; Back
   truncates them; the draft previews with them).
-- **Editor:** handles show only on the SELECTED point, only in the plain point
-  editor (not hosted in a Tube bar), only on Bezier; an open end shows one,
+- **Editor:** handles show only on the SELECTED point, in the point editor
+  and in a Tube bar (2.77, below), only on Bezier; an open end shows one,
   a doubled point hides the side facing its twin (that span is skipped).
   A handle is picked only when nearer than any point (ties go to the point).
   Dragging a handle of an Auto point makes it **Smooth** (seeded from Auto, so
   nothing jumps); Smooth mirrors DIRECTION only, the other keeps its length.
   Chips **Auto / Corner** in the point bar; Corner again = Smooth, re-aligned
   to the visible handle. A tap on a handle does nothing.
+- **In a Tube bar (2.77):** the selected point's radius ring steps aside for its
+  handles (empty slot in `tubeRingPts`, skipped by `pickTubeRingPx`), except
+  while that ring is being dragged; the slider still sets that point's
+  thickness. A handle press is tested BEFORE the rings. No Auto/Corner chips
+  in the Tube bar (Corner is set in the curve editor). Probe `_cv277.py`
+  (port 8982): 20/20.
 - **Exact insert (2.76):** a tap on the line of a Bezier span whose end has
   handles SPLITS it (`curveSplitSpan`, de Casteljau at the pick's own span
   parameter `t`, clamped to 2-98%): the shape does not move, the new point is

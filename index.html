@@ -2774,7 +2774,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.76</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.77</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -25097,7 +25097,7 @@ function curveEditSelChanged() {
   const ce = App.curveEdit;
   if (!ce) return;
   refreshCurvePreview();
-  if (ce.hosted && App.opSetup) showOpSetupBar();
+  if (ce.hosted && App.opSetup) { showOpSetupBar(); refreshTubeRings(); }
   else refreshCurveEditBar();
 }
 
@@ -25224,13 +25224,14 @@ curveHandleLine.frustumCulled = false;
 scene.add(curveHandleLine);
 gizmoStrokes.push(curveHandleLine);
 
-/* Which handles the selected point shows, in world space. None while hosted
-   (a tube's bar already hangs a radius ring on every point), none on a Poly
+/* Which handles the selected point shows, in world space. Inside a tube's bar
+   too since v2.77 - there the selected point gives up its radius ring for
+   them (the slider still sets its thickness). None on a Poly
    curve (it has no handles to use), and on an OPEN curve's ends only the one
    that shapes a span - the other bends nothing and would be a dot that lies. */
 function curveHandlesShown() {
   const ce = App.curveEdit, obj = curveEditObj();
-  if (!ce || ce.hosted || !obj || !hasCurveData(obj) || ce.sel < 0) return [];
+  if (!ce || !obj || !hasCurveData(obj) || ce.sel < 0) return [];
   const cv = curveDataOf(obj);
   const P = cv.pts || [], n = P.length, i = ce.sel;
   if (cv.type !== 'bezier' || n < 2 || i >= n) return [];
@@ -26004,6 +26005,18 @@ function curveEditPointerDown(ev) {
   ce.tapId = obj.id;
   ce.tapN = ((obj.mesh.userData.kubikCurve || {}).pts || []).length;
   ce.hdrag = null;
+  const hit = pickCurvePointOn(obj, ev, GRAB_RADIUS_PX);
+  /* A HANDLE OF THE SELECTED POINT (v2.75), when it is nearer than any point.
+     Claimed like a point - the camera stays still under it - and dragged the
+     same way, in the camera plane through where it was. Ahead of the rings
+     (v2.77): a handle only exists on the point you chose, so a press on one
+     meant it even where a neighbour's ring passes under it. */
+  const hh = pickCurveHandle(ev, hit);
+  if (hh) {
+    ce.drag = null;
+    ce.hdrag = { i: hh.i, which: hh.which, from: hh.world.clone() };
+    return true;
+  }
   /* THE RING FIRST, when there is one (v2.20). Inside a tube's bar every
      point wears a circle at its own thickness, and that circle is the radius
      handle - which is what frees the dot in the middle to mean "move this
@@ -26019,16 +26032,6 @@ function curveEditPointerDown(ev) {
       curveEditSelChanged();
       return true;
     }
-  }
-  const hit = pickCurvePointOn(obj, ev, GRAB_RADIUS_PX);
-  /* A HANDLE OF THE SELECTED POINT (v2.75), when it is nearer than any point.
-     Claimed like a point - the camera stays still under it - and dragged the
-     same way, in the camera plane through where it was. */
-  const hh = pickCurveHandle(ev, hit);
-  if (hh) {
-    ce.drag = null;
-    ce.hdrag = { i: hh.i, which: hh.which, from: hh.world.clone() };
-    return true;
   }
   /* THE PLANE FOLLOWS THE POINT. Captured on the press, in world space, so
      the drag happens in the plane the point is already in rather than in one
@@ -26155,7 +26158,7 @@ function curveEditPointerUp(ev) {
     const movedH = ce.moved;
     ce.hdrag = null; ce.pid = null; ce.drag = null; ce.moved = false;
     ce.togg = false; ce.markedDrag = false; ce.tapSpan = null; ce.tapEnd = null;
-    if (movedH) refreshCurveEditBar();   // Auto may have become Smooth
+    if (movedH && !ce.hosted) refreshCurveEditBar();   // Auto may have become Smooth
     refreshUI();
     return;
   }
@@ -37822,7 +37825,16 @@ function refreshTubeRings() {
   const closed = !!cv.closed && n > 2;
   const verts = [], all = [];
   const T = new THREE.Vector3(), U = new THREE.Vector3(), B = new THREE.Vector3();
+  /* ONE THING UNDER THE FINGER PER POINT (v2.77). The selected point shows
+     its Bezier handles, so its ring steps aside - kept as an empty slot so the
+     indices still name points. Not while that ring is the one being dragged:
+     the press that grabs a ring also selects its point. */
+  const ce = App.curveEdit;
+  const skip = (ce && ce.hosted && ce.sel >= 0 &&
+                !(tubeRadiusDrag && tubeRadiusDrag.i === ce.sel) &&
+                curveHandlesShown().length) ? ce.sel : -1;
   for (let i = 0; i < n; i++) {
+    if (i === skip) { all.push([]); continue; }
     const a = closed ? P[(i - 1 + n) % n] : P[Math.max(0, i - 1)];
     const b = closed ? P[(i + 1) % n] : P[Math.min(n - 1, i + 1)];
     T.copy(b).sub(a);
@@ -37870,6 +37882,7 @@ function pickTubeRingPx(ev) {
   let best = null;
   for (let i = 0; i < tubeRingPts.length; i++) {
     const ring = tubeRingPts[i];
+    if (!ring.length) continue;          // stepped aside for handles (v2.77)
     let near = Infinity, far = 0;
     const c0 = worldToScreenPx(ring[0].clone().lerp(ring[RING_SEGS >> 1], 0.5));
     for (let k = 0; k < ring.length; k++) {
@@ -38005,6 +38018,7 @@ function updateTubeRadiusDrag(ev) {
 function endTubeRadiusDrag() {
   if (!tubeRadiusDrag) return;
   tubeRadiusDrag = null;
+  refreshTubeRings();   // v2.77: the held ring may now step aside for handles
   /* Nothing is pushed here. The whole setup is one step and the tick is what
      takes it - the same rule the slider and the stepper already follow. */
   orbit.enabled = true;
