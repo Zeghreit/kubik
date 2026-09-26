@@ -17,7 +17,7 @@ const lib = new Function('THREE', 'const IMPORT_TRI_BUDGET = 40000; const IMPORT
   cut('function importWeldKey(', '/* A budget, refused out loud').replace('function mergeCoplanarTriangles(', 'function legacyMerge(') +
   'let captured = null; function mergeCoplanarTriangles(p, t, m) { captured = { positions: p, tris: t, matOf: m }; return legacyMerge(p, t, m); }' +
   topoSrc +
-  '; return { editableFromCSGResult, legacyMerge, topoNgon, topoCollinear, importTriNormal, get captured() { return captured; } };')(THREE);
+  '; return { editableFromCSGResult, legacyMerge, topoNgon, topoDivisions, topoBlockedEdges, topoCollinear, importTriNormal, get captured() { return captured; } };')(THREE);
 
 let fails = 0, n = 0;
 function check(name, ok, note) { n++; if (!ok) fails++; console.log((ok ? 'PASS ' : 'FAIL ') + name + (note ? '  ' + note : '')); }
@@ -27,11 +27,19 @@ function brushOf(geom, pos) {
   const g = geom.clone();
   if (pos) g.translate(pos[0], pos[1], pos[2]);
   if (!g.index) { const ix = []; for (let i = 0; i < g.attributes.position.count; i++) ix.push(i); g.setIndex(ix); }
-  g.deleteAttribute('uv');
+  if (g.attributes.uv) g.deleteAttribute('uv');
+  // The input's FACES, as the app would hand them over: one group = one face.
+  const faces = [], ix = g.index;
+  (g.groups.length ? g.groups : [{ start: 0, count: ix.count }]).forEach(gr => {
+    const f = [];
+    for (let i = gr.start; i + 2 < gr.start + gr.count; i += 3) f.push([ix.getX(i), ix.getX(i + 1), ix.getX(i + 2)]);
+    faces.push(f);
+  });
   g.computeVertexNormals();
   g.clearGroups(); g.addGroup(0, g.index.count, 0);
   const b = new CSG.Brush(g, [MAT]);
   b.updateMatrixWorld(true);
+  b.userData.faces = faces;
   return b;
 }
 function posKeys(b) {
@@ -64,6 +72,9 @@ function loopCutCube() {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
   g.setIndex(I);
+  // Faces: top 6-gon, bottom 6-gon, then six quads (the walls, front and back halved).
+  g.addGroup(0, 12, 0); g.addGroup(12, 12, 0);
+  for (let i = 0; i < 6; i++) g.addGroup(24 + i * 6, 6, 0);
   return g;
 }
 
@@ -85,9 +96,16 @@ function run(name, a, b, op, expect) {
   }
   const P0 = P.slice();
   const t0 = performance.now();
-  const r = lib.topoNgon(P, tris, C.matOf, seam, 0.9998);
+  // Hand-made divisions of flat faces, per input, then the result edges on them.
+  const div = [];
+  [a, b].forEach(br => { if (!br.userData.faces) return;
+    const pa = br.geometry.attributes.position, Pi = [];
+    for (let i = 0; i < pa.count; i++) Pi.push(pa.getX(i), pa.getY(i), pa.getZ(i));
+    div.push(...lib.topoDivisions(Pi, br.userData.faces, 0.9998)); });
+  const blocked = lib.topoBlockedEdges(P, tris, div, 7e-4);
+  const r = lib.topoNgon(P, tris, C.matOf, seam, 0.9998, blocked);
   const ms = performance.now() - t0;
-  console.log('\n== ' + name + '  legacy ' + ed.groups.length + ' faces, seam ' + seam.size + ', ' + ms.toFixed(1) + ' ms');
+  console.log('\n== ' + name + '  legacy ' + ed.groups.length + ' faces, seam ' + seam.size + ', divisions ' + div.length / 6 + ', blocked ' + (blocked ? blocked.size : 'n/a') + ', ' + ms.toFixed(1) + ' ms');
   check(name + ': topoNgon finished', !!r);
   if (!r) return;
   const G = r.groups;
@@ -183,6 +201,8 @@ run('loop-cut cube - rod', brushOf(loopCutCube()), brushOf(rod()), CSG.SUBTRACTI
         shared.map(v => '(' + P[v * 3].toFixed(3) + ',' + P[v * 3 + 2].toFixed(3) + ')').join(' '));
   const straight = shared.filter(v => Math.abs(P[v * 3]) < 1e-6).length;
   check('loop-cut: the whole bridge lies on x = 0', straight === 4, straight + ' of ' + shared.length + ' shared vertices on x=0');
+  const front = L.filter(f => f.n[2] > 0.99).length, back = L.filter(f => f.n[2] < -0.99).length;
+  check('loop-cut: the walls keep their loop cut (2 + 2 faces)', front === 2 && back === 2, front + ' front, ' + back + ' back');
 });
 run('cube U cube in line', A(), brushOf(box(), [0.5, 0, 0]), CSG.ADDITION, (G) => {
   check('box U box in line = 6 faces', G.length === 6, G.length + ' faces');

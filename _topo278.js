@@ -17,6 +17,87 @@ const TOPO_STRAIGHT_SIN = Math.sin(10 * Math.PI / 180);
 const TOPO_CONTINUE_COS = Math.cos(20 * Math.PI / 180);
 const TOPO_PAIR_BUDGET = 4e6;             // hole x outer x edges, per bridge
 
+/* WHERE A FLAT SURFACE WAS DIVIDED BY HAND (v2.78, Zeghreit 26.09: a
+   boolean must not erase a loop cut). An edge shared by two faces of the SAME
+   input that lie in one plane is a division someone made on purpose - there
+   is no other reason for it to exist. Returned as world segments, so they
+   survive whatever the evaluator does to the triangles around them.
+
+   Only same-input, only coplanar. A fold needs no protection (the flood
+   already stops at one), and two inputs meeting in a plane - two cubes
+   unioned in a line - is exactly what SHOULD merge. */
+function topoDivisions(P, faces, dot) {
+  const key = i => Math.round(P[i * 3] * 1e4) + '_' + Math.round(P[i * 3 + 1] * 1e4) + '_' + Math.round(P[i * 3 + 2] * 1e4);
+  const byEdge = new Map();
+  faces.forEach(tris => {
+    let n = null;
+    for (let i = 0; i < tris.length && !n; i++) n = importTriNormal(P, tris[i]);
+    if (!n) return;
+    const cnt = new Map();
+    tris.forEach(t => {
+      for (let k = 0; k < 3; k++) {
+        const a = t[k], b = t[(k + 1) % 3], ka = key(a), kb = key(b);
+        if (ka === kb) continue;
+        const e = ka < kb ? ka + '|' + kb : kb + '|' + ka;
+        const c = cnt.get(e);
+        cnt.set(e, c ? { n: c.n + 1, a: a, b: b } : { n: 1, a: a, b: b });
+      }
+    });
+    cnt.forEach((c, e) => {
+      if (c.n !== 1) return;                        // interior to the face
+      let l = byEdge.get(e);
+      if (!l) byEdge.set(e, l = []);
+      l.push({ n: n, a: c.a, b: c.b });
+    });
+  });
+  const segs = [];
+  byEdge.forEach(l => {
+    for (let i = 0; i < l.length; i++) for (let j = i + 1; j < l.length; j++) {
+      const n = l[i].n, m = l[j].n;
+      if (n[0] * m[0] + n[1] * m[1] + n[2] * m[2] < dot) continue;
+      const a = l[i].a, b = l[i].b;
+      segs.push(P[a * 3], P[a * 3 + 1], P[a * 3 + 2], P[b * 3], P[b * 3 + 1], P[b * 3 + 2]);
+      return;
+    }
+  });
+  return segs;
+}
+
+/* Result edges lying on a division: both ends within tol of the segment and
+   inside its span. The evaluator may have cut a division into pieces, and
+   every piece is still the division. Null when the product of the two
+   counts is past the budget - the caller then merges as before rather than
+   stall the main thread. */
+function topoBlockedEdges(P, tris, segs, tol) {
+  const nV = P.length / 3, nS = segs.length / 6;
+  const out = new Set();
+  if (!nS) return out;
+  const edges = new Map();
+  tris.forEach(t => { for (let k = 0; k < 3; k++) {
+    const a = t[k], b = t[(k + 1) % 3];
+    edges.set(a < b ? a * nV + b : b * nV + a, a < b ? [a, b] : [b, a]);
+  } });
+  if (edges.size * nS > 2e7) return null;
+  const onSeg = (s, v) => {
+    const ax = segs[s], ay = segs[s + 1], az = segs[s + 2];
+    const ux = segs[s + 3] - ax, uy = segs[s + 4] - ay, uz = segs[s + 5] - az;
+    const L2 = ux * ux + uy * uy + uz * uz;
+    if (L2 < 1e-16) return false;
+    const wx = P[v * 3] - ax, wy = P[v * 3 + 1] - ay, wz = P[v * 3 + 2] - az;
+    const t = (wx * ux + wy * uy + wz * uz) / L2;
+    const L = Math.sqrt(L2);
+    if (t * L < -tol || (t - 1) * L > tol) return false;
+    const dx = wx - t * ux, dy = wy - t * uy, dz = wz - t * uz;
+    return dx * dx + dy * dy + dz * dz <= tol * tol;
+  };
+  edges.forEach((ab, k) => {
+    for (let s = 0; s < segs.length; s += 6) {
+      if (onSeg(s, ab[0]) && onSeg(s, ab[1])) { out.add(k); return; }
+    }
+  });
+  return out;
+}
+
 /* Flat patches: flood over shared edges, same material, normal within
    `dot` of the seed - the same rule mergeCoplanarTriangles floods by, so a
    patch here is exactly a face there. Each patch is walked into its boundary
@@ -25,7 +106,7 @@ const TOPO_PAIR_BUDGET = 4e6;             // hole x outer x edges, per bridge
    unsafe: a directed edge used twice, a pinch vertex, a loop that does not
    close, or not exactly one CCW loop. Those go to the pairs fallback,
    exactly as they do today. */
-function topoPatches(P, tris, matOf, seam, dot) {
+function topoPatches(P, tris, matOf, seam, dot, blocked) {
   const nV = P.length / 3;
   const normals = tris.map(t => importTriNormal(P, t));
   const ek = (a, b) => (a < b ? a * nV + b : b * nV + a);
@@ -53,7 +134,9 @@ function topoPatches(P, tris, matOf, seam, dot) {
       region.push(ti);
       const t = tris[ti];
       for (let k = 0; k < 3; k++) {
-        (edgeTris.get(ek(t[k], t[(k + 1) % 3])) || []).forEach(nb => {
+        const ekey = ek(t[k], t[(k + 1) % 3]);
+        if (blocked && blocked.has(ekey)) continue;     // a hand-made division
+        (edgeTris.get(ekey) || []).forEach(nb => {
           if (seen[nb] || !normals[nb] || matOf(nb) !== mat) return;
           const m = normals[nb];
           if (n[0] * m[0] + n[1] * m[1] + n[2] * m[2] < dot) return;
@@ -363,8 +446,8 @@ function topoBridge(P, patch, nbr, ek) {
    vertices dissolved and holes bridged, inside patches that touch the seam.
    Returns null when anything here could not finish; the caller then uses
    the old path, so this pass can make a result better and never worse. */
-function topoNgon(P, tris, matOf, seam, dot) {
-  const T = topoPatches(P, tris, matOf, seam, dot);
+function topoNgon(P, tris, matOf, seam, dot, blocked) {
+  const T = topoPatches(P, tris, matOf, seam, dot, blocked);
   const patches = T.patches, ek = T.ek, edgeTris = T.edgeTris;
   patches.forEach(p => {
     p.mode = p.unsafe ? 'pairs'
