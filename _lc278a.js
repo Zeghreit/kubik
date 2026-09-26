@@ -119,6 +119,49 @@
     var a4 = audit(o4);
     log('4.slide', 'cut ' + r4 + ', ' + a4.faces + ' faces [' + a4.sizes + '] T=' + a4.tj);
     log('4.CHECK', a4.tj === 0 && a4.sizes === '4,4,4,4,4' ? 'PASS' : 'FAIL');
+    // 5. SYMMETRY + SLIDE through the real op path. A 4x2 grid, x in [-2,2];
+    //    the ring starts on a column at x in [-2,-1] and its mirror is the
+    //    column [1,2]. Both rings have faces on both sides of the start edge,
+    //    which is exactly where the Slide fix changes t.
+    var gp = [], gg = [];
+    for (var i = 0; i < 4; i++) for (var j = 0; j < 2; j++) {
+      var x0 = -2 + i, z0 = j, b5 = gp.length / 3;
+      gp.push(x0, 0, z0, x0 + 1, 0, z0, x0 + 1, 0, z0 + 1, x0, 0, z0 + 1);
+      gg.push({ triangles: [[b5, b5 + 2, b5 + 1], [b5, b5 + 3, b5 + 2]] });
+    }
+    var o5 = make('LC5', gp, gg);
+    k.ensureHelpers(o5);
+    var before5 = {};
+    for (var l = 0; l < o5.mesh.userData.topo.logicalCount; l++) {
+      var q = k.logicalPos(o5, l); before5[q.x.toFixed(4) + ',' + q.z.toFixed(4)] = 1;
+    }
+    A.symmetry = true; if ('symmetryAxis' in A) A.symmetryAxis = 'x';
+    k.setMode('edge');
+    var e5 = edgeAt(o5, new V(-2, 0, 1), new V(-1, 0, 1));
+    var idx5 = o5.mesh.userData.topo.edges.indexOf(e5);
+    A.selectedElements = new Set([idx5]);
+    k.edgeLoopSelection();
+    var op5 = A.pendingOp;
+    if (!op5) { log('5.sym', 'no pending op'); }
+    else {
+      op5.groupMode = 'slide';
+      k.setPendingAmount(0.25);
+      k.applyPendingOp();
+      k.confirmPendingOp();
+      k.ensureHelpers(o5);
+      var xs = {};
+      for (var l2 = 0; l2 < o5.mesh.userData.topo.logicalCount; l2++) {
+        var q2 = k.logicalPos(o5, l2), key5 = q2.x.toFixed(4) + ',' + q2.z.toFixed(4);
+        if (!before5[key5]) xs[q2.x.toFixed(4)] = (xs[q2.x.toFixed(4)] || 0) + 1;
+      }
+      var xk = Object.keys(xs).map(Number).sort(function (p, q) { return p - q; });
+      var a5 = audit(o5);
+      log('5.sym', 'mflip=' + op5.payload.mflip + ', new vertex x: ' + JSON.stringify(xs) + ', faces ' + a5.faces + ', T=' + a5.tj);
+      log('5.CHECK', xk.length === 2 && Math.abs(xk[0] + xk[1]) < 1e-4 && xs[xk[0].toFixed(4)] === 3 &&
+        xs[xk[1].toFixed(4)] === 3 && a5.tj === 0 && Math.abs(xk[0] + 2) > 0.05 && Math.abs(xk[0] + 1.5) > 0.05
+        ? 'PASS both rings straight, mirrored, off-centre' : 'FAIL');
+    }
+    A.symmetry = false;
     log('errors', errs.length ? errs.slice(0, 3).join(' | ') : 'none');
   }
 

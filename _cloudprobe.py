@@ -25,7 +25,7 @@ if not os.path.isdir(ADDONS):
                     '--sparse', 'https://github.com/mrdoob/three.js', dst], check=True)
     subprocess.run(['git', '-C', dst, 'sparse-checkout', 'set', 'examples/jsm'], check=True)
 
-src = open(os.path.join(ROOT, 'index.html'), encoding='utf-8').read()
+src = open(os.environ.get('KUBIK_INDEX') or os.path.join(ROOT, 'index.html'), encoding='utf-8').read()
 js = open(os.path.join(ROOT, JS), encoding='utf-8').read()
 page_html = src.replace('</body>', '<script>\n' + js + '\n</script>\n</body>', 1)
 
