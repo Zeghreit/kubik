@@ -7,7 +7,6 @@ const THREE = await import(new URL('three/build/three.module.js', LIB).href);
 const CSG = await import(new URL('three-bvh-csg/build/index.module.js', LIB).href);
 
 const html = fs.readFileSync(new URL('index.html', here), 'utf8');
-const topoSrc = fs.readFileSync(new URL(process.env.TOPO_SRC || '_topo278.js', here), 'utf8');
 function cut(a, b) { const i = html.indexOf(a), j = html.indexOf(b, i); if (i < 0 || j < 0) throw new Error('cut ' + a); return html.slice(i, j); }
 
 // The app's own weld / heal / merge, cut from index.html. mergeCoplanarTriangles
@@ -16,7 +15,6 @@ const lib = new Function('THREE', 'const IMPORT_TRI_BUDGET = 40000; const IMPORT
   cut('const CSG_WELD_TOL =', 'const BOOL_OPS') +
   cut('function importWeldKey(', '/* A budget, refused out loud').replace('function mergeCoplanarTriangles(', 'function legacyMerge(') +
   'let captured = null; function mergeCoplanarTriangles(p, t, m) { captured = { positions: p, tris: t, matOf: m }; return legacyMerge(p, t, m); }' +
-  topoSrc +
   '; return { editableFromCSGResult, legacyMerge, topoNgon, topoDivisions, topoBlockedEdges, topoCollinear, importTriNormal, get captured() { return captured; } };')(THREE);
 
 let fails = 0, n = 0;
@@ -82,8 +80,14 @@ function run(name, a, b, op, expect) {
   const ev = new CSG.Evaluator();
   ev.attributes = ['position', 'normal'];
   ev.useCDTClipping = true; ev.useGroups = true; ev.consolidateGroups = true; ev.removeUnusedMaterials = true;
+  // What booleanBuild hands over, per input: welded keys and hand-made divisions.
+  const topoIn = [a, b].map(br => {
+    const pa = br.geometry.attributes.position, Pi = [];
+    for (let i = 0; i < pa.count; i++) Pi.push(pa.getX(i), pa.getY(i), pa.getZ(i));
+    return { keys: posKeys(br), segs: br.userData.faces ? lib.topoDivisions(Pi, br.userData.faces, 0.9998) : [] };
+  });
   const res = ev.evaluate(a, b, op);
-  const ed = lib.editableFromCSGResult(res);
+  const ed = lib.editableFromCSGResult(res);            // the old path, for comparison
   const C = lib.captured;
   const P = C.positions, tris = C.tris;
   // Seam: a result vertex no input had, or one two inputs had (they touch).
@@ -96,21 +100,17 @@ function run(name, a, b, op, expect) {
   }
   const P0 = P.slice();
   const t0 = performance.now();
-  // Hand-made divisions of flat faces, per input, then the result edges on them.
-  const div = [];
-  [a, b].forEach(br => { if (!br.userData.faces) return;
-    const pa = br.geometry.attributes.position, Pi = [];
-    for (let i = 0; i < pa.count; i++) Pi.push(pa.getX(i), pa.getY(i), pa.getZ(i));
-    div.push(...lib.topoDivisions(Pi, br.userData.faces, 0.9998)); });
-  const blocked = lib.topoBlockedEdges(P, tris, div, 7e-4);
-  const r = lib.topoNgon(P, tris, C.matOf, seam, 0.9998, blocked);
+  const ed2 = lib.editableFromCSGResult(res, topoIn);   // the app's own v2.78 path
+  const r = ed2.topo ? Object.assign({ groups: ed2.groups }, ed2.topo) : null;
+  const div = { length: topoIn.reduce((s, t) => s + t.segs.length, 0) };
+  const blocked = null;
   const ms = performance.now() - t0;
-  console.log('\n== ' + name + '  legacy ' + ed.groups.length + ' faces, seam ' + seam.size + ', divisions ' + div.length / 6 + ', blocked ' + (blocked ? blocked.size : 'n/a') + ', ' + ms.toFixed(1) + ' ms');
+  console.log('\n== ' + name + '  legacy ' + ed.groups.length + ' faces, seam ' + seam.size + ', divisions ' + div.length / 6 + ', ' + ms.toFixed(1) + ' ms');
   check(name + ': topoNgon finished', !!r);
   if (!r) return;
   const G = r.groups;
   console.log('   new ' + G.length + ' faces, dissolved ' + r.dissolved + ', bridged ' + r.bridged);
-  check(name + ': positions untouched', P.every((x, i) => x === P0[i]));
+  check(name + ': positions untouched', ed2.positions.length === P.length && ed2.positions.every((x, i) => x === P0[i]));
 
   // Watertight, consistently wound: every directed edge exactly once, its reverse exactly once.
   const nV = P.length / 3, dir = new Map();
