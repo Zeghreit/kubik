@@ -16,6 +16,12 @@ const TOPO_COLLINEAR_EPS = 1e-4;          // the app's own weld tolerance
 const TOPO_STRAIGHT_SIN = Math.sin(10 * Math.PI / 180);
 const TOPO_CONTINUE_COS = Math.cos(20 * Math.PI / 180);
 const TOPO_PAIR_BUDGET = 4e6;             // hole x outer x edges, per bridge
+/* A bridge may not pass closer than this to any vertex it does not end at,
+   nor leave its ends closer than this to the loop edges beside them (found
+   by fable, v2.78). The weld grid is 1e-4 and the heal tolerance 3.5e-4, so
+   anything tighter builds slivers out of rounding noise - and a sliver whose
+   corner sits a grid step off the plane has a normal pointing anywhere. */
+const TOPO_GRAZE = 3.5e-4;
 
 /* WHERE A FLAT SURFACE WAS DIVIDED BY HAND (v2.78, Zeghreit 26.09: a
    boolean must not erase a loop cut). An edge shared by two faces of the SAME
@@ -121,6 +127,16 @@ function topoPatches(P, tris, matOf, seam, dot, blocked) {
     }
   });
 
+  /* Counted over EVERY triangle, normal or not (found by fable, v2.78): a
+     degenerate cap the heal left behind still shares edges, and an edge used
+     three times reads as "interior" from inside one patch. */
+  const allEdge = new Map(), vertTris = new Map();
+  tris.forEach(t => { for (let k = 0; k < 3; k++) {
+    const key = ek(t[k], t[(k + 1) % 3]);
+    allEdge.set(key, (allEdge.get(key) || 0) + 1);
+    vertTris.set(t[k], (vertTris.get(t[k]) || 0) + 1);
+  } });
+
   const seen = new Uint8Array(tris.length);
   const patches = [];
   for (let s = 0; s < tris.length; s++) {
@@ -147,11 +163,13 @@ function topoPatches(P, tris, matOf, seam, dot, blocked) {
     }
 
     let unsafe = false, touched = false;
-    const dir = new Map();
+    const dir = new Map(), vIn = new Map();
     region.forEach(ti => {
       const t = tris[ti];
       for (let k = 0; k < 3; k++) {
         if (seam.has(t[k])) touched = true;
+        if (allEdge.get(ek(t[k], t[(k + 1) % 3])) > 2) unsafe = true;
+        vIn.set(t[k], (vIn.get(t[k]) || 0) + 1);
         const key = t[k] * nV + t[(k + 1) % 3];
         const c = (dir.get(key) || 0) + 1;
         if (c > 1) unsafe = true;
@@ -180,6 +198,14 @@ function topoPatches(P, tris, matOf, seam, dot, blocked) {
         if (v !== a0 || loop.length < 3) unsafe = true;
         else loops.push(loop);
       });
+    }
+    /* A vertex inside the patch (on no loop) must belong to the patch alone;
+       re-triangulating the patch drops it, and any triangle outside still
+       pointing at it would be left with an open edge. */
+    if (!unsafe) {
+      const onLoop = new Set();
+      loops.forEach(l => l.forEach(v => onLoop.add(v)));
+      vIn.forEach((c, v) => { if (!onLoop.has(v) && vertTris.get(v) !== c) unsafe = true; });
     }
     if (!unsafe) {
       const area = loops.map(l => topoLoopArea3(P, l, n));
@@ -244,8 +270,12 @@ function topoEarClip(xy, ids, eps) {
   let guard = 0;
   while (idx.length > 3) {
     if (guard++ > 100000) return null;
-    let cut = -1;
-    for (let k = 0; k < idx.length && cut < 0; k++) {
+    /* THE FATTEST EAR, not the first one (v2.78, fable's fuzz). Any valid ear
+       triangulates, but the first one found on a polygon with a near-straight
+       run is routinely a sliver a grid step high - and the face's normal is
+       then read off noise. */
+    let cut = -1, bestQ = -1;
+    for (let k = 0; k < idx.length; k++) {
       const i0 = idx[(k + idx.length - 1) % idx.length], i1 = idx[k], i2 = idx[(k + 1) % idx.length];
       if (cr(i0, i1, i2) <= eps) continue;
       let ok = true;
@@ -254,16 +284,57 @@ function topoEarClip(xy, ids, eps) {
         if (j === i0 || j === i1 || j === i2) continue;
         if (cr(i0, i1, j) >= -eps && cr(i1, i2, j) >= -eps && cr(i2, i0, j) >= -eps) ok = false;
       }
-      if (ok) cut = k;
+      if (!ok) continue;
+      const q = cr(i0, i1, i2) / Math.max(
+        Math.hypot(xy[i1][0] - xy[i0][0], xy[i1][1] - xy[i0][1]),
+        Math.hypot(xy[i2][0] - xy[i1][0], xy[i2][1] - xy[i1][1]),
+        Math.hypot(xy[i0][0] - xy[i2][0], xy[i0][1] - xy[i2][1]));
+      if (q > bestQ) { bestQ = q; cut = k; }
     }
     if (cut < 0) return null;
     const n = idx.length;
-    out.push([ids[idx[(cut + n - 1) % n]], ids[idx[cut]], ids[idx[(cut + 1) % n]]]);
+    out.push([idx[(cut + n - 1) % n], idx[cut], idx[(cut + 1) % n]]);
     idx.splice(cut, 1);
   }
   if (cr(idx[0], idx[1], idx[2]) <= eps) return null;
-  out.push([ids[idx[0]], ids[idx[1]], ids[idx[2]]]);
-  return out;
+  out.push([idx[0], idx[1], idx[2]]);
+  topoFlip(xy, out, eps);
+  return out.map(t => [ids[t[0]], ids[t[1]], ids[t[2]]]);
+}
+
+/* Diagonal flips inside one polygon until the thinnest triangle stops
+   improving (v2.78). Greedy ear choice alone still leaves a sliver where the
+   only ear available at some step is thin; a flip across an interior
+   diagonal fixes it without touching the boundary, and the boundary is the
+   face. Only diagonals are flipped - an edge used once is the outline. */
+function topoFlip(xy, T, eps) {
+  const cr = (i, j, k) => (xy[j][0] - xy[i][0]) * (xy[k][1] - xy[i][1]) -
+                          (xy[j][1] - xy[i][1]) * (xy[k][0] - xy[i][0]);
+  const h = t => {
+    const a = xy[t[0]], b = xy[t[1]], c = xy[t[2]];
+    return cr(t[0], t[1], t[2]) / Math.max(Math.hypot(b[0] - a[0], b[1] - a[1]),
+      Math.hypot(c[0] - b[0], c[1] - b[1]), Math.hypot(a[0] - c[0], a[1] - c[1]));
+  };
+  for (let pass = 0; pass < 8 * T.length + 8; pass++) {
+    const at = new Map();
+    T.forEach((t, ti) => { for (let k = 0; k < 3; k++) at.set(t[k] + ',' + t[(k + 1) % 3], [ti, k]); });
+    let flipped = false;
+    for (let ti = 0; ti < T.length && !flipped; ti++) {
+      for (let k = 0; k < 3 && !flipped; k++) {
+        const t = T[ti], a = t[k], c = t[(k + 1) % 3], b = t[(k + 2) % 3];
+        const o = at.get(c + ',' + a);
+        if (!o) continue;                            // outline edge
+        const u = T[o[0]], d = u[(o[1] + 2) % 3];
+        // (a,c,b) and (c,a,d) -> (b,a,d) and (d,c,b), if the quad is convex.
+        const n1 = [b, a, d], n2 = [d, c, b];
+        if (cr(n1[0], n1[1], n1[2]) <= eps || cr(n2[0], n2[1], n2[2]) <= eps) continue;
+        if (Math.min(h(n1), h(n2)) > Math.min(h(t), h(u)) * (1 + 1e-9)) {
+          T[ti] = n1; T[o[0]] = n2; flipped = true;
+        }
+      }
+    }
+    if (!flipped) return;
+  }
 }
 
 /* A patch with holes -> simple polygons, by bridges between EXISTING
@@ -367,6 +438,14 @@ function topoBridge(P, patch, nbr, ek) {
     let win = null;
     if (outer.length * hole.length * walls.length > TOPO_PAIR_BUDGET) return null;
     const area0 = split ? Math.abs(areaOf(split)) : 0;
+    const others = new Set();
+    walls.forEach(e => { others.add(e[0]); others.add(e[1]); });
+    const dSeg = (p, a, b) => {
+      const ux = b[0] - a[0], uy = b[1] - a[1], L2 = ux * ux + uy * uy;
+      let t = L2 > 0 ? ((p[0] - a[0]) * ux + (p[1] - a[1]) * uy) / L2 : 0;
+      t = Math.max(0, Math.min(1, t));
+      return Math.hypot(p[0] - a[0] - t * ux, p[1] - a[1] - t * uy);
+    };
     for (let i = 0; i < outer.length; i++) {
       const o = outer[i];
       if (o === skipO) continue;
@@ -388,6 +467,24 @@ function topoBridge(P, patch, nbr, ek) {
           if (segHit(po, ph, xy.get(e[0]), xy.get(e[1]))) clear = false;
         }
         if (!clear) continue;
+        for (const x of others) {
+          if (x === o || x === h) continue;
+          if (dSeg(xy.get(x), po, ph) < TOPO_GRAZE) { clear = false; break; }
+        }
+        if (!clear) continue;
+        /* And the triangle the bridge makes with each loop edge beside it must
+           not be a sliver either - a hole edge pointing almost straight at the
+           corner the bridge runs to is the case (fuzz, v2.78): no vertex is near
+           the bridge, yet the two share a line. Height of (a, b, x), taken off
+           its longest side, the same measure the fixture checks. */
+        const tall = (a, b, x) => {
+          const cr2 = Math.abs((b[0] - a[0]) * (x[1] - a[1]) - (b[1] - a[1]) * (x[0] - a[0]));
+          const L = Math.max(Math.hypot(b[0] - a[0], b[1] - a[1]), Math.hypot(x[0] - a[0], x[1] - a[1]),
+                             Math.hypot(x[0] - b[0], x[1] - b[1]));
+          return cr2 / L >= TOPO_GRAZE;
+        };
+        if (!tall(po, ph, xy.get(op)) || !tall(po, ph, xy.get(on)) ||
+            !tall(po, ph, xy.get(hp)) || !tall(po, ph, xy.get(hn))) continue;
         const wantH = pull(hp, h, hn);
         const aO = wantO ? wantO.dir[0] * d[0] + wantO.dir[1] * d[1] : 0;
         const aH = wantH ? -(wantH.dir[0] * d[0] + wantH.dir[1] * d[1]) : 0;
@@ -533,7 +630,7 @@ function topoNgon(P, tris, matOf, seam, dot, blocked) {
       groups.push({ triangles: tri, mat: p.mat });
     }
   }
-  return { groups: groups, dissolved: dissolved, bridged: bridged };
+  return { groups: groups, dissolved: dissolved, bridged: bridged, frozen: frozen };
 }
 
 // The old fallback, unchanged in meaning: coplanar pairs across a clean edge.

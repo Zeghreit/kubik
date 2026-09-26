@@ -126,7 +126,8 @@ function run(name, a, b, op, expect) {
   let open0 = 0;
   dir0.forEach((_c, key) => { const a = Math.floor(key / nV), b = key - a * nV; if (!dir0.has(b * nV + a)) open0++; });
   check(name + ': no degenerate triangle', degen === 0, 'degen ' + degen);
-  check(name + ': no open or doubled edge beyond the input', open <= open0 && dup === 0, 'open ' + open + ' (input ' + open0 + '), dup ' + dup);
+  let dup0 = 0; { const c0 = new Map(); tris.forEach(t => { for (let k = 0; k < 3; k++) { const key = t[k] * nV + t[(k + 1) % 3]; c0.set(key, (c0.get(key) || 0) + 1); } }); c0.forEach(c => { if (c > 1) dup0++; }); }
+  check(name + ': no open or doubled edge beyond the input', open <= open0 && dup <= dup0, 'open ' + open + ' (input ' + open0 + '), dup ' + dup);
 
   // Volume and area: the shape did not move.
   const vol = ts => ts.reduce((s, t) => { const a = t[0] * 3, b = t[1] * 3, c = t[2] * 3;
@@ -137,9 +138,27 @@ function run(name, a, b, op, expect) {
   const allT = G.flatMap(g => g.triangles);
   const legacyT = ed.groups.flatMap(g => g.triangles);
   const dv = Math.abs(vol(allT) - vol(legacyT)), da = Math.abs(area(allT) - area(legacyT));
-  // Relative 1e-7: a dissolved vertex may sit up to the 1e-4 weld grid off its line.
-  const V0 = Math.abs(vol(legacyT)), A0 = area(legacyT);
-  check(name + ': volume and area unchanged', dv < 1e-7 * V0 && da < 1e-7 * A0, 'dV ' + dv.toExponential(1) + ' dA ' + da.toExponential(1));
+  // A dissolved vertex may sit up to the 1e-4 weld grid off its line, so the
+  // shape may move by that much per dissolved vertex, and no more (fable, v2.78).
+  let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < P.length; i += 3) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], P[i + k]); hi[k] = Math.max(hi[k], P[i + k]); }
+  const diag = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+  const V0 = Math.abs(vol(legacyT)), A0 = area(legacyT), slack = r.dissolved * 1e-4 * diag;
+  check(name + ': volume and area unchanged', dv <= 1e-9 * V0 + slack * diag && da <= 1e-9 * A0 + slack,
+        'dV ' + dv.toExponential(1) + ' dA ' + da.toExponential(1));
+  // No new sliver: every output triangle at least as fat as the input's thinnest, or the heal tolerance.
+  const H = t => { const a = t[0] * 3, b = t[1] * 3, c = t[2] * 3;
+    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2], vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
+    const A2 = Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx);
+    return A2 / Math.max(Math.hypot(ux, uy, uz), Math.hypot(vx, vy, vz), Math.hypot(P[c] - P[b], P[c + 1] - P[b + 1], P[c + 2] - P[b + 2])); };
+  const inMin = Math.min(...legacyT.map(H)), outMin = Math.min(...allT.map(H));
+  if (process.env.DBG && outMin < Math.min(3.5e-4, inMin) * 0.999) {
+    const t = allT.reduce((b, t) => (H(t) < H(b) ? t : b));
+    const g = G.find(g => g.triangles.includes(t));
+    const xyz = v => '(' + [0, 1, 2].map(k => P[v * 3 + k].toFixed(5)).join(',') + ')';
+    console.log('   THIN', t.map(xyz).join(' '), 'face tris', g.triangles.length, 'seam', t.map(v => seam.has(v) ? 1 : 0).join(''), 'H', H(t).toExponential(2));
+  }
+  check(name + ': no new sliver', outMin >= Math.min(3.5e-4, inMin) * 0.999, 'min height ' + outMin.toExponential(1) + ' (input ' + inMin.toExponential(1) + ')');
 
   // Every face: flat, wound with its plane, ONE simple boundary loop.
   let bad = 0, badWhy = '';
@@ -171,7 +190,7 @@ function run(name, a, b, op, expect) {
   }));
   loopsOf.forEach(({ loop }) => { if (loop.some(v => seam.has(v))) loop.forEach(v => seamFace.add(v)); });
   let left = 0;
-  nb.forEach((s, v) => { if (s.size !== 2 || !seamFace.has(v)) return; const [a, b] = Array.from(s); if (lib.topoCollinear(P, a, v, b)) left++; });
+  nb.forEach((s, v) => { if (s.size !== 2 || !seamFace.has(v) || r.frozen.has(v)) return; const [a, b] = Array.from(s); if (lib.topoCollinear(P, a, v, b)) left++; });
   check(name + ': no collinear vertex left by the seam', left === 0, 'left ' + left);
 
   if (expect) expect(G, P, loopsOf, ed);
@@ -222,6 +241,32 @@ run('plate - two rods', brushOf(box(2, 0.2, 1)), (() => {
   const top = topFaces(P, L, 0.1);
   check('plate: two holes in one face = 3 faces', top.length === 3, top.length + ' faces');
 });
+
+// Found by fable (v2.78): a rotated scene far from the origin, a blind hole
+// (the heal leaves an edge used three times), and a fuzz of two-hole plates.
+function rotG(g, rx, ry, rz) { return g.clone().applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rx, ry, rz))); }
+const R = [0.37, 0.61, 0.23];
+run('ROT cube - rod64', brushOf(rotG(box(), ...R)), brushOf(rotG(rod(0.25, 2, 64), ...R)), CSG.SUBTRACTION);
+run('ROT far cube - rod', brushOf(rotG(box(), ...R), [40, -17, 23]), brushOf(rotG(rod(), ...R), [40, -17, 23]), CSG.SUBTRACTION);
+run('blind hole', A(), brushOf(rod(0.2, 0.6, 12), [0, 0.5, 0]), CSG.SUBTRACTION);
+{
+  const quiet = console.log; let rng = 12345, runs = 0;
+  const rand = () => (rng = (rng * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const f0 = fails;
+  for (let it = 0; it < 120 && runs < 60; it++) {
+    const seg = [8, 12, 16, 24][it % 4], r1 = 0.08 + rand() * 0.12, r2 = 0.08 + rand() * 0.12;
+    const x1 = -0.7 + rand() * 1.4, z1 = -0.3 + rand() * 0.6, x2 = -0.7 + rand() * 1.4, z2 = -0.3 + rand() * 0.6;
+    if (Math.hypot(x1 - x2, z1 - z2) < r1 + r2 + 0.02) continue;
+    const ev = new CSG.Evaluator(); ev.attributes = ['position', 'normal']; ev.useCDTClipping = true;
+    const rods = ev.evaluate(brushOf(rod(r1, 1, seg), [x1, 0, z1]), brushOf(rod(r2, 1, seg), [x2, 0, z2]), CSG.ADDITION);
+    const lines = [];
+    console.log = (...a) => { if (/^(FAIL|   THIN)/.test(String(a[0]))) lines.push(a.join(' ')); };
+    try { run('fuzz ' + it, brushOf(box(2, 0.2, 1)), rods, CSG.SUBTRACTION); } finally { console.log = quiet; }
+    lines.forEach(l => console.log(l));
+    runs++;
+  }
+  console.log('\n== fuzz: ' + runs + ' plates, ' + (fails - f0) + ' failures');
+}
 
 console.log('\n' + (n - fails) + '/' + n + (fails ? '  FAILURES' : '  all green'));
 process.exit(fails ? 1 : 0);
