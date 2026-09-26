@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~50,091 lines)
-- Version at time of writing: **2.78a**
+- Version at time of writing: **2.78b**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -201,6 +201,18 @@ corners; the same with a loop cut on the walls bridges straight along x=0
 and keeps the walls divided; plate with two holes 84 → 34; box ∪ box in line
 6; notch 10; 571/571 including a 60-plate fuzz. Reviewed by fable (graze,
 non-manifold, slivers - all three fixed and in the fixture).
+
+**Untouched faces come back as themselves (2.78b, Zeghreit's "Female").** A
+curved quad is not coplanar with itself, so no merge can rebuild it, and an
+organic model minus one small sphere came back 546 -> 893 faces, 824 of them
+triangles (v2.77 did the same: 884). Now `booleanTopoInput` also records
+which input faces each welded position belongs to; a result triangle whose
+three corners share exactly ONE face (and none is a seam vertex) is a piece of
+that face, and `topoPatches` rebuilds the face from its pieces when they
+close into one simple loop - emitted as it came, corners frozen. Measured on
+the model: 546 -> 552 faces, 409 quads, closed and wound clean. Probe
+`_bool278b.js` (reads `_dev/female.json`, which is Zeghreit's and is NOT in
+the repo). Still dropped by any boolean: UVs and seams.
 
 Not done: a division that only partly overlaps its neighbour's edge is not
 protected; on fallback nothing is protected; k holes cost k+1 faces, not 2.

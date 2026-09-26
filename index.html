@@ -2774,7 +2774,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.78</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.78b</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -31942,8 +31942,25 @@ function editableFromCSGResult(res, topoIn) {
     const segs = [];
     topoIn.forEach(t => { for (let i = 0; i < t.segs.length; i++) segs.push(t.segs[i]); });
     const blocked = topoBlockedEdges(positions, healed.tris, segs, 2 * CSG_WELD_TOL);
+    /* A triangle whose three corners all belong to ONE input face (and to no
+       other face in common) is a piece of that face. topoPatches rebuilds the
+       face from its pieces when they close into one simple loop. */
+    const keyAt = i => Math.round(positions[i * 3] * 1e4) + '_' + Math.round(positions[i * 3 + 1] * 1e4) + '_' +
+                       Math.round(positions[i * 3 + 2] * 1e4);
+    const facesAt = i => {
+      const k = keyAt(i), out = [];
+      topoIn.forEach((t, ii) => { const l = t.faceOfKey && t.faceOfKey.get(k); if (l) l.forEach(f => out.push(ii * 1e6 + f)); });
+      return out;
+    };
+    const faceOf = new Float64Array(healed.tris.length).fill(-1);
+    healed.tris.forEach((t, ti) => {
+      if (seam.has(t[0]) || seam.has(t[1]) || seam.has(t[2])) return;
+      const a = facesAt(t[0]), b = facesAt(t[1]), c = facesAt(t[2]);
+      const both = a.filter(f => b.indexOf(f) >= 0 && c.indexOf(f) >= 0);
+      if (both.length === 1) faceOf[ti] = both[0];
+    });
     topo = topoNgon(positions, healed.tris, ti => healed.matOf[ti], seam, IMPORT_COPLANAR_DOT,
-                    blocked || undefined);
+                    blocked || undefined, faceOf);
     if (topo) groups = topo.groups;
   }
   if (!groups) groups = mergeCoplanarTriangles(positions, healed.tris, ti => healed.matOf[ti]);
@@ -31974,7 +31991,18 @@ function booleanTopoInput(brush, o) {
       faces.push(f);
     });
   }
-  return { keys: keys, segs: topoDivisions(P, faces, IMPORT_COPLANAR_DOT) };
+  /* WHICH FACES EACH POSITION BELONGS TO (v2.78b, Zeghreit's "Female"). A
+     face the cut never touched comes back from the evaluator as the same
+     triangles on the same corners, and it should come back as the SAME FACE
+     - a curved quad included, which no coplanar merge can rebuild. */
+  const faceOfKey = new Map();
+  faces.forEach((f, fi) => f.forEach(t => t.forEach(v => {
+    const k = Math.round(P[v * 3] * 1e4) + '_' + Math.round(P[v * 3 + 1] * 1e4) + '_' + Math.round(P[v * 3 + 2] * 1e4);
+    let l = faceOfKey.get(k);
+    if (!l) faceOfKey.set(k, l = []);
+    if (l[l.length - 1] !== fi) l.push(fi);
+  })));
+  return { keys: keys, faceOfKey: faceOfKey, segs: topoDivisions(P, faces, IMPORT_COPLANAR_DOT) };
 }
 
 /* ===== TOPOLOGY AFTER A BOOLEAN (v2.78) =====================================
@@ -32091,7 +32119,7 @@ function topoBlockedEdges(P, tris, segs, tol) {
    unsafe: a directed edge used twice, a pinch vertex, a loop that does not
    close, or not exactly one CCW loop. Those go to the pairs fallback,
    exactly as they do today. */
-function topoPatches(P, tris, matOf, seam, dot, blocked) {
+function topoPatches(P, tris, matOf, seam, dot, blocked, faceOf) {
   const nV = P.length / 3;
   const normals = tris.map(t => importTriNormal(P, t));
   const ek = (a, b) => (a < b ? a * nV + b : b * nV + a);
@@ -32118,6 +32146,41 @@ function topoPatches(P, tris, matOf, seam, dot, blocked) {
 
   const seen = new Uint8Array(tris.length);
   const patches = [];
+
+  /* THE FACES THE CUT NEVER TOUCHED come back whole (v2.78b). Grouped by the
+     input face their corners share, kept as one face when the pieces close
+     into ONE simple loop with the face's own winding. Anything else is
+     released to the flood below, exactly as before. The patch normal is the
+     region's own (Newell), because a kept face may be a curved quad. */
+  if (faceOf) {
+    const byFace = new Map();
+    tris.forEach((t, ti) => {
+      if (!normals[ti] || !(faceOf[ti] >= 0)) return;
+      let l = byFace.get(faceOf[ti]);
+      if (!l) byFace.set(faceOf[ti], l = []);
+      l.push(ti);
+    });
+    byFace.forEach(region => {
+      const mat = matOf(region[0]);
+      if (region.some(ti => matOf(ti) !== mat)) return;
+      let nx = 0, ny = 0, nz = 0;
+      region.forEach(ti => {
+        const t = tris[ti], a = t[0] * 3, b = t[1] * 3, c = t[2] * 3;
+        const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
+        const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
+        nx += uy * vz - uz * vy; ny += uz * vx - ux * vz; nz += ux * vy - uy * vx;
+      });
+      const l = Math.hypot(nx, ny, nz);
+      if (!(l > 1e-12)) return;
+      const n = [nx / l, ny / l, nz / l];
+      const r = analyse(region, n);
+      if (r.unsafe || r.loops.length !== 1) return;
+      region.forEach(ti => { seen[ti] = 1; });
+      patches.push({ tris: region, mat: mat, n: n, loops: r.loops, touched: r.touched,
+                     unsafe: false, changed: false, keep: true });
+    });
+  }
+
   for (let s = 0; s < tris.length; s++) {
     if (seen[s] || !normals[s]) continue;
     const n = normals[s], mat = matOf(s);
@@ -32140,7 +32203,14 @@ function topoPatches(P, tris, matOf, seam, dot, blocked) {
         });
       }
     }
+    const r = analyse(region, n);
+    patches.push({ tris: region, mat: mat, n: n, loops: r.unsafe ? [] : r.loops,
+                   touched: r.touched, unsafe: r.unsafe, changed: false });
+  }
+  return { patches: patches, edgeTris: edgeTris, normals: normals, ek: ek };
 
+  // A region's outline: loops (outer CCW about n first, holes after) or unsafe.
+  function analyse(region, n) {
     let unsafe = false, touched = false;
     const dir = new Map(), vIn = new Map();
     region.forEach(ti => {
@@ -32192,10 +32262,8 @@ function topoPatches(P, tris, matOf, seam, dot, blocked) {
       if (outer.length !== 1) unsafe = true;
       else loops.unshift(loops.splice(outer[0], 1)[0]);
     }
-    patches.push({ tris: region, mat: mat, n: n, loops: unsafe ? [] : loops,
-                   touched: touched, unsafe: unsafe, changed: false });
+    return { loops: loops, unsafe: unsafe, touched: touched };
   }
-  return { patches: patches, edgeTris: edgeTris, normals: normals, ek: ek };
 }
 
 // Signed area of a closed 3D loop about the unit normal n.
@@ -32522,11 +32590,11 @@ function topoBridge(P, patch, nbr, ek) {
    vertices dissolved and holes bridged, inside patches that touch the seam.
    Returns null when anything here could not finish; the caller then uses
    the old path, so this pass can make a result better and never worse. */
-function topoNgon(P, tris, matOf, seam, dot, blocked) {
-  const T = topoPatches(P, tris, matOf, seam, dot, blocked);
+function topoNgon(P, tris, matOf, seam, dot, blocked, faceOf) {
+  const T = topoPatches(P, tris, matOf, seam, dot, blocked, faceOf);
   const patches = T.patches, ek = T.ek, edgeTris = T.edgeTris;
   patches.forEach(p => {
-    p.mode = p.unsafe ? 'pairs'
+    p.mode = p.keep ? 'keep' : p.unsafe ? 'pairs'
            : p.loops.length === 1 ? 'simple'
            : p.touched ? 'bridge' : 'pairs';
   });
@@ -32541,6 +32609,12 @@ function topoNgon(P, tris, matOf, seam, dot, blocked) {
   const frozen = new Set();
   const patchesOf = new Map();
   patches.forEach((p, pi) => {
+    // A kept face is emitted as it came: its outline is a face edge, and
+    // none of its corners may be dissolved out from under it.
+    if (p.mode === 'keep') {
+      p.loops[0].forEach((v, i, l) => { link(v, l[(i + 1) % l.length]); frozen.add(v); });
+      return;
+    }
     if (p.mode === 'pairs') {
       p.tris.forEach(ti => tris[ti].forEach(v => frozen.add(v)));
       p.tris.forEach(ti => { const t = tris[ti]; link(t[0], t[1]); link(t[1], t[2]); link(t[2], t[0]); });
@@ -32589,7 +32663,7 @@ function topoNgon(P, tris, matOf, seam, dot, blocked) {
   for (let pi = 0; pi < patches.length; pi++) {
     const p = patches[pi];
     if (p.mode === 'pairs') { topoPairs(p, tris, edgeTris, ek, groups); continue; }
-    if (p.mode === 'simple' && !p.changed) {
+    if (p.mode === 'keep' || (p.mode === 'simple' && !p.changed)) {
       groups.push({ triangles: p.tris.map(ti => tris[ti]), mat: p.mat });
       continue;
     }
