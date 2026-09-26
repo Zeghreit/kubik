@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~50,091 lines)
-- Version at time of writing: **2.78c**
+- Version at time of writing: **2.78d**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -232,6 +232,13 @@ calls the spec's `after` too; before, a setup opened on Union and switched to
 Difference kept the union's marks, 22 of 22 on no edge at all. Known and
 older than this: a cube unioned into the model leaves 4 open edges (v2.77
 too).
+
+**The "N hidden / Show all" chip after a boolean (2.78d).** The preview hides
+its inputs through `App.hidden`; OK puts them back and calls
+`reconcileIsolation`, which returned early on an EMPTY set - so the chip and
+`body.isolating` stayed on over a scene with nothing hidden, for good (v2.77
+did the same). An empty set now still re-applies when the body says
+isolating. Probe `_iso278d.js` (union, union keep, union->difference).
 
 Not done: a division that only partly overlaps its neighbour's edge is not
 protected; on fallback nothing is protected; k holes cost k+1 faces, not 2.

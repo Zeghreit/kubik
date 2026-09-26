@@ -2774,7 +2774,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.78c</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.78d</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -22788,7 +22788,15 @@ function hideObject(id) {
      An empty viewport with no explanation is the failure this whole feature
      has to avoid. */
 function reconcileIsolation() {
-  if (!App.hidden.size) return;
+  /* NOTHING HIDDEN IS STILL A STATE THE CHIP HAS TO HEAR ABOUT (v2.78d,
+     Zeghreit). This returned early on an empty set, so a caller that EMPTIED
+     it and then asked to reconcile - every boolean's OK, which puts back the
+     inputs its preview hid - left "2 hidden / Show all" on screen over a
+     scene with nothing hidden, for good. Measured the same in v2.77. */
+  if (!App.hidden.size) {
+    if (document.body.classList.contains('isolating')) applyIsolation();
+    return;
+  }
   let changed = false;
   App.hidden.forEach(id => { if (!findObject(id)) { App.hidden.delete(id); changed = true; } });
   if (App.hidden.size >= App.objects.length) { App.hidden = new Set(); changed = true; }
