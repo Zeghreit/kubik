@@ -15407,6 +15407,15 @@ function edgeLoopOp(obj, startLogicalEdge, positions) {
     return refuseOp('a ring can only cross four-sided faces, and that edge runs into one that is not', 0);
   }
 
+  /* THE RING'S ENDS (v2.78a, Zeghreit). Where the walk stops at a triangle or
+     an n-gon, the cut points it placed on that boundary edge used to belong
+     to the quads only - the face beyond never heard of them, so each one sat
+     on its edge as a T-junction: the triangle still ran straight past it,
+     and the mesh was open there. Now every cut point on an edge the ring
+     shares with a face it did NOT cross is written into that face's outline
+     too, so a triangle with one point on an edge becomes a quad. */
+  const inChain = new Set(chain.map(c => c.gi));
+  const endCuts = [];                                  // {u, w, pts: [attr...]} per crossed edge
   chain.forEach(({ gi, entry, exit }) => {
     const lp = attrLoops[gi];
     const a0 = lp[entry], a1 = lp[(entry + 1) % 4];
@@ -15427,10 +15436,8 @@ function edgeLoopOp(obj, startLogicalEdge, positions) {
     // the SAME t at each step - that's the a0/a3 and a1/a2 pairing above.
     const chainE = [a0, ...ts.map(t => pointAt(a0, a1, t)), a1];
     const chainX = [a3, ...ts.map(t => pointAt(a3, a2, t)), a2];
+    endCuts.push({ u: a0, w: a1, pts: chainE.slice(1, -1) }, { u: a3, w: a2, pts: chainX.slice(1, -1) });
 
-    for (let k = 0; k < chainE.length - 1; k++) {
-      ed.groups[gi === undefined ? gi : gi].triangles; // no-op guard removed below
-    }
     // Build the strip: first segment reuses this face's own group slot, the
     // rest are appended as new faces.
     for (let k = 0; k < chainE.length - 1; k++) {
@@ -15443,9 +15450,73 @@ function edgeLoopOp(obj, startLogicalEdge, positions) {
       }
     }
   });
-
+  const grown = new Map();                             // neighbour face -> its outline, growing
+  endCuts.forEach(({ u, w, pts }) => {
+    const lu = L.logicalOf[u], lw = L.logicalOf[w];
+    (edgeToGroups.get(edgeKey(lu, lw)) || []).forEach(ng => {
+      if (inChain.has(ng)) return;
+      const loop = grown.get(ng) || attrLoops[ng].slice();
+      const n = loop.length;
+      const lg = ai => (ai < L.logicalOf.length ? L.logicalOf[ai] : -1);
+      for (let i = 0; i < n; i++) {
+        const x = loop[i], y = loop[(i + 1) % n];
+        const lx = lg(x), ly = lg(y);
+        if (!((lx === lu && ly === lw) || (lx === lw && ly === lu))) continue;
+        // Copies of the ring's own points, in THIS face's direction of travel,
+        // at the exact coordinates the quads used - so the weld is certain.
+        const from = vecAt(ed, x);
+        const add = pts.map(ai => {
+          const p = vecAt(ed, ai);
+          const ni = ed.positions.length / 3;
+          ed.positions.push(p.x, p.y, p.z);
+          return { ni: ni, d: p.distanceToSquared(from) };
+        }).sort((a, b) => a.d - b.d).map(o => o.ni);
+        loop.splice(i + 1, 0, ...add);
+        grown.set(ng, loop);
+        return;
+      }
+    });
+  });
+  grown.forEach((loop, ng) => { ed.groups[ng].triangles = loopCutCloseFace(ed, loop); });
   rebuildFromEditable(obj, ed);
   return chain.length;
+}
+
+/* A face outline that gained points on its edges, triangulated again. The
+   new points are collinear with their edge, so a plain fan from a corner on
+   that edge would lay a zero-area triangle along it - hence the ear clip on
+   the face's own plane, which never takes a flat ear. A fan from the
+   sharpest corner is the fallback. */
+function loopCutCloseFace(ed, loop) {
+  const P = ed.positions;
+  let nx = 0, ny = 0, nz = 0;                          // Newell normal
+  for (let i = 0; i < loop.length; i++) {
+    const a = loop[i] * 3, b = loop[(i + 1) % loop.length] * 3;
+    nx += (P[a + 1] - P[b + 1]) * (P[a + 2] + P[b + 2]);
+    ny += (P[a + 2] - P[b + 2]) * (P[a] + P[b]);
+    nz += (P[a] - P[b]) * (P[a + 1] + P[b + 1]);
+  }
+  const l = Math.hypot(nx, ny, nz);
+  if (l > 1e-12) {
+    const fr = topoFrame([nx / l, ny / l, nz / l]);
+    let s = 0;
+    const xy = loop.map(id => {
+      const x = P[id * 3], y = P[id * 3 + 1], z = P[id * 3 + 2];
+      const q = [x * fr.u[0] + y * fr.u[1] + z * fr.u[2], x * fr.v[0] + y * fr.v[1] + z * fr.v[2]];
+      s = Math.max(s, Math.abs(q[0]), Math.abs(q[1]));
+      return q;
+    });
+    const tri = topoEarClip(xy, loop, 1e-12 * Math.max(s * s, 1e-12));
+    if (tri) return tri;
+  }
+  const n = loop.length;
+  const turn = i => {
+    const a = vecAt(ed, loop[(i + n - 1) % n]), b = vecAt(ed, loop[i]), c = vecAt(ed, loop[(i + 1) % n]);
+    return b.clone().sub(a).cross(c.clone().sub(b)).lengthSq();
+  };
+  let k = 0;
+  for (let i = 0; i < n; i++) if (turn(i) > turn(k)) k = i;
+  return fanTriangles(loop.slice(k).concat(loop.slice(0, k)));
 }
 
 // Splits one edge in half, inserting a midpoint vertex and re-triangulating
