@@ -1,0 +1,1 @@
+Dev-only copies for node fixtures (never loaded by index.html, which uses the CDN importmap). three@0.184.0, three-mesh-bvh@0.9.7, three-bvh-csg@0.0.18 - the same versions. Minimal package.json files point every bare import at the ESM build.
