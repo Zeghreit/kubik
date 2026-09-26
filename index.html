@@ -15396,7 +15396,15 @@ function edgeLoopOp(obj, startLogicalEdge, positions) {
 
   const seen = new Set();
   let chain = walk(startKey, startGroups[0], seen);
-  if (startGroups[1] !== undefined) chain = chain.concat(walk(startKey, startGroups[1], seen));
+  /* THE SECOND HALF MEASURES FROM THE OTHER END (v2.78a, measured). Both
+     halves enter through the start edge, and the two faces on it walk it in
+     opposite directions, so "t from a0" is t on one side and 1-t on the
+     other. Any t but 0.5 cut the two halves at mirrored spots: a kink at the
+     start edge and two T-junctions (Slide at 0.3 on a three-face strip,
+     T=2). The second half takes 1-t so both halves land on one point. */
+  if (startGroups[1] !== undefined) {
+    chain = chain.concat(walk(startKey, startGroups[1], seen).map(st => Object.assign(st, { flip: true })));
+  }
   /* `walk` steps only through quads, so an edge whose faces are triangles or
      n-gons produces no chain at all. Two taps from a cube reach it: Split an
      edge, then loop cut between the two five-sided faces that made. It used
@@ -15416,8 +15424,10 @@ function edgeLoopOp(obj, startLogicalEdge, positions) {
      too, so a triangle with one point on an edge becomes a quad. */
   const inChain = new Set(chain.map(c => c.gi));
   const endCuts = [];                                  // {u, w, pts: [attr...]} per crossed edge
-  chain.forEach(({ gi, entry, exit }) => {
+  const tsFlip = ts.map(t => 1 - t).sort((a, b) => a - b);
+  chain.forEach(({ gi, entry, exit, flip }) => {
     const lp = attrLoops[gi];
+    const tt = flip ? tsFlip : ts;
     const a0 = lp[entry], a1 = lp[(entry + 1) % 4];
     const a2 = lp[exit], a3 = lp[(exit + 1) % 4];
 
@@ -15434,8 +15444,8 @@ function edgeLoopOp(obj, startLogicalEdge, positions) {
 
     // chainE runs a0 -> (cuts) -> a1; chainX runs a3 -> (cuts) -> a2, using
     // the SAME t at each step - that's the a0/a3 and a1/a2 pairing above.
-    const chainE = [a0, ...ts.map(t => pointAt(a0, a1, t)), a1];
-    const chainX = [a3, ...ts.map(t => pointAt(a3, a2, t)), a2];
+    const chainE = [a0, ...tt.map(t => pointAt(a0, a1, t)), a1];
+    const chainX = [a3, ...tt.map(t => pointAt(a3, a2, t)), a2];
     endCuts.push({ u: a0, w: a1, pts: chainE.slice(1, -1) }, { u: a3, w: a2, pts: chainX.slice(1, -1) });
 
     // Build the strip: first segment reuses this face's own group slot, the
