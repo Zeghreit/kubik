@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~48,653 lines)
-- Version at time of writing: **2.74**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~50,091 lines)
+- Version at time of writing: **2.78a**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -148,6 +148,80 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Warp the lookup, not the distance** — same doc, §5B.
 - **Curves** still lack edge snapping while drawing, and a Lathe that sweeps
   an arc rather than a full turn.
+
+## Topology after a boolean (2.78)
+
+A boolean used to come back as the coplanar merge made it: a face with a hole
+fell back to PAIRS of triangles (the one-simple-loop rule), and every vertex
+the cut left on a straight edge stayed there. Now `editableFromCSGResult`
+runs **`topoNgon`** instead, and only falls back to `mergeCoplanarTriangles`
+when it returns null - so a result can come out better and never worse.
+
+**The invariant: the shape does not move.** Positions are never written, no
+vertex is added. Connectivity changes only in flat patches that carry a SEAM
+vertex - one no input had (the cut made it) or one two inputs had (they
+touch there).
+
+What it does, in order:
+1. **`topoPatches`** floods coplanar triangles into patches (same rule as the
+   merge) and walks each into loops: outer CCW, holes CW. A patch with a
+   pinch, a doubled directed edge, an edge used 3+ times anywhere, or an
+   interior vertex some outside triangle still uses is UNSAFE and goes to the
+   old pairs path.
+2. **Dissolve**: a vertex of degree 2 in the face-edge graph, collinear
+   (1e-4 absolute AND 2% relative), next to the seam, is removed from both
+   faces' outlines. Vertices of a pairs patch are frozen.
+3. **`topoBridge`**: every hole gets TWO bridges to the outline, between
+   existing vertices, so the face splits into two simple polygons - one
+   bridge alone is a keyhole, which `getGroupBoundaryLoopAttr` cannot read.
+   k holes in one face give k+1 faces. **Where bridges go (Zeghreit):
+   continue edges.** Tier 0: from a vertex on a straight stretch of outline
+   where an edge of a neighbouring face arrives (a loop cut on the wall),
+   along the inward normal. Tier 1: a corner, along its bisector. Then
+   shortest, best aligned, and for the second bridge the most even split.
+   A bridge may not pass within `TOPO_GRAZE` (3.5e-4) of any other vertex,
+   nor make a sliver with the loop edges beside it.
+4. **`topoEarClip`** takes the FATTEST ear, then `topoFlip` flips interior
+   diagonals until the thinnest triangle stops improving. Found by fuzz:
+   first-ear clipping left slivers a grid step high, with normals read off
+   noise.
+
+**Hand-made divisions survive the boolean (Zeghreit).** An edge shared by two
+coplanar faces of the SAME input is a division someone made - a loop cut on a
+flat wall. `booleanTopoInput` reads them off each brush **before any
+evaluate** (three-mesh-bvh reorders a geometry's index when it builds the
+tree, and the face map is index ranges), `topoDivisions` returns them as
+world segments, and `topoBlockedEdges` marks every result edge lying on one
+(2x `CSG_WELD_TOL`). The flood does not cross them. Two inputs meeting in a
+plane are NOT protected - two cubes unioned in a line must still merge.
+
+Measured, node fixture `_topo278fx.mjs` on the real engine (`_dev/csg`):
+cube − rod 56 → 24 faces, its top 2 N-gons with bridges from opposite
+corners; the same with a loop cut on the walls bridges straight along x=0
+and keeps the walls divided; plate with two holes 84 → 34; box ∪ box in line
+6; notch 10; 571/571 including a 60-plate fuzz. Reviewed by fable (graze,
+non-manifold, slivers - all three fixed and in the fixture).
+
+Not done: a division that only partly overlaps its neighbour's edge is not
+protected; on fallback nothing is protected; k holes cost k+1 faces, not 2.
+
+## Loop cut: the ends of a ring, and Slide (2.78a)
+
+**A ring that stops at a triangle or n-gon now writes its cut points into
+that face** (Zeghreit). They used to belong to the quads only, so each sat on
+the neighbour's edge as a T-junction. `edgeLoopOp` records every crossed edge
+with its cut points, inserts copies (exact coordinates, so the weld is
+certain) into the outline of any face beyond that the ring did not cross, and
+`loopCutCloseFace` re-triangulates it by ear clip - a fan from a corner on
+that edge would lay a zero-area triangle along it. One point turns a
+triangle into a quad; two, a pentagon.
+
+**Slide was kinked at the start edge since v1.99.** Both halves of a ring
+enter through the start edge, and the two faces on it walk it in opposite
+directions, so "t from a0" is t on one side and 1-t on the other. Any t but
+0.5 cut the halves at mirrored spots. The second half now takes 1-t.
+Measured through the real op with symmetry: old code, kinked rings and T=4;
+now both rings straight and mirrored at ±1.75. Probe `_lc278a.js` (5 cases).
 
 ## Bezier handles on curves (2.75)
 
