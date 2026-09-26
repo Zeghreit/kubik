@@ -2774,7 +2774,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.78b</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.78c</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -31927,10 +31927,10 @@ function editableFromCSGResult(res, topoIn) {
      seam vertices dissolved, hand-made divisions kept. Null from it means it
      could not finish, and then the old merge runs exactly as before - this
      can make a result better and never worse. */
-  let groups = null, topo = null;
+  let groups = null, topo = null, seam = null;
   if (topoIn && topoIn.length) {
     const nV = positions.length / 3;
-    const seam = new Set();
+    seam = new Set();
     for (let i = 0; i < nV; i++) {
       const k = Math.round(positions[i * 3] * 1e4) + '_' + Math.round(positions[i * 3 + 1] * 1e4) + '_' +
                 Math.round(positions[i * 3 + 2] * 1e4);
@@ -31964,9 +31964,89 @@ function editableFromCSGResult(res, topoIn) {
     if (topo) groups = topo.groups;
   }
   if (!groups) groups = mergeCoplanarTriangles(positions, healed.tris, ti => healed.matOf[ti]);
+  /* EVERY INPUT KEEPS ITS OWN LOOK, AND THE CUT'S RIM IS SHARP (v2.78c,
+     Zeghreit's "Female"). An object has ONE smoothing angle; a boolean of a
+     body smoothed at 180 and a sphere at the default 33 has two, and the
+     result used to take whichever was TAPPED FIRST - union with the sphere
+     tapped first shaded the whole body faceted. Now the result takes the
+     angle of the input that contributes the most faces, and every face edge
+     whose two faces come from ONE input with a different angle carries a
+     hand mark saying what that input's own angle said. An edge between
+     faces of DIFFERENT inputs is the rim of the cut: sharp when its faces
+     turn by more than the app's auto-sharp angle. Hand marks beat any
+     per-object angle, so all three survive whatever angle the object has.
+     World coordinates here; the setup moves them into the object. */
+  const shadeMarks = [];
+  let angle = null;
+  if (topoIn && topoIn.length) {
+    const nV = positions.length / 3;
+    const keyAt = i => Math.round(positions[i * 3] * 1e4) + '_' + Math.round(positions[i * 3 + 1] * 1e4) + '_' +
+                       Math.round(positions[i * 3 + 2] * 1e4);
+    // Which input a face came from: its corners that only ONE input had.
+    const srcOf = groups.map(g => {
+      const votes = new Array(topoIn.length).fill(0);
+      g.triangles.forEach(t => t.forEach(v => {
+        if (seam && seam.has(v)) return;
+        const k = keyAt(v);
+        topoIn.forEach((ti, ii) => { if (ti.keys.has(k)) votes[ii]++; });
+      }));
+      let best = -1, bv = 0;
+      votes.forEach((c, ii) => { if (c > bv) { bv = c; best = ii; } });
+      return best;
+    });
+    const count = new Array(topoIn.length).fill(0);
+    srcOf.forEach(ii => { if (ii >= 0) count[ii]++; });
+    let main = 0;
+    count.forEach((c, ii) => { if (c > count[main]) main = ii; });
+    angle = topoIn[main].angle;
+    // Face normals (Newell) and face edges.
+    const fn = groups.map(g => {
+      let nx = 0, ny = 0, nz = 0;
+      g.triangles.forEach(t => {
+        const a = t[0] * 3, b = t[1] * 3, c = t[2] * 3;
+        const ux = positions[b] - positions[a], uy = positions[b + 1] - positions[a + 1], uz = positions[b + 2] - positions[a + 2];
+        const vx = positions[c] - positions[a], vy = positions[c + 1] - positions[a + 1], vz = positions[c + 2] - positions[a + 2];
+        nx += uy * vz - uz * vy; ny += uz * vx - ux * vz; nz += ux * vy - uy * vx;
+      });
+      const l = Math.hypot(nx, ny, nz) || 1;
+      return [nx / l, ny / l, nz / l];
+    });
+    const byEdge = new Map();
+    groups.forEach((g, gi) => {
+      const cnt = new Map();
+      g.triangles.forEach(t => { for (let k = 0; k < 3; k++) {
+        const a = t[k], b = t[(k + 1) % 3], key = a < b ? a * nV + b : b * nV + a;
+        cnt.set(key, (cnt.get(key) || 0) + 1);
+      } });
+      cnt.forEach((c, key) => {
+        if (c !== 1) return;                         // inside the face
+        let l = byEdge.get(key);
+        if (!l) byEdge.set(key, l = []);
+        l.push(gi);
+      });
+    });
+    byEdge.forEach((l, key) => {
+      if (l.length !== 2) return;
+      const i0 = srcOf[l[0]], i1 = srcOf[l[1]];
+      const n0 = fn[l[0]], n1 = fn[l[1]];
+      const turn = Math.acos(Math.max(-1, Math.min(1, n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2])));
+      let v = null;
+      if (i0 >= 0 && i0 === i1) {
+        const own = topoIn[i0].angle;
+        if (own !== angle) v = turn > own + SHARP_EPS ? 'sharp' : 'smooth';
+      } else if (turn > SHARP_ANGLE + SHARP_EPS) {
+        v = 'sharp';                                 // the rim of the cut
+      }
+      if (!v) return;
+      const a = Math.floor(key / nV), b = key - a * nV;
+      shadeMarks.push({ a: [positions[a * 3], positions[a * 3 + 1], positions[a * 3 + 2]],
+                        b: [positions[b * 3], positions[b * 3 + 1], positions[b * 3 + 2]], v: v });
+    });
+  }
   return { positions: positions, groups: groups,
            triCount: healed.tris.length, capped: healed.capped,
-           topo: topo ? { dissolved: topo.dissolved, bridged: topo.bridged, frozen: topo.frozen } : null };
+           topo: topo ? { dissolved: topo.dissolved, bridged: topo.bridged, frozen: topo.frozen } : null,
+           shadeMarks: shadeMarks, angle: angle };
 }
 
 /* What the topology pass needs from one input (v2.78): its welded vertex
@@ -32002,7 +32082,8 @@ function booleanTopoInput(brush, o) {
     if (!l) faceOfKey.set(k, l = []);
     if (l[l.length - 1] !== fi) l.push(fi);
   })));
-  return { keys: keys, faceOfKey: faceOfKey, segs: topoDivisions(P, faces, IMPORT_COPLANAR_DOT) };
+  return { keys: keys, faceOfKey: faceOfKey, angle: effectiveSmoothAngle(o.mesh),
+           segs: topoDivisions(P, faces, IMPORT_COPLANAR_DOT) };
 }
 
 /* ===== TOPOLOGY AFTER A BOOLEAN (v2.78) =====================================
@@ -32791,6 +32872,8 @@ function booleanBuild(objs, kind) {
     ok: true,
     ed: { positions: ed.positions, groups: ed.groups },
     mats: outMats,
+    shadeMarks: ed.shadeMarks || [],
+    angle: ed.angle,
     note: ed.capped ? 'too tangled to close fully' : ''
   };
 }
@@ -38016,13 +38099,37 @@ const OP_SETUP = {
        without meaning anything different - and a union of two smooth objects
        coming back flat, silently, is the kind of thing you notice a session
        later. */
-    after: (s, obj) => {
+    after: (s, obj, r) => {
+      // The angle the build chose (the input with the most faces), else A's.
       const a = findObject(s.inputIds[0]);
-      const ang = a && a.mesh.userData.autoSmoothAngle;
-      if (typeof ang === 'number') {
-        obj.mesh.userData.autoSmoothAngle = ang;
-        applyShading(obj);
-      }
+      const ang = r && typeof r.angle === 'number' ? r.angle : a && a.mesh.userData.autoSmoothAngle;
+      if (typeof ang === 'number') obj.mesh.userData.autoSmoothAngle = ang;
+      /* HAND MARKS RIDE ACROSS (v2.78c). Sharp/Smooth and Crease are keyed by
+         a pair of POSITIONS, so an edge the cut left alone is still the same
+         key once it is moved into the result's own space: input local ->
+         world -> result local. An edge the cut split loses its mark, which is
+         honest - it is not the same edge any more. */
+      const c = obj.mesh.position, p = new THREE.Vector3(), q = new THREE.Vector3();
+      const moveKey = (key, m) => {
+        const ab = key.split('|');
+        if (ab.length !== 2) return null;
+        const f = (s1, v) => { const n = s1.split('_').map(Number); return v.set(n[0] / 1e4, n[1] / 1e4, n[2] / 1e4).applyMatrix4(m).sub(c); };
+        return edgePosKey(f(ab[0], p), f(ab[1], q));
+      };
+      const shade = {}, crease = {};
+      s.inputIds.map(id => findObject(id)).filter(Boolean).forEach(o => {
+        o.mesh.updateMatrixWorld(true);
+        const m = o.mesh.matrixWorld;
+        Object.keys(o.mesh.userData.edgeShade || {}).forEach(k => { const nk = moveKey(k, m); if (nk) shade[nk] = o.mesh.userData.edgeShade[k]; });
+        Object.keys(o.mesh.userData.creases || {}).forEach(k => { const nk = moveKey(k, m); if (nk) crease[nk] = o.mesh.userData.creases[k]; });
+      });
+      ((r && r.shadeMarks) || []).forEach(m => {
+        const k = edgePosKey(p.fromArray(m.a).sub(c), q.fromArray(m.b).sub(c));
+        if (!(k in shade)) shade[k] = m.v;           // a hand mark on the input wins
+      });
+      obj.mesh.userData.edgeShade = shade;
+      obj.mesh.userData.creases = crease;
+      applyShading(obj);
     },
     onToggle: (s) => { App.boolKeep = !!s.p.keep; }
   }
@@ -38052,7 +38159,7 @@ function buildOpSetupObject(spec, s) {
   const obj = createObjectFromEditable(spec.name(s), c, r.ed, r.mats, {});
   /* Whatever the op wants carried over from what it was made of. Only the
      boolean has one: its result wears A's smoothing. */
-  if (spec.after) spec.after(s, obj);
+  if (spec.after) spec.after(s, obj, r);
   return { obj: obj, res: r };
 }
 
@@ -38249,6 +38356,11 @@ function refreshOpSetupMesh() {
      the old one would leave the new faces unstamped. */
   o.mesh.material = r.mats.length > 1 ? r.mats : r.mats[0];
   rebuildFromEditable(o, r.ed);
+  /* AND WHAT IT CARRIES FOLLOWS THEM TOO (v2.78c, measured). The boolean's
+     smoothing angle and edge marks were set once, by the FIRST build - a
+     chip switched Union to Difference and the marks still described the
+     union, 22 of 22 landing on no edge at all. */
+  if (spec.after) spec.after(s, o, r);
   refreshTubeRings();
   /* THE NAME FOLLOWS THE CHIPS (v2.17). A boolean opened on Union and
      finished on Difference kept "A union" in the outliner - the one part of

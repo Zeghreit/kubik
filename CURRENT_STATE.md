@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~50,091 lines)
-- Version at time of writing: **2.78b**
+- Version at time of writing: **2.78c**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -213,6 +213,25 @@ close into one simple loop - emitted as it came, corners frozen. Measured on
 the model: 546 -> 552 faces, 409 quads, closed and wound clean. Probe
 `_bool278b.js` (reads `_dev/female.json`, which is Zeghreit's and is NOT in
 the repo). Still dropped by any boolean: UVs and seams.
+
+**Shading no longer depends on which object you tapped first (2.78c).** An
+object has one smoothing angle; the result used to take A's - the FIRST
+tapped - so a union with the sphere tapped first shaded the whole 180-degree
+body at the sphere's default 33 and it came back faceted (367 split vertices
+on the model). Now `editableFromCSGResult` finds each result face's source
+input (votes of its non-seam corners), the result takes the angle of the
+input contributing the most faces, and every face edge whose two faces come
+from one input with a DIFFERENT angle gets a hand Sharp/Smooth mark saying
+what that input's angle said - a cube unioned into a smooth body stays
+crisp. An edge between faces of different inputs is the cut's rim and is
+marked Sharp when its faces turn by more than `SHARP_ANGLE` - a body at 180
+used to smooth straight across the rim of a hole. Inputs' own Sharp/Smooth
+and Crease marks are carried (position keys, input -> world -> result).
+**The marks are rebuilt on every chip switch**: `refreshOpSetupMesh` now
+calls the spec's `after` too; before, a setup opened on Union and switched to
+Difference kept the union's marks, 22 of 22 on no edge at all. Known and
+older than this: a cube unioned into the model leaves 4 open edges (v2.77
+too).
 
 Not done: a division that only partly overlaps its neighbour's edge is not
 protected; on fallback nothing is protected; k holes cost k+1 faces, not 2.

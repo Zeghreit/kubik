@@ -11,7 +11,7 @@ function cut(a, b) { const i = html.indexOf(a), j = html.indexOf(b, i); if (i < 
 
 // The app's own weld / heal / merge, cut from index.html. mergeCoplanarTriangles
 // is wrapped so the fixture sees exactly what the app hands it.
-const lib = new Function('THREE', 'const IMPORT_TRI_BUDGET = 40000; const IMPORT_COPLANAR_DOT = 0.9998;' +
+const lib = new Function('THREE', 'const IMPORT_TRI_BUDGET = 40000; const IMPORT_COPLANAR_DOT = 0.9998; const SHARP_ANGLE = 33 * Math.PI / 180; const SHARP_EPS = 1e-6;' +
   cut('const CSG_WELD_TOL =', 'const BOOL_OPS') +
   cut('function importWeldKey(', '/* A budget, refused out loud').replace('function mergeCoplanarTriangles(', 'function legacyMerge(') +
   'let captured = null; function mergeCoplanarTriangles(p, t, m) { captured = { positions: p, tris: t, matOf: m }; return legacyMerge(p, t, m); }' +

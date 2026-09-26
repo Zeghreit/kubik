@@ -90,7 +90,7 @@ with sync_playwright() as p:
     pg.on('console', lambda m: logs.append(m.type + ': ' + m.text) if m.type in ('error',) else None)
     pg.on('pageerror', lambda e: logs.append('pageerror: ' + str(e)))
     pg.route('**/*', route)
-    pg.goto('http://127.0.0.1:%d/_probe.html?debug=1' % port)
+    pg.goto('http://127.0.0.1:%d/_probe.html?debug=1%s' % (port, os.environ.get('PROBE_QS', '')))
     t = 0
     while not done.is_set() and t < 150:
         pg.wait_for_timeout(500)
@@ -102,6 +102,10 @@ with sync_playwright() as p:
                 break
         except Exception:
             pass
+    if os.environ.get('SHOT'):
+        pg.wait_for_timeout(2500)
+        pg.evaluate("() => { if (window.__lockCam) { window.__lockCam(); window.__kubik.renderNow && window.__kubik.renderNow(); } }")
+        pg.screenshot(path=os.environ['SHOT'])
     b.close()
 
 text = result['text'] if result['text'] is not None else ('\n'.join(posts) if posts else 'NO RESULT (timeout)\n' + '\n'.join(logs[:20]))
