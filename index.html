@@ -1871,6 +1871,12 @@
   /* Below 520px the head has no honest room for it: 118 numeral + name +
      hint + a 90px rail overran a 412px screen and pushed the slider off. */
   @media (max-width: 520px) { #opHint { display: none; } }
+  /* What the layout is (v2.79). Same voice as the hint, but it stays on a
+     phone: the boolean has no slider, so the head has the room. */
+  #opReadout {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .06em; color: var(--text-dim);
+    white-space: nowrap; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  }
   #drawer input[type=range] { flex: 1 1 120px; min-width: 110px; accent-color: var(--accent); height: 28px; }
   #opBar input[type=range] {
     /* 44 TALL, not 28. The track stays 4px and the thumb 24 - what grows is
@@ -2556,10 +2562,12 @@
       <input type="text" id="opValue" inputmode="decimal" />
       <span id="opLabel">Extrude</span>
       <span id="opHint">drag anywhere to set</span>
+      <span id="opReadout" style="display:none"></span>
       <input type="range" id="opSlider" />
       </div>
       <div id="opCells">
       <div class="group" id="opGrouping"></div>
+      <div class="group" id="opGrouping2" style="display:none"></div>
       <div class="group" id="opToggleWrap"><button id="opToggle"></button></div>
       <div class="stepper" id="opSegments">
         <button id="opSegMinus" title="Fewer loops">−</button>
@@ -2774,7 +2782,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.78d</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.79</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -16864,7 +16872,7 @@ function showOpBar() {
      drag on the model is the control), no Cancel (tap away, or Undo), and
      the label counts the sections stacked so far. */
   if (op.live) {
-    ['opSlider', 'opValue', 'opSegments', 'opSegments2', 'opExtraWrap', 'opToggleWrap', 'opCancel'].forEach(id => {
+    ['opSlider', 'opValue', 'opSegments', 'opSegments2', 'opExtraWrap', 'opGrouping2', 'opReadout', 'opToggleWrap', 'opCancel'].forEach(id => {
       document.getElementById(id).style.display = 'none';
     });
     document.getElementById('opOk').textContent = 'Done';
@@ -17097,6 +17105,8 @@ function hideOpBar() {
   submergeOut(opBarEl);
   document.getElementById('opSegments2').style.display = 'none';
   document.getElementById('opExtraWrap').style.display = 'none';
+  document.getElementById('opGrouping2').style.display = 'none';
+  document.getElementById('opReadout').style.display = 'none';
   // The chooser bars (Mirror, Extrude grouping) drive this bar by hand and
   // know nothing about the toggle, so it goes away with the bar itself.
   document.getElementById('opToggleWrap').style.display = 'none';
@@ -24790,7 +24800,7 @@ function showKnifeBar() {
     refreshKnifeBar();
   });
   el.appendChild(back);
-  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opSegments2', 'opExtraWrap'].forEach(id => { document.getElementById(id).style.display = 'none'; });
+  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opSegments2', 'opExtraWrap', 'opGrouping2', 'opReadout'].forEach(id => { document.getElementById(id).style.display = 'none'; });
   document.getElementById('opOk').style.display = '';
   surfaceIn(opBarEl);
   refreshKnifeBar();
@@ -25611,7 +25621,7 @@ function showCurveBar() {
   btn.textContent = 'Back';
   btn.title = 'Remove the last point';
   btn.classList.remove('active');
-  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opSegments2', 'opExtraWrap'].forEach(id => {
+  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opSegments2', 'opExtraWrap', 'opGrouping2', 'opReadout'].forEach(id => {
     document.getElementById(id).style.display = 'none';
   });
   document.getElementById('opOk').style.display = '';
@@ -25995,7 +26005,7 @@ function showCurveEditBar() {
   btn.textContent = 'Delete point';
   btn.title = 'Remove the point you have selected';
   btn.classList.remove('active');
-  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opSegments2', 'opExtraWrap'].forEach(id => {
+  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opSegments2', 'opExtraWrap', 'opGrouping2', 'opReadout'].forEach(id => {
     document.getElementById(id).style.display = 'none';
   });
   document.getElementById('opOk').style.display = '';
@@ -30415,7 +30425,7 @@ function showMirrorChooser(axis) {
     el.appendChild(b);
   });
   document.getElementById('opLabel').textContent = 'Mirror';
-  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opSegments2', 'opExtraWrap', 'opToggleWrap', 'opOk'].forEach(id => {
+  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opSegments2', 'opExtraWrap', 'opGrouping2', 'opReadout', 'opToggleWrap', 'opOk'].forEach(id => {
     document.getElementById(id).style.display = 'none';
   });
   surfaceIn(opBarEl);
@@ -31829,7 +31839,7 @@ function healTJunctions(positions, trisIn, matOfTriIn) {
    PAIRS. A cube with a cylinder cut out of its top face is exactly that
    region, and merging it whole would give a face whose rim Inset would pull
    inward while the hole stayed put. */
-function editableFromCSGResult(res, topoIn) {
+function editableFromCSGResult(res, topoIn, topoOpt) {
   const g = res.geometry;
   const pos = g.attributes.position;
   if (!pos || pos.count < 3) return null;
@@ -31968,7 +31978,8 @@ function editableFromCSGResult(res, topoIn) {
       if (both.length === 1) faceOf[ti] = both[0];
     });
     topo = topoNgon(positions, healed.tris, ti => healed.matOf[ti], seam, IMPORT_COPLANAR_DOT,
-                    blocked || undefined, faceOf);
+                    blocked || undefined, faceOf, topoOpt);
+    if (topo && topo.miss) return { miss: true };
     if (topo) groups = topo.groups;
   }
   if (!groups) groups = mergeCoplanarTriangles(positions, healed.tris, ti => healed.matOf[ti]);
@@ -32053,7 +32064,8 @@ function editableFromCSGResult(res, topoIn) {
   }
   return { positions: positions, groups: groups,
            triCount: healed.tris.length, capped: healed.capped,
-           topo: topo ? { dissolved: topo.dissolved, bridged: topo.bridged, frozen: topo.frozen } : null,
+           topo: topo ? { dissolved: topo.dissolved, bridged: topo.bridged, frozen: topo.frozen,
+                          space: topo.space, hash: topo.hash, stats: topo.stats } : null,
            shadeMarks: shadeMarks, angle: angle };
 }
 
@@ -32118,6 +32130,10 @@ const TOPO_PAIR_BUDGET = 4e6;             // hole x outer x edges, per bridge
    anything tighter builds slivers out of rounding noise - and a sliver whose
    corner sits a grid step off the plane has a normal pointing anywhere. */
 const TOPO_GRAZE = 3.5e-4;
+/* v2.79: how far down its ranking one bridge may be picked by Generate, and
+   how many builds one tap of Generate may spend looking for a new layout. */
+const TOPO_VARIANT_RANKS = 8;
+const TOPO_GEN_TRIES = 64;
 
 /* WHERE A FLAT SURFACE WAS DIVIDED BY HAND (v2.78, Zeghreit 26.09: a
    boolean must not erase a loop cut). An edge shared by two faces of the SAME
@@ -32490,7 +32506,7 @@ function topoFlip(xy, T, eps) {
      tier 2 - anything valid.
    Inside a tier: shortest, best aligned, and for the second bridge the most
    even split of area. */
-function topoBridge(P, patch, nbr, ek) {
+function topoBridge(P, patch, nbr, ek, pick) {
   const fr = topoFrame(patch.n);
   const xy = new Map();
   const put = id => {
@@ -32572,6 +32588,7 @@ function topoBridge(P, patch, nbr, ek) {
      second may not reuse. split: the keyhole, when choosing the second. */
   function best(outer, hole, walls, skipO, skipH, split) {
     let win = null;
+    const cands = [];
     if (outer.length * hole.length * walls.length > TOPO_PAIR_BUDGET) return null;
     const area0 = split ? Math.abs(areaOf(split)) : 0;
     const others = new Set();
@@ -32636,9 +32653,23 @@ function topoBridge(P, patch, nbr, ek) {
           cost += Math.abs(A1 - A2) / area0;
           pieces = [p1, p2];
         }
-        if (!win || tier < win.tier || (tier === win.tier && cost < win.cost - 1e-12)) {
-          win = { o: o, h: h, tier: tier, cost: cost, pieces: pieces };
-        }
+        const cand = { o: o, h: h, tier: tier, cost: cost, pieces: pieces };
+        cands.push(cand);
+        if (!win || tier < win.tier || (tier === win.tier && cost < win.cost - 1e-12)) win = cand;
+      }
+    }
+    /* GENERATE (v2.79): the same valid bridges, ranked, and the variant picks
+       the rank-th one at ONE choice point; every other point takes the best,
+       so rank 0 everywhere is exactly the v2.78 result. */
+    if (pick) {
+      const at = pick.at++;
+      pick.counts[at] = cands.length;
+      if (at === pick.cp && pick.rank > 0) {
+        const rest = cands.filter(c => c !== win)
+          .sort((a, b) => a.tier - b.tier || a.cost - b.cost);
+        const c = rest[pick.rank - 1];
+        if (!c) { pick.miss = true; return null; }
+        return c;
       }
     }
     return win;
@@ -32679,7 +32710,13 @@ function topoBridge(P, patch, nbr, ek) {
    vertices dissolved and holes bridged, inside patches that touch the seam.
    Returns null when anything here could not finish; the caller then uses
    the old path, so this pass can make a result better and never worse. */
-function topoNgon(P, tris, matOf, seam, dot, blocked, faceOf) {
+function topoNgon(P, tris, matOf, seam, dot, blocked, faceOf, opt) {
+  /* opt (v2.79): { type: 'ngon' | 'tris', seed }. Seed 0 is the default
+     layout of the type; Generate walks the seeds. A seed that names no layout
+     returns { miss: true } - not null, which would mean "fall back". */
+  opt = opt || {};
+  const asTris = opt.type === 'tris';
+  const seed = Math.max(0, opt.seed | 0);
   const T = topoPatches(P, tris, matOf, seam, dot, blocked, faceOf);
   const patches = T.patches, ek = T.ek, edgeTris = T.edgeTris;
   patches.forEach(p => {
@@ -32746,18 +32783,44 @@ function topoNgon(P, tris, matOf, seam, dot, blocked, faceOf) {
     work.push(a, b);
   }
 
-  // Emit.
+  /* N-gon variants: every hole has two bridges, and each is a choice point.
+     Seed s > 0 moves ONE of them down its ranking: point (s-1) mod C, rank
+     1 + floor((s-1) / C). */
+  let C = 0;
+  patches.forEach(p => { if (p.mode === 'bridge') C += 2 * (p.loops.length - 1); });
+  let pick = null;
+  if (!asTris) {
+    pick = { cp: -1, rank: 0, at: 0, counts: [], miss: false };
+    if (seed > 0) {
+      if (!C) return { miss: true };
+      pick.cp = (seed - 1) % C;
+      pick.rank = 1 + Math.floor((seed - 1) / C);
+      if (pick.rank > TOPO_VARIANT_RANKS) return { miss: true };
+    }
+  }
+
+  // Emit. `region` is the faces this pass is answerable for: every face of
+  // a patch that touches the seam. The readout and the hash count only those.
   const groups = [];
+  const region = [];
+  const triPolys = [];
   let bridged = 0;
   for (let pi = 0; pi < patches.length; pi++) {
     const p = patches[pi];
-    if (p.mode === 'pairs') { topoPairs(p, tris, edgeTris, ek, groups); continue; }
-    if (p.mode === 'keep' || (p.mode === 'simple' && !p.changed)) {
+    if (p.mode === 'pairs') {
+      const g0 = groups.length;
+      if (asTris && p.touched) p.tris.forEach(ti => groups.push({ triangles: [tris[ti]], mat: p.mat }));
+      else topoPairs(p, tris, edgeTris, ek, groups);
+      if (p.touched) for (let g = g0; g < groups.length; g++) region.push(g);
+      continue;
+    }
+    if (p.mode === 'keep' || (p.mode === 'simple' && !p.changed && !(asTris && p.touched))) {
+      if (p.touched) region.push(groups.length);
       groups.push({ triangles: p.tris.map(ti => tris[ti]), mat: p.mat });
       continue;
     }
-    const polys = p.mode === 'bridge' ? topoBridge(P, p, nbr, ek) : [p.loops[0]];
-    if (!polys) return null;
+    const polys = p.mode === 'bridge' ? topoBridge(P, p, nbr, ek, pick) : [p.loops[0]];
+    if (!polys) return pick && pick.miss ? { miss: true } : null;
     if (p.mode === 'bridge') bridged += p.loops.length - 1;
     const fr = topoFrame(p.n);
     for (const poly of polys) {
@@ -32767,12 +32830,100 @@ function topoNgon(P, tris, matOf, seam, dot, blocked, faceOf) {
       });
       let s = 0;
       for (let i = 0; i < xy.length; i++) s = Math.max(s, Math.abs(xy[i][0]), Math.abs(xy[i][1]));
-      const tri = topoEarClip(xy, poly, 1e-12 * Math.max(s * s, 1e-12));
+      const eps = 1e-12 * Math.max(s * s, 1e-12);
+      const tri = topoEarClip(xy, poly, eps);
       if (!tri) return null;
+      if (asTris) { triPolys.push({ tri: tri, poly: poly, xy: xy, eps: eps, mat: p.mat }); continue; }
+      region.push(groups.length);
       groups.push({ triangles: tri, mat: p.mat });
     }
   }
-  return { groups: groups, dissolved: dissolved, bridged: bridged, frozen: frozen };
+  /* Tris variants: one diagonal flipped. The flips are ranked by the
+     thinnest triangle they leave, fattest first; seed s takes the s-th. */
+  let space = 1;
+  if (asTris) {
+    const flips = topoFlipChoices(triPolys);
+    space = 1 + flips.length;
+    if (seed > 0) {
+      const f = flips[seed - 1];
+      if (!f) return { miss: true };
+      const tp = triPolys[f.pi];
+      tp.tri[f.ti] = f.n1;
+      tp.tri[f.tj] = f.n2;
+    }
+    triPolys.forEach(tp => tp.tri.forEach(t => {
+      region.push(groups.length);
+      groups.push({ triangles: [t], mat: tp.mat });
+    }));
+  } else {
+    const most = pick.counts.reduce((m, c) => Math.max(m, c | 0), 0);
+    space = 1 + C * Math.min(Math.max(0, most - 1), TOPO_VARIANT_RANKS);
+  }
+  const stats = { faces: region.length, tris: 0, quads: 0, ngons: 0 };
+  region.forEach(gi => {
+    const n = groups[gi].triangles.length + 2;      // a simple polygon: tris + 2 corners
+    if (n === 3) stats.tris++; else if (n === 4) stats.quads++; else stats.ngons++;
+  });
+  return { groups: groups, dissolved: dissolved, bridged: bridged, frozen: frozen,
+           space: space, hash: topoHash(groups, region, P.length / 3), stats: stats };
+}
+
+/* The ways one diagonal of a Tris layout can turn (v2.79): inside one
+   polygon, the quad convex, neither new triangle thinner than TOPO_GRAZE or
+   than a quarter of what it replaces. Ranked fattest first, ties by edge. */
+function topoFlipChoices(polys) {
+  const out = [];
+  polys.forEach((tp, pi) => {
+    const m = new Map();
+    tp.poly.forEach((id, i) => m.set(id, tp.xy[i]));
+    const cr = (a, b, c) => {
+      const A = m.get(a), B = m.get(b), Q = m.get(c);
+      return (B[0] - A[0]) * (Q[1] - A[1]) - (B[1] - A[1]) * (Q[0] - A[0]);
+    };
+    const h = t => {
+      const a = m.get(t[0]), b = m.get(t[1]), c = m.get(t[2]);
+      return cr(t[0], t[1], t[2]) / Math.max(Math.hypot(b[0] - a[0], b[1] - a[1]),
+        Math.hypot(c[0] - b[0], c[1] - b[1]), Math.hypot(a[0] - c[0], a[1] - c[1]));
+    };
+    const at = new Map();
+    tp.tri.forEach((t, ti) => { for (let k = 0; k < 3; k++) at.set(t[k] + ',' + t[(k + 1) % 3], [ti, k]); });
+    tp.tri.forEach((t, ti) => {
+      for (let k = 0; k < 3; k++) {
+        const a = t[k], c = t[(k + 1) % 3], b = t[(k + 2) % 3];
+        if (a > c) continue;                           // each diagonal once
+        const o = at.get(c + ',' + a);
+        if (!o) continue;                              // outline edge
+        const u = tp.tri[o[0]], d = u[(o[1] + 2) % 3];
+        const n1 = [b, a, d], n2 = [d, c, b];
+        if (cr(n1[0], n1[1], n1[2]) <= tp.eps || cr(n2[0], n2[1], n2[2]) <= tp.eps) continue;
+        const q = Math.min(h(n1), h(n2)), q0 = Math.min(h(t), h(u));
+        if (q < TOPO_GRAZE || q < 0.25 * q0) continue;
+        out.push({ pi: pi, ti: ti, tj: o[0], n1: n1, n2: n2, q: q, key: a + '_' + c });
+      }
+    });
+  });
+  out.sort((x, y) => y.q - x.q || (x.key < y.key ? -1 : x.key > y.key ? 1 : 0));
+  return out;
+}
+
+/* Connectivity of the region, as a short string (v2.79): each face's outline
+   edges, sorted. Two layouts with the same outlines are the same layout,
+   however the faces happen to be triangulated inside. */
+function topoHash(groups, region, nV) {
+  const faces = region.map(gi => {
+    const cnt = new Map();
+    groups[gi].triangles.forEach(t => { for (let k = 0; k < 3; k++) {
+      const a = t[k], b = t[(k + 1) % 3], key = a < b ? a * nV + b : b * nV + a;
+      cnt.set(key, (cnt.get(key) || 0) + 1);
+    } });
+    const e = [];
+    cnt.forEach((c, key) => { if (c === 1) e.push(key); });
+    return e.sort((x, y) => x - y).join(',');
+  }).sort();
+  let h = 0x811c9dc5;
+  const str = faces.join('|');
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(16) + ':' + region.length;
 }
 
 // The old fallback, unchanged in meaning: coplanar pairs across a clean edge.
@@ -32814,7 +32965,12 @@ const BOOL_OPS = {
    is not, and A is objs[0] - the FIRST object you tapped. That is the rule
    Solidify and the material tools already use for "the one you mean", and
    the Difference chip says so in its own tooltip. */
-function booleanBuild(objs, kind) {
+function booleanBuild(objs, kind, opt) {
+  /* opt (v2.79): { type, seed, cache }. `cache` is the setup's own object:
+     the CSG runs once per operation and set of inputs, and Generate re-runs
+     only the topology on what it made. The inputs are hidden while a setup
+     stands, so nothing can change them under the cache. */
+  opt = opt || {};
   const CSG = csgMod;
   if (!CSG) return { ok: false, why: 'The boolean engine is still loading' };
   const OP = kind === 'union' ? CSG.ADDITION
@@ -32839,7 +32995,10 @@ function booleanBuild(objs, kind) {
   ev.removeUnusedMaterials = true;
 
   let res, mats, topoIn = null;
-  try {
+  const ckey = kind + ':' + objs.map(o => o.id).join(',');
+  const cache = opt.cache;
+  if (cache && cache.key === ckey) { res = cache.res; mats = cache.mats; topoIn = cache.topoIn; }
+  else try {
     const brushes = objs.map(o => booleanBrushOf(CSG, o));
     topoIn = brushes.map((b, i) => booleanTopoInput(b, objs[i]));   // before any evaluate
     let acc = brushes[0];
@@ -32848,12 +33007,14 @@ function booleanBuild(objs, kind) {
     }
     res = acc;
     mats = Array.isArray(res.material) ? res.material : [res.material];
+    if (cache) { cache.key = ckey; cache.res = res; cache.mats = mats; cache.topoIn = topoIn; }
   } catch (err) {
     console.warn('[boolean]', err);
     return { ok: false, why: 'That boolean failed - try Clean up on the inputs first' };
   }
 
-  const ed = editableFromCSGResult(res, topoIn);
+  const ed = editableFromCSGResult(res, topoIn, { type: opt.type || 'ngon', seed: opt.seed | 0 });
+  if (ed && ed.miss) return { ok: false, miss: true, why: 'No such layout' };
   if (ed && ed.why) return { ok: false, why: ed.why };
   if (!ed || !ed.groups.length) return { ok: false, why: 'That boolean leaves nothing behind' };
   /* THE OP BUDGET, not the importer's (v2.24). It used to be one number for
@@ -32882,6 +33043,7 @@ function booleanBuild(objs, kind) {
     mats: outMats,
     shadeMarks: ed.shadeMarks || [],
     angle: ed.angle,
+    topo: ed.topo ? { space: ed.topo.space, hash: ed.topo.hash, stats: ed.topo.stats } : null,
     note: ed.capped ? 'too tangled to close fully' : ''
   };
 }
@@ -38087,17 +38249,42 @@ const OP_SETUP = {
     stepper: null,
     toggle: { key: 'keep', label: 'Keep originals',
               tip: 'Leave what went in standing beside the result', norebuild: true },
-    defaults: () => ({ kind: 'union', keep: !!App.boolKeep }),
+    /* TOPOLOGY OF THE CUT (v2.79, Zeghreit). A second row of chips says what
+       the flat faces along the cut are made of; Generate walks the layouts
+       of that type, and a tap of Undo walks back. The shape never moves -
+       only which vertices are joined to which. */
+    chips2: [['ngon', 'N-gon'], ['tris', 'Tris']],
+    chip2Key: 'topo',
+    chip2Tip: (k) => (k === 'ngon' ? 'Big flat faces along the cut, holes bridged'
+                    : 'Every flat face along the cut as triangles'),
+    onChip2: () => { App.opSetup.p.seed = 0; },
+    defaults: () => ({ kind: 'union', keep: !!App.boolKeep, topo: 'ngon', seed: 0 }),
     build: (s) => {
       const objs = s.inputIds.map(id => findObject(id)).filter(Boolean);
       if (objs.length < 2) return { ok: false, why: 'the selection changed - pick them again' };
-      return booleanBuild(objs, s.p.kind);
+      return booleanBuild(objs, s.p.kind, { type: s.p.topo, seed: s.p.seed,
+                                            cache: s.csgCache || (s.csgCache = {}) });
+    },
+    extra: { label: 'Generate', tip: 'Another layout of the same type - Undo goes back',
+             run: (s) => generateBooleanLayout(s) },
+    readout: (s) => {
+      const t = s.topoInfo;
+      if (!t) return '';
+      const seen = topoBook(s).seen;
+      const st = t.stats, parts = [];
+      if (st.quads) parts.push(st.quads + (st.quads === 1 ? ' quad' : ' quads'));
+      if (st.tris) parts.push(st.tris + (st.tris === 1 ? ' tri' : ' tris'));
+      if (st.ngons) parts.push(st.ngons + (st.ngons === 1 ? ' n-gon' : ' n-gons'));
+      return (s.p.topo === 'tris' ? 'Tris' : 'N-gon') + ' · var ' + (seen.indexOf(t.hash) + 1) +
+             ' · ' + st.faces + (st.faces === 1 ? ' face' : ' faces') +
+             (parts.length ? ' (' + parts.join(', ') + ')' : '');
     },
     name: (s) => {
       const a = findObject(s.inputIds[0]);
       return (a ? a.name : 'Boolean') + ' ' + BOOL_OPS[s.p.kind].suffix;
     },
-    onChip: null,
+    // A new operation is a new set of layouts.
+    onChip: () => { App.opSetup.p.seed = 0; },
     renames: true,
     // Which of the three it was. The shared label says only "Boolean", and
     // the three are told apart by nothing else once the bar has gone.
@@ -38108,6 +38295,14 @@ const OP_SETUP = {
        coming back flat, silently, is the kind of thing you notice a session
        later. */
     after: (s, obj, r) => {
+      // What Generate and the readout need: this layout's hash and counts.
+      s.topoInfo = r && r.topo ? r.topo : null;
+      if (s.topoInfo) {
+        const bk = topoBook(s), h = s.topoInfo.hash;
+        if (bk.seen.indexOf(h) < 0) { bk.seen.push(h); bk.seedOf[h] = s.p.seed | 0; }
+        bk.space = Math.max(bk.space, s.topoInfo.space | 0);
+      }
+      refreshOpReadout();
       // The angle the build chose (the input with the most faces), else A's.
       const a = findObject(s.inputIds[0]);
       const ang = r && typeof r.angle === 'number' ? r.angle : a && a.mesh.userData.autoSmoothAngle;
@@ -38145,6 +38340,69 @@ const OP_SETUP = {
 
 function opSetupSpec() {
   return App.opSetup ? OP_SETUP[App.opSetup.kind] : null;
+}
+
+/* What this setup has seen of one operation + type (v2.79). Kept for the
+   whole setup and never cleared, so Undo past a chip switch still reads the
+   right "var N": the layouts in the order they were first shown, the seed
+   that first made each, the largest seed space any build reported, where
+   the search stopped, and whether it has run out once. */
+function topoBook(s) {
+  if (!s.topoBooks) s.topoBooks = {};
+  const k = s.p.kind + ':' + s.p.topo;
+  return s.topoBooks[k] || (s.topoBooks[k] = { seen: [], seedOf: {}, space: 0, cursor: 0, round: false });
+}
+
+/* GENERATE (v2.79). The next seed of the current type whose layout this
+   setup has not shown yet. Builds are cheap - the CSG is cached - but not
+   free, so one tap spends at most TOPO_GEN_TRIES of them and the next tap
+   carries on from there. When the seeds run out it goes back to the first
+   layout and says so; after that, Generate walks the layouts already found,
+   in order. One step on the bar's own stack, so Undo takes it back. */
+function generateBooleanLayout(s) {
+  if (!s || App.opSetup !== s) return;
+  const objs = s.inputIds.map(id => findObject(id)).filter(Boolean);
+  const info = s.topoInfo;
+  if (objs.length < 2 || !info) { toast('Nothing along this cut to lay out differently'); return; }
+  const bk = topoBook(s);
+  const go = (seed) => { opSetupMark(); s.p.seed = seed; refreshOpSetupMesh(); showOpSetupBar(); };
+  if (bk.round) {
+    if (bk.seen.length <= 1) { toast('Only one layout of this type here'); return; }
+    const i = bk.seen.indexOf(info.hash);
+    const next = bk.seen[(i + 1) % bk.seen.length];
+    go(bk.seedOf[next] | 0);
+    return;
+  }
+  const space = Math.max(bk.space, info.space | 0);
+  const from = Math.max(s.p.seed | 0, bk.cursor) + 1;
+  const last = Math.min(space, from + TOPO_GEN_TRIES);
+  let found = -1;
+  for (let seed = from; seed < last; seed++) {
+    const r = booleanBuild(objs, s.p.kind, { type: s.p.topo, seed: seed, cache: s.csgCache });
+    if (!r.ok || !r.topo || bk.seen.indexOf(r.topo.hash) >= 0) continue;
+    found = seed;
+    break;
+  }
+  if (found >= 0) { bk.cursor = found; go(found); return; }
+  if (last < space) {
+    bk.cursor = last - 1;
+    toast('No new layout yet - tap Generate again to keep looking');
+    return;
+  }
+  bk.round = true;
+  if (bk.seen.length <= 1) { toast('Only one layout of this type here'); return; }
+  toast('All ' + bk.seen.length + ' layouts shown - back to the first');
+  go(bk.seedOf[bk.seen[0]] | 0);
+}
+
+// The line under the op's name that says what the layout is (v2.79).
+function refreshOpReadout() {
+  const el = document.getElementById('opReadout');
+  if (!el) return;
+  const s = App.opSetup, spec = opSetupSpec();
+  const txt = s && spec && spec.readout ? spec.readout(s) : '';
+  el.textContent = txt;
+  el.style.display = txt ? '' : 'none';
 }
 
 /* Every op here turns a curve into a mesh, and every one of them wants the
@@ -38542,7 +38800,9 @@ function showOpSetupBar() {
       b.title = spec.chipTip ? spec.chipTip(key) : '';
       if (s.p[spec.chipKey] === key) b.classList.add('active');
       b.addEventListener('click', () => {
-        if (!App.opSetup) return;
+        // The lit chip is a no-op (v2.79, review): it used to reset the
+        // layout Generate had found, for a tap that looks like nothing.
+        if (!App.opSetup || App.opSetup.p[spec.chipKey] === key) return;
         opSetupMark();
         App.opSetup.p[spec.chipKey] = key;
         if (spec.onChip) spec.onChip(key);
@@ -38554,6 +38814,31 @@ function showOpSetupBar() {
   } else {
     el.style.display = 'none';
   }
+  // The second row of chips (v2.79): same shape as the first, its own key.
+  const el2 = document.getElementById('opGrouping2');
+  el2.innerHTML = '';
+  if (spec.chips2) {
+    el2.style.display = 'inline-flex';
+    spec.chips2.forEach(pair => {
+      const key = pair[0];
+      const b = document.createElement('button');
+      b.textContent = pair[1];
+      b.title = spec.chip2Tip ? spec.chip2Tip(key) : '';
+      if (s.p[spec.chip2Key] === key) b.classList.add('active');
+      b.addEventListener('click', () => {
+        if (!App.opSetup || App.opSetup.p[spec.chip2Key] === key) return;
+        opSetupMark();
+        App.opSetup.p[spec.chip2Key] = key;
+        if (spec.onChip2) spec.onChip2(key);
+        showOpSetupBar();
+        refreshOpSetupMesh();
+      });
+      el2.appendChild(b);
+    });
+  } else {
+    el2.style.display = 'none';
+  }
+  refreshOpReadout();
 
   const sl = document.getElementById('opSlider');
   const val = document.getElementById('opValue');
@@ -49905,7 +50190,7 @@ if (PICK_DEBUG) {
     hasCurveData, curveDataOf,
     refreshTubeRings, pickTubeRingPx, stepOpSetup2,
     // v2.21: stepping back inside a bar, without leaving it.
-    opSetupMark, opSetupStepBack, opSetupHasSteps,
+    opSetupMark, opSetupStepBack, opSetupHasSteps, generateBooleanLayout,
     curveEditMark, curveEditStepBack, curveEditHasSteps,
     get tubeRingPts() { return tubeRingPts; },
     get tubeRadiusDrag() { return tubeRadiusDrag; },

@@ -20,7 +20,7 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~50,091 lines)
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~50,570 lines)
 - Version at time of writing: **2.78d**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
@@ -148,6 +148,53 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Warp the lookup, not the distance** — same doc, §5B.
 - **Curves** still lack edge snapping while drawing, and a Lathe that sweeps
   an arc rather than a full turn.
+
+## Topology types and Generate in the Boolean bar (2.79)
+
+The Boolean bar has a second row of chips, **N-gon / Tris**, a **Generate**
+button and a readout in the head: `N-gon · var 2 · 7 faces (3 quads, 4
+n-gons)`. They act on the REGION only - the faces of flat patches that touch
+the seam; everything else comes back as 2.78 made it. The shape never moves:
+same positions, same vertex set, same area (fixture checks all three).
+
+- **`topoNgon(..., opt)`** takes `{ type: 'ngon' | 'tris', seed }`. Seed 0 is
+  exactly the 2.78 result (hash-checked). A seed that names no layout
+  returns `{ miss: true }`, which is NOT null (null still means "fall back to
+  the pairs merge").
+- **N-gon variants**: every hole has two bridges, each a choice point; seed
+  s > 0 takes the rank-`1 + floor((s-1)/C)` alternative at point
+  `(s-1) mod C` and the 2.78 winner everywhere else (`topoBridge(..., pick)`).
+  No holes, one layout. Ranks capped at `TOPO_VARIANT_RANKS` (8).
+- **Tris**: every region polygon ear-clipped into one-triangle faces.
+  Variants flip ONE diagonal (`topoFlipChoices`: convex quad, both new
+  triangles at least `TOPO_GRAZE` high and a quarter of what they replace),
+  fattest first.
+- **`topoHash`**: FNV of each region face's outline edges, sorted. Same
+  outlines = same layout.
+- **Generate** (`generateBooleanLayout`): the next seed whose hash this setup
+  has not shown, at most `TOPO_GEN_TRIES` (64) builds per tap, the next tap
+  carries on. When the seeds run out it goes back to layout 1 with a toast,
+  and from then on walks the layouts it found. One mark on the bar's stack,
+  so Undo takes it back. The CSG runs once per operation (`s.csgCache`,
+  keyed kind + input ids); Generate re-runs only weld/heal/topology - 35-45
+  ms a tap on Zeghreit's model.
+- **Books, not a list** (`topoBook`): seen layouts are kept per operation +
+  type for the whole setup and never cleared, so Undo past a chip switch
+  still reads the right "var N". Op and type chips reset the seed to 0; the
+  LIT chip does nothing (it used to wipe a Generate'd layout).
+- The chips and readout are hidden by `hideOpBar` and by every other bar
+  that reuses `#opBar`.
+
+Measured: node fixture `_topo279fx.mjs` 59/59 (every seed of both types on
+the 2.78 cases plus 20 fuzz plates: closed, flat, one loop, positions and
+area untouched, deterministic); `_topo278fx.mjs` still 571/571; probe
+`_bool279_probe.js` all green through the real buttons on cube − rod and on
+Zeghreit's model − cube. Reviewed by fable (no defects; 3456 variant seeds,
+0 hash collisions in 2044 layouts) and opus (4 lifecycle defects, all
+fixed). The model − cube keeps the 4 open edges main has (v2.77 too).
+
+Not done: Quads (2.80) and Loops (2.81) types; curved walls are never
+touched - Zeghreit's call whether Generate should.
 
 ## Topology after a boolean (2.78)
 
