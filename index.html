@@ -2782,7 +2782,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.80a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.81</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -31978,7 +31978,7 @@ function editableFromCSGResult(res, topoIn, topoOpt) {
       const both = a.filter(f => b.indexOf(f) >= 0 && c.indexOf(f) >= 0);
       if (both.length === 1) faceOf[ti] = both[0];
     });
-    const quads = !!(topoOpt && topoOpt.type === 'quads');
+    const quads = !!(topoOpt && (topoOpt.type === 'quads' || topoOpt.type === 'loops'));
     topo = topoNgon(positions, healed.tris, ti => healed.matOf[ti], seam, IMPORT_COPLANAR_DOT,
                     blocked || undefined, faceOf, quads ? { type: 'ngon', seed: 0 } : topoOpt);
     if (topo && topo.miss) return { miss: true };
@@ -31986,12 +31986,12 @@ function editableFromCSGResult(res, topoIn, topoOpt) {
        to, piece by piece, and what stays outside the band. */
     if (topo && quads) {
       const surf = topoIn.every(t => t.P && t.tri) ? topoIn.map(t => ({ P: t.P, tri: t.tri })) : null;
-      const q = topoQuads(positions, topo.groups, seam, owner, surf, { seed: topoOpt.seed | 0 });
+      const q = topoQuads(positions, topo.groups, seam, owner, surf, { seed: topoOpt.seed | 0, loops: topoOpt.type === 'loops' });
       if (q.miss) return { miss: true };
       positions = q.positions;
       topo = { groups: q.groups, dissolved: topo.dissolved, bridged: topo.bridged, frozen: topo.frozen,
                space: q.space, hash: q.hash, stats: q.stats, rebuilt: q.rebuilt, failed: q.failed, ways: q.ways,
-               band: q.band, snapped: q.snapped };
+               band: q.band, snapped: q.snapped, lines: q.lines };
     }
     if (topo) groups = topo.groups;
   }
@@ -32079,7 +32079,7 @@ function editableFromCSGResult(res, topoIn, topoOpt) {
            triCount: healed.tris.length, capped: healed.capped,
            topo: topo ? { dissolved: topo.dissolved, bridged: topo.bridged, frozen: topo.frozen,
                           space: topo.space, hash: topo.hash, stats: topo.stats,
-                          rebuilt: topo.rebuilt, failed: topo.failed, ways: topo.ways, band: topo.band, snapped: topo.snapped } : null,
+                          rebuilt: topo.rebuilt, failed: topo.failed, ways: topo.ways, band: topo.band, snapped: topo.snapped, lines: topo.lines } : null,
            shadeMarks: shadeMarks, angle: angle };
 }
 
@@ -32995,6 +32995,41 @@ const TOPO_Q_SAG = 0.2;                   // a new face's middle, off the surfac
 const TOPO_Q_ISLAND = 6;                  // faces: an enclosed patch this small joins the band
 const TOPO_Q_GRAZE = 0.35;                // a boundary point this close to the cut (per its edge) joins the band
 
+/* LOOPS (v2.81, DECISION 29.09, Zeghreit: "the body's grid carried to the
+   hole"). Same band, pieces, flat map and checks as Quads; what differs is
+   the fill. No rings around the cut: every original point on the band's
+   edge sends the body's own edge arriving at it straight on across the band,
+   in the flat piece, to where it meets the cut, and the spokes are matched to
+   those landings. Where the cut is denser than the body the extra cut edges
+   are absorbed by 3:1 / 2:1 steps IN THE ROW AGAINST THE CUT, so the poles
+   and triangles sit at the seam, not in the body. A second row only where a
+   gap is wider than three cut edges (or on the "one more row" variant). The
+   smaller input is always kept as cut. Generate: band two rings / one ring,
+   one more row, spoke matching rank. */
+const TOPO_L_WIDTHS = [{ host: 2, minor: 0 }, { host: 1, minor: 0 }];   // one ring alone folded on the model: 16 body points to 49 cut points
+const TOPO_L_ROWS = [0, 1];
+const TOPO_L_ROTS = 3;
+const TOPO_L_SPACE = TOPO_L_WIDTHS.length * TOPO_L_ROWS.length * TOPO_L_ROTS;
+const TOPO_L_ACROSS = 0.5;             // a body edge carries on only if it heads this squarely into the band (cos)
+function topoLoopVariant(seed) {
+  const nW = TOPO_L_WIDTHS.length;
+  return { loops: true, widths: TOPO_L_WIDTHS[seed % nW],
+           rd: TOPO_L_ROWS[Math.floor(seed / nW) % TOPO_L_ROWS.length],
+           rot: Math.floor(seed / (nW * TOPO_L_ROWS.length)) % TOPO_L_ROTS };
+}
+/* Counts per row, the cut's side first: shed as fast as 3:1 allows, AT the
+   cut, then plain rows. ceil(e/3) always leaves room for the steps. */
+function topoLoopCounts(E, S) {
+  const e = [E];
+  for (let j = 0; j < S; j++) e.push(j === S - 1 ? 1 : Math.max(1, Math.ceil(e[j] / 3)));
+  for (let j = 0; j < S; j++) {
+    const d = e[j] - e[j + 1];
+    if (d < 0 || e[j] > 3 * e[j + 1] || (d >> 1) + (d & 1) > e[j + 1]) return null;
+  }
+  return e;
+}
+function topoLoopRows(E) { let r = 1; while (E > 3) { E = Math.ceil(E / 3); r++; } return r; }
+
 /* Seed -> variant. Widths first, so the other band widths are one and two
    Generates away; then one more / one fewer ring; then the spoke matching. */
 function topoQuadVariant(seed) {
@@ -33113,9 +33148,24 @@ function topoQuadMatch(small, big, pos, lam, cost) {
 
 function topoQuads(P0, groups, seam, owner, surf, opt) {
   opt = opt || {};
+  /* LOOPS: A BAND THAT FOLDS TRIES THE OTHER WIDTH. On Zeghreit's model the
+     two-ring band folded where the ball sat a hair lower and the one-ring
+     band folded where it sat a hair higher; each seed falls back to the
+     other width before it falls back to N-gon. */
+  if (opt.loops && !opt.alt) {
+    const r = topoQuadsCore(P0, groups, seam, owner, surf, opt);
+    if (r.miss || r.rebuilt || !r.failed.some(w => !/^kept as cut|^cap kept/.test(w))) return r;
+    const nW = TOPO_L_WIDTHS.length, sd = Math.max(0, opt.seed | 0);
+    const r2 = topoQuadsCore(P0, groups, seam, owner, surf, Object.assign({}, opt, { alt: true, seed: sd - sd % nW + (sd + 1) % nW }));
+    return r2.rebuilt ? Object.assign(r2, { space: r.space }) : r;
+  }
+  return topoQuadsCore(P0, groups, seam, owner, surf, opt);
+}
+function topoQuadsCore(P0, groups, seam, owner, surf, opt) {
   const seed = Math.max(0, opt.seed | 0);
-  if (seed >= TOPO_Q_SPACE) return { miss: true };
-  const V = topoQuadVariant(seed);
+  const SPACE = opt.loops ? TOPO_L_SPACE : TOPO_Q_SPACE;
+  if (seed >= SPACE) return { miss: true };
+  const V = opt.loops ? topoLoopVariant(seed) : topoQuadVariant(seed);
   const P = Array.from(P0);
   const nV0 = P0.length / 3;
   let snapped = 0;
@@ -33568,6 +33618,24 @@ function topoQuads(P0, groups, seam, owner, surf, opt) {
     return out;
   };
 
+  /* LOOPS: the body's own edges at each point of the band's edge - face
+     outlines of every face outside the band (a face's inner diagonals are
+     not edges). */
+  let outNbr = null;
+  if (V.loops) {
+    outNbr = new Map();
+    const link = (a, b) => { let l = outNbr.get(a); if (!l) outNbr.set(a, l = new Set()); l.add(b); };
+    groups.forEach((g, gi) => {
+      if (inBand[gi]) return;
+      const d = new Set();
+      g.triangles.forEach(t => { for (let k = 0; k < 3; k++) d.add(t[k] * nVx + t[(k + 1) % 3]); });
+      g.triangles.forEach(t => { for (let k = 0; k < 3; k++) {
+        const a = t[k], b = t[(k + 1) % 3];
+        if (!d.has(b * nVx + a)) { link(a, b); link(b, a); }
+      } });
+    });
+  }
+
   // ---- Fill each annulus with rings and spokes.
   const newGroups = [];
   let rebuilt = 0;
@@ -33579,7 +33647,13 @@ function topoQuads(P0, groups, seam, owner, surf, opt) {
        the next spoke matching, one more ring. Deterministic, so a seed
        always names the same layout. */
     const save = P.length;
-    const tries = [Object.assign({}, V, { even: true }), V, Object.assign({}, V, { blend: true }), Object.assign({}, V, { blend: true, relax: true }),
+    c.outNbr = outNbr;
+    const tries = V.loops
+      /* Loops: the fewest rows first; one more row only when those fold
+         (Zeghreit's model: a body three times sparser than the ball). */
+      ? [Object.assign({}, V, { even: true }), V, Object.assign({}, V, { rd: V.rd + 1, even: true }), Object.assign({}, V, { rd: V.rd + 1 }),
+         Object.assign({}, V, { rot: V.rot + 1, even: true }), Object.assign({}, V, { rd: V.rd + 1, blend: true, relax: true })]
+      : [Object.assign({}, V, { even: true }), V, Object.assign({}, V, { blend: true }), Object.assign({}, V, { blend: true, relax: true }),
                    Object.assign({}, V, { rot: V.rot + 1 }), Object.assign({}, V, { rd: V.rd + 1, blend: true, relax: true })];
     let res = null, why = [];
     for (let ti = 0; ti < tries.length; ti++) {
@@ -33636,9 +33710,9 @@ function topoQuads(P0, groups, seam, owner, surf, opt) {
   const nV = P.length / 3;
   const band = [];
   groups.forEach((g, gi) => { if (inBand[gi]) band.push(gi); });
-  return { groups: out, positions: P, region: region, stats: stats, space: TOPO_Q_SPACE, band: band, snapped: snapped,
+  return { groups: out, positions: P, region: region, stats: stats, space: SPACE, band: band, snapped: snapped,
            hash: topoHash(out, region, nV) + ':' + nV, rebuilt: rebuilt,
-           failed: comps.filter(c => !c.ok).map(c => c.why),
+           failed: comps.filter(c => !c.ok).map(c => c.why + (V.loops && c.tried && c.tried.length > 1 ? ' [' + c.tried.join('/') + ']' : '')), lines: comps.filter(c => c.ok && c.lines !== undefined).map(c => c.lines),
            ways: comps.filter(c => c.ok && c.how !== undefined).map(c => c.how + (c.tried && c.tried.length ? ' after ' + c.tried.join('/') : '')) };
 }
 
@@ -33743,6 +33817,7 @@ function topoQuadFill(c, expand, P, V, addP, pt) {
   };
 
   const firstNew = P.length / 3;
+  if (V.loops && c.disk) return (c.why = 'cap kept as cut', null);
   const L0 = c.loops[0];
   let L1 = c.loops[1];
   const A = L0.kind === 'seam' ? expand(L0.verts) : L0.verts.slice();
@@ -33879,6 +33954,96 @@ function topoQuadFill(c, expand, P, V, addP, pt) {
       return (d * rr) ** 2 + 0.25 * len(small[i], big[j]) ** 2;
     };
   }
+  /* LOOPS: WHERE THE BODY'S EDGE LANDS. At each original point of the
+     band's edge, the body edge arriving from outside is carried on straight
+     in the flat piece until it meets the other loop; the spoke goes to the
+     cut point nearest that landing (monotone, so lines never cross). A point
+     with no edge heading squarely into the band keeps the angle rule. */
+  c.lines = 0;
+  if (V.loops && dom && c.outNbr) {
+    const frozenBig = L0.kind === 'frozen' ? !flip : L1.kind === 'frozen' ? flip : null;
+    if (frozenBig !== null) {
+      const fr = frozenBig ? big : small;
+      const hub = c.hub || [0, 0];
+      const fxy = k => (frozenBig ? [Math.cos(thB[k]), Math.sin(thB[k])] : c.smallXY[k]);
+      const inc = new Map();
+      c.tris.forEach(t => t.forEach(v => { let l = inc.get(v); if (!l) inc.set(v, l = []); l.push(t); }));
+      const land = fr.map((f, k) => {
+        const F = fxy(k), pf = pt(f), ts = inc.get(f);
+        if (!ts) return null;
+        const prev = fr[(k - 1 + fr.length) % fr.length], next = fr[(k + 1) % fr.length];
+        let into = frozenBig ? [-F[0], -F[1]] : [F[0] - hub[0], F[1] - hub[1]];
+        const il = Math.hypot(into[0], into[1]) || 1;
+        into = [into[0] / il, into[1] / il];
+        let best = null, bs = TOPO_L_ACROSS;
+        (c.outNbr.get(f) || new Set()).forEach(o => {
+          if (o === prev || o === next) return;
+          const po = pt(o), d3 = [pf[0] - po[0], pf[1] - po[1], pf[2] - po[2]];
+          // into the flat piece through the triangle at f whose corner holds it
+          /* In the tangent plane at f (fable, v2.81): on a curved band the
+             incoming edge dips below every incident triangle's plane, and
+             solved in 3D it fell outside every corner - no line carried. */
+          const N = [0, 0, 0];
+          for (const t of ts) { const A = pt(t[0]), B = pt(t[1]), C = pt(t[2]);
+            N[0] += (B[1] - A[1]) * (C[2] - A[2]) - (B[2] - A[2]) * (C[1] - A[1]);
+            N[1] += (B[2] - A[2]) * (C[0] - A[0]) - (B[0] - A[0]) * (C[2] - A[2]);
+            N[2] += (B[0] - A[0]) * (C[1] - A[1]) - (B[1] - A[1]) * (C[0] - A[0]); }
+          const Nl = Math.hypot(N[0], N[1], N[2]) || 1;
+          const tan = v => { const k = (v[0] * N[0] + v[1] * N[1] + v[2] * N[2]) / (Nl * Nl); return [v[0] - k * N[0], v[1] - k * N[1], v[2] - k * N[2]]; };
+          const dt = tan(d3);
+          let dd = null, bo = -Infinity;
+          for (const t of ts) {
+            const i = t.indexOf(f), b = t[(i + 1) % 3], q = t[(i + 2) % 3];
+            const pb = pt(b), pq = pt(q), Db = dom.D.get(b), Dq = dom.D.get(q), Df = dom.D.get(f);
+            if (!Db || !Dq || !Df) continue;
+            const e1 = tan([pb[0] - pf[0], pb[1] - pf[1], pb[2] - pf[2]]), e2 = tan([pq[0] - pf[0], pq[1] - pf[1], pq[2] - pf[2]]);
+            const a11 = e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2], a12 = e1[0] * e2[0] + e1[1] * e2[1] + e1[2] * e2[2];
+            const a22 = e2[0] * e2[0] + e2[1] * e2[1] + e2[2] * e2[2];
+            const r1 = dt[0] * e1[0] + dt[1] * e1[1] + dt[2] * e1[2], r2 = dt[0] * e2[0] + dt[1] * e2[1] + dt[2] * e2[2];
+            const det = a11 * a22 - a12 * a12;
+            if (!(det > 1e-30)) continue;
+            const al = (r1 * a22 - r2 * a12) / det, be = (r2 * a11 - r1 * a12) / det;
+            const sc = Math.min(al, be) / (Math.abs(al) + Math.abs(be) + 1e-30);
+            if (sc > bo) { bo = sc; dd = [al * (Db[0] - Df[0]) + be * (Dq[0] - Df[0]), al * (Db[1] - Df[1]) + be * (Dq[1] - Df[1])]; }
+          }
+          if (!dd || bo < -1e-6) return;
+          const dl = Math.hypot(dd[0], dd[1]);
+          if (!(dl > 1e-12)) return;
+          const u = [dd[0] / dl, dd[1] / dl], sc = u[0] * into[0] + u[1] * into[1];
+          if (sc > bs) { bs = sc; best = u; }
+        });
+        if (!best) return null;
+        // the ray to the other loop
+        if (!frozenBig) {
+          const b = F[0] * best[0] + F[1] * best[1], cc = F[0] * F[0] + F[1] * F[1] - 1, disc = b * b - cc;
+          if (disc < 0) return null;
+          const t = -b + Math.sqrt(disc);
+          return Math.atan2(F[1] + t * best[1], F[0] + t * best[0]);
+        }
+        let bt = Infinity, hit = null;
+        const xy = c.smallXY;
+        for (let q = 0; q < xy.length; q++) {
+          const a = xy[q], b = xy[(q + 1) % xy.length];
+          const ex = b[0] - a[0], ey = b[1] - a[1], den = best[0] * ey - best[1] * ex;
+          if (Math.abs(den) < 1e-18) continue;
+          const wx = a[0] - F[0], wy = a[1] - F[1];
+          const t = (wx * ey - wy * ex) / den, sgm = (wx * best[1] - wy * best[0]) / den;
+          if (t > 1e-9 && sgm >= -1e-9 && sgm <= 1 + 1e-9 && t < bt) { bt = t; hit = [F[0] + t * best[0], F[1] + t * best[1]]; }
+        }
+        return hit ? Math.atan2(hit[1] - hub[1], hit[0] - hub[0]) : null;
+      });
+      c.lines = land.filter(x => x !== null).length;
+      if (c.lines) {
+        const base = cost, rr = hb * nb / (2 * Math.PI);
+        const ang = (x, y) => { let d = Math.abs(x - y) % (2 * Math.PI); return d > Math.PI ? 2 * Math.PI - d : d; };
+        cost = (i, j) => {
+          const th = frozenBig ? land[j] : land[i];
+          if (th === null) return base(i, j);
+          return (ang(th, frozenBig ? thS[i] : thB[j]) * rr) ** 2 + 2 * base(i, j) + 0.05 * len(small[i], big[j]) ** 2;
+        };
+      }
+    }
+  }
   const cands = topoQuadMatch(small, big, P, sp2 + 4 * hb * hb, cost);
   if (!cands.length) return (c.why = 'no match', null);
   const m = cands[Math.min(V.rot, cands.length - 1)].m;
@@ -33899,11 +34064,14 @@ function topoQuadFill(c, expand, P, V, addP, pt) {
   /* A transition never sits against the cut: when any gap sheds spokes,
      there are at least two rows, and the shedding happens in the outer one. */
   let Smin = 1;
-  for (; Smin <= TOPO_Q_MAX_STRIPS; Smin++) if (gaps.every(E => topoQuadCounts(E, Smin))) break;
+  if (V.loops) Smin = Math.max.apply(null, gaps.map(topoLoopRows));
+  else for (; Smin <= TOPO_Q_MAX_STRIPS; Smin++) if (gaps.every(E => topoQuadCounts(E, Smin))) break;
   if (Smin > TOPO_Q_MAX_STRIPS) return (c.why = 'too many rows', null);
   // The ring variant is one more or one fewer than this, never below what the steps need.
-  const S = Math.min(TOPO_Q_MAX_STRIPS, Math.max(Smin, Math.max(R + 1, Smin) + V.rd));
-  const counts = gaps.map(E => topoQuadCounts(E, S));
+  // Loops: no rings but what the steps need, one more on its variant.
+  const S = V.loops ? Math.min(TOPO_Q_MAX_STRIPS, Smin + Math.max(0, V.rd))
+                    : Math.min(TOPO_Q_MAX_STRIPS, Math.max(Smin, Math.max(R + 1, Smin) + V.rd));
+  const counts = gaps.map(E => (V.loops ? topoLoopCounts(E, S) : topoQuadCounts(E, S)));
   if (!counts.every(Boolean)) return (c.why = 'rows', null);
 
   const bigAt = j => big[((j % nb) + nb) % nb];
@@ -39459,11 +39627,12 @@ const OP_SETUP = {
        the shape - only which vertices are joined to which. Quads (v2.80)
        rebuilds a band along the cut, flat and curved, with new points on
        the surfaces they came from (topoQuads). */
-    chips2: [['ngon', 'N-gon'], ['tris', 'Tris'], ['quads', 'Quads']],
+    chips2: [['ngon', 'N-gon'], ['tris', 'Tris'], ['quads', 'Quads'], ['loops', 'Loops']],
     chip2Key: 'topo',
     chip2Tip: (k) => (k === 'ngon' ? 'Big flat faces along the cut, holes bridged'
                     : k === 'tris' ? 'Every flat face along the cut as triangles'
-                    : 'Rebuild a band along the cut as rings of quads, curved walls too'),
+                    : k === 'quads' ? 'Rebuild a band along the cut as rings of quads, curved walls too'
+                    : 'Carry the body\'s own edges straight on to the cut'),
     onChip2: () => { App.opSetup.p.seed = 0; },
     defaults: () => ({ kind: 'union', keep: !!App.boolKeep, topo: 'ngon', seed: 0 }),
     build: (s) => {
@@ -39482,7 +39651,7 @@ const OP_SETUP = {
       if (st.quads) parts.push(st.quads + (st.quads === 1 ? ' quad' : ' quads'));
       if (st.tris) parts.push(st.tris + (st.tris === 1 ? ' tri' : ' tris'));
       if (st.ngons) parts.push(st.ngons + (st.ngons === 1 ? ' n-gon' : ' n-gons'));
-      return (s.p.topo === 'tris' ? 'Tris' : s.p.topo === 'quads' ? 'Quads' : 'N-gon') + ' · var ' + (seen.indexOf(t.hash) + 1) +
+      return ({ tris: 'Tris', quads: 'Quads', loops: 'Loops' }[s.p.topo] || 'N-gon') + ' · var ' + (seen.indexOf(t.hash) + 1) +
              ' · ' + st.faces + (st.faces === 1 ? ' face' : ' faces') +
              (parts.length ? ' (' + parts.join(', ') + ')' : '');
     },

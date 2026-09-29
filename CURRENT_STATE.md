@@ -20,7 +20,7 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~51,750 lines)
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~51,950 lines)
 - Version at time of writing: **2.80a**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
@@ -154,6 +154,50 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack edge snapping while drawing, and a Lathe that sweeps
   an arc rather than a full turn.
 
+## Loops along the cut (2.81)
+
+Fourth chip in the Boolean bar: **N-gon / Tris / Quads / Loops**. DECISION
+29.09 (Zeghreit): "the body's grid carried to the hole" - no concentric rings
+around the cut. Same band, pieces, flat map, invariant and checks as Quads
+(below); only the fill differs (`topoQuads(..., { loops: true })`).
+
+- **Lines, not rings.** At every original point on the band's edge, the body
+  edge arriving from outside (face outlines of non-band faces, `outNbr`) is
+  carried on straight in the flat piece to the other loop. The direction is
+  taken in the tangent plane at the point (normal = sum of its piece
+  triangles), then through the piece triangle whose corner holds it (fable:
+  solved in 3D, a curved band rejected every edge). The spoke DP
+  (`topoQuadMatch`) is priced by angular distance to that landing + 2x the
+  Quads angle cost; a point with no edge heading squarely in
+  (`TOPO_L_ACROSS` cos 0.5) keeps the angle cost. `topo.lines` = points that
+  carried a line, per rebuilt piece.
+- **Steps at the cut.** Rows: the fewest the gaps need (`topoLoopRows`: one
+  per x3 of cut edges under one body edge), counts from the cut side
+  (`topoLoopCounts`: ceil(e/3) each row), so 3:1 / 2:1 sit in the row against
+  the cut, not in the body. Tries: fewest rows (evened, plain), then one more
+  row (evened, plain), next spoke rank, blend+relax.
+- **Band:** host two rings by default, one ring on Generate; the smaller input
+  always kept as cut; caps (disks) are never Loops' business ('cap kept as
+  cut'). If every piece of a seed folds, the seed retries the other width
+  before falling back to N-gon (on the model each width folded on one of two
+  near-identical ball placements).
+- **Generate** (`TOPO_L_SPACE` 12): width, one more row, spoke rank.
+
+Measured: `_topo281fx.mjs` 36/36 - every seed on the Quads cases, closed,
+frozen outside the band, on the surface, unfolded, deterministic; sphere -
+cylinder carries all 16 meridians on both sides; model ∪/− ball on the chest
+rebuilt on seed 0 with 13 lines. Probe `_bool281_probe.js` all green through
+the real chips; on the model: union 143 faces (116 quads) vs Quads 181, commit
+0 open edges vs N-gon's 4. Fable: 1 defect (the 3D corner test above, fixed),
+80 random booleans x 12 seeds + 14 density cases clean.
+
+Why two rows on the model: its body is three times sparser than the ball (16
+body points against 49 cut points around the chest ball) - one row folds.
+Zeghreit accepted a second row where needed (29.09: "норм, оставляем").
+
+Not done: the arm-thick ball still falls back; a partly rebuilt seed does not
+try the other width.
+
 ## Quads along the cut (2.80)
 
 The Boolean bar's second chip row is **N-gon / Tris / Quads**. Quads is the
@@ -236,7 +280,7 @@ Cost: a Quads build is 30-150 ms on the model, the worst Generate tap about
 
 Not done: the band is still busy where the cutter is much denser than the host
 (3:1 steps crowd); a limb-thick cutter falls back; UVs and seams dropped as
-by every boolean; Loops type (2.81).
+by every boolean. Loops: section above.
 
 ## Topology types and Generate in the Boolean bar (2.79)
 
