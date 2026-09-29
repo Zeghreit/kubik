@@ -33621,18 +33621,38 @@ function topoLoopsExact(P, groups, seam, owner, surf, opt) {
   const W = TOPO_X_WEIGHTS[seed];
   P = Array.from(P);
   const nV = P.length / 3;
-  // the smaller input keeps its cut as it is (as Quads' default)
+  /* THE SMALLER SIDE OF THE RESULT keeps its cut as it is (v2.93, fable).
+     It was the smaller INPUT, by whole surface - so a long drill, whose
+     cylinder has more surface than the body it goes through, became the
+     "host": its own cut cells are all quads and triangles, and Loops quietly
+     divided nothing (sphere - rod, box - long rod, box - star prism: 0 cells
+     on every seed). What survives is what matters: the drill leaves only the
+     wall of its hole, the body keeps nearly all of itself. */
+  const sideOf = g => {
+    const votes = new Map();
+    g.triangles.forEach(t => t.forEach(v => { const o = owner[v]; if (o >= 0) votes.set(o, (votes.get(o) || 0) + 1); }));
+    let side = -1, bv = 0;
+    votes.forEach((c, o) => { if (c > bv || (c === bv && o < side)) { bv = c; side = o; } });
+    return side;
+  };
   let minor = -1;
   if (surf && surf.length >= 2) {
-    const areas = surf.map(sf => { let a = 0; const T = sf.tri, SP = sf.P;
-      for (let k = 0; k + 2 < T.length; k += 3) {
-        const i = T[k] * 3, j = T[k + 1] * 3, l = T[k + 2] * 3;
-        const ux = SP[j] - SP[i], uy = SP[j + 1] - SP[i + 1], uz = SP[j + 2] - SP[i + 2];
-        const vx = SP[l] - SP[i], vy = SP[l + 1] - SP[i + 1], vz = SP[l + 2] - SP[i + 2];
+    const kept = new Map();
+    groups.forEach(g => {
+      const side = sideOf(g);
+      if (side < 0) return;
+      let a = 0;
+      g.triangles.forEach(t => {
+        const i = t[0] * 3, j = t[1] * 3, l = t[2] * 3;
+        const ux = P[j] - P[i], uy = P[j + 1] - P[i + 1], uz = P[j + 2] - P[i + 2];
+        const vx = P[l] - P[i], vy = P[l + 1] - P[i + 1], vz = P[l + 2] - P[i + 2];
         a += Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) / 2;
-      }
-      return a; });
-    minor = areas.indexOf(Math.min.apply(null, areas));
+      });
+      kept.set(side, (kept.get(side) || 0) + a);
+    });
+    let lo = Infinity;
+    kept.forEach((a, side) => { if (a < lo || (a === lo && side < minor)) { lo = a; minor = side; } });
+    if (kept.size < 2) minor = -1;   // one side left: nothing is the cutter's
   }
   const outlineOf = g => {
     const d = new Set(), nx = new Map();
@@ -33649,16 +33669,20 @@ function topoLoopsExact(P, groups, seam, owner, surf, opt) {
     while (v !== s0) { if (v === undefined || L.length > nx.size) return null; L.push(v); v = nx.get(v); }
     return L.length === nx.size ? L : null;
   };
+  /* ONE PASS PER CHOICE OF CUTTER (v2.93). A union with a rod standing well
+     out of a cube keeps more rod than cube, so the cube is "the cutter" -
+     and the rod's own cells are plain quads, so nothing was divided. When
+     the chosen host divides nothing, the other side is divided instead. */
+  const P0 = P;
+  const pass = (minor) => {
+  P = Array.from(P0);
   const out = [], region = [], failed = [], band = [];
   let rebuilt = 0;
   groups.forEach((g, gi) => {
     if (!g.triangles.length) return;
     if (!g.triangles.some(t => seam.has(t[0]) || seam.has(t[1]) || seam.has(t[2]))) { out.push(g); return; }
     // its side: the input its own corners came from
-    const votes = new Map();
-    g.triangles.forEach(t => t.forEach(v => { const o = owner[v]; if (o >= 0) votes.set(o, (votes.get(o) || 0) + 1); }));
-    let side = -1, bv = 0;
-    votes.forEach((c, o) => { if (c > bv || (c === bv && o < side)) { bv = c; side = o; } });
+    const side = sideOf(g);
     const L = outlineOf(g);
     if (side === minor || side < 0 || !L || L.length <= 4) { out.push(g); return; }
     band.push(gi);
@@ -33667,6 +33691,12 @@ function topoLoopsExact(P, groups, seam, owner, surf, opt) {
     rebuilt++;
     faces.forEach(f => { region.push(out.length); out.push({ triangles: f, mat: g.mat }); });
   });
+  return { out, region, failed, band, rebuilt, P };
+  };
+  let r = pass(minor);
+  if (!r.rebuilt && minor >= 0) { const r2 = pass(-1); if (r2.rebuilt) r = r2; }
+  const out = r.out, region = r.region, failed = r.failed, band = r.band, rebuilt = r.rebuilt;
+  P = r.P;
   const stats = { faces: region.length, tris: 0, quads: 0, ngons: 0 };
   region.forEach(gi => { const n = out[gi].triangles.length + 2;
     if (n === 3) stats.tris++; else if (n === 4) stats.quads++; else stats.ngons++; });
@@ -33858,14 +33888,19 @@ function topoCellSplit(P, L, seam, W, cellTris) {
     for (let k = i + 1; k < j; k++) {
       if (best[i][k] === Infinity || best[k][j] === Infinity) continue;
       const c = best[i][k] + best[k][j] + triCost(i, k, j);
-      if (c < b) { b = c; h = [k]; }
+      /* A TIE IS A TIE (v2.93, fable): a mirror-symmetric cell scores its two
+         layouts equal to 12 decimals, and plain `<` let 1e-16 of rounding
+         pick - so the same boolean moved, turned or scaled chose other
+         diagonals. Better by more than a hair, or the first one found stays. */
+      if (b === Infinity ? c < b : c < b - 1e-9 * Math.max(1, Math.abs(b))) { b = c; h = [k]; }
     }
     for (let k = i + 1; k < j; k++) {
       if (best[i][k] === Infinity) continue;
       for (let l = k + 1; l < j; l++) {
         if (best[k][l] === Infinity || best[l][j] === Infinity) continue;
         const c = best[i][k] + best[k][l] + best[l][j] + quadCost(i, k, l, j);
-        if (c < b) { b = c; h = [k, l]; }
+        const eps = b === Infinity ? 0 : 1e-9 * Math.max(1, Math.abs(b));
+        if (c < b - eps || (h && h.length === 1 && c <= b + eps)) { b = c; h = [k, l]; }   // a quad wins a tie
       }
     }
     best[i][j] = b; how[i][j] = h;

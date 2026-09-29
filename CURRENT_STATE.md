@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~52,400 lines)
-- Version at time of writing: **2.92a**
+- Version at time of writing: **2.93**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -322,7 +322,33 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack edge snapping while drawing, and a Lathe that sweeps
   an arc rather than a full turn.
 
-## Loops, exact (2.81a) - and an evener Quads
+## Loops, exact (2.81a) - and an evener Quads - SHIPPED in 2.93
+
+Merged onto 2.92a (one conflict: the badge) and reviewed by fable: 28
+booleans x every seed for Loops and Quads, 70 direct cells, scales 1e-6 to
+1e6 - closed, frozen, on the surface, unfolded, deterministic. Two defects,
+both fixed in 2.93:
+- **The cutter was the smaller INPUT by whole surface**, so a long drill
+  (more surface than the body) became the host and Loops divided nothing
+  (sphere - rod, box - long rod, box - star prism: 0 cells). Now it is the
+  side with less SURVIVING surface in the result; and when the chosen host
+  divides nothing (a union with a rod standing far out of a cube), the other
+  side is divided instead (`pass(-1)`).
+- **DP ties were broken by rounding noise** - a mirror-symmetric cell's two
+  layouts cost the same to 12 decimals, so the same boolean moved or scaled
+  picked other diagonals. Now better by 1e-9 relative or the first found
+  stays; a quad wins a tie against triangles. (The first cut of this read
+  `Infinity - Infinity` as the threshold and divided nothing - the fixture
+  caught it: the model went from 12 cells to 7.)
+Fixture 34/34, fable's repros green, model ∪/− chest ball unchanged (44
+faces, 24 quads, 20 tris, 0 n-gons), `_bool281_probe` green.
+Pre-existing, found on the way, NOT fixed: uvSphere(0.5,16,8) − cylinder
+(r = 0.5 sin(pi/8), h 2, 16 segs) turned pi/16 about Y hangs in
+`healTJunctions` -> `mergeCoplanarTriangles`; below scale 0.1 the N-gon stage
+leaves open edges (absolute 1e-4 weld keys).
+`_meas281.mjs` had stale names (TOPO_L_SPACE) - fixed.
+
+### What 2.81a changed (from the branch)
 
 Fourth chip: **N-gon / Tris / Quads / Loops**. DECISION 29.09 (Zeghreit,
 after measurements): "the most exact shape - sharp corners stay sharp - but
