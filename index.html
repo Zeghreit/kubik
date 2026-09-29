@@ -1003,7 +1003,10 @@
     content: ''; flex: 0 0 64px; height: 5px; margin-left: 10px; opacity: .7;
     background: repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px 6px);
   }
-  #toolChip .mode { color: var(--text-dim); font-weight: 500; margin-left: 8px; }
+  #toolChip .mode { color: var(--text-dim); font-weight: 500; margin-left: 8px; flex-shrink: 0; }
+  /* v2.92: the object's name is the one part that can be any length, so it
+     is the part that gives way - "CUBE 1 SYM SY" ran off under the cube. */
+  #toolChip .mode.nm { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   #toolChip .mode::before { content: '\00b7'; margin-right: 8px; }
 
   /* Anchored above the tool arc rather than centred in the viewport.
@@ -3166,7 +3169,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.91a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.92</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -25111,7 +25114,7 @@ function refreshToolIndicator() {
   const named = active && active.name && (App.mode !== 'object' || (App.selectedObjectIds && App.selectedObjectIds.has(App.activeObjectId)));
   if (named) {
     // Names are typed by the user: text, never markup.
-    const nm = document.createElement('span'); nm.className = 'mode'; nm.textContent = active.name;
+    const nm = document.createElement('span'); nm.className = 'mode nm'; nm.textContent = active.name;
     what += nm.outerHTML;
   }
   el.innerHTML = label + '<span class="mode">' + mode + '</span>' + piv + snp + what;
@@ -29056,9 +29059,160 @@ document.addEventListener('dblclick', (ev) => { if (ev.cancelable) ev.preventDef
 let pointerDown = null;
 let lastTap = null;
 let boxDrag = null;
+/* ---------------- PRE-SELECT (v2.92) ----------------
+
+   A tap used to say what it had picked only after the finger lifted. Now
+   the element a tap WOULD pick lights up the moment the finger lands - in
+   the selection's own hue, at about half its weight - so a near miss is
+   seen and corrected before it happens instead of undone after. A mouse
+   gets the same thing as a hover. It is a promise, not a state: it asks
+   the same pickers a tap asks, it leaves the moment a drag, a second
+   finger or the lift takes over, and nothing in it reaches the undo
+   history or the selection.
+
+   Vertex: a ring round the dot. Edge: a 2.5px line (the selection is 3.5).
+   Face: a faint wash and its outline. Depth off like the selection, so a
+   face in a fold is still shown whole. It fades in over 110ms, which is
+   quick enough to feel instant and slow enough not to flicker when a
+   mouse crosses a dense patch. Off under reduced motion - it just appears. */
+const PRE_EDGE_PX = 2.5;
+let preHi = null;            // { obj, key, group, mats: [[material, target]] }
+let _preRingTexture = null;
+function preRingTexture() {
+  if (_preRingTexture) return _preRingTexture;
+  const S = 64, c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d');
+  g.beginPath(); g.arc(S / 2, S / 2, S / 2 - 6, 0, Math.PI * 2);
+  g.lineWidth = 7; g.strokeStyle = '#ffffff'; g.stroke();
+  _preRingTexture = new THREE.CanvasTexture(c);
+  return _preRingTexture;
+}
+function clearPreHi() {
+  if (!preHi) return;
+  const group = preHi.group;
+  preHi = null;
+  if (group.parent) group.parent.remove(group);
+  group.traverse(o => {
+    if (o.geometry && !o.userData.borrowed) o.geometry.dispose();
+    if (o.material) o.material.dispose();
+    const k = gizmoStrokes.indexOf(o);
+    if (k >= 0) gizmoStrokes.splice(k, 1);
+  });
+  invalidate();
+}
+/* THE TAP'S OWN PICKER, not the mode's. With nothing selected a tap is
+   free to land on another type (and switch the mode to it) - so asking only
+   Face mode's picker promised a face and delivered an edge. The pickers
+   write two flags a tap reads afterwards (why it missed); a pre-select
+   must not leave them behind for the real tap to misread. */
+function preHiPick(ev) {
+  const hid = pickHiddenOnly, blk = pickBlockedBy;
+  let r = null;
+  try { r = pickComponentOnActiveInner(ev); } catch (err) { r = null; }
+  pickHiddenOnly = hid; pickBlockedBy = blk;
+  return (r && (r.type === 'vertex' || r.type === 'edge' || r.type === 'face') && r.index >= 0) ? r : null;
+}
+function preHiAllowed() {
+  return (App.mode === 'vertex' || App.mode === 'edge' || App.mode === 'face') &&
+    !App.knife && !App.curveDraw && !App.curveEdit && !toolRingActive && !lightHold && !softSlide;
+}
+function showPreHi(ev) {
+  const obj = preHiAllowed() ? findObject(App.activeObjectId) : null;
+  const topo = obj && obj.mesh.userData.topo;
+  const r = topo ? preHiPick(ev) : null;
+  const i = r ? r.index : -1, type = r ? r.type : null;
+  // Already selected: it is already loud, and a second layer on it says nothing.
+  const key = (r && !(type === App.mode && App.selectedElements.has(i))) ? type + ':' + i : null;
+  // In the colour of the mode the tap will leave you in.
+  const col = (type && MODE_SELECT[type]) || SELECT_COLOR;
+  if (preHi && preHi.key === key && preHi.obj === obj) return;
+  clearPreHi();
+  if (!key) return;
+  const pa = obj.mesh.geometry.attributes.position;
+  const at = (l) => { const g = topo.logicalGroups[l]; return g ? [pa.getX(g[0]), pa.getY(g[0]), pa.getZ(g[0])] : null; };
+  const group = new THREE.Group();
+  const mats = [];
+  const lines = (pos, px, op) => {
+    const geo = new LineSegmentsGeometry(); geo.setPositions(pos);
+    const mat = new LineMaterial({ color: col, linewidth: px, worldUnits: false,
+      transparent: true, opacity: 0, depthTest: false, depthWrite: false });
+    mat.resolution.set(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
+    const seg = new LineSegments2(geo, mat);
+    seg.renderOrder = 10; seg.frustumCulled = false;
+    group.add(seg); gizmoStrokes.push(seg); mats.push([mat, op]);
+  };
+  if (type === 'vertex') {
+    const p = at(i);
+    if (!p) return;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
+    const mat = new THREE.PointsMaterial({
+      size: SEL_DOT_PX * 2.2 * modeView().dot * (renderer.getPixelRatio ? renderer.getPixelRatio() : 1),
+      sizeAttenuation: false, map: preRingTexture(), transparent: true, opacity: 0,
+      depthTest: false, depthWrite: false, fog: false });
+    mat.color.setHex(col);
+    const pts = new THREE.Points(geo, mat);
+    pts.renderOrder = 11; pts.frustumCulled = false;
+    group.add(pts); mats.push([mat, 0.9]);
+  } else if (type === 'edge') {
+    const e = topo.edges[i];
+    const a = e && at(e[0]), b = e && at(e[1]);
+    if (!a || !b) return;
+    lines([a[0], a[1], a[2], b[0], b[1], b[2]], PRE_EDGE_PX, 0.6);
+  } else {
+    const fg = topo.faceGroups[i], index = obj.mesh.geometry.index;
+    if (!fg || !index) return;
+    const idx = new index.array.constructor(fg.triCount * 3);
+    for (let t = 0; t < fg.triCount * 3; t++) idx[t] = index.array[fg.triStart * 3 + t];
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', pa);
+    geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    const mat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0,
+      depthTest: false, depthWrite: false, side: THREE.DoubleSide, fog: false });
+    const wash = new THREE.Mesh(geo, mat);
+    wash.userData.borrowed = true;   // the position attribute is the model's own
+    wash.renderOrder = 7; wash.frustumCulled = false;
+    group.add(wash); mats.push([mat, 0.2]);
+    const lp = groupLogicalLoop(obj, i), pos = [];
+    if (lp) for (let k = 0; k < lp.length; k++) {
+      const u = at(lp[k]), v = at(lp[(k + 1) % lp.length]);
+      if (u && v) pos.push(u[0], u[1], u[2], v[0], v[1], v[2]);
+    }
+    if (pos.length) lines(pos, 2, 0.75);
+  }
+  obj.mesh.add(group);
+  preHi = { obj, key, group, mats };
+  const calm = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const t0 = performance.now(), me = preHi;
+  const step = () => {
+    if (preHi !== me) return;
+    const k = calm ? 1 : Math.min(1, (performance.now() - t0) / 110);
+    const e = 1 - (1 - k) * (1 - k);
+    me.mats.forEach(([m, op]) => { m.opacity = op * e; });
+    invalidate();
+    if (k < 1) requestAnimationFrame(step);
+  };
+  step();
+}
+{
+  let queued = null;
+  // A mouse hovers; a finger does not. Throttled to one pick per frame.
+  renderer.domElement.addEventListener('pointermove', (ev) => {
+    if (ev.pointerType !== 'mouse' || ev.buttons) return;
+    if (!queued) requestAnimationFrame(() => { const e = queued; queued = null; if (e) showPreHi(e); });
+    queued = ev;
+  });
+  renderer.domElement.addEventListener('pointerleave', clearPreHi);
+  renderer.domElement.addEventListener('pointercancel', clearPreHi);
+}
+
 renderer.domElement.addEventListener('pointerdown', (ev) => {
   camAnim = null; // a new touch/click cancels any in-flight focus animation
   trackPointerDown(ev);
+  /* v2.92: one finger landing on the model shows what a tap would pick. */
+  if (activePointers.size === 1 && (ev.pointerType !== 'mouse' || ev.button === 0)) showPreHi(ev);
+  else clearPreHi();
 
   /* Lighting owns the gesture once it is engaged: a third and fourth finger
      are the sliding hand, not a new selection. Checked before the camera
@@ -29248,6 +29402,8 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
 
 renderer.domElement.addEventListener('pointermove', (ev) => {
   trackPointerMove(ev);
+  /* v2.92: a drag or a camera turn is not a tap - the promise goes. */
+  if (preHi && ev.buttons && pointerDown && Math.hypot(ev.clientX - pointerDown.x, ev.clientY - pointerDown.y) > dragStartPx(ev)) clearPreHi();
   if (lightHold) { lightSlideMove(); return; }
   /* Three fingers sliding: the falloff in Soft, otherwise the reach of the
      selection. Checked before the camera bail-out below, which would
@@ -29330,6 +29486,7 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
 });
 
 renderer.domElement.addEventListener('pointerup', (ev) => {
+  clearPreHi();   // v2.92: the tap (or not) takes over from here
   /* An ANCHOR lifting ends the mode; a sliding finger lifting only
      re-baselines, so you can switch between turning and strength without
      starting again. */
@@ -50849,6 +51006,7 @@ document.getElementById('btnInspector').addEventListener('click', (ev) => {
 });
 
 function refreshUI() {
+  clearPreHi();   // v2.92: any change of state retires the pre-select
   /* The selected curves' control points are part of the UI, not of any one
      op - they follow the selection, so they are refreshed where every other
      selection-shaped thing is. Cheap: it is one dispose and one small
@@ -52115,6 +52273,7 @@ if (PICK_DEBUG) {
     wantsShareSheet, downloadBlob, saveBlobAsDownload,
     // v2.5: the picture, and the rule that decides what is in it.
     savePictureAction, pictureHiddenParts, dataUrlBytes,
+    showPreHi, clearPreHi, preHiKey: () => (preHi ? preHi.key : null),
     // v2.7: the signed depth, and the one predicate that reads it.
     maskBumped, defWantsBump,
     restoreDoc, serializeDoc, refuseOp, pushHistory, toast,

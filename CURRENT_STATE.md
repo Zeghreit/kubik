@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~52,400 lines)
-- Version at time of writing: **2.91a**
+- Version at time of writing: **2.92**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -43,6 +43,29 @@ than none. Prefer rewriting a section over appending to it.
 its own probe passes, the suite is clean apart from `_imp_probe`'s known CDN
 flake - commit and `git push`. The push IS the ship; the app is live at the
 URL above and a commit sitting unpushed helps nobody. Do not stop to ask.
+
+## Pre-select (v2.92) - the last design-pass item
+
+The element a tap WOULD pick lights up the moment one finger lands (and
+under a mouse, as a hover): vertex = a ring round the dot, edge = a 2.5px
+line, face = a faint wash and its outline, fading in over 110ms (instant
+under reduced motion). `showPreHi(ev)` / `clearPreHi()`, state in `preHi`.
+- **It asks the tap's own picker** (`pickComponentOnActiveInner`), not the
+  mode's: with nothing selected a tap may land on another type and switch
+  the mode, so the highlight shows that type in THAT mode's colour
+  (`MODE_SELECT[type]`). It restores `pickHiddenOnly` / `pickBlockedBy`
+  after, so the real tap's miss message is unaffected.
+- Nothing already selected is re-highlighted; it never touches the
+  selection or the history.
+- Gone on: a move past `dragStartPx`, a second finger, the lift, pointer
+  leave/cancel, and every `refreshUI`. Stays while the tool ring is held -
+  it says what the ring will act on.
+- Face wash borrows the model's position attribute (`userData.borrowed`,
+  not disposed with the overlay).
+- `__kubik.showPreHi / clearPreHi / preHiKey()` for probes.
+- Also: `#toolChip` ends a long object name in an ellipsis (`.mode.nm`).
+Selection probes (`_sel`, `_pick`, `_ring104`, `_bug`) print the same as
+v2.91a; `_feel290`, `_shotchk`, `_theme` unchanged.
 
 ## Face mode is lit like Vertex (v2.91a)
 
