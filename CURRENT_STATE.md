@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~52,400 lines)
-- Version at time of writing: **2.91**
+- Version at time of writing: **2.91a**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -43,6 +43,16 @@ than none. Prefer rewriting a section over appending to it.
 its own probe passes, the suite is clean apart from `_imp_probe`'s known CDN
 flake - commit and `git push`. The push IS the ship; the app is live at the
 URL above and a commit sitting unpushed helps nobody. Do not stop to ask.
+
+## Face mode is lit like Vertex (v2.91a)
+
+`MODE_VIEW.face` was a2.62's "flat panels" (hemi x1.95, key x0.28, wire
+x0.35, hemisphere ground = sky). On the studio floor it read as a paler
+model with a hairline dark mesh - Zeghreit: "in Face the model turns light
+and the mesh gets thinner". Face now takes Vertex's numbers (hemi .55,
+key .45, env .50, frame 1.10); the selection wash marks the faces. The
+`flat` switch still works in applyEnvLive; no mode uses it. `_theme` 10
+logs the new numbers, nothing else moved.
 
 ## The sheet (v2.91) - the drawer, rebuilt
 

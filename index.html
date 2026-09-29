@@ -3166,7 +3166,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.91</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.91a</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -5341,21 +5341,15 @@ const MODE_VIEW = {
   object: { hemi: 1.00, key: 1.00, env: 1.00, frame: 2.00, dot: 1.0 },
   vertex: { hemi: 0.55, key: 0.45, env: 0.50, frame: 1.10, dot: 1.6 },
   edge:   { hemi: 0.50, key: 0.40, env: 0.45, frame: 3.40, dot: 1.0 },
-  /* `flat` makes the hemisphere UNIFORM by giving it its own sky colour on
-     the ground side. Raising the ambient alone was not enough: a
-     HemisphereLight still shades by normal.y, so the top face stayed
-     brighter than the sides and the model went on reading as a lit solid
-     rather than as panels.
-
-     What actually does the flattening is taking the KEY and the ENVIRONMENT
-     away - they are what models a surface - and the hemisphere is only
-     putting back a base level so the panels are not black. Measured, it
-     contributes little either way: 1.30 and 1.95 look nearly the same,
-     because the theme's sky colour is dim by design. Face mode ends up a
-     shade darker than Object as a result, which is the honest trade for
-     panels that read as regions rather than as a lit solid. The wireframe
-     below 1 draws the seams between them. */
-  face:   { hemi: 1.95, key: 0.28, env: 0.40, frame: 0.35, dot: 1.0, flat: true },
+  /* FACE IS LIT LIKE VERTEX (v2.91a, Zeghreit: "in Face the model turns
+     light and the mesh gets thinner"). a2.62 flattened Face into panels -
+     ambient x1.95, key x0.28, wireframe x0.35 - and on the v2.89 studio
+     that read as a different, paler model with a hairline dark mesh, the
+     one mode that did not look like the other two. Same light and the same
+     wireframe as Vertex now; the selection wash is what marks a face. The
+     `flat` switch (hemisphere ground = sky) is left in applyEnvLive for any
+     mode that asks for it; none does. */
+  face:   { hemi: 0.55, key: 0.45, env: 0.50, frame: 1.10, dot: 1.0 },
   /* UV HAD NO ENTRY AT ALL until v2.58, so modeView() fell through to
      MODE_VIEW.object for it - and object mode's frame multiplier is 2.00
      against Edge mode's 3.40. The one mode whose whole job is marking EDGES
