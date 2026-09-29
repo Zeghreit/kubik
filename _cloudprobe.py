@@ -85,7 +85,8 @@ def route(r):
 
 with sync_playwright() as p:
     b = p.chromium.launch(args=['--use-gl=swiftshader', '--enable-unsafe-swiftshader'])
-    pg = b.new_page(viewport={'width': 1100, 'height': 800})
+    vw, vh = (int(x) for x in os.environ.get('VIEWPORT', '1100x800').split('x'))
+    pg = b.new_page(viewport={'width': vw, 'height': vh}, device_scale_factor=float(os.environ.get('DPR', '1')), has_touch=bool(os.environ.get('TOUCH')))
     logs = []
     pg.on('console', lambda m: logs.append(m.type + ': ' + m.text) if m.type in ('error',) else None)
     pg.on('pageerror', lambda e: logs.append('pageerror: ' + str(e)))

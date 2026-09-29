@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="ru"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kubik · C · Тишина</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap">
+<style>
+/* Direction C · Тишина. Hierarchy from surface value steps, not borders.
+   Hairlines only, a soft 10px radius, sentence-case labels, the mode accent
+   as a tint and a stripe instead of a full slab. Solid fills, no blur. */
+:root{
+  color-scheme:dark;
+  --bg:#0d0f12; --s1:#171a1f; --s2:#20242a; --s3:#2a2f36; --press:#353b43;
+  --hair:rgb(255 255 255/.08);
+  --text:#edf0f3; --text-dim:#9aa3ad; --text-faint:#6d7580;
+  --signal:#ff5a3a; --on-accent:#0d0f12;
+  --mode:#d5dce4; --mode-tint:rgb(213 220 228/.14);
+  --r:10px; --r-lg:14px;
+  --mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:32px;background:#000;color:var(--text);font-family:'Archivo',-apple-system,'Segoe UI',Roboto,sans-serif}
+.intro{max-width:1180px;margin-bottom:28px}
+.intro h1{font-size:22px;font-weight:700;margin:0 0 6px}
+.intro p{margin:0 0 6px;color:#b9c0c8;font-size:14px;line-height:1.5;max-width:75ch}
+.cap{font-size:12px;color:var(--text-dim);margin:0 0 10px}
+.row{display:flex;gap:40px;flex-wrap:wrap;align-items:flex-start;margin-bottom:40px}
+.stage{position:relative;background:var(--bg);overflow:hidden;flex:none}
+.phone{width:390px;height:844px}
+.tablet{width:1180px;height:820px}
+.m-face{--mode:#b48cff;--mode-tint:rgb(180 140 255/.18)}
+svg.scene{position:absolute;inset:0}
+svg.i{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+
+.b{position:absolute;display:flex;align-items:center;justify-content:center;gap:8px;width:48px;height:48px;border-radius:var(--r);
+  background:var(--s2);color:var(--text);font:600 14px 'Archivo'}
+.b.pressed{background:var(--press);transform:scale(.96)}
+.b.dis{background:var(--s1);color:var(--text-faint)}
+.bar{position:absolute;display:flex;gap:4px;padding:4px;background:var(--s1);border-radius:var(--r-lg);box-shadow:0 0 0 1px var(--hair)}
+.bar .b{position:static}
+.mode{display:flex;align-items:center;gap:10px;height:48px;padding:0 16px 0 12px;border-radius:var(--r);background:var(--mode-tint);color:var(--text)}
+.mode i{width:4px;height:24px;border-radius:2px;background:var(--mode)}
+.mode b{font-size:16px;font-weight:700}
+.mode small{font:500 12px 'Archivo';color:var(--text-dim)}
+.axb{width:44px;height:48px;display:flex;align-items:center;justify-content:center;border-radius:var(--r);font:600 15px var(--mono);color:var(--text-dim)}
+.axb.on{background:var(--mode-tint);color:var(--mode);box-shadow:inset 0 0 0 1.5px var(--mode)}
+.read{position:absolute;font:500 12px 'Archivo';color:var(--text-dim)}
+.read b{color:var(--text);font-weight:600}
+.cube{position:absolute;width:96px;height:96px}
+.card{position:absolute;background:var(--s1);border-radius:var(--r-lg);box-shadow:0 0 0 1px var(--hair);padding:14px 16px}
+.val{font:600 30px var(--mono);font-variant-numeric:tabular-nums;line-height:1}
+.card h3{margin:0;font-size:15px;font-weight:700}
+.track{position:relative;height:44px}
+.track i{position:absolute;left:0;right:0;top:20px;height:4px;border-radius:2px;background:var(--s3)}
+.track b{position:absolute;left:0;top:20px;height:4px;border-radius:2px;background:var(--mode)}
+.track s{position:absolute;top:10px;width:24px;height:24px;margin-left:-12px;border-radius:50%;background:var(--text)}
+.seg{display:inline-flex;padding:3px;border-radius:var(--r);background:var(--bg)}
+.seg b{height:40px;padding:0 14px;display:flex;align-items:center;border-radius:8px;font:600 13px 'Archivo';color:var(--text-dim)}
+.seg b.on{background:var(--s3);color:var(--text)}
+.apply{height:46px;padding:0 22px;display:flex;align-items:center;border-radius:var(--r);background:var(--signal);color:var(--on-accent);font:700 14px 'Archivo'}
+.x{width:46px;height:46px;display:flex;align-items:center;justify-content:center;border-radius:var(--r);background:var(--s2)}
+.hub{position:absolute;width:64px;height:64px;border-radius:18px;background:var(--mode);color:var(--on-accent);display:flex;align-items:center;justify-content:center}
+.hub svg{width:26px;height:26px}
+.orow{display:flex;align-items:center;gap:10px;height:50px;padding:0 10px 0 14px;border-radius:var(--r);font-size:14px}
+.orow.sel{background:var(--mode-tint)}
+.orow .n{flex:1}.orow .k{font:500 12px var(--mono);color:var(--text-dim)}
+.orow .eye{width:44px;height:44px;display:flex;align-items:center;justify-content:center;color:var(--text-dim)}
+.strip{position:absolute;display:flex;flex-direction:column;gap:4px;padding:4px;background:var(--s1);border-radius:var(--r-lg);box-shadow:0 0 0 1px var(--hair)}
+.strip .b{position:static;width:56px;height:52px}
+.strip hr{border:none;height:1px;background:var(--hair);margin:4px 6px}
+.lbl{font:600 10px 'Archivo';color:var(--text-dim);text-align:center;margin-top:-2px}
+.note{position:absolute;font:600 11px var(--mono);color:#ffcf6b;letter-spacing:.04em}
+.note:before{content:"▸ "}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute">
+ <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+ <symbol id="undo" viewBox="0 0 24 24"><path d="M4 9h11a5 5 0 0 1 0 10h-6"/><path d="M8 5L4 9l4 4"/></symbol>
+ <symbol id="redo" viewBox="0 0 24 24"><path d="M20 9H9a5 5 0 0 0 0 10h6"/><path d="M16 5l4 4-4 4"/></symbol>
+ <symbol id="list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6h1M4 12h1M4 18h1"/></symbol>
+ <symbol id="ball" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M8 9a5 5 0 0 1 5-3"/></symbol>
+ <symbol id="object" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></symbol>
+ <symbol id="face" viewBox="0 0 24 24"><path d="M5 5h14v14H5z"/><path d="M5 5h14v14z" fill="currentColor" stroke="none" opacity=".55"/></symbol>
+ <symbol id="eye" viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+</svg>
+
+<div class="intro">
+  <h1>C · Тишина</h1>
+  <p><b>Тезис:</b> рамки почти исчезают, уровни задаются тоном поверхностей. Мягкий радиус, обычный регистр в подписях, цвет режима как подкраска и полоска, а не заливка плашки. Модель в центре, интерфейс отступает.</p>
+  <p><b>Плюсы:</b> самый спокойный экран, меньше визуального шума при долгой работе; на планшете естественно ложится в плавающие палитры (как в Procreate/Nomad). <b>Минусы:</b> Kubik теряет узнаваемость (нулевой радиус, штриховка, ромбы уходят); противоречит правилу дизайн-системы «Nothing is rounded. Ever»; тихие кнопки легче не заметить, особенно disabled.</p>
+  <p><b>Планшет:</b> в альбомной ориентации справа вертикальная панель инструментов под правый большой палец (режим, симметрия, undo/redo), аутлайнер и материалы открываются плавающими карточками у левого края, меню остаётся слева сверху.</p>
+</div>
+
+<div class="row">
+ <div>
+  <div class="cap">Телефон · Object, выделен Cube 1</div>
+  <div class="stage phone">
+   <svg class="scene" viewBox="0 0 390 844">
+    <g stroke="#1b1f25"><polygon points="195,330 104,386 195,440" fill="#4a525b"/><polygon points="195,330 195,440 286,386" fill="#5a636d"/><polygon points="104,386 90,482 195,440" fill="#363c44"/><polygon points="286,386 195,440 300,482" fill="#464e57"/><polygon points="90,482 195,554 195,440" fill="#2b3037"/><polygon points="195,440 195,554 300,482" fill="#383f47"/></g>
+    <g fill="none" stroke="#d5dce4" stroke-width="2"><polyline points="195,330 286,386 300,482 195,554 90,482 104,386 195,330"/><polyline points="104,386 195,440 286,386"/><line x1="195" y1="440" x2="195" y2="554"/></g>
+   </svg>
+   <div class="bar" style="left:12px;top:52px">
+    <div class="b"><svg class="i"><use href="#menu"/></svg></div>
+    <div class="mode"><i></i><b>Object</b><small>Cube 1</small></div>
+   </div>
+   <div class="bar" style="right:12px;top:52px;gap:0"><div class="axb">X</div><div class="axb">Y</div><div class="axb">Z</div></div>
+   <div class="read" style="left:16px;top:114px">Move · Axis</div>
+   <div class="cube" style="right:14px;top:120px"><svg viewBox="0 0 128 128" width="96" height="96"><polygon points="64,26 102,48 64,70 26,48" fill="#4f5862" stroke="#9aa3ad"/><polygon points="26,48 64,70 64,102 26,80" fill="#2e343b" stroke="#9aa3ad"/><polygon points="102,48 102,80 64,102 64,70" fill="#3a4149" stroke="#9aa3ad"/></svg></div>
+   <div class="b" style="left:12px;top:150px;flex-direction:column;gap:0;height:56px"><svg class="i"><use href="#list"/></svg><span class="lbl">Scene</span></div>
+   <div class="b" style="left:12px;top:212px;flex-direction:column;gap:0;height:56px"><svg class="i"><use href="#ball"/></svg><span class="lbl">Mat</span></div>
+   <div class="bar" style="left:12px;bottom:30px">
+    <div class="b" style="width:56px"><svg class="i"><use href="#undo"/></svg></div>
+    <div class="b pressed" style="width:56px"><svg class="i"><use href="#redo"/></svg></div>
+   </div>
+   <div class="hub" style="right:14px;bottom:30px"><svg class="i"><use href="#object"/></svg></div>
+   <div class="note" style="left:14px;bottom:100px">нажато: чуть темнее + scale .96</div>
+  </div>
+ </div>
+
+ <div>
+  <div class="cap">Телефон · Face, открыта панель Extrude</div>
+  <div class="stage phone m-face">
+   <svg class="scene" viewBox="0 0 390 844"><g stroke="#1b1f25"><polygon points="195,250 104,306 195,360" fill="#4a525b"/><polygon points="195,250 195,360 286,306" fill="#b48cff" fill-opacity=".85"/><polygon points="104,306 90,402 195,360" fill="#363c44"/><polygon points="286,306 195,360 300,402" fill="#8a6fc2"/><polygon points="90,402 195,474 195,360" fill="#2b3037"/><polygon points="195,360 195,474 300,402" fill="#383f47"/></g>
+    <g fill="#edf0f3"><circle cx="195" cy="250" r="3.5"/><circle cx="104" cy="306" r="3.5"/><circle cx="286" cy="306" r="3.5"/><circle cx="195" cy="360" r="3.5"/><circle cx="90" cy="402" r="3.5"/><circle cx="300" cy="402" r="3.5"/><circle cx="195" cy="474" r="3.5"/></g></svg>
+   <div class="bar" style="left:12px;top:52px">
+    <div class="b"><svg class="i"><use href="#menu"/></svg></div>
+    <div class="mode"><i></i><b>Face</b><small>Cube 1</small></div>
+   </div>
+   <div class="bar" style="right:12px;top:52px;gap:0"><div class="axb on">X</div><div class="axb">Y</div><div class="axb">Z</div></div>
+   <div class="read" style="left:16px;top:114px"><b>Extrude</b> · 1 face</div>
+   <div class="cube" style="right:14px;top:120px"><svg viewBox="0 0 128 128" width="96" height="96"><polygon points="64,26 102,48 64,70 26,48" fill="#4f5862" stroke="#9aa3ad"/><polygon points="26,48 64,70 64,102 26,80" fill="#2e343b" stroke="#9aa3ad"/><polygon points="102,48 102,80 64,102 64,70" fill="#3a4149" stroke="#9aa3ad"/></svg></div>
+   <div class="b" style="left:12px;top:150px;flex-direction:column;gap:0;height:56px"><svg class="i"><use href="#list"/></svg><span class="lbl">Scene</span></div>
+   <div class="b" style="left:12px;top:212px;flex-direction:column;gap:0;height:56px"><svg class="i"><use href="#ball"/></svg><span class="lbl">Mat</span></div>
+   <div class="card" style="left:12px;right:12px;bottom:110px">
+    <div style="display:flex;align-items:baseline;gap:12px"><div class="val">0.42</div><h3>Extrude</h3><span style="margin-left:auto;font-size:12px;color:var(--text-dim)">Drag or type</span></div>
+    <div class="track"><i></i><b style="width:58%"></b><s style="left:58%"></s></div>
+    <div style="display:flex;gap:8px;align-items:center"><div class="seg"><b class="on">Per face</b><b>Region</b></div><div class="x" style="margin-left:auto"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></div><div class="apply">Apply</div></div>
+   </div>
+   <div class="bar" style="left:12px;bottom:30px">
+    <div class="b" style="width:56px"><svg class="i"><use href="#undo"/></svg></div>
+    <div class="b" style="width:56px"><svg class="i"><use href="#redo"/></svg></div>
+   </div>
+   <div class="hub" style="right:14px;bottom:30px"><svg class="i"><use href="#face"/></svg></div>
+  </div>
+ </div>
+</div>
+
+<div class="row">
+ <div>
+  <div class="cap">Планшет 1180×820 · Face + Extrude, вертикальная панель справа, аутлайнер карточкой</div>
+  <div class="stage tablet m-face">
+   <svg class="scene" viewBox="0 0 1180 820"><g transform="translate(600 320) scale(1.6) translate(-195 -360)" stroke="#1b1f25"><polygon points="195,250 104,306 195,360" fill="#4a525b"/><polygon points="195,250 195,360 286,306" fill="#b48cff" fill-opacity=".85"/><polygon points="104,306 90,402 195,360" fill="#363c44"/><polygon points="286,306 195,360 300,402" fill="#8a6fc2"/><polygon points="90,402 195,474 195,360" fill="#2b3037"/><polygon points="195,360 195,474 300,402" fill="#383f47"/></g></svg>
+   <div class="bar" style="left:20px;top:24px">
+    <div class="b"><svg class="i"><use href="#menu"/></svg></div>
+    <div class="mode"><i></i><b>Face</b><small>Cube 1</small></div>
+   </div>
+   <div class="read" style="left:24px;top:86px"><b>Extrude</b> · 1 face</div>
+   <div class="card" style="left:20px;top:120px;width:300px;padding:8px">
+    <div style="display:flex;align-items:center;padding:6px 8px 8px"><h3 style="flex:1">Scene</h3><span style="font-size:12px;color:var(--text-dim)">3 objects</span></div>
+    <div class="orow sel"><span class="n">Cube 1</span><span class="k">6 f</span><span class="eye"><svg class="i" style="width:20px;height:20px"><use href="#eye"/></svg></span></div>
+    <div class="orow"><span class="n">Floor plate</span><span class="k">1 f</span><span class="eye"><svg class="i" style="width:20px;height:20px"><use href="#eye"/></svg></span></div>
+    <div class="orow" style="color:var(--text-dim)"><span class="n">Tube 2</span><span class="k">48 f</span><span class="eye" style="color:var(--text-faint)"><svg class="i" style="width:20px;height:20px"><use href="#eye"/></svg></span></div>
+   </div>
+   <div class="cube" style="right:100px;top:20px"><svg viewBox="0 0 128 128" width="96" height="96"><polygon points="64,26 102,48 64,70 26,48" fill="#4f5862" stroke="#9aa3ad"/><polygon points="26,48 64,70 64,102 26,80" fill="#2e343b" stroke="#9aa3ad"/><polygon points="102,48 102,80 64,102 64,70" fill="#3a4149" stroke="#9aa3ad"/></svg></div>
+   <div class="strip" style="right:20px;top:170px">
+    <div class="b" style="flex-direction:column;gap:0"><svg class="i"><use href="#object"/></svg><span class="lbl">Obj</span></div>
+    <div class="b" style="flex-direction:column;gap:0;color:var(--text-dim)"><span style="font:600 13px var(--mono)">V</span><span class="lbl">Vert</span></div>
+    <div class="b" style="flex-direction:column;gap:0;color:var(--text-dim)"><span style="font:600 13px var(--mono)">E</span><span class="lbl">Edge</span></div>
+    <div class="b" style="flex-direction:column;gap:0;background:var(--mode-tint);color:var(--mode);box-shadow:inset 0 0 0 1.5px var(--mode)"><svg class="i"><use href="#face"/></svg><span class="lbl" style="color:var(--mode)">Face</span></div>
+    <hr>
+    <div class="b" style="background:var(--mode-tint);color:var(--mode);font-family:var(--mono)">X</div>
+    <div class="b" style="font-family:var(--mono);color:var(--text-dim)">Y</div>
+    <div class="b" style="font-family:var(--mono);color:var(--text-dim)">Z</div>
+    <hr>
+    <div class="b"><svg class="i"><use href="#undo"/></svg></div>
+    <div class="b"><svg class="i"><use href="#redo"/></svg></div>
+   </div>
+   <div class="card" style="left:360px;width:500px;bottom:24px">
+    <div style="display:flex;align-items:baseline;gap:12px"><div class="val">0.42</div><h3>Extrude</h3></div>
+    <div class="track"><i></i><b style="width:58%"></b><s style="left:58%"></s></div>
+    <div style="display:flex;gap:8px;align-items:center"><div class="seg"><b class="on">Per face</b><b>Region</b></div><div class="x" style="margin-left:auto"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></div><div class="apply">Apply</div></div>
+   </div>
+  </div>
+ </div>
+</div>
+</body></html>

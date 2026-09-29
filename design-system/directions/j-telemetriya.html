@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ru"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kubik · J · Телеметрия</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=Geist+Mono:wght@400;500;600&display=swap">
+<style>
+/* J · Телеметрия. The viewport is framed by one 1px instrument frame and the
+   controls are notches cut into it. Every mark is data: the edge scale is the
+   world ruler at the pivot, the brackets are the selection's bounds, the
+   dimension line is its real width. Graphite, mode colour only when active. */
+:root{color-scheme:dark;
+  --bg:#0a0b0d; --fr:#3b4048; --frs:#6c737c; --plate:#111317; --plate2:#181b20; --press:#23272e;
+  --text:#e7eaed; --dim:#8a929b; --micro:#5c636b;
+  --signal:#ff4d17; --on:#0a0b0d; --mode:#e7eaed;
+  --mono:'Geist Mono',ui-monospace,Menlo,monospace; --sans:'Archivo',-apple-system,'Segoe UI',sans-serif}
+.m-fce{--mode:#ff4fa3}
+*{box-sizing:border-box}
+body{margin:0;padding:32px;background:#000;color:#c4cbd2;font-family:var(--sans)}
+.intro{max-width:1180px;margin-bottom:28px}.intro h1{font:800 28px var(--sans);font-stretch:125%;text-transform:uppercase;margin:0 0 8px;color:#fff}
+.intro p{margin:0 0 6px;font-size:14px;line-height:1.5;max-width:78ch}
+.cap{font:500 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;margin:0 0 10px;opacity:.7}
+.row{display:flex;gap:40px;flex-wrap:wrap;align-items:flex-start;margin-bottom:40px}
+.stage{position:relative;background:var(--bg);overflow:hidden;flex:none;color:var(--text)}
+.phone{width:390px;height:844px}.tablet{width:1180px;height:820px}
+svg.scene{position:absolute;inset:0}
+svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:square}
+.frame{position:absolute;border:1px solid var(--fr);pointer-events:none}
+.notch{position:absolute;display:flex;background:var(--bg)}
+.tab{height:44px;min-width:48px;padding:0 12px;display:flex;align-items:center;justify-content:center;gap:6px;border:1px solid var(--fr);margin-left:-1px;background:var(--plate);font:600 11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+.tab.on{background:var(--mode);color:var(--on);border-color:var(--mode)}
+.tab.pressed{background:var(--press);color:var(--text);border-color:var(--frs)}
+.tab.dis{color:var(--micro)}
+.tab.big{height:56px}
+.ro{position:absolute;font:500 10px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--dim);line-height:1.6}
+.ro b{color:var(--text);font-weight:600}
+.scale{position:absolute;font:500 9px var(--mono);color:var(--micro)}
+.op{position:absolute;background:var(--plate);border:1px solid var(--frs);padding:12px}
+.val{font:500 40px var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-.03em;line-height:1}
+.ruler{position:relative;height:40px;margin-top:10px;background:repeating-linear-gradient(90deg,var(--frs) 0 1px,transparent 1px 8px) 0 24px/100% 10px no-repeat,repeating-linear-gradient(90deg,var(--frs) 0 1px,transparent 1px 40px) 0 16px/100% 18px no-repeat}
+.ruler i{position:absolute;left:0;top:34px;height:2px;background:var(--mode)}
+.ruler s{position:absolute;top:4px;bottom:0;width:1px;background:var(--text)}
+.ruler s:after{content:attr(data-v);position:absolute;left:4px;top:-2px;font:500 9px var(--mono);color:var(--text)}
+.opr{display:flex;gap:0;margin-top:10px}
+.apply{height:44px;padding:0 18px;display:flex;align-items:center;background:var(--signal);color:var(--on);font:600 12px var(--mono);letter-spacing:.14em;text-transform:uppercase;margin-left:auto}
+.orow{display:grid;grid-template-columns:28px 1fr auto;align-items:center;height:48px;padding:0 10px;border-bottom:1px solid var(--fr);font:500 12px var(--mono);letter-spacing:.06em}
+.orow .ix{color:var(--micro)}.orow .k{color:var(--dim)}
+.orow.sel{background:var(--mode);color:var(--on)}.orow.sel .ix,.orow.sel .k{color:var(--on)}
+.note{position:absolute;font:600 11px var(--mono);color:#0b0c0e;background:#ffd166;padding:2px 6px;z-index:5}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute">
+ <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h16"/></symbol>
+ <symbol id="undo" viewBox="0 0 24 24"><path d="M4 9h11a5 5 0 0 1 0 10h-6"/><path d="M8 5L4 9l4 4"/></symbol>
+ <symbol id="redo" viewBox="0 0 24 24"><path d="M20 9H9a5 5 0 0 0 0 10h6"/><path d="M16 5l4 4-4 4"/></symbol>
+ <symbol id="x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+ <g id="cube" stroke="#0a0b0d"><polygon points="195,330 104,386 195,440" fill="#4a525b"/><polygon points="195,330 195,440 286,386" fill="#5a636d"/><polygon points="104,386 90,482 195,440" fill="#363c44"/><polygon points="286,386 195,440 300,482" fill="#464e57"/><polygon points="90,482 195,554 195,440" fill="#2b3037"/><polygon points="195,440 195,554 300,482" fill="#383f47"/></g>
+ <g id="cubeF" stroke="#0a0b0d"><polygon points="195,330 104,386 195,440" fill="#4a525b"/><polygon points="195,330 195,440 286,386" fill="#ff4fa3"/><polygon points="104,386 90,482 195,440" fill="#363c44"/><polygon points="286,386 195,440 300,482" fill="#d93f8a"/><polygon points="90,482 195,554 195,440" fill="#2b3037"/><polygon points="195,440 195,554 300,482" fill="#383f47"/></g>
+ <g id="bracket" fill="none" stroke="#e7eaed" stroke-width="1.5"><path d="M80 316v-14h14M310 316v-14h-14M80 568v14h14M310 568v14h-14"/></g>
+</svg>
+
+<div class="intro">
+  <h1>J · Телеметрия</h1>
+  <p><b>Тезис:</b> экран обведён одной тонкой рамкой прибора, а кнопки это вырезы в ней. Каждая отметка несёт данные: шкала на краю показывает мировые единицы у точки вращения, уголки обводят габарит выделения, размерная линия показывает его настоящую ширину. Графит, моноширинный шрифт, цвет режима только у активного.</p>
+  <p><b>Плюсы:</b> самый «инженерный» и дорогой на вид; ничего не висит в воздухе, всё привязано к рамке; размер и габарит видны без открытия панелей, это полезно при моделировании. <b>Минусы:</b> рамка забирает по 10px с каждого края; моноширинный текст длиннее, подписи приходится сокращать (VTX, EDG); размерную линию нужно пересчитывать при движении камеры (только во время жеста, кадры в это время и так рисуются).</p>
+  <p><b>Планшет:</b> та же рамка; сцена прикреплена вырезом к левому краю, режимы вырезами сверху, инструменты снизу.</p>
+</div>
+
+<div class="row">
+ <div>
+  <div class="cap">Телефон · Object, выделен Cube 1</div>
+  <div class="stage phone">
+   <svg class="scene" viewBox="0 0 390 844"><g transform="translate(0 -40)"><use href="#cube"/><use href="#bracket"/>
+    <path d="M90 610h210M90 604v12M300 604v12" stroke="#e7eaed" stroke-width="1" fill="none"/></g>
+    <g stroke="#3b4048"><path d="M10 170h8M10 210h5M10 250h8M10 290h5M10 330h8M10 370h5M10 410h8M10 450h5M10 490h8M10 530h5M10 570h8M10 610h5M10 650h8"/></g></svg>
+   <div class="ro" style="left:150px;top:574px;color:var(--text)">W 1.000</div>
+   <div class="scale" style="left:22px;top:326px">0</div><div class="scale" style="left:22px;top:406px">1</div><div class="scale" style="left:22px;top:486px">2</div><div class="scale" style="left:22px;top:566px">3 m</div>
+   <div class="frame" style="left:10px;right:10px;top:72px;bottom:94px"></div>
+   <div class="notch" style="left:10px;top:50px"><div class="tab on">Obj</div><div class="tab">Vtx</div><div class="tab">Edg</div><div class="tab">Fce</div></div>
+   <div class="notch" style="right:10px;top:50px"><div class="tab"><svg class="i"><use href="#menu"/></svg></div></div>
+   <div class="ro" style="left:22px;top:104px"><b>Cube_1</b><br>move / axis<br>pivot 0.00 0.50 0.00</div>
+   <div class="notch" style="left:10px;bottom:50px"><div class="tab big">Scene</div><div class="tab big">Mat</div><div class="tab big">Sym</div><div class="tab big pressed"><svg class="i"><use href="#undo"/></svg></div><div class="tab big dis"><svg class="i"><use href="#redo"/></svg></div></div>
+   <div class="note" style="left:22px;top:170px;left:40px">шкала слева: метры у точки вращения</div>
+  </div>
+ </div>
+
+ <div>
+  <div class="cap">Телефон · Face, Extrude</div>
+  <div class="stage phone m-fce">
+   <svg class="scene" viewBox="0 0 390 844"><g transform="translate(0 -120)"><use href="#cubeF"/>
+    <path d="M300 386v-60M296 330l4-6 4 6" stroke="#ff4fa3" stroke-width="1.5" fill="none"/></g></svg>
+   <div class="ro" style="left:310px;top:196px;color:#ff4fa3">+0.42</div>
+   <div class="frame" style="left:10px;right:10px;top:72px;bottom:94px;border-color:#ff4fa3"></div>
+   <div class="notch" style="left:10px;top:50px"><div class="tab">Obj</div><div class="tab">Vtx</div><div class="tab">Edg</div><div class="tab on">Fce</div></div>
+   <div class="notch" style="right:10px;top:50px"><div class="tab"><svg class="i"><use href="#menu"/></svg></div></div>
+   <div class="ro" style="left:22px;top:104px"><b>Cube_1 / face 02</b><br>extrude / per face<br>sym x</div>
+   <div class="op" style="left:10px;right:10px;bottom:94px">
+    <div style="display:flex;align-items:flex-end;justify-content:space-between"><div class="val">0.420</div><div class="ro" style="position:static;text-align:right">extrude<br>m / drag or type</div></div>
+    <div class="ruler"><i style="width:58%"></i><s style="left:58%" data-v="0.42"></s></div>
+    <div class="opr"><div class="tab on" style="margin-left:0">Per face</div><div class="tab">Region</div><div class="tab"><svg class="i"><use href="#x"/></svg></div><div class="apply">Apply</div></div>
+   </div>
+   <div class="notch" style="left:10px;bottom:50px"><div class="tab big">Scene</div><div class="tab big">Mat</div><div class="tab big on">Sym X</div><div class="tab big"><svg class="i"><use href="#undo"/></svg></div><div class="tab big"><svg class="i"><use href="#redo"/></svg></div></div>
+  </div>
+ </div>
+</div>
+
+<div class="row">
+ <div>
+  <div class="cap">Планшет 1180×820 · сцена вырезом слева</div>
+  <div class="stage tablet m-fce">
+   <svg class="scene" viewBox="0 0 1180 820"><g transform="translate(700 410) scale(1.5) translate(-195 -440)"><use href="#cubeF"/><path d="M300 386v-60M296 330l4-6 4 6" stroke="#ff4fa3" stroke-width="1.5" fill="none"/></g></svg>
+   <div class="frame" style="left:16px;right:16px;top:60px;bottom:88px;border-color:#ff4fa3"></div>
+   <div class="notch" style="left:340px;top:36px"><div class="tab">Obj</div><div class="tab">Vtx</div><div class="tab">Edg</div><div class="tab on">Fce</div></div>
+   <div class="notch" style="right:16px;top:36px"><div class="tab"><svg class="i"><use href="#menu"/></svg></div></div>
+   <div style="position:absolute;left:16px;top:60px;width:300px;bottom:88px;background:var(--plate);border-right:1px solid var(--fr)">
+    <div class="ro" style="position:static;padding:12px 10px">scene / 3 objects</div>
+    <div class="orow sel"><span class="ix">01</span>Cube_1<span class="k">6f</span></div>
+    <div class="orow"><span class="ix">02</span>Floor_plate<span class="k">1f</span></div>
+    <div class="orow" style="color:var(--micro)"><span class="ix">03</span>Tube_2 hidden<span class="k">48f</span></div>
+   </div>
+   <div class="ro" style="left:340px;top:76px"><b>Cube_1 / face 02</b><br>extrude / per face / sym x</div>
+   <div class="op" style="left:480px;width:420px;bottom:88px">
+    <div style="display:flex;align-items:flex-end;justify-content:space-between"><div class="val">0.420</div><div class="ro" style="position:static;text-align:right">extrude<br>m</div></div>
+    <div class="ruler"><i style="width:58%"></i><s style="left:58%" data-v="0.42"></s></div>
+    <div class="opr"><div class="tab on" style="margin-left:0">Per face</div><div class="tab">Region</div><div class="tab"><svg class="i"><use href="#x"/></svg></div><div class="apply">Apply</div></div>
+   </div>
+   <div class="notch" style="left:16px;bottom:32px"><div class="tab big">Scene</div><div class="tab big">Mat</div><div class="tab big"><svg class="i"><use href="#undo"/></svg></div><div class="tab big"><svg class="i"><use href="#redo"/></svg></div></div>
+   <div class="notch" style="right:16px;bottom:32px"><div class="tab big on">X</div><div class="tab big">Y</div><div class="tab big">Z</div></div>
+  </div>
+ </div>
+</div>
+</body></html>

@@ -11,8 +11,23 @@ not redrawn from screenshots.
 
 - **Zero radius.** `--r-sm`, `--r-md`, `--r-pill` are all `0`. Nothing in
   Kubik is rounded. Ever.
-- **2px rules do the organising.** `--rule: 2px`. Borders separate things;
-  shadows and cards do not.
+- **Plates over the model (the hybrid, v2.79-v2.86).** Floating chrome is
+  glass: `--glass` (the panel at 56%) over a `--glass-blur` of the scene,
+  with a `--hair` edge and a `--glass-hi` line along the top. Anything read
+  for a while - trays, decks, drawer, help - is `--glass-thick` (86%).
+  `html.lite` (the drawer's Glass switch) makes every plate solid and drops
+  the blur; it is the setting for a phone that runs warm.
+- **1px rules.** `--rule: 1px` since v2.79; the colour is unchanged. Plates
+  separate things by tone, the rule only finishes the edge.
+- **One cut.** Every plate and every control 30px or taller loses its
+  bottom-right corner by `--ch` (10px): one size, one corner, everywhere,
+  so a row of them keeps its rhythm. `--cut` is the clip; `--cut-line` is a
+  background layer that draws the rule along the cut. State rules set
+  `background-color`, never the `background` shorthand, which would wipe it.
+- **Lit underline = on.** A chosen thing lights an edge in the mode's hue:
+  the symmetry axes (bottom), the rail tabs (right edge), the op deck's
+  chips (bottom), the selected outliner row (left edge), section titles in
+  the drawer (a short bar).
 - **One control size.** 44px is the standard target, 34px for `.small`.
   Nothing that a thumb must hit is smaller than 44px.
 - **The accent IS the mode.** Object is neutral `#d5dce4`; Vertex `#d9ff3d`,
@@ -21,8 +36,16 @@ not redrawn from screenshots.
   reflects the current mode.
 - **Signal orange `#ff5230`** means commit / danger / hazard, and is the only
   hue that is not a mode.
-- **Archivo** for everything, weights up to 800, uppercase with wide letter
-  spacing for labels. `--mono` for every numeric readout.
+- **Archivo** for everything you press, with its width axis embedded
+  (62-125%): the display voice - the mode word, the op numeral, deck names -
+  is Archivo at 125%. **Geist Mono** (`--mono`, embedded) for every readout
+  and caption. Micro captions (SYM under the axes, UNDO/REDO, the rail's
+  01/02) are 9px mono caps and only ever repeat what the control already
+  says.
+- **Depth.** A sheet (drawer, help) pushes the scene back to 94%; while the
+  camera turns, the header, rail and bottom row drift up to 6px against it
+  and ease home. Motion is transform and opacity only - no `filter: blur`
+  in any animation.
 - **The viewport is the hero.** Chrome floats over it at the edges and gets
   out of the way; there is no top bar and no gizmo.
 
@@ -35,6 +58,9 @@ not redrawn from screenshots.
 - `components/` — the control families, each a standalone page that links
   `tokens.css` and uses the real values.
 - `screens/` — the whole interface at phone size: at rest, and mid-operation.
+- `directions/` — the redesign's exploration: static mockups A-L and, in
+  `proto/kubik-ui-lab.html`, a live three.js prototype of every direction
+  including N · Гибрид, the one that shipped as v2.79-v2.86.
 
 Open any file directly in a browser; there is no build step.
 
