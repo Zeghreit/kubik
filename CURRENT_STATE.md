@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~52,400 lines)
-- Version at time of writing: **2.80a**
+- Version at time of writing: **2.91**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -43,6 +43,41 @@ than none. Prefer rewriting a section over appending to it.
 its own probe passes, the suite is clean apart from `_imp_probe`'s known CDN
 flake - commit and `git push`. The push IS the ship; the app is live at the
 URL above and a commit sitting unpushed helps nobody. Do not stop to ask.
+
+## The sheet (v2.91) - the drawer, rebuilt
+
+Design pass step 3, chosen from pictures on Zeghreit's model (variant C of
+three: a rebuilt left sheet, three tabs, a bottom sheet).
+- **Where it is.** On a phone held upright (`max-width 699px` and
+  `min-height 521px`, `sheetMQ` in script) `#drawer` is a bottom sheet,
+  `min(62vh, 600px)` tall, on the same sheet curve. The canvas moves up and
+  shrinks (`translateY(-24%) scale(.56)`) so the model stays in view above
+  it; the chrome and `#selMarks` fade to .16 (the marks are placed in screen
+  space and would sit beside a scaled canvas). Landscape and desktop keep
+  the left sheet with the same insides.
+- **Order**: This model (name in `#drawerName`, count in `#status`, Save),
+  Light, Tools (snap), Saved + Files, Help. Chips in `#drawerNav` jump to a
+  section and follow the scroll.
+- **Light tiles** carry a lit ball drawn by `envDisc(p)` from the preset
+  itself (sky, ground, the strongest light by azimuth/height; a key from
+  behind draws a rim). On the phone the tiles are a sideways strip.
+- **Steppers, not sliders.** The four ranges are still the source of the
+  value (hidden, `wireSetting` unchanged); `.ds-pm` buttons `stepUp`/
+  `stepDown` them and fire `input`. Hold repeats (380ms, then every 85ms);
+  the number springs the way it went; the end stop dims. `syncSteppers()`
+  runs on open.
+- **Feel**: sections arrive 40ms apart on open (`--i`); the grip strip drags
+  the sheet and past 90px, or a flick, closes it. All off under reduced
+  motion.
+- **Kept for the probes**: every id, `#projCurrent` (hidden, still says
+  `Editing "x"`), `.drawer-sec` round Files (`_shotchk`).
+- The paragraphs went: Appearance's two notes, Glass's, Snap's, Models' and
+  Files' are one line each or gone - the Help card has them.
+- `#status` is the count only (it used to append "editing: <name>").
+- **Mirror** appends " sym" once, not once per mirror (the test model was
+  "Cube 1 sym" x16). `#selTag` ends a long name in an ellipsis.
+Probes: `_shotchk` 26/26, `_proj273/274a/274/projchk` PASS, `_feel290`
+green, `_out_probe` clean, `_theme` identical to v2.90.
 
 ## The feel layer (v2.90) - and two small design-pass fixes
 

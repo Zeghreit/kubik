@@ -1055,6 +1055,7 @@
     background: var(--glass-thick); color: var(--text);
     font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase;
   }
+  #selTag { max-width: 44vw; overflow: hidden; text-overflow: ellipsis; }   /* v2.91: a long name ends in ..., not off the screen */
   #selTag::before { content: 'Sel'; background: var(--accent-mode); color: var(--on-accent); padding: 2px 5px; margin-right: 7px; }
   #selMarks.left #selTag { left: auto; right: calc(100% + 16px); }
   #viewport > canvas { transform-origin: 70% 45%; transition: transform .5s cubic-bezier(.32, .72, 0, 1); }
@@ -1066,9 +1067,10 @@
      nearer things move. The script writes `translate` on these five only
      while the camera moves; the easing back is this transition, so no frame
      is drawn to let them settle. */
-  #hdr, #toolChip, #outFly, #matFly, #quickRow { transition: translate .35s cubic-bezier(.2, 0, 0, 1); }
+  #hdr, #toolChip, #outFly, #matFly, #quickRow { transition: translate .35s cubic-bezier(.2, 0, 0, 1), opacity .3s ease; }
   @media (prefers-reduced-motion: reduce) {
     #viewport > canvas, #hdr, #toolChip, #outFly, #matFly, #quickRow { transition: none; }
+    #drawer.open .drawer-body > *, .ds-v.pop { animation: none; }
   }
   #scrim.show { display: block; }
   #drawer {
@@ -1085,6 +1087,86 @@
   }
   html.lite #drawer { -webkit-backdrop-filter: none; backdrop-filter: none; }
   #drawer.open { transform: translateX(0); }
+
+  /* ---- THE SHEET (v2.91) ----------------------------------------------
+     Base rules are the left sheet (landscape, desktop). The media block
+     below turns it into a bottom sheet on a phone held upright. */
+  .drawer-nav { display: flex; gap: 6px; padding: 2px 14px 10px; overflow-x: auto; flex-shrink: 0; border-bottom: var(--rule) solid var(--line); scrollbar-width: none; }
+  .drawer-nav::-webkit-scrollbar { display: none; }
+  .drawer-nav button { min-height: 34px; padding: 0 14px; font-size: 11px; font-weight: 800; font-stretch: 112%; letter-spacing: .08em; text-transform: uppercase; color: var(--text-dim); }
+  .drawer-nav button.on { color: var(--on-accent); background-color: var(--accent-mode); border-color: var(--accent-mode); }
+  .ds-model { padding-top: 14px; }
+  #drawer #projCurrent { display: none; }   /* the probes read it; #drawerName shows it */
+  .ds-cap { font-family: var(--mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--text-dim); display: flex; justify-content: space-between; }
+  .ds-name { font-size: 22px; font-weight: 800; font-stretch: 125%; letter-spacing: -.01em; line-height: 1.1; margin: 6px 0 12px; color: var(--text);
+             text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ds-name.unsaved { color: var(--text-dim); }
+  .ds-save { display: flex; gap: 6px; }
+  .ds-save #projName { flex: 1 1 auto; min-width: 0; }
+  .ds-save button { padding: 0 16px; }
+  #drawer .ds-primary { background-color: var(--accent-mode); color: var(--on-accent); border-color: var(--accent-mode); font-weight: 700; }
+  .ds-note { font-size: 12px; line-height: 1.45; color: var(--text-dim); margin: 2px 0 8px; }
+  .ds-note b { color: var(--text); font-weight: 600; }
+  .ds-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px; }
+  .ds-grid > * { justify-content: flex-start; min-height: 48px; }
+  .ds-grid .full { grid-column: 1 / -1; }
+  .ds-seg { display: grid; grid-template-columns: auto 1fr 1fr 1fr; margin-bottom: 6px; border: var(--rule) solid var(--line); clip-path: var(--cut); background: var(--cut-line), var(--panel2); }
+  .ds-seg span { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-dim); align-self: center; padding: 0 12px; }
+  .ds-seg button { border: 0; border-left: var(--rule) solid var(--line); clip-path: none; background: transparent; justify-content: center; font-family: var(--mono); min-height: 44px; }
+  #projList .proj-row { margin-bottom: 4px; }
+  #projList .proj-open { min-height: 44px; }
+  /* Light: a tile per preset with a lit ball drawn from the preset itself
+     (sky over ground, the strongest light placed by its azimuth). */
+  #drawer #lightMenu { grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 0 0 10px; }
+  #drawer #lightMenu button { flex-direction: column; justify-content: center; align-items: center; gap: 8px; min-height: 92px; padding: 10px 4px 8px; font-size: 12px;
+      clip-path: var(--cut); background: var(--cut-line), var(--panel2); }
+  #drawer #lightMenu button.active { background-color: var(--accent-dim); border-color: var(--accent-mode); box-shadow: inset 0 -2px 0 var(--accent-mode); font-weight: 600; }
+  .ds-disc { display: block; width: 40px; height: 40px; border-radius: 50%; box-shadow: 0 0 0 1px rgb(255 255 255 / .08); transition: scale .3s cubic-bezier(.34, 1.56, .64, 1); }
+  #lightMenu button.active .ds-disc { scale: 1.08; }
+  .ds-switch { display: flex; align-items: center; justify-content: space-between; min-height: 52px; gap: 12px; font-size: 14px; color: var(--text); }
+  .ds-switch small { display: block; font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+  .ds-switch .group button { min-height: 34px; min-width: 48px; justify-content: center; font-size: 12px; }
+  .ds-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 6px; }
+  .ds-step { border: var(--rule) solid var(--line); background: var(--cut-line), var(--panel2); clip-path: var(--cut); padding: 10px 10px 8px; min-width: 0; }
+  .ds-step input[type=range] { display: none; }
+  .ds-t { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-dim); }
+  .ds-v { font-family: var(--mono); font-size: 22px; font-weight: 500; color: var(--text); margin: 4px 0 8px; font-variant-numeric: tabular-nums; }
+  .ds-v.pop { animation: ds-pop .22s cubic-bezier(.34, 1.56, .64, 1); }
+  .ds-v.pop.down { animation-name: ds-pop-down; }
+  @keyframes ds-pop { from { translate: 0 5px; opacity: .4; } }
+  @keyframes ds-pop-down { from { translate: 0 -5px; opacity: .4; } }
+  .ds-pm { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+  .ds-pm button { min-height: 40px; justify-content: center; font-size: 18px; padding: 0; }
+  .ds-pm button:disabled { opacity: .35; }
+  .ds-wide { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; }
+  .ds-wide .ds-v { margin: 2px 0 0; } .ds-wide .ds-pm { width: 110px; }
+  #drawer .ds-help { display: flex; justify-content: space-between; width: 100%; min-height: 52px; margin-top: 18px; font-size: 14px; }
+  #drawer .ds-help::after { content: '\2192'; color: var(--text-dim); }
+  /* It opens with the sections arriving one after another, 40ms apart - the
+     eye follows them down instead of meeting a finished wall. */
+  #drawer.open .drawer-body > * { animation: ds-in .46s cubic-bezier(.16, 1, .3, 1) both; animation-delay: calc(var(--i, 0) * 40ms + 70ms); }
+  @keyframes ds-in { from { opacity: 0; translate: 0 14px; } }
+
+  @media (max-width: 699px) and (min-height: 521px) {
+    #drawer { top: auto; right: 0; width: auto; height: min(62vh, 600px); border-right: 0; border-top: var(--rule) solid var(--line);
+              clip-path: none; transform: translateY(104%); }
+    #drawer.open { transform: translateY(0); }
+    #drawer .drawer-head { padding: 10px 14px 6px; border-bottom: 0; position: relative; touch-action: none; }
+    /* The grip: this strip is where a swipe down closes the sheet. */
+    #drawer .drawer-head::before { content: ''; position: absolute; left: 50%; top: 5px; width: 40px; height: 4px; margin-left: -20px; background: var(--line); }
+    #drawer .brand { font-size: 14px; } #drawer .brand span::before { font-size: 14px; }
+    #drawerClose { min-height: 36px; min-width: 36px; }
+    #drawer #lightMenu { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; margin: 0 -14px 8px; padding: 0 14px; scroll-padding-inline: 14px; scrollbar-width: none; }
+    #drawer #lightMenu::-webkit-scrollbar { display: none; }
+    #drawer #lightMenu button { flex: 0 0 84px; scroll-snap-align: start; min-height: 104px; }
+    #drawer .ds-disc { width: 46px; height: 46px; }
+    #scrim { background: linear-gradient(rgb(var(--shadow) / .06), rgb(var(--shadow) / .5)); }
+    /* The model moves up into the room left above the sheet. Selection
+       marks are placed in screen space from the camera, so they would sit
+       beside a scaled canvas - they step out while the sheet is up. */
+    #app:has(#drawer.open) #viewport > canvas { transform-origin: 50% 47%; transform: translateY(-24%) scale(.56); }
+    #app:has(#drawer.open) :is(#hdr, #toolChip, #outFly, #matFly, #quickRow, #viewCube, #isoChip, #selMarks) { opacity: .16; }
+  }
 
   /* ---- Materials fly-out: a slim named tab on the LEFT border, the rail's
      second seat under the outliner (v2.2). A tap rolls the vertical tray of
@@ -1535,16 +1617,19 @@
     border-bottom: var(--rule) solid var(--line);
     font-size: 14px; font-weight: 600; flex-shrink: 0;
   }
-  .drawer-body { overflow-y: auto; overscroll-behavior: contain; padding: 6px 14px calc(24px + env(safe-area-inset-bottom, 0px)); }
-  .drawer-sec { padding: 12px 0; border-bottom: var(--rule) solid var(--line); }
-  .drawer-sec:last-child { border-bottom: none; }
+  .drawer-body { position: relative; overflow-y: auto; overscroll-behavior: contain; padding: 0 14px calc(24px + env(safe-area-inset-bottom, 0px)); }
+  .drawer-sec { padding: 18px 0 6px; }
   /* v2.85: a short bar in the mode's hue under each section title - the
      hybrid's lit underline, here marking where a section starts. */
+  /* v2.91: the deck-name voice (Archivo 112%) with a hairline running out
+     to the edge - a heading you can find with the thumb mid-scroll. */
   .drawer-title {
-    font-family: var(--mono); font-size: 10px; font-weight: 600; color: var(--text-dim);
-    text-transform: uppercase; letter-spacing: .14em; margin-bottom: 10px; padding-bottom: 6px;
-    background: linear-gradient(var(--accent-mode), var(--accent-mode)) left bottom / 28px 2px no-repeat;
+    font-size: 13px; font-weight: 800; font-stretch: 112%; letter-spacing: .06em; text-transform: uppercase; color: var(--text);
+    display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px;
   }
+  .drawer-title::after { content: ''; flex: 1; height: 1px; background: var(--line); transform: translateY(-4px); }
+  .drawer-title small { font-family: var(--mono); font-size: 10px; font-weight: 500; font-stretch: 100%; letter-spacing: .1em; color: var(--text-dim); white-space: nowrap; }
+  .drawer-title.ds-sub { margin-top: 18px; }
   .drawer-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
   .drawer-row:last-child { margin-bottom: 0; }
   .proj-row { display: flex; gap: 6px; margin-bottom: 6px; }
@@ -3068,145 +3153,99 @@
   <!-- Everything set once or used rarely lives in the drawer, reachable with
        the other hand's finger without crowding the viewport. -->
   <div id="scrim"></div>
-  <aside id="drawer">
+  <!-- THE SHEET (v2.91, design pass step 3, chosen from pictures on the
+       model - variant C). On a phone held upright it rises from the bottom
+       edge to a little over half height and the model moves up into the
+       space above it, so a light is judged ON the model while the finger is
+       still on the tile. Landscape and desktop keep the left sheet with the
+       same insides. Every id the code and the probes know is kept; the
+       paragraphs of help are cut to one line each or gone - the Help card
+       has them in full. -->
+  <aside id="drawer" aria-label="Menu">
     <div class="drawer-head">
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
-           It moved here with the bar; it must not lose the element or the
-           class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.90</span></div>
-      <button id="drawerClose" class="small">✕</button>
+           It must not lose the element or the class. -->
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.91</span></div>
+      <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
-    <!-- Was pinned to the top-right of the screen. It says how many objects
-         there are and which one is being edited - both of which the list
-         directly below it already shows, so it earns its place here and not
-         over the model. -->
-    <div id="status"></div>
-    <div class="drawer-body">
+    <nav class="drawer-nav" id="drawerNav">
+      <button data-go="dsModel" class="on">Model</button><button data-go="dsLight">Light</button><button data-go="dsTools">Tools</button><button data-go="dsFiles">Files</button>
+    </nav>
+    <div class="drawer-body" id="drawerBody">
 
-      <!-- The Scene section left at a2.91. Add Cube / Duplicate / Delete had
-           already gone to the fan menu, and the object list - the one thing
-           here that was not duplicated elsewhere - is the outliner now, on a
-           shelf you can consult without covering the model with a 340px
-           settings panel. -->
-
-      <div class="drawer-sec">
-        <div class="drawer-title">Appearance</div>
-        <!-- Three paragraphs became two lines. Everything they described is
-             in the Help card in full; from here they only need to say where
-             to go, and the lighting one keeps its gesture because that is the
-             part you cannot discover by looking. -->
-        <div class="drawer-note">Colour is in the material — the Materials tab on the left edge.
-          See-through, Floor grid and Snap are in the ring you get by holding on empty space.</div>
-        <div class="drawer-note">Lighting - pick the type here. Hold two fingers still
-          anywhere, then slide with the other hand to aim it.</div>
-        <div id="lightMenu"></div>
-        <!-- v2.86. The one setting the look has: the plates' blur is what a
-             phone pays for while the camera moves, so it can be switched
-             off for the session that is running warm. -->
-        <div class="drawer-row" style="margin-top:10px"><span class="label">Glass</span>
-          <div class="group" id="glassGroup"><button data-glass="on">On</button><button data-glass="off">Off</button></div></div>
-        <div class="drawer-note">Off makes every plate solid. The blur is the part of the look the phone works for while the camera turns.</div>
+      <!-- What you come for most: which model this is, and Save. -->
+      <div class="drawer-sec ds-model" id="dsModel" style="--i:0">
+        <div class="ds-cap"><span>This model</span><span id="status"></span></div>
+        <div class="ds-name" id="drawerName">Unsaved</div>
+        <!-- Kept for the probes and the tooltip logic; the name above says it. -->
+        <div class="drawer-note" id="projCurrent" hidden></div>
+        <div class="ds-save">
+          <input type="text" id="projName" placeholder="Name this model" maxlength="40" />
+          <button id="btnProjSave" class="ds-primary">Save</button>
+          <button id="btnProjSaveAs" hidden>Save as</button>
+        </div>
       </div>
 
+      <div class="drawer-sec" id="dsLight" style="--i:1">
+        <div class="drawer-title">Light</div>
+        <div id="lightMenu"></div>
+        <div class="ds-note"><b>Aim it:</b> hold two fingers still, slide with the other hand.</div>
+        <!-- v2.86: the plates' blur is what a phone pays for while the camera
+             moves, so it can be switched off for a session running warm. -->
+        <div class="ds-switch"><div>Glass<small>Off: solid plates, a cooler phone</small></div>
+          <div class="group" id="glassGroup"><button data-glass="on">On</button><button data-glass="off">Off</button></div></div>
+      </div>
 
-      <div class="drawer-sec">
-        <div class="drawer-title">Editing</div>
-        <div class="drawer-row">
+      <!-- Steppers, not sliders: a thumb lands on "+" more surely than on a
+           0.05 notch of a 200px track. The ranges stay (hidden) and remain
+           the one place the value lives - the buttons step them. -->
+      <div class="drawer-sec" id="dsTools" style="--i:2">
+        <div class="drawer-title">Snap <small>on or off: hold empty space</small></div>
+        <div class="ds-steps">
+          <div class="ds-step"><div><div class="ds-t">Move</div><div class="ds-v" id="snapMoveVal">0.25</div></div>
+            <div class="ds-pm" data-for="snapMove"><button data-d="-1" aria-label="Less">−</button><button data-d="1" aria-label="More">+</button></div>
+            <input type="range" id="snapMove" min="0.05" max="1" step="0.05" value="0.25" /></div>
+          <div class="ds-step"><div><div class="ds-t">Rotate</div><div class="ds-v" id="snapRotVal">15°</div></div>
+            <div class="ds-pm" data-for="snapRot"><button data-d="-1" aria-label="Less">−</button><button data-d="1" aria-label="More">+</button></div>
+            <input type="range" id="snapRot" min="5" max="90" step="5" value="15" /></div>
+          <div class="ds-step"><div><div class="ds-t">Scale</div><div class="ds-v" id="snapScaleVal">0.10</div></div>
+            <div class="ds-pm" data-for="snapScale"><button data-d="-1" aria-label="Less">−</button><button data-d="1" aria-label="More">+</button></div>
+            <input type="range" id="snapScale" min="0.05" max="0.5" step="0.05" value="0.1" /></div>
+          <div class="ds-step ds-wide"><div><div class="ds-t">Drag speed</div><div class="ds-v" id="sensValue">0.70</div></div>
+            <div class="ds-pm" data-for="sensSlider"><button data-d="-1" aria-label="Slower">−</button><button data-d="1" aria-label="Faster">+</button></div>
+            <input type="range" id="sensSlider" min="0.2" max="1.5" step="0.05" value="0.7" /></div>
+        </div>
+        <div class="ds-grid">
           <button id="btnInspector" title="Type exact transform values">⌗ Values</button>
           <button id="btnClearCreases" title="Remove every crease on this object">Clear creases</button>
         </div>
-        <div class="drawer-row">
-          <span class="label">Drag speed</span>
-          <input type="range" id="sensSlider" min="0.2" max="1.5" step="0.05" value="0.7" />
-          <span class="label" id="sensValue">0.70</span>
-        </div>
-        <!-- The axis buttons and the note that apologised for them being
-             here left at a2.89: symmetry is one block in the top-left now,
-             toggle and axes together. -->
       </div>
 
-      <div class="drawer-sec">
-        <!-- "Snap step" read as a verb - a thing you do - when it is a set of
-             amounts you set once. -->
-        <div class="drawer-title">Snap amounts</div>
-        <div class="drawer-row">
-          <span class="label">Move</span>
-          <input type="range" id="snapMove" min="0.05" max="1" step="0.05" value="0.25" />
-          <span class="label" id="snapMoveVal">0.25</span>
-        </div>
-        <div class="drawer-row">
-          <span class="label">Rotate</span>
-          <input type="range" id="snapRot" min="5" max="90" step="5" value="15" />
-          <span class="label" id="snapRotVal">15°</span>
-        </div>
-        <div class="drawer-row">
-          <span class="label">Scale</span>
-          <input type="range" id="snapScale" min="0.05" max="0.5" step="0.05" value="0.1" />
-          <span class="label" id="snapScaleVal">0.10</span>
-        </div>
-        <div class="drawer-note">Switched on in the world ring; these are what it lands on.</div>
-      </div>
-
-      <div class="drawer-sec">
-        <div class="drawer-title">Models</div>
-        <div class="drawer-row">
-          <button id="btnNewScene" title="Start over with one cube - Undo brings this scene back">New scene</button>
-        </div>
-        <div class="drawer-note" id="projCurrent" hidden></div>
-        <div class="drawer-row">
-          <input type="text" id="projName" placeholder="Name this model" maxlength="40" />
-          <button id="btnProjSave">Save</button>
-          <button id="btnProjSaveAs" hidden>Save as</button>
-        </div>
+      <div class="drawer-sec" id="dsFiles" style="--i:3">
+        <div class="drawer-title">Saved <small>in this app, no files</small></div>
         <div id="projList"></div>
-        <div class="drawer-note">Kept inside the app, no files involved. Your last
-          state is restored automatically when you come back.</div>
-      </div>
-
-      <div class="drawer-sec">
-        <div class="drawer-title">Files</div>
-        <!-- "Download" and "Open", not "Save" and "Load": Models above also has
-             a Save, and two buttons with the same word doing different things
-             (browser storage vs a file on disk) is the drawer's worst label. -->
-        <div class="drawer-row">
+        <div class="ds-grid">
+          <button id="btnNewScene" class="full" title="Start over with one cube - Undo brings this scene back">New scene</button>
+        </div>
+        <!-- "Download" and "Open", not "Save" and "Load": Save above writes
+             into the app, these are files on disk. -->
+        <div class="drawer-title ds-sub">Files</div>
+        <div class="ds-grid">
           <button id="btnSave">Download .json</button>
           <label class="btn fileBtn">Open .json<input type="file" id="fileLoad" accept="application/json" /></label>
         </div>
-        <div class="drawer-row">
-          <button id="btnExportGlb" title="Export glTF binary">.glb</button>
-          <button id="btnExportObj" title="Export Wavefront OBJ">.obj</button>
-          <button id="btnExportStl" title="Export STL">.stl</button>
-        </div>
-        <!-- A picture, not a model - the view as you framed it, without the
-             app in the shot. It sits with the exports because it is the
-             other thing that leaves. -->
-        <div class="drawer-row">
-          <button id="btnShot" title="Save the view as a PNG">Save a picture</button>
-        </div>
-        <!-- "Bring in", not "Import": the row above is what goes OUT, and
-             the two read as a pair without either needing a heading. -->
-        <div class="drawer-row">
-          <!-- `multiple`, only so an .obj can be picked together with its
-               .mtl. Everything else takes the first file and ignores the
-               rest; asking for two files up front would be worse than
-               losing the colours of the one format that has a sidecar. -->
+        <div class="ds-seg"><span>Export</span><button id="btnExportGlb" title="Export glTF binary">.glb</button><button id="btnExportObj" title="Export Wavefront OBJ">.obj</button><button id="btnExportStl" title="Export STL">.stl</button></div>
+        <div class="ds-grid">
+          <!-- A picture, not a model - the view as framed, without the app. -->
+          <button id="btnShot" title="Save the view as a PNG">Picture .png</button>
+          <!-- `multiple`, only so an .obj can be picked with its .mtl. -->
           <label class="btn fileBtn">Bring in a model<input type="file" id="fileImport" multiple accept=".glb,.gltf,.obj,.mtl,.stl,.fbx,model/gltf-binary,model/gltf+json" /></label>
         </div>
-        <div class="drawer-note">.glb, .gltf, .obj or .stl. A model comes back
-          as faces, not triangles, so it edits like something you built here.
-          For an .obj's colours, pick its .mtl at the same time.</div>
+        <div class="ds-note">Brings in .glb .gltf .obj .stl .fbx. Pick an .obj together with its .mtl.</div>
       </div>
 
-      <!-- a3.0's drawer section 04 (screen 09). The card itself is
-           unchanged; only the way in moved. -->
-      <div class="drawer-sec">
-        <div class="drawer-title">Help</div>
-        <div class="drawer-row">
-          <button id="btnHelp" title="Help">Gestures and tools</button>
-        </div>
-      </div>
-
+      <button id="btnHelp" class="ds-help" title="Help" style="--i:4">Gestures and tools</button>
     </div>
   </aside>
 
@@ -5033,6 +5072,19 @@ let SEAM_COLOR = THEME.seam;
 // default for new ones follows the theme.
 let DEFAULT_MATERIAL_COLOR = THEME.material;
 
+/* A lit ball for a preset's tile (v2.91): sky over ground, the strongest
+   light placed by its azimuth and height. A key light from behind (Rim)
+   draws a dark ball with a lit edge, which is what that preset does. */
+function envDisc(p) {
+  const key = p.lights.reduce((a, l) => (l.int > a.int ? l : a), p.lights[0]);
+  if (Math.abs(key.az) > 90)
+    return 'radial-gradient(circle at 46% 54%, #121418 0 56%, ' + key.color + ' 68%, ' + p.sky + ' 72%)';
+  const a = key.az * Math.PI / 180;
+  const x = Math.round(50 + Math.sin(a) * 34), y = Math.round(42 - key.el / 90 * 40);
+  return 'radial-gradient(circle at ' + x + '% ' + y + '%, ' + key.color + ' 0, ' + key.color + 'd0 10%, ' +
+         p.sky + ' 36%, #22262c 70%, ' + p.ground + ' 100%)';
+}
+
 /* The menu is built rather than written out, so ENV_PRESETS stays the
    single place a preset is defined. */
 function buildEnvPresets() {
@@ -5042,6 +5094,10 @@ function buildEnvPresets() {
     const b = document.createElement('button');
     b.textContent = p.name;
     b.dataset.env = p.id;
+    const disc = document.createElement('i');   // v2.91: the preset, drawn
+    disc.className = 'ds-disc';
+    disc.style.background = envDisc(p);
+    b.prepend(disc);
     b.addEventListener('click', () => {
       if (App.env.preset === p.id) return;
       App.env.preset = p.id;
@@ -30697,7 +30753,7 @@ function mirrorSelectedObjects(axis, apart) {
 
     const half = mirrorObject(keep, plane);
     const mirrorSrc = [keep, half];
-    const merged = combineObjectsInto([keep, half], src.name + ' sym', plane);
+    const merged = combineObjectsInto([keep, half], /\ssym$/.test(src.name) ? src.name : src.name + ' sym', plane);
     noteUVLostFromSources(mirrorSrc, [merged], 'Mirror');
     if (merged) {
       removeObjects(cut ? [src, cut, half] : [src, half]);
@@ -36754,6 +36810,8 @@ function syncProjectButtons() {
   if (!cur || !as || !save || !input) return;
   cur.hidden = !currentProject;
   cur.textContent = currentProject ? 'Editing "' + currentProject + '"' : '';
+  const nm = document.getElementById('drawerName');   // v2.91: the sheet's title
+  if (nm) { nm.textContent = currentProject || 'Unsaved'; nm.classList.toggle('unsaved', !currentProject); }
   as.hidden = !currentProject;
   save.title = currentProject ? 'Save over "' + currentProject + '"' : 'Save under the name typed';
   input.placeholder = currentProject ? 'New name, then Save as' : 'Name this model';
@@ -47994,8 +48052,103 @@ const drawerEl = document.getElementById('drawer');
 const scrimEl = document.getElementById('scrim');
 
 function setDrawerOpen(open) {
+  if (open) syncSteppers();
+  drawerEl.style.transform = drawerEl.style.transition = '';
   drawerEl.classList.toggle('open', open);
   scrimEl.classList.toggle('show', open);
+}
+
+/* ---- The sheet's feel (v2.91) ----
+   Chips jump to a section and light up as you scroll past it; the steppers
+   step the hidden ranges (hold to repeat) and the number springs the way it
+   went; on a phone held upright the grip strip drags the sheet down, and
+   past 90px - or flicked - it closes. */
+const drawerBodyEl = document.getElementById('drawerBody');
+const drawerNavEl = document.getElementById('drawerNav');
+const sheetMQ = window.matchMedia('(max-width: 699px) and (min-height: 521px)');
+const calmMQ = window.matchMedia('(prefers-reduced-motion: reduce)');
+function markDrawerChip(id) {
+  drawerNavEl.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.go === id));
+}
+drawerNavEl.addEventListener('click', (ev) => {
+  const b = ev.target.closest('button[data-go]');
+  const t = b && document.getElementById(b.dataset.go);
+  if (!t) return;
+  markDrawerChip(b.dataset.go);
+  drawerBodyEl.scrollTo({ top: Math.max(0, t.offsetTop - 4), behavior: calmMQ.matches ? 'auto' : 'smooth' });
+});
+{
+  let queued = false;
+  drawerBodyEl.addEventListener('scroll', () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      const y = drawerBodyEl.scrollTop;
+      let id = 'dsModel';
+      if (y + drawerBodyEl.clientHeight >= drawerBodyEl.scrollHeight - 4) id = 'dsFiles';
+      else ['dsModel', 'dsLight', 'dsTools', 'dsFiles'].forEach(s => { if (document.getElementById(s).offsetTop - 40 <= y) id = s; });
+      markDrawerChip(id);
+    });
+  }, { passive: true });
+}
+const _steppers = [];
+function syncSteppers() { _steppers.forEach(f => f()); }
+drawerEl.querySelectorAll('.ds-pm').forEach(pm => {
+  const input = document.getElementById(pm.dataset.for);
+  const val = pm.parentElement.querySelector('.ds-v');
+  const [minus, plus] = pm.querySelectorAll('button');
+  const sync = () => { minus.disabled = +input.value <= +input.min + 1e-9; plus.disabled = +input.value >= +input.max - 1e-9; };
+  _steppers.push(sync);
+  const bump = (d) => {
+    const before = input.value;
+    if (d > 0) input.stepUp(); else input.stepDown();
+    sync();
+    if (input.value === before) return false;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    val.classList.remove('pop', 'down'); void val.offsetWidth;
+    val.classList.add('pop'); if (d < 0) val.classList.add('down');
+    return true;
+  };
+  let wait = 0, rep = 0;
+  const stop = () => { clearTimeout(wait); clearInterval(rep); wait = rep = 0; };
+  pm.querySelectorAll('button').forEach(b => {
+    const d = +b.dataset.d;
+    b.addEventListener('pointerdown', (ev) => {
+      if (ev.button > 0) return;
+      stop();
+      if (!bump(d)) return;
+      wait = setTimeout(() => { rep = setInterval(() => { if (!bump(d)) stop(); }, 85); }, 380);
+    });
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => b.addEventListener(t, stop));
+    b.addEventListener('click', (ev) => { if (ev.detail === 0) bump(d); });   // keyboard
+  });
+  sync();
+});
+{
+  const head = drawerEl.querySelector('.drawer-head');
+  let y0 = 0, t0 = 0, dy = 0, id = null;
+  head.addEventListener('pointerdown', (ev) => {
+    if (!sheetMQ.matches || ev.target.closest('button') || !drawerEl.classList.contains('open')) return;
+    id = ev.pointerId; y0 = ev.clientY; t0 = performance.now(); dy = 0;
+    head.setPointerCapture(id);
+    drawerEl.style.transition = 'none';
+  });
+  head.addEventListener('pointermove', (ev) => {
+    if (ev.pointerId !== id) return;
+    dy = ev.clientY - y0;
+    drawerEl.style.transform = 'translateY(' + (dy > 0 ? dy : dy * 0.2) + 'px)';
+  });
+  const end = (ev) => {
+    if (ev.pointerId !== id) return;
+    id = null;
+    const v = dy / Math.max(1, performance.now() - t0);
+    drawerEl.style.transition = '';
+    if (dy > 90 || (dy > 24 && v > 0.5)) setDrawerOpen(false);
+    else drawerEl.style.transform = '';
+  };
+  head.addEventListener('pointerup', end);
+  head.addEventListener('pointercancel', end);
 }
 document.getElementById('btnMenu').addEventListener('click', () => setDrawerOpen(true));
 
@@ -50816,8 +50969,9 @@ function refreshUI() {
      finger is holding - and the lift ends by rebuilding anyway. */
   if (outlinerIsOpen() && !_outHoldRebuild && !_outLift) refreshOutliner();
 
-  statusEl.textContent = App.objects.length + ' object' + (App.objects.length === 1 ? '' : 's') +
-    (App.mode !== 'object' ? ' · editing: ' + (findObject(App.activeObjectId)?.name || 'none') : '');
+  /* v2.91: the count only - it sits opposite "This model" in the sheet, and
+     the object being edited is on the model itself. */
+  statusEl.textContent = App.objects.length + ' object' + (App.objects.length === 1 ? '' : 's');
   void hasSel;
 }
 
