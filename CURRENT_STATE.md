@@ -44,6 +44,35 @@ its own probe passes, the suite is clean apart from `_imp_probe`'s known CDN
 flake - commit and `git push`. The push IS the ship; the app is live at the
 URL above and a commit sitting unpushed helps nobody. Do not stop to ask.
 
+## The look: the hybrid (v2.79-v2.87, branch ui-hybrid)
+
+A redesign of the UI layer only - no operation, gesture or button position
+changed. Chosen from twelve directions and a live prototype, all in
+`design-system/directions/` (the prototype is `proto/kubik-ui-lab.html`).
+It is today's layout dressed in two of them: G's type and plates, M's depth.
+
+- **Type.** Archivo with its width axis embedded; the display voice (mode
+  word, op numeral, deck names) is Archivo at 125%. Geist Mono, embedded,
+  is `--mono` - every readout and caption.
+- **Plates.** Floating chrome is glass (`.plate`, `--glass`, `--glass-thick`
+  over `--glass-blur`); `html.lite` makes it solid. The drawer's Appearance
+  section has the switch (Glass On/Off, localStorage `kubik.glass`).
+- **One cut.** Every plate and control 30px+ loses its bottom-right corner
+  by `--ch` 10px, with `--cut-line` drawing the rule along it. State rules
+  set `background-color`, never the shorthand, or the cut line vanishes.
+- **Lit underline = on**: axes, rail tabs, op chips, the selected outliner
+  row, drawer section titles. The op deck's chosen chip also keeps a solid
+  3:1 fill (`_theme` 11 checks it).
+- **Depth.** Drawer/help scale the canvas to 94%; header, readout, rail and
+  bottom row drift up to 6px against a camera turn (`hudDrift`, called after
+  orbit.update in stepFrame; no frames spent settling).
+- **Selection marks** (`selMarks`, after renderer.render): Object mode shows
+  corner crosses and a SEL tag on what is selected.
+- **Rule is 1px** now. No `filter: blur` in any animation.
+
+Suite vs main: 34/35 identical; `_theme` differs only by measured sizes and
+the glass neighbour colour. Mode hues are unchanged (violet Face stays).
+
 ## Versioning
 
 **Numbers for new work or reworks** (v1.85 → v1.86). **Letters for bug

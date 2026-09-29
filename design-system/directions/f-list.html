@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="ru"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kubik · F · Лист</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap">
+<style>
+/* Direction F · Лист. One place to look. On the phone a single bottom sheet
+   with three heights holds everything (selection, tools, the op's values,
+   scene, material); on a tablet the same sheet stands up as a permanent
+   inspector. Warm graphite, one sheet surface, content in sections. */
+:root{
+  color-scheme:dark;
+  --bg:#12110f; --sheet:#1d1b18; --s2:#27241f; --s3:#322e28; --press:#3b362f;
+  --hair:rgb(255 240 220/.09);
+  --text:#f1ece4; --dim:#a39a8d; --faint:#6f675c;
+  --signal:#ff6a3d; --on:#12110f;
+  --mode:#e8e1d6;
+  --mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+}
+.m-face{--mode:#b894ff}
+*{box-sizing:border-box}
+body{margin:0;padding:32px;background:#000;color:var(--text);font-family:'Archivo',-apple-system,'Segoe UI',Roboto,sans-serif}
+.intro{max-width:1180px;margin-bottom:28px}
+.intro h1{font:800 26px 'Archivo',-apple-system,'Segoe UI',sans-serif;margin:0 0 6px}
+.intro p{margin:0 0 6px;color:#cfc6b8;font-size:14px;line-height:1.5;max-width:75ch}
+.cap{font:500 12px var(--mono);color:var(--dim);margin:0 0 10px}
+.row{display:flex;gap:40px;flex-wrap:wrap;align-items:flex-start;margin-bottom:40px}
+.stage{position:relative;background:var(--bg);overflow:hidden;flex:none}
+.phone{width:390px;height:844px}.tablet{width:1180px;height:820px}
+svg.scene{position:absolute;inset:0}
+svg.i{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.fl{position:absolute;width:44px;height:44px;border-radius:12px;background:rgb(29 27 24/.92);box-shadow:inset 0 0 0 1px var(--hair);display:flex;align-items:center;justify-content:center;color:var(--text)}
+.fl.dis{color:var(--faint)}
+.sheet{position:absolute;left:0;right:0;bottom:0;background:var(--sheet);border-radius:22px 22px 0 0;box-shadow:inset 0 1px 0 var(--hair);padding:8px 14px 30px}
+.grab{width:40px;height:5px;border-radius:3px;background:var(--s3);margin:0 auto 10px}
+.head{display:flex;align-items:center;gap:10px}
+.head .n{flex:1;font:700 17px 'Archivo'}
+.head .n small{display:block;font:500 12px var(--mono);color:var(--dim);margin-top:2px}
+.modes{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;background:var(--bg);padding:4px;border-radius:14px;margin-top:12px}
+.modes b{height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;font:600 13px 'Archivo';color:var(--dim)}
+.modes b.on{background:var(--s3);color:var(--text);box-shadow:inset 0 -3px 0 var(--mode)}
+.sec{font:600 12px 'Archivo';color:var(--dim);margin:16px 2px 8px}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.t{height:56px;border-radius:12px;background:var(--s2);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font:600 12px 'Archivo'}
+.t.on{background:var(--mode);color:var(--on)}
+.t.dz{color:var(--signal)}
+.t.pressed{background:var(--press);transform:scale(.97)}
+.field{display:flex;align-items:center;gap:12px;height:56px;padding:0 14px;border-radius:12px;background:var(--s2)}
+.field .l{font:600 14px 'Archivo';flex:none;width:84px}
+.field .v{font:600 18px var(--mono);font-variant-numeric:tabular-nums;flex:none;width:64px;text-align:right}
+.bar{flex:1;height:6px;border-radius:3px;background:var(--s3);position:relative}
+.bar b{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:var(--mode)}
+.bar s{position:absolute;top:-9px;width:24px;height:24px;margin-left:-12px;border-radius:50%;background:var(--text)}
+.seg2{display:grid;grid-template-columns:1fr 1fr;gap:4px;background:var(--bg);padding:4px;border-radius:14px}
+.seg2 b{height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;font:600 13px 'Archivo';color:var(--dim)}
+.seg2 b.on{background:var(--s3);color:var(--text)}
+.acts{display:grid;grid-template-columns:1fr 2fr;gap:8px;margin-top:12px}
+.acts b{height:52px;border-radius:14px;display:flex;align-items:center;justify-content:center;font:700 15px 'Archivo'}
+.cancel{background:var(--s2)}
+.apply{background:var(--signal);color:var(--on)}
+.orow{display:flex;align-items:center;gap:10px;height:48px;padding:0 12px;border-radius:10px;font-size:14px}
+.orow.sel{background:var(--s2);box-shadow:inset 3px 0 0 var(--mode)}
+.orow .n{flex:1}.orow .k{font:500 12px var(--mono);color:var(--dim)}
+.mat{display:flex;align-items:center;gap:12px;height:56px;padding:0 12px;border-radius:12px;background:var(--s2)}
+.sw{width:32px;height:32px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff,#8a8f96 55%,#3d4147)}
+.note{position:absolute;font:600 11px var(--mono);color:#ffcf6b}
+.note:before{content:"▸ "}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute">
+ <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+ <symbol id="undo" viewBox="0 0 24 24"><path d="M4 9h11a5 5 0 0 1 0 10h-6"/><path d="M8 5L4 9l4 4"/></symbol>
+ <symbol id="redo" viewBox="0 0 24 24"><path d="M20 9H9a5 5 0 0 0 0 10h6"/><path d="M16 5l4 4-4 4"/></symbol>
+ <symbol id="sym" viewBox="0 0 24 24"><path d="M12 3v18" stroke-dasharray="2 3"/><path d="M9 7L4 12l5 5M15 7l5 5-5 5"/></symbol>
+ <g id="cube" stroke="#15130f"><polygon points="195,330 104,386 195,440" fill="#57524a"/><polygon points="195,330 195,440 286,386" fill="#68625a"/><polygon points="104,386 90,482 195,440" fill="#433f39"/><polygon points="286,386 195,440 300,482" fill="#534e47"/><polygon points="90,482 195,554 195,440" fill="#36332e"/><polygon points="195,440 195,554 300,482" fill="#45413a"/></g>
+ <g id="cubeF" stroke="#15130f"><polygon points="195,330 104,386 195,440" fill="#57524a"/><polygon points="195,330 195,440 286,386" fill="#b894ff" fill-opacity=".9"/><polygon points="104,386 90,482 195,440" fill="#433f39"/><polygon points="286,386 195,440 300,482" fill="#9272d6"/><polygon points="90,482 195,554 195,440" fill="#36332e"/><polygon points="195,440 195,554 300,482" fill="#45413a"/></g>
+</svg>
+
+<div class="intro">
+  <h1>F · Лист</h1>
+  <p><b>Тезис:</b> одно место, куда смотреть. На телефоне весь интерфейс это один нижний лист с тремя высотами: в свёрнутом виде имя, режимы и главные инструменты; наполовину — параметры операции; целиком — сцена и материал. На планшете этот же лист встаёт справа постоянным инспектором. Тёплый графит, мягкие радиусы, крупные поля ввода.</p>
+  <p><b>Плюсы:</b> самая предсказуемая модель (так устроены Карты, Shapr3D, Nomad); параметры операции получают место для нормальных полей с числами и подписями; меню, аутлайнер и материалы перестают быть отдельными островами; на планшете самая «профессиональная» раскладка. <b>Минусы:</b> на телефоне лист постоянно отнимает 25–60% экрана; тянуть лист и крутить камеру один палец, нужна дисциплина жестов; меньше «flow», больше «формы».</p>
+  <p><b>Планшет:</b> справа инспектор 360px: выделение, режимы, инструменты, параметры, сцена, материал одной колонкой; слева над моделью только история и симметрия.</p>
+</div>
+
+<div class="row">
+ <div>
+  <div class="cap">Телефон · лист свёрнут: Object, Cube 1</div>
+  <div class="stage phone">
+   <svg class="scene" viewBox="0 0 390 844"><g transform="translate(0 -90)"><use href="#cube"/><g fill="none" stroke="#e8e1d6" stroke-width="2"><polyline points="195,330 286,386 300,482 195,554 90,482 104,386 195,330"/><polyline points="104,386 195,440 286,386"/><line x1="195" y1="440" x2="195" y2="554"/></g></g></svg>
+   <div class="fl" style="left:14px;top:52px"><svg class="i"><use href="#undo"/></svg></div>
+   <div class="fl dis" style="left:64px;top:52px"><svg class="i"><use href="#redo"/></svg></div>
+   <div class="fl" style="right:64px;top:52px"><svg class="i"><use href="#sym"/></svg></div>
+   <div class="fl" style="right:14px;top:52px"><svg class="i"><use href="#menu"/></svg></div>
+   <div class="sheet" style="height:276px">
+    <div class="grab"></div>
+    <div class="head"><div class="n">Cube 1<small>object · 6 faces</small></div></div>
+    <div class="modes"><b class="on">Object</b><b>Vertex</b><b>Edge</b><b>Face</b></div>
+    <div class="grid" style="margin-top:10px"><div class="t">Duplicate</div><div class="t pressed">Mirror</div><div class="t">Array</div><div class="t">More</div></div>
+   </div>
+   <div class="note" style="left:14px;top:112px">лист тянется вверх: инструменты → сцена → материал</div>
+  </div>
+ </div>
+
+ <div>
+  <div class="cap">Телефон · лист наполовину: Face, Extrude</div>
+  <div class="stage phone m-face">
+   <svg class="scene" viewBox="0 0 390 844"><g transform="translate(0 -210) scale(1)"><use href="#cubeF"/></g></svg>
+   <div class="fl" style="left:14px;top:52px"><svg class="i"><use href="#undo"/></svg></div>
+   <div class="fl" style="left:64px;top:52px"><svg class="i"><use href="#redo"/></svg></div>
+   <div class="fl" style="right:64px;top:52px;color:var(--mode);box-shadow:inset 0 0 0 1.5px var(--mode)"><svg class="i"><use href="#sym"/></svg></div>
+   <div class="fl" style="right:14px;top:52px"><svg class="i"><use href="#menu"/></svg></div>
+   <div class="sheet" style="height:476px">
+    <div class="grab"></div>
+    <div class="head"><div class="n">Extrude<small>Cube 1 · 1 face</small></div></div>
+    <div class="sec">Amount</div>
+    <div class="field"><span class="l">Height</span><div class="bar"><b style="width:58%"></b><s style="left:58%"></s></div><span class="v">0.42</span></div>
+    <div class="sec">Grouping</div>
+    <div class="seg2"><b class="on">Per face</b><b>Region</b></div>
+    <div class="acts"><b class="cancel">Cancel</b><b class="apply">Apply</b></div>
+   </div>
+  </div>
+ </div>
+</div>
+
+<div class="row">
+ <div>
+  <div class="cap">Планшет 1180×820 · постоянный инспектор справа</div>
+  <div class="stage tablet m-face">
+   <svg class="scene" viewBox="0 0 1180 820"><g transform="translate(410 410) scale(1.6) translate(-195 -440)"><use href="#cubeF"/></g></svg>
+   <div class="fl" style="left:24px;top:24px"><svg class="i"><use href="#undo"/></svg></div>
+   <div class="fl" style="left:74px;top:24px"><svg class="i"><use href="#redo"/></svg></div>
+   <div class="fl" style="left:134px;top:24px;color:var(--mode);box-shadow:inset 0 0 0 1.5px var(--mode)"><svg class="i"><use href="#sym"/></svg></div>
+   <div style="position:absolute;right:0;top:0;bottom:0;width:360px;background:var(--sheet);box-shadow:inset 1px 0 0 var(--hair);padding:24px 16px;overflow:hidden">
+    <div class="head"><div class="n">Cube 1<small>face · 1 selected</small></div><div class="fl" style="position:static"><svg class="i"><use href="#menu"/></svg></div></div>
+    <div class="modes"><b>Object</b><b>Vertex</b><b>Edge</b><b class="on">Face</b></div>
+    <div class="sec">Tools</div>
+    <div class="grid"><div class="t on">Extrude</div><div class="t">Inset</div><div class="t">Bevel</div><div class="t">Split</div><div class="t">Flip</div><div class="t">Fill</div><div class="t">Detach</div><div class="t dz">Delete</div></div>
+    <div class="sec">Extrude</div>
+    <div class="field"><span class="l">Height</span><div class="bar"><b style="width:58%"></b><s style="left:58%"></s></div><span class="v">0.42</span></div>
+    <div class="seg2" style="margin-top:8px"><b class="on">Per face</b><b>Region</b></div>
+    <div class="acts"><b class="cancel">Cancel</b><b class="apply">Apply</b></div>
+    <div class="sec">Scene</div>
+    <div class="orow sel"><span class="n">Cube 1</span><span class="k">6 f</span></div>
+    <div class="orow"><span class="n">Floor plate</span><span class="k">1 f</span></div>
+    <div class="sec">Material</div>
+    <div class="mat"><span class="sw"></span><span style="flex:1;font-weight:600">Clay</span><span style="font:500 12px var(--mono);color:var(--dim)">rough 1.00</span></div>
+   </div>
+  </div>
+ </div>
+</div>
+</body></html>

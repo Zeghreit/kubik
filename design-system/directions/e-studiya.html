@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ru"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kubik · E · Студия</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap">
+<style>
+/* Direction E · Студия. Light clay studio instead of a dark void, and the
+   iPhone Camera app as the interaction model: a swipeable mode dial, the
+   selection's tools as a flat row of words above it (the ring, unfolded and
+   always visible), one big shutter for the thing you do most. */
+:root{
+  color-scheme:light;
+  --stage:#c9ced4; --stage2:#bfc5cc;
+  --chrome:#f4f5f6; --chrome2:#e6e8eb; --press:#d6dade;
+  --ink:#15181c; --dim:#59616b; --faint:#8a929b;
+  --signal:#e2401f;
+  --mode:#15181c;             /* object: ink */
+  --mode-ink:#15181c;
+  --mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+}
+.m-face{--mode:#7a4fe0;--mode-ink:#5b35bd}   /* face, darkened for light ground (5.9:1) */
+*{box-sizing:border-box}
+body{margin:0;padding:32px;background:#8d939a;color:var(--ink);font-family:'Archivo',-apple-system,'Segoe UI',Roboto,sans-serif}
+.intro{max-width:1180px;margin-bottom:28px;color:#fff}
+.intro h1{font:800 26px 'Archivo',-apple-system,'Segoe UI',sans-serif;margin:0 0 6px}
+.intro p{margin:0 0 6px;color:#eef1f4;font-size:14px;line-height:1.5;max-width:75ch}
+.cap{font:500 12px var(--mono);color:#f4f5f6;margin:0 0 10px}
+.row{display:flex;gap:40px;flex-wrap:wrap;align-items:flex-start;margin-bottom:40px}
+.stage{position:relative;background:linear-gradient(var(--stage),var(--stage2));overflow:hidden;flex:none}
+.phone{width:390px;height:844px}.tablet{width:1180px;height:820px}
+svg.scene{position:absolute;inset:0}
+svg.i{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.top{position:absolute;left:0;right:0;display:flex;align-items:center;gap:6px;padding:0 12px}
+.ib{width:44px;height:44px;border-radius:22px;display:flex;align-items:center;justify-content:center;background:rgb(244 245 246/.9);color:var(--ink)}
+.ib.dis{color:var(--faint)}
+.obj{flex:1;text-align:center;font:700 15px 'Archivo'}
+.obj small{display:block;font:500 11px var(--mono);color:var(--dim)}
+.dock{position:absolute;left:0;right:0;bottom:0;background:var(--chrome);padding:10px 0 30px}
+.tools{display:flex;gap:6px;padding:0 12px;overflow:hidden;white-space:nowrap}
+.tool{flex:none;height:44px;padding:0 16px;border-radius:22px;display:flex;align-items:center;background:var(--chrome2);font:600 14px 'Archivo'}
+.tool.hot{background:var(--mode);color:#fff}
+.tool.dz{color:var(--signal)}
+.dial{display:flex;justify-content:center;gap:22px;margin:12px 0 10px;font:700 13px 'Archivo';font-stretch:88%;letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
+.dial b{padding:6px 0;min-height:32px}
+.dial b.on{color:var(--mode-ink);border-bottom:2px solid var(--mode)}
+.shut{display:flex;align-items:center;justify-content:space-between;padding:0 28px}
+.thumb{width:52px;height:52px;border-radius:12px;background:var(--chrome2);display:flex;flex-direction:column;align-items:center;justify-content:center;font:600 10px 'Archivo';color:var(--dim)}
+.shutter{width:76px;height:76px;border-radius:50%;border:4px solid var(--ink);display:flex;align-items:center;justify-content:center}
+.shutter i{width:60px;height:60px;border-radius:50%;background:var(--mode);display:flex;align-items:center;justify-content:center;color:#fff;font:700 11px 'Archivo';font-style:normal;letter-spacing:.04em;text-transform:uppercase;text-align:center;line-height:1.1}
+.swatch{width:26px;height:26px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff,#9aa1a9 60%,#5d646c)}
+.ruler{position:relative;height:56px;margin:0 12px;border-radius:14px;background:var(--chrome2);overflow:hidden}
+.ruler .ticks{position:absolute;inset:0;background:repeating-linear-gradient(90deg,transparent 0 11px,var(--faint) 11px 12px) 0 34px/100% 14px no-repeat}
+.ruler .needle{position:absolute;left:50%;top:30px;bottom:4px;width:3px;margin-left:-1.5px;background:var(--mode);border-radius:2px}
+.ruler .v{position:absolute;left:0;right:0;top:6px;text-align:center;font:700 18px var(--mono);font-variant-numeric:tabular-nums}
+.opt{display:flex;gap:6px;padding:10px 12px 0}
+.opt .tool{flex:1;justify-content:center}
+.opt .tool.on{background:var(--ink);color:#fff}
+.note{position:absolute;font:600 11px var(--mono);color:#7a3d00;background:#ffe8b8;padding:2px 6px}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute">
+ <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+ <symbol id="undo" viewBox="0 0 24 24"><path d="M4 9h11a5 5 0 0 1 0 10h-6"/><path d="M8 5L4 9l4 4"/></symbol>
+ <symbol id="redo" viewBox="0 0 24 24"><path d="M20 9H9a5 5 0 0 0 0 10h6"/><path d="M16 5l4 4-4 4"/></symbol>
+ <symbol id="list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6h1M4 12h1M4 18h1"/></symbol>
+ <symbol id="sym" viewBox="0 0 24 24"><path d="M12 3v18" stroke-dasharray="2 3"/><path d="M9 7L4 12l5 5M15 7l5 5-5 5"/></symbol>
+ <g id="clay" stroke="#9aa0a7" stroke-width="1"><polygon points="195,330 104,386 195,440" fill="#e9ebee"/><polygon points="195,330 195,440 286,386" fill="#f6f7f8"/><polygon points="104,386 90,482 195,440" fill="#d4d8dc"/><polygon points="286,386 195,440 300,482" fill="#e2e5e8"/><polygon points="90,482 195,554 195,440" fill="#c4c9ce"/><polygon points="195,440 195,554 300,482" fill="#d1d5d9"/></g>
+</svg>
+
+<div class="intro">
+  <h1>E · Студия</h1>
+  <p><b>Тезис:</b> светлая глиняная студия вместо тёмной пустоты, и модель взаимодействия из приложения «Камера»: режимы листаются пальцем по шкале, инструменты выделения лежат строкой слов над ней (то же кольцо, но развёрнутое и всегда видимое), одна большая кнопка-затвор для самого частого действия.</p>
+  <p><b>Плюсы:</b> всё видно без скрытых жестов, первый раз разбирается без подсказок; жест «листать режимы» знаком каждому владельцу iPhone; светлая сцена лучше читается на улице и в светлой комнате, модель выглядит как предмет, а не как призрак. <b>Минусы:</b> самый далёкий от нынешнего Kubik образ; светлый фон тяжелее для батареи на OLED и ярче в темноте (нужна тёмная тема рядом); цвета режимов пришлось затемнить, лаймовый Vertex на светлом не живёт; строка инструментов прокручивается, длинный список не виден целиком.</p>
+  <p><b>Планшет:</b> как «Камера» на iPad: всё управление в вертикальной колонке у правого края (инструменты столбцом, шкала режимов, затвор), слева только история и сцена.</p>
+</div>
+
+<div class="row">
+ <div>
+  <div class="cap">Телефон · Object, выделен Cube 1</div>
+  <div class="stage phone">
+   <svg class="scene" viewBox="0 0 390 844"><g transform="translate(0 -70)"><use href="#clay"/><g fill="none" stroke="#15181c" stroke-width="2.2"><polyline points="195,330 286,386 300,482 195,554 90,482 104,386 195,330"/><polyline points="104,386 195,440 286,386"/><line x1="195" y1="440" x2="195" y2="554"/></g></g></svg>
+   <div class="top" style="top:52px"><div class="ib"><svg class="i"><use href="#undo"/></svg></div><div class="ib dis"><svg class="i"><use href="#redo"/></svg></div><div class="obj">Cube 1<small>6 faces · move</small></div><div class="ib"><svg class="i"><use href="#sym"/></svg></div><div class="ib"><svg class="i"><use href="#menu"/></svg></div></div>
+   <div class="dock">
+    <div class="tools"><span class="tool">Duplicate</span><span class="tool">Mirror</span><span class="tool">Array</span><span class="tool">Subdivide</span><span class="tool">Finish</span><span class="tool dz">Delete</span></div>
+    <div class="dial"><b>UV</b><b class="on">Object</b><b>Vertex</b><b>Edge</b><b>Face</b></div>
+    <div class="shut"><div class="thumb"><svg class="i"><use href="#list"/></svg>Scene</div><div class="shutter"><i>Move</i></div><div class="thumb"><span class="swatch"></span>Clay</div></div>
+   </div>
+   <div class="note" style="left:12px;top:112px">шкала листается свайпом, как режимы камеры</div>
+  </div>
+ </div>
+
+ <div>
+  <div class="cap">Телефон · Face, Extrude: значение шкалой-линейкой</div>
+  <div class="stage phone m-face">
+   <svg class="scene" viewBox="0 0 390 844"><g transform="translate(0 -140)" stroke="#9aa0a7"><polygon points="195,330 104,386 195,440" fill="#e9ebee"/><polygon points="195,330 195,440 286,386" fill="#9d7cf0"/><polygon points="104,386 90,482 195,440" fill="#d4d8dc"/><polygon points="286,386 195,440 300,482" fill="#8663e6"/><polygon points="90,482 195,554 195,440" fill="#c4c9ce"/><polygon points="195,440 195,554 300,482" fill="#d1d5d9"/></g></svg>
+   <div class="top" style="top:52px"><div class="ib"><svg class="i"><use href="#undo"/></svg></div><div class="ib"><svg class="i"><use href="#redo"/></svg></div><div class="obj">Cube 1<small>face · 1 selected</small></div><div class="ib" style="background:var(--mode);color:#fff"><svg class="i"><use href="#sym"/></svg></div><div class="ib"><svg class="i"><use href="#menu"/></svg></div></div>
+   <div class="dock">
+    <div class="ruler"><div class="ticks"></div><div class="v">0.42</div><div class="needle"></div></div>
+    <div class="opt"><span class="tool on">Per face</span><span class="tool">Region</span><span class="tool" style="flex:none;width:44px;padding:0">✕</span></div>
+    <div class="dial"><b>Object</b><b>Vertex</b><b>Edge</b><b class="on">Face</b><b>UV</b></div>
+    <div class="shut"><div class="thumb"><svg class="i"><use href="#list"/></svg>Scene</div><div class="shutter" style="border-color:var(--signal)"><i style="background:var(--signal)">Apply</i></div><div class="thumb"><span class="swatch"></span>Clay</div></div>
+   </div>
+   <div class="note" style="left:12px;top:112px">линейка тянется пальцем, тап по числу = ввод</div>
+  </div>
+ </div>
+</div>
+
+<div class="row">
+ <div>
+  <div class="cap">Планшет 1180×820 · Face, всё управление колонкой справа</div>
+  <div class="stage tablet m-face">
+   <svg class="scene" viewBox="0 0 1180 820"><g transform="translate(520 400) scale(1.6) translate(-195 -440)" stroke="#9aa0a7"><polygon points="195,330 104,386 195,440" fill="#e9ebee"/><polygon points="195,330 195,440 286,386" fill="#9d7cf0"/><polygon points="104,386 90,482 195,440" fill="#d4d8dc"/><polygon points="286,386 195,440 300,482" fill="#8663e6"/><polygon points="90,482 195,554 195,440" fill="#c4c9ce"/><polygon points="195,440 195,554 300,482" fill="#d1d5d9"/></g></svg>
+   <div style="position:absolute;left:20px;top:24px;display:flex;gap:6px"><div class="ib"><svg class="i"><use href="#undo"/></svg></div><div class="ib"><svg class="i"><use href="#redo"/></svg></div></div>
+   <div style="position:absolute;left:20px;bottom:24px" class="thumb"><svg class="i"><use href="#list"/></svg>Scene</div>
+   <div style="position:absolute;left:0;right:220px;top:28px" class="obj">Cube 1<small>face · 1 selected</small></div>
+   <div style="position:absolute;right:0;top:0;bottom:0;width:200px;background:var(--chrome);display:flex;flex-direction:column;align-items:center;padding:24px 14px">
+    <div style="display:flex;gap:6px;align-self:stretch;justify-content:space-between"><div class="ib" style="background:var(--mode);color:#fff"><svg class="i"><use href="#sym"/></svg></div><div class="ib"><svg class="i"><use href="#menu"/></svg></div></div>
+    <div style="display:flex;flex-direction:column;gap:6px;align-self:stretch;margin-top:18px">
+     <span class="tool hot">Extrude</span><span class="tool">Inset</span><span class="tool">Bevel</span><span class="tool">Split</span><span class="tool">Flip</span><span class="tool dz">Delete</span>
+    </div>
+    <div class="ruler" style="align-self:stretch;margin:14px 0 0"><div class="ticks"></div><div class="v">0.42</div><div class="needle"></div></div>
+    <div style="flex:1"></div>
+    <div class="dial" style="flex-direction:column;align-items:center;gap:6px;margin:0 0 12px"><b>Object</b><b>Vertex</b><b>Edge</b><b class="on">Face</b><b>UV</b></div>
+    <div class="shutter" style="border-color:var(--signal)"><i style="background:var(--signal)">Apply</i></div>
+    <div class="thumb" style="margin-top:14px;width:100%;flex-direction:row;gap:8px;height:44px"><span class="swatch"></span>Clay</div>
+   </div>
+  </div>
+ </div>
+</div>
+</body></html>

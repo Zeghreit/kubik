@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="ru"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kubik · K · Этикетки</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&family=Geist+Mono:wght@400;500;600&display=swap">
+<style>
+/* K · Этикетки. Poster energy: the mode word is set huge and is the mode
+   indicator itself; every control is a die-cut label (bone stock, black
+   print, a notched corner). The four modes are always in colour as a strip
+   of stickers. Loud, graphic, the most Marathon of the set. */
+:root{color-scheme:dark;
+  --bg:#0c0d0f; --bone:#ebe8df; --bone2:#dcd9cf; --press:#c9c5ba; --ink:#0c0d0f; --inkd:#56585c;
+  --signal:#ff4d17;
+  --obj:#ebe8df; --vtx:#c8ff1a; --edg:#1fe0ff; --fce:#ff4fa3;
+  --mode:var(--obj);
+  --mono:'Geist Mono',ui-monospace,Menlo,monospace; --sans:'Archivo',-apple-system,'Segoe UI',sans-serif}
+.m-fce{--mode:var(--fce)}
+*{box-sizing:border-box}
+body{margin:0;padding:32px;background:#000;color:#c4cbd2;font-family:var(--sans)}
+.intro{max-width:1180px;margin-bottom:28px}.intro h1{font:900 30px var(--sans);font-stretch:125%;text-transform:uppercase;margin:0 0 8px;color:#fff}
+.intro p{margin:0 0 6px;font-size:14px;line-height:1.5;max-width:78ch}
+.cap{font:500 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;margin:0 0 10px;opacity:.7}
+.row{display:flex;gap:40px;flex-wrap:wrap;align-items:flex-start;margin-bottom:40px}
+.stage{position:relative;background:var(--bg);overflow:hidden;flex:none;color:#fff}
+.phone{width:390px;height:844px}.tablet{width:1180px;height:820px}
+svg.scene{position:absolute;inset:0}
+svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:square}
+.big{position:absolute;font:900 92px var(--sans);font-stretch:125%;line-height:.82;letter-spacing:-.03em;color:var(--mode);text-transform:uppercase}
+.lab{position:absolute;display:flex;align-items:center;gap:10px;background:var(--bone);color:var(--ink);padding:0 12px;height:48px;
+  clip-path:polygon(0 0,calc(100% - 12px) 0,100% 12px,100% 100%,0 100%);font:800 15px var(--sans);font-stretch:112%;text-transform:uppercase;letter-spacing:.02em}
+.lab small{font:500 10px var(--mono);letter-spacing:.1em;color:var(--inkd);text-transform:uppercase}
+.bar{display:inline-block;height:22px;width:64px;background:repeating-linear-gradient(90deg,var(--ink) 0 2px,transparent 2px 3px,var(--ink) 3px 4px,transparent 4px 7px,var(--ink) 7px 10px,transparent 10px 11px)}
+.side{position:absolute;right:0;display:flex;flex-direction:column;gap:4px}
+.st{height:56px;width:78px;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;padding:0 10px;background:var(--bone);color:var(--ink);font:800 13px var(--sans);font-stretch:112%;text-transform:uppercase;clip-path:polygon(10px 0,100% 0,100% 100%,0 100%,0 10px)}
+.st small{font:500 9.5px var(--mono);letter-spacing:.1em;color:var(--inkd)}
+.st.pressed{background:var(--press);transform:translateX(-2px)}
+.st.dis{color:#9c998f}
+.modes{position:absolute;left:0;right:0;bottom:30px;display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:0 12px}
+.ms{height:64px;display:flex;flex-direction:column;justify-content:flex-end;padding:8px 10px;color:var(--ink);font:900 16px var(--sans);font-stretch:125%;text-transform:uppercase;clip-path:polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,0 100%)}
+.ms small{font:600 9.5px var(--mono);letter-spacing:.12em;margin-bottom:auto}
+.ms.off{filter:none;opacity:.42}
+.ms.on{outline:3px solid #fff;outline-offset:-3px}
+.op{position:absolute;background:var(--bone);color:var(--ink);padding:14px;clip-path:polygon(0 0,calc(100% - 16px) 0,100% 16px,100% 100%,0 100%)}
+.val{font:900 58px var(--sans);font-stretch:125%;line-height:.85;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+.ruler{position:relative;height:36px;margin-top:10px;background:repeating-linear-gradient(90deg,var(--ink) 0 2px,transparent 2px 9px) 0 14px/100% 22px no-repeat}
+.ruler i{position:absolute;left:0;top:14px;height:22px;background:var(--mode);mix-blend-mode:multiply}
+.ruler s{position:absolute;top:0;bottom:0;width:3px;background:var(--ink)}
+.opr{display:flex;gap:4px;margin-top:10px}
+.pill{height:48px;padding:0 14px;display:flex;align-items:center;background:var(--bone2);font:700 12px var(--mono);letter-spacing:.08em;text-transform:uppercase}
+.pill.on{background:var(--ink);color:var(--bone)}
+.apply{height:48px;margin-left:auto;padding:0 16px;display:flex;align-items:center;gap:10px;background:var(--signal);font:900 15px var(--sans);font-stretch:125%;text-transform:uppercase}
+.apply i{width:16px;height:48px;margin-right:-16px;background:repeating-linear-gradient(135deg,var(--ink) 0 3px,transparent 3px 7px)}
+.note{position:absolute;font:600 11px var(--mono);color:#0b0c0e;background:#ffd166;padding:2px 6px;z-index:5}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute">
+ <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h16"/></symbol>
+ <symbol id="undo" viewBox="0 0 24 24"><path d="M4 9h11a5 5 0 0 1 0 10h-6"/><path d="M8 5L4 9l4 4"/></symbol>
+ <symbol id="x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+ <g id="cube" stroke="#0c0d0f"><polygon points="195,330 104,386 195,440" fill="#4a525b"/><polygon points="195,330 195,440 286,386" fill="#5a636d"/><polygon points="104,386 90,482 195,440" fill="#363c44"/><polygon points="286,386 195,440 300,482" fill="#464e57"/><polygon points="90,482 195,554 195,440" fill="#2b3037"/><polygon points="195,440 195,554 300,482" fill="#383f47"/></g>
+ <g id="cubeF" stroke="#0c0d0f"><polygon points="195,330 104,386 195,440" fill="#4a525b"/><polygon points="195,330 195,440 286,386" fill="#ff4fa3"/><polygon points="104,386 90,482 195,440" fill="#363c44"/><polygon points="286,386 195,440 300,482" fill="#d93f8a"/><polygon points="90,482 195,554 195,440" fill="#2b3037"/><polygon points="195,440 195,554 300,482" fill="#383f47"/></g>
+</svg>
+
+<div class="intro">
+  <h1>K · Этикетки</h1>
+  <p><b>Тезис:</b> плакат вместо панели. Слово режима набрано огромным и само является индикатором режима. Каждый элемент управления это вырубная этикетка: костяная бумага, чёрная печать, срезанный угол, штрихкод объекта. Четыре режима всегда в цвете, полоской наклеек внизу.</p>
+  <p><b>Плюсы:</b> самый «Marathon» из всех; режим невозможно не заметить; у Kubik появляется лицо, которое узнаётся по одному скриншоту. <b>Минусы:</b> громко, при долгой работе может утомлять; огромное слово занимает верх экрана (модель уходит ниже); цвет режимов виден всегда, правило «цвет только при правке» отменяется.</p>
+  <p><b>Планшет:</b> слово режима ещё крупнее в левом верхнем углу, колонка этикеток справа, наклейки режимов и панель операции внизу.</p>
+</div>
+
+<div class="row">
+ <div>
+  <div class="cap">Телефон · Object, выделен Cube 1</div>
+  <div class="stage phone">
+   <svg class="scene" viewBox="0 0 390 844"><g transform="translate(-20 20)"><use href="#cube"/><g fill="none" stroke="#ebe8df" stroke-width="2"><polyline points="195,330 286,386 300,482 195,554 90,482 104,386 195,330"/><polyline points="104,386 195,440 286,386"/><line x1="195" y1="440" x2="195" y2="554"/></g></g></svg>
+   <div class="big" style="left:10px;top:54px">Obj</div>
+   <div class="lab" style="left:12px;top:138px">Cube 1 <small>6f / move</small><span class="bar"></span></div>
+   <div class="side" style="top:54px"><div class="st"><svg class="i"><use href="#menu"/></svg></div></div>
+   <div class="side" style="top:250px"><div class="st">Scene<small>3 obj</small></div><div class="st">Mat<small>clay</small></div><div class="st">Sym<small>off</small></div><div class="st pressed">Undo<small>12</small></div><div class="st dis">Redo<small>0</small></div></div>
+   <div class="modes"><div class="ms on" style="background:var(--obj)"><small>01</small>Obj</div><div class="ms off" style="background:var(--vtx)"><small>02</small>Vtx</div><div class="ms off" style="background:var(--edg)"><small>03</small>Edg</div><div class="ms off" style="background:var(--fce)"><small>04</small>Fce</div></div>
+   <div class="note" style="left:12px;top:196px">цифры на этикетках: шаги undo, число объектов</div>
+  </div>
+ </div>
+
+ <div>
+  <div class="cap">Телефон · Face, Extrude</div>
+  <div class="stage phone m-fce">
+   <svg class="scene" viewBox="0 0 390 844"><g transform="translate(-20 -60)"><use href="#cubeF"/></g></svg>
+   <div class="big" style="left:10px;top:54px">Fce</div>
+   <div class="lab" style="left:12px;top:138px">Cube 1 <small>face 02 / sym x</small></div>
+   <div class="side" style="top:54px"><div class="st"><svg class="i"><use href="#menu"/></svg></div></div>
+   <div class="op" style="left:12px;right:12px;bottom:106px">
+    <div style="display:flex;align-items:flex-end;justify-content:space-between"><div class="val">0.42</div><div style="font:900 18px var(--sans);font-stretch:125%;text-transform:uppercase">Extrude</div></div>
+    <div class="ruler"><i style="width:58%"></i><s style="left:58%"></s></div>
+    <div class="opr"><div class="pill on">Per face</div><div class="pill">Region</div><div class="pill"><svg class="i"><use href="#x"/></svg></div><div class="apply">Apply<i></i></div></div>
+   </div>
+   <div class="modes"><div class="ms off" style="background:var(--obj)"><small>01</small>Obj</div><div class="ms off" style="background:var(--vtx)"><small>02</small>Vtx</div><div class="ms off" style="background:var(--edg)"><small>03</small>Edg</div><div class="ms on" style="background:var(--fce)"><small>04</small>Fce</div></div>
+  </div>
+ </div>
+</div>
+
+<div class="row">
+ <div>
+  <div class="cap">Планшет 1180×820</div>
+  <div class="stage tablet m-fce">
+   <svg class="scene" viewBox="0 0 1180 820"><g transform="translate(560 400) scale(1.5) translate(-195 -440)"><use href="#cubeF"/></g></svg>
+   <div class="big" style="left:24px;top:24px;font-size:150px">Face</div>
+   <div class="lab" style="left:28px;top:160px">Cube 1 <small>face 02 / sym x</small><span class="bar"></span></div>
+   <div class="side" style="top:24px"><div class="st"><svg class="i"><use href="#menu"/></svg></div></div>
+   <div class="side" style="top:200px"><div class="st">Scene<small>3 obj</small></div><div class="st">Mat<small>clay</small></div><div class="st">Sym<small>x</small></div><div class="st">Undo<small>12</small></div><div class="st">Redo<small>1</small></div></div>
+   <div class="op" style="left:360px;width:440px;bottom:120px">
+    <div style="display:flex;align-items:flex-end;justify-content:space-between"><div class="val">0.42</div><div style="font:900 18px var(--sans);font-stretch:125%;text-transform:uppercase">Extrude</div></div>
+    <div class="ruler"><i style="width:58%"></i><s style="left:58%"></s></div>
+    <div class="opr"><div class="pill on">Per face</div><div class="pill">Region</div><div class="pill"><svg class="i"><use href="#x"/></svg></div><div class="apply">Apply<i></i></div></div>
+   </div>
+   <div class="modes" style="left:auto;width:520px;right:90px;bottom:24px"><div class="ms off" style="background:var(--obj)"><small>01</small>Obj</div><div class="ms off" style="background:var(--vtx)"><small>02</small>Vtx</div><div class="ms off" style="background:var(--edg)"><small>03</small>Edg</div><div class="ms on" style="background:var(--fce)"><small>04</small>Fce</div></div>
+  </div>
+ </div>
+</div>
+</body></html>

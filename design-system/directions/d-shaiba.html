@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="ru"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kubik · D · Шайба</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap">
+<style>
+/* Direction D · Шайба. No bars at all. One round puck under the thumb is the
+   whole interface: tap cycles nothing, press opens arcs (modes on the inner
+   arc, the selection's tools on the outer arc). Everything is a circle; the
+   ring Kubik already has becomes the system instead of a hidden shortcut. */
+:root{
+  color-scheme:dark;
+  --bg:#0a0d13; --ink:#121722; --ink2:#1a2130; --ink3:#243044;
+  --hair:rgb(160 180 220/.14);
+  --text:#e9eef7; --dim:#8e9ab0;
+  --signal:#ff5a36; --on:#0a0d13;
+  --mode:#dfe5ee;
+  --mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:32px;background:#000;color:var(--text);font-family:'Archivo',-apple-system,'Segoe UI',Roboto,sans-serif}
+.intro{max-width:1180px;margin-bottom:28px}
+.intro h1{font:800 26px 'Archivo',-apple-system,'Segoe UI',sans-serif;font-stretch:125%;margin:0 0 6px;letter-spacing:.02em}
+.intro p{margin:0 0 6px;color:#b9c3d4;font-size:14px;line-height:1.5;max-width:75ch}
+.cap{font:500 12px var(--mono);color:var(--dim);margin:0 0 10px}
+.row{display:flex;gap:40px;flex-wrap:wrap;align-items:flex-start;margin-bottom:40px}
+.stage{position:relative;background:radial-gradient(120% 80% at 50% 40%,#111725 0%,var(--bg) 70%);overflow:hidden;flex:none}
+.phone{width:390px;height:844px}.tablet{width:1180px;height:820px}
+.m-face{--mode:#b48cff}
+svg.scene{position:absolute;inset:0}
+svg.i{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.puck{position:absolute;width:76px;height:76px;border-radius:50%;background:var(--mode);color:var(--on);display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 6px var(--bg),0 0 0 7px var(--hair)}
+.puck svg{width:28px;height:28px}
+.dot{position:absolute;width:48px;height:48px;border-radius:50%;background:var(--ink2);color:var(--text);display:flex;align-items:center;justify-content:center;box-shadow:inset 0 0 0 1px var(--hair)}
+.word{position:absolute;font:700 12px 'Archivo';font-stretch:112%;letter-spacing:.06em;text-transform:uppercase;color:var(--text)}
+.title{position:absolute;font:800 34px 'Archivo';font-stretch:125%;line-height:.95;letter-spacing:-.01em}
+.title small{display:block;font:500 13px var(--mono);font-stretch:100%;color:var(--dim);letter-spacing:.02em;margin-top:8px}
+.chip{position:absolute;height:44px;padding:0 16px;border-radius:22px;display:flex;align-items:center;gap:8px;background:var(--ink2);box-shadow:inset 0 0 0 1px var(--hair);font:600 13px 'Archivo'}
+.chip.on{background:var(--mode);color:var(--on)}
+.dial{position:absolute;border-radius:50%;box-shadow:inset 0 0 0 1px var(--hair)}
+.seat{position:absolute;width:64px;height:64px;margin:-32px 0 0 -32px;border-radius:50%;background:var(--ink2);box-shadow:inset 0 0 0 1px var(--hair);display:flex;align-items:center;justify-content:center;text-align:center;font:700 10px 'Archivo';font-stretch:112%;letter-spacing:.04em;text-transform:uppercase;line-height:1.1}
+.seat.hot{background:var(--text);color:var(--on)}
+.seat.m{width:52px;height:52px;margin:-26px 0 0 -26px;font-size:10px}
+.seat.m.on{background:var(--mode);color:var(--on)}
+.seat.dz{color:var(--signal);box-shadow:inset 0 0 0 1.5px var(--signal)}
+.amt{position:absolute;display:flex;flex-direction:column;align-items:center}
+.amt .v{font:700 40px var(--mono);font-variant-numeric:tabular-nums;line-height:1}
+.amt .l{font:700 12px 'Archivo';font-stretch:112%;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-top:6px}
+.arcbar{position:absolute}
+.go{position:absolute;width:64px;height:64px;border-radius:50%;background:var(--signal);color:var(--on);display:flex;align-items:center;justify-content:center}
+.no{position:absolute;width:52px;height:52px;border-radius:50%;background:var(--ink2);box-shadow:inset 0 0 0 1px var(--hair);display:flex;align-items:center;justify-content:center}
+.note{position:absolute;font:600 11px var(--mono);color:#ffcf6b}
+.note:before{content:"▸ "}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute">
+ <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+ <symbol id="undo" viewBox="0 0 24 24"><path d="M4 9h11a5 5 0 0 1 0 10h-6"/><path d="M8 5L4 9l4 4"/></symbol>
+ <symbol id="redo" viewBox="0 0 24 24"><path d="M20 9H9a5 5 0 0 0 0 10h6"/><path d="M16 5l4 4-4 4"/></symbol>
+ <symbol id="object" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></symbol>
+ <symbol id="face" viewBox="0 0 24 24"><path d="M5 5h14v14H5z"/><path d="M5 5h14v14z" fill="currentColor" stroke="none" opacity=".55"/></symbol>
+ <symbol id="check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7"/></symbol>
+ <symbol id="x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+ <g id="cube"><g stroke="#0e121a"><polygon points="195,330 104,386 195,440" fill="#4d5566"/><polygon points="195,330 195,440 286,386" fill="#5e6778"/><polygon points="104,386 90,482 195,440" fill="#39404f"/><polygon points="286,386 195,440 300,482" fill="#495163"/><polygon points="90,482 195,554 195,440" fill="#2d3340"/><polygon points="195,440 195,554 300,482" fill="#3b4251"/></g></g>
+</svg>
+
+<div class="intro">
+  <h1>D · Шайба</h1>
+  <p><b>Тезис:</b> баров нет вообще. Весь интерфейс это одна круглая шайба под большим пальцем. Нажал и держишь: внутренняя дуга режимов, внешняя дуга инструментов выделения; отпустил на слове, выполнилось. Кольцо, которое у Kubik уже есть, из скрытого жеста становится всей системой. Язык: круги, широкая Archivo (wdth 125) для крупных слов, чернильно-синий фон.</p>
+  <p><b>Плюсы:</b> максимум экрана под модель; одна точка входа, которую не надо искать; идеально для одной руки; рука-переключатель (шайба зеркалится влево для левшей). <b>Минусы:</b> всё, кроме названия объекта, скрыто за нажатием, новичку нужен первый урок; меню, файлы и материалы уходят в третий уровень; радиальное меню на 8+ пунктов становится тесным.</p>
+  <p><b>Планшет:</b> две шайбы, по одной под каждый большой палец: левая держит режимы и историю, правая инструменты. Панель операции появляется дугой вокруг той шайбы, которой её вызвали.</p>
+</div>
+
+<div class="row">
+ <div>
+  <div class="cap">Телефон · покой, выделен Cube 1</div>
+  <div class="stage phone">
+   <svg class="scene" viewBox="0 0 390 844"><use href="#cube"/><g fill="none" stroke="#dfe5ee" stroke-width="2"><polyline points="195,330 286,386 300,482 195,554 90,482 104,386 195,330"/><polyline points="104,386 195,440 286,386"/><line x1="195" y1="440" x2="195" y2="554"/></g></svg>
+   <div class="title" style="left:22px;top:62px">Cube 1<small>object · 6 faces · move</small></div>
+   <div class="dot" style="right:22px;top:66px"><svg class="i"><use href="#menu"/></svg></div>
+   <div class="dot" style="left:22px;bottom:44px"><svg class="i"><use href="#undo"/></svg></div>
+   <div class="dot" style="left:80px;bottom:44px;color:#566077"><svg class="i"><use href="#redo"/></svg></div>
+   <div class="puck" style="right:26px;bottom:38px"><svg class="i"><use href="#object"/></svg></div>
+   <div class="note" style="left:22px;bottom:118px">всё управление: одна шайба + история + меню</div>
+  </div>
+ </div>
+
+ <div>
+  <div class="cap">Телефон · шайба нажата: режимы и инструменты</div>
+  <div class="stage phone">
+   <svg class="scene" viewBox="0 0 390 844" style="opacity:.35"><g transform="translate(0 -120)"><use href="#cube"/></g></svg>
+   <div class="title" style="left:22px;top:62px">Cube 1<small>держи и веди к слову</small></div>
+   <svg style="position:absolute;inset:0" viewBox="0 0 390 844"><circle cx="326" cy="768" r="215" fill="rgb(18 23 34/.6)" stroke="rgb(160 180 220/.18)"/><circle cx="326" cy="768" r="128" fill="rgb(26 33 48/.7)" stroke="rgb(160 180 220/.18)"/><line x1="326" y1="768" x2="160" y2="714" stroke="#e9eef7" stroke-width="1.5" stroke-dasharray="3 4"/></svg>
+<div class="seat m on" style="left:226px;top:768px">Obj</div><div class="seat m" style="left:239px;top:718px">Vert</div><div class="seat m" style="left:276px;top:681px">Edge</div><div class="seat m" style="left:326px;top:668px">Face</div>
+<div class="seat" style="left:151px;top:768px">Dup</div><div class="seat hot" style="left:160px;top:714px">Mirror</div><div class="seat" style="left:184px;top:665px">Array</div><div class="seat" style="left:223px;top:626px">Sub&shy;divide</div><div class="seat" style="left:272px;top:602px">Finish</div><div class="seat dz" style="left:326px;top:593px">Delete</div>
+<div class="word" style="left:22px;top:520px;color:var(--dim)">Mirror · по X</div>
+<div class="puck" style="right:26px;bottom:38px"><svg class="i"><use href="#object"/></svg></div>
+  </div>
+ </div>
+
+ <div>
+  <div class="cap">Телефон · Face, Extrude: значение дугой</div>
+  <div class="stage phone m-face">
+   <svg class="scene" viewBox="0 0 390 844"><g transform="translate(0 -110)" stroke="#0e121a"><polygon points="195,250 104,306 195,360" fill="#4d5566"/><polygon points="195,250 195,360 286,306" fill="#b48cff" fill-opacity=".85"/><polygon points="104,306 90,402 195,360" fill="#39404f"/><polygon points="286,306 195,360 300,402" fill="#8a6fc2"/><polygon points="90,402 195,474 195,360" fill="#2d3340"/><polygon points="195,360 195,474 300,402" fill="#3b4251"/></g></svg>
+   <div class="title" style="left:22px;top:62px;color:var(--mode)">Face<small style="color:var(--dim)">Cube 1 · 1 face · extrude</small></div>
+   <div class="dot" style="right:22px;top:66px"><svg class="i"><use href="#menu"/></svg></div>
+   <svg class="arcbar" style="left:0;top:0" width="390" height="844" viewBox="0 0 390 844">
+    <path d="M60 690 A 170 170 0 0 1 330 690" fill="none" stroke="#243044" stroke-width="10" stroke-linecap="round"/>
+    <path d="M60 690 A 170 170 0 0 1 222 568" fill="none" stroke="#b48cff" stroke-width="10" stroke-linecap="round"/>
+    <circle cx="222" cy="568" r="14" fill="#e9eef7"/>
+   </svg>
+   <div class="amt" style="left:0;right:0;top:620px"><div class="v">0.42</div><div class="l">Extrude</div></div>
+   <div class="chip on" style="left:98px;top:700px">Per face</div>
+   <div class="chip" style="left:206px;top:700px">Region</div>
+   <div class="no" style="left:40px;bottom:44px"><svg class="i"><use href="#x"/></svg></div>
+   <div class="go" style="left:163px;bottom:38px"><svg class="i"><use href="#check"/></svg></div>
+   <div class="puck" style="right:26px;bottom:38px"><svg class="i"><use href="#face"/></svg></div>
+   <div class="note" style="left:22px;top:150px">значение крутится пальцем по дуге</div>
+  </div>
+ </div>
+</div>
+
+<div class="row">
+ <div>
+  <div class="cap">Планшет 1180×820 · две шайбы, правая раскрыта</div>
+  <div class="stage tablet m-face">
+   <svg class="scene" viewBox="0 0 1180 820"><g transform="translate(590 330) scale(1.6) translate(-195 -360)" stroke="#0e121a"><polygon points="195,250 104,306 195,360" fill="#4d5566"/><polygon points="195,250 195,360 286,306" fill="#b48cff" fill-opacity=".85"/><polygon points="104,306 90,402 195,360" fill="#39404f"/><polygon points="286,306 195,360 300,402" fill="#8a6fc2"/><polygon points="90,402 195,474 195,360" fill="#2d3340"/><polygon points="195,360 195,474 300,402" fill="#3b4251"/></g></svg>
+   <div class="title" style="left:32px;top:32px;color:var(--mode)">Face<small style="color:var(--dim)">Cube 1 · 1 face</small></div>
+   <div class="dot" style="right:32px;top:36px"><svg class="i"><use href="#menu"/></svg></div>
+   <!-- left puck: modes + history -->
+   <svg style="position:absolute;inset:0" viewBox="0 0 1180 820"><circle cx="70" cy="750" r="150" fill="rgb(26 33 48/.6)" stroke="rgb(160 180 220/.18)"/><circle cx="1110" cy="750" r="225" fill="rgb(18 23 34/.6)" stroke="rgb(160 180 220/.18)"/></svg>
+   <div class="seat m" style="left:70px;top:632px">Obj</div>
+   <div class="seat m" style="left:130px;top:648px">Vert</div>
+   <div class="seat m" style="left:172px;top:692px">Edge</div>
+   <div class="seat m on" style="left:188px;top:750px">Face</div>
+   <div class="puck" style="left:32px;bottom:32px"><svg class="i"><use href="#undo"/></svg></div>
+   <!-- right puck: face tools -->
+   
+   <div class="seat hot" style="left:920px;top:750px">Extrude</div>
+   <div class="seat" style="left:934px;top:677px">Inset</div>
+   <div class="seat" style="left:975px;top:616px">Bevel</div>
+   <div class="seat" style="left:1036px;top:575px">Split</div>
+   <div class="seat dz" style="left:1110px;top:560px">Delete</div>
+   <div class="puck" style="right:32px;bottom:32px"><svg class="i"><use href="#face"/></svg></div>
+   <div class="note" style="left:32px;top:120px">левая шайба: тап = undo, держать = режимы (на кадре раскрыта); в покое рядом кнопка redo</div>
+  </div>
+ </div>
+</div>
+</body></html>

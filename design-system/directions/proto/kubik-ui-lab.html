@@ -1,0 +1,1837 @@
+<title>Kubik UI Lab</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,300..900&family=Geist+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: a workbench. Variant rail on top, a live Kubik build in a device
+   frame on the left, the brief on the right. On a phone or tablet the build
+   fills the screen under the rail, so it can be judged at real size. */
+@property --mc { syntax: '<color>'; inherits: true; initial-value: #f2f2f2; }
+:root{
+  color-scheme:dark;
+  --lab-bg:#060708; --lab-panel:#0d0f12; --lab-fg:#dde2e7; --lab-dim:#7f8891; --lab-line:#1b1f25; --lab-acc:#c0fe04;
+  --f-d:'Archivo',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  --f-m:'Geist Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+html{box-sizing:border-box;height:100%}
+*,*::before,*::after{box-sizing:inherit}
+body{margin:0;height:100%;background:var(--lab-bg);color:var(--lab-fg);font:14px/1.45 var(--f-d);overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+button:focus-visible,[role=button]:focus-visible,input:focus-visible{outline:2px solid var(--lab-acc);outline-offset:2px}
+
+#lab{height:100%;display:grid;grid-template-rows:auto minmax(0,1fr)}
+#bar{display:flex;align-items:center;gap:12px;padding:8px 12px;border-bottom:1px solid var(--lab-line);min-width:0;background:var(--lab-bg);position:relative;z-index:5}
+.brand{font:800 12px var(--f-d);font-stretch:125%;letter-spacing:.08em;white-space:nowrap;text-transform:uppercase}
+.brand span{color:var(--lab-dim);font-weight:500}
+#variants{display:flex;gap:4px;overflow-x:auto;scrollbar-width:none;min-width:0;flex:1;padding:2px}
+#variants::-webkit-scrollbar{display:none}
+#variants button{flex:none;display:flex;align-items:baseline;gap:7px;height:38px;padding:0 12px;border:1px solid var(--lab-line);background:var(--lab-panel);color:var(--lab-dim);font:500 11px var(--f-m);letter-spacing:.08em;text-transform:uppercase;transition:background .15s,color .15s,border-color .15s}
+#variants button b{color:var(--lab-fg);font:800 15px var(--f-d);font-stretch:112%;transition:color .15s}
+#variants button[aria-selected=true]{background:var(--lab-acc);border-color:var(--lab-acc);color:#060708}
+#variants button[aria-selected=true] b{color:#060708}
+.ctl{display:flex;gap:6px;flex:none}
+.lseg{display:flex;border:1px solid var(--lab-line)}
+.lseg button{height:36px;padding:0 10px;font:500 11px var(--f-m);letter-spacing:.08em;text-transform:uppercase;color:var(--lab-dim)}
+.lseg button[aria-pressed=true]{background:var(--lab-fg);color:#060708}
+#infoBtn{display:none;width:38px;height:38px;border:1px solid var(--lab-line);font:600 13px var(--f-m)}
+
+#bench{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,390px);min-height:0}
+#well{position:relative;min-width:0;min-height:0;display:grid;place-items:center;overflow:hidden;
+  background:radial-gradient(ellipse at 50% 40%,#121519 0%,#060708 70%)}
+#well::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.35;
+  background:linear-gradient(#1b1f25 1px,transparent 1px) 0 0/40px 40px,linear-gradient(90deg,#1b1f25 1px,transparent 1px) 0 0/40px 40px;
+  -webkit-mask:radial-gradient(ellipse at center,#000 20%,transparent 75%);mask:radial-gradient(ellipse at center,#000 20%,transparent 75%)}
+#device{position:absolute;left:50%;top:50%;flex:none;border-radius:46px;overflow:hidden;transform-origin:center center;
+  box-shadow:0 0 0 9px #14171b,0 0 0 10px #2a2f36,0 50px 90px -30px rgb(0 0 0/.9)}
+#device[data-device=tablet]{border-radius:26px}
+#device[data-device=fill]{position:absolute;inset:0;border-radius:0;box-shadow:none;transform:none!important;width:auto!important;height:auto!important}
+#brief{border-left:1px solid var(--lab-line);overflow:auto;padding:22px 22px 40px;background:var(--lab-panel);overscroll-behavior:contain;min-width:0}
+.b-kick{font:500 11px var(--f-m);letter-spacing:.12em;text-transform:uppercase;color:var(--lab-dim)}
+#brief h1{font:900 34px/1 var(--f-d);font-stretch:125%;text-transform:uppercase;margin:6px 0 12px;text-wrap:balance;letter-spacing:-.01em}
+#brief h3{font:600 11px var(--f-m);letter-spacing:.12em;text-transform:uppercase;color:var(--lab-dim);margin:22px 0 8px}
+#brief p{margin:0 0 10px;color:#c5ccd3;max-width:62ch}
+#brief ul,#brief ol{margin:0;padding-left:18px;color:#c5ccd3}
+#brief li{margin:0 0 6px}
+#brief li::marker{color:var(--lab-dim)}
+.refs a{color:var(--lab-fg);text-decoration:underline;text-decoration-color:#3a4048;text-underline-offset:3px}
+.refs li span{color:var(--lab-dim)}
+.b-close{display:none}
+
+@media (max-width:980px){
+  #bench{grid-template-columns:minmax(0,1fr)}
+  #brief{position:fixed;left:0;right:0;bottom:0;max-height:78%;z-index:60;border-left:0;border-top:1px solid var(--lab-line);
+    transform:translateY(102%);transition:transform .5s cubic-bezier(.32,.72,0,1);padding-bottom:calc(30px + env(safe-area-inset-bottom,0px))}
+  #brief.open{transform:none}
+  .b-close{display:block;position:sticky;top:0;margin-left:auto;width:44px;height:44px;border:1px solid var(--lab-line);background:var(--lab-panel);font:600 12px var(--f-m)}
+  #infoBtn{display:block}
+  .lseg.dev{display:none}
+  .brand span{display:none}
+  #variants button{padding:0 11px}
+  #variants button:not([aria-selected=true]){font-size:0;gap:0}
+}
+@media (max-width:560px){ .brand{display:none} #bar{gap:8px;padding:6px 8px} .lseg button{padding:0 8px} }
+
+/* ================= THE APP ================= */
+#app{
+  --bg1:#0e1115; --bg2:#040506; --plate:#101216; --plate2:#181b20; --press:#262a31;
+  --ink:#f2f2f2; --inkd:#8e959c; --micro:#5d646b; --line:rgb(255 255 255/.09); --lines:rgb(255 255 255/.28);
+  --vpt:#f2f2f2; --vpd:#7d858d;
+  --signal:#f24723; --on:#060708;
+  --m-obj:#f2f2f2; --m-vtx:#c0fe04; --m-edg:#01e8ff; --m-fce:#ff4fa3;
+  --on-obj:#060708;
+  --fd:var(--f-d); --fm:var(--f-m);
+  --sat:0px; --sab:0px; --vt:120px; --vb:200px; --deckH:170px;
+  --e-std:cubic-bezier(.2,0,0,1); --e-in:cubic-bezier(.05,.7,.1,1); --e-out:cubic-bezier(.3,0,.8,.15);
+  --e-sheet:cubic-bezier(.32,.72,0,1); --e-spring:cubic-bezier(.3,1.3,.5,1);
+  --mc:var(--m-obj); --mc-on:var(--on-obj);
+  position:absolute;inset:0;overflow:hidden;border-radius:inherit;container:app/size;
+  color:var(--ink);font-family:var(--fd);
+  user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;
+  transition:--mc .15s linear;
+}
+#app[data-mode=vertex]{--mc:var(--m-vtx);--mc-on:#060708}
+#app[data-mode=edge]{--mc:var(--m-edg);--mc-on:#060708}
+#app[data-mode=face]{--mc:var(--m-fce);--mc-on:#060708}
+#app button:focus-visible,#app [role=button]:focus-visible{outline:2px solid var(--mc);outline-offset:2px}
+#app svg.ic{display:block;flex:none}
+
+#stage{position:absolute;inset:0;background:radial-gradient(120% 90% at 50% 38%,var(--bg1) 0%,var(--bg2) 72%);
+  transform-origin:50% 60%;transition:transform .5s var(--e-sheet),filter .5s var(--e-sheet),border-radius .5s var(--e-sheet),left .45s var(--e-sheet);overflow:hidden}
+#cv{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none;outline:none}
+#chrome{position:absolute;inset:0;pointer-events:none;z-index:10}
+#chrome > *{pointer-events:auto}
+#chrome .passive{pointer-events:none}
+
+/* overlays that follow the selection */
+#ov{position:absolute;inset:0;pointer-events:none;z-index:6;opacity:0;transition:opacity .15s}
+#ov.on{opacity:1}
+#ov > *{display:none;position:absolute}
+.brk{left:var(--x0);top:var(--y0);width:calc(var(--x1) - var(--x0));height:calc(var(--y1) - var(--y0))}
+.brk i{position:absolute;width:14px;height:14px;border:0 solid var(--bc,var(--vpt))}
+.brk i:nth-child(1){left:-12px;top:-12px;border-width:1.5px 0 0 1.5px}
+.brk i:nth-child(2){right:-12px;top:-12px;border-width:1.5px 1.5px 0 0}
+.brk i:nth-child(3){left:-12px;bottom:-12px;border-width:0 0 1.5px 1.5px}
+.brk i:nth-child(4){right:-12px;bottom:-12px;border-width:0 1.5px 1.5px 0}
+#ov.draw .brk i{animation:tick .3s var(--e-in) both}
+@keyframes tick{from{opacity:0;transform:scale(1.8)}to{opacity:1;transform:none}}
+.lead{inset:0;width:100%;height:100%;overflow:visible}
+.lead line{stroke:var(--lc,var(--vpt));stroke-width:1}
+.lead circle{fill:var(--lc,var(--vpt))}
+.callout{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font:600 10px var(--fm);letter-spacing:.1em;text-transform:uppercase;color:var(--vpt);transform:translateY(-50%)}
+.callout b{display:inline-block;background:var(--mc);color:var(--mc-on);padding:3px 6px;margin-right:6px;font-weight:600}
+.dim{left:var(--x0);top:calc(var(--y1) + 18px);width:calc(var(--x1) - var(--x0));height:1px;background:var(--vpt)}
+.dim::before,.dim::after{content:"";position:absolute;top:-5px;width:1px;height:11px;background:var(--vpt)}
+.dim::before{left:0}.dim::after{right:0}
+.dim span{position:absolute;left:50%;top:6px;transform:translateX(-50%);font:600 10px var(--fm);letter-spacing:.1em;color:var(--vpt);white-space:nowrap}
+.scale{left:18px;top:0;bottom:0;width:44px;clip-path:inset(calc(var(--sat) + 150px) 0 calc(var(--sab) + 70px) 0)}
+.scale span{position:absolute;left:0;top:calc(var(--g) - var(--n) * var(--ppm));font:500 9.5px var(--fm);color:var(--vpd);letter-spacing:.06em;transform:translateY(-50%);padding-left:12px}
+.scale span::before{content:"";position:absolute;left:0;top:50%;width:8px;height:1px;background:var(--vpd)}
+
+/* scrim, panels */
+#scrim{position:absolute;inset:0;z-index:28;background:rgb(0 0 0/.42);opacity:0;visibility:hidden;transition:opacity .4s var(--e-sheet),visibility 0s .4s}
+#app[data-panel]:not([data-panel=""]) #scrim{opacity:1;visibility:visible;transition:opacity .5s var(--e-sheet)}
+.panel{position:absolute;left:0;right:0;bottom:0;max-height:74%;display:flex;flex-direction:column;z-index:30;background:var(--plate);color:var(--ink);
+  border-top:1px solid var(--lines);padding-bottom:calc(10px + var(--sab));
+  transform:translateY(104%);visibility:hidden;transition:transform .4s var(--e-sheet),visibility 0s .4s}
+#app[data-panel=scene] #p-scene,#app[data-panel=mat] #p-mat,#app[data-panel=menu] #p-menu{transform:none;visibility:visible;transition:transform .5s var(--e-sheet)}
+.panel header{display:flex;align-items:center;gap:12px;padding:12px 8px 10px 16px}
+.panel h2{margin:0;font:800 20px var(--fd);font-stretch:125%;text-transform:uppercase;letter-spacing:-.005em}
+.panel .sub{font:500 10px var(--fm);letter-spacing:.12em;text-transform:uppercase;color:var(--inkd)}
+.panel .px{margin-left:auto;width:44px;height:44px;display:grid;place-items:center;color:var(--ink)}
+.plist{overflow:auto;overscroll-behavior:contain;min-height:0}
+.prow{display:grid;grid-template-columns:30px minmax(0,1fr) auto 48px;align-items:center;min-height:52px;padding-left:16px;border-top:1px solid var(--line);cursor:pointer;transition:background .15s}
+.prow i{font:500 10px var(--fm);font-style:normal;color:var(--micro)}
+.prow b{font:600 15px var(--fd);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prow small{font:500 10px var(--fm);letter-spacing:.08em;color:var(--inkd);padding-right:6px}
+.prow .eye{width:48px;height:52px;display:grid;place-items:center;color:var(--inkd)}
+.prow.sel{background:var(--mc);color:var(--mc-on)}
+.prow.sel i,.prow.sel small,.prow.sel .eye{color:inherit;opacity:.72}
+.prow.hid b{opacity:.5;text-decoration:line-through}
+.pfoot{display:flex;flex-wrap:wrap;gap:4px;padding:10px 12px 0}
+.pfoot button,.mseg button{height:44px;padding:0 14px;display:inline-flex;align-items:center;gap:6px;background:var(--plate2);font:600 11px var(--fm);letter-spacing:.08em;text-transform:uppercase}
+.pfoot button:disabled{opacity:.4;cursor:default}
+.pfoot .danger{color:var(--signal);margin-left:auto}
+.mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px;padding:4px 12px 6px;overflow:auto;overscroll-behavior:contain}
+.mcard{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:12px;background:var(--plate2);text-align:left;min-height:118px;border:1px solid transparent;transition:border-color .15s,background .15s}
+.mcard.on{border-color:var(--mc)}
+.mcard b{font:700 13px var(--fd)}
+.mcard small{font:500 10px var(--fm);color:var(--inkd);letter-spacing:.06em}
+.sw{width:46px;height:46px;border-radius:50%;background:radial-gradient(circle at 34% 30%,color-mix(in srgb,var(--sw) 30%,#fff) 0%,var(--sw) 38%,color-mix(in srgb,var(--sw) 45%,#000) 100%);box-shadow:0 8px 16px -8px rgb(0 0 0/.6)}
+.sw.metal{background:radial-gradient(circle at 34% 30%,#fff 0%,var(--sw) 22%,#5a5f66 55%,#e9edf2 72%,#3a3e44 100%)}
+.mbody{padding:0 16px 8px;overflow:auto;overscroll-behavior:contain}
+.mrow{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:56px;border-top:1px solid var(--line);font:600 14px var(--fd)}
+.mseg{display:flex;gap:4px}
+.mseg button.on{background:var(--mc);color:var(--mc-on)}
+.tog{width:52px;height:32px;border:1px solid var(--lines);position:relative;flex:none}
+.tog i{position:absolute;left:3px;top:3px;width:24px;height:24px;background:var(--inkd);transition:transform .2s var(--e-std),background .15s}
+.tog.on i{transform:translateX(20px);background:var(--mc)}
+.mnote{font:500 11px/1.5 var(--fm);color:var(--inkd);margin:14px 0 4px;letter-spacing:.02em}
+
+/* operation deck */
+#opdeck{position:absolute;left:0;right:0;bottom:var(--deckH);z-index:20;background:var(--plate);color:var(--ink);padding:12px 12px 12px;border-top:1px solid var(--lines);
+  opacity:0;visibility:hidden;transform:translateY(14px);transition:opacity .15s var(--e-out),transform .2s var(--e-out),visibility 0s .2s}
+#app[data-op]:not([data-op=""]) #opdeck{opacity:1;visibility:visible;transform:none;transition:opacity .2s var(--e-in),transform .3s var(--e-in)}
+.op-head{display:flex;align-items:flex-end;gap:12px}
+.op-val{width:4.6ch;background:none;border:0;color:inherit;font:800 44px/.9 var(--fd);font-stretch:125%;font-variant-numeric:tabular-nums;padding:0;letter-spacing:-.02em;outline:none;-webkit-user-select:text;user-select:text}
+.op-meta{display:flex;flex-direction:column;gap:3px;padding-bottom:3px;min-width:0}
+.op-kick{font:500 9.5px var(--fm);letter-spacing:.14em;text-transform:uppercase;color:var(--micro)}
+.op-name{font:800 14px var(--fd);font-stretch:112%;letter-spacing:.06em;text-transform:uppercase}
+.op-hint{margin-left:auto;font:500 9.5px var(--fm);letter-spacing:.12em;text-transform:uppercase;color:var(--micro);text-align:right;padding-bottom:3px}
+.op-ruler{position:relative;height:46px;margin-top:6px;touch-action:none;cursor:ew-resize;
+  background:repeating-linear-gradient(90deg,var(--lines) 0 1px,transparent 1px 10px) 0 28px/100% 10px no-repeat,
+             repeating-linear-gradient(90deg,var(--lines) 0 1px,transparent 1px 50px) 0 22px/100% 16px no-repeat}
+.op-ruler .fill{position:absolute;left:0;top:22px;height:16px;width:calc(var(--opp,0) * 100%);background:var(--mc)}
+.op-ruler .needle{position:absolute;top:8px;bottom:0;left:calc(var(--opp,0) * 100%);width:2px;margin-left:-1px;background:var(--ink)}
+.op-ruler .needle::before{content:"";position:absolute;left:-5px;top:-7px;border:6px solid transparent;border-top-color:var(--ink)}
+.op-arc{display:none}
+.op-row{display:flex;gap:4px;margin-top:8px;align-items:stretch}
+.op-seg{display:flex;gap:4px}
+.op-seg button{height:48px;padding:0 14px;background:var(--plate2);color:var(--inkd);font:600 11px var(--fm);letter-spacing:.08em;text-transform:uppercase}
+.op-seg button.on{background:var(--ink);color:var(--plate)}
+#app[data-op=inset] .op-seg{visibility:hidden}
+.op-x{width:52px;height:48px;display:grid;place-items:center;background:var(--plate2);margin-left:auto}
+.op-ok{height:48px;padding:0 34px 0 18px;background:var(--signal);color:#060708;font:800 14px var(--fd);font-stretch:112%;letter-spacing:.08em;text-transform:uppercase;position:relative;overflow:hidden}
+.op-ok::after{content:"";position:absolute;right:0;top:0;bottom:0;width:16px;background:repeating-linear-gradient(135deg,rgb(0 0 0/.55) 0 3px,transparent 3px 7px)}
+
+/* sym popover */
+.pop{position:absolute;z-index:25;display:grid;grid-template-columns:repeat(3,52px);gap:4px;padding:6px;background:var(--plate);border:1px solid var(--lines);
+  transition:opacity .15s var(--e-out),transform .2s var(--e-out)}
+.pop:not(.vis){opacity:0;transform:scale(.95);pointer-events:none!important}
+.pop.vis{transition:opacity .2s var(--e-in),transform .25s var(--e-in)}
+.pop button{height:48px;background:var(--plate2);font:700 15px var(--fm);color:var(--ink)}
+.pop button.on{background:var(--mc);color:var(--mc-on)}
+
+/* tool ring */
+#ring{position:absolute;inset:0;z-index:40;pointer-events:none}
+#ring.open{pointer-events:auto}
+#ring .veil{position:absolute;inset:0;background:radial-gradient(circle at var(--cx) var(--cy),rgb(0 0 0/.55) 0,rgb(0 0 0/.18) calc(var(--r) * 2.2));opacity:0;transition:opacity .15s}
+#ring.open .veil{opacity:1}
+.seat{position:absolute;left:0;top:0;width:70px;height:70px;margin:-35px 0 0 -35px;display:grid;place-items:center;text-align:center;padding:6px;
+  font:700 10px/1.1 var(--fd);font-stretch:112%;letter-spacing:.04em;text-transform:uppercase;color:var(--ink);background:var(--plate);border:1px solid var(--lines);
+  transform:translate(var(--cx),var(--cy)) scale(.9);opacity:0;
+  transition:transform .16s var(--e-in) calc(var(--i) * 22ms),opacity .16s linear calc(var(--i) * 22ms),background .12s,color .12s}
+#ring.open .seat{transform:translate(var(--x),var(--y)) scale(1);opacity:1}
+#ring.closing .seat{transition:transform .1s var(--e-out),opacity .1s;transition-delay:0s}
+#ring .seat.hot{background:var(--mc);color:var(--mc-on);border-color:var(--mc);transform:translate(var(--x),var(--y)) scale(1.1)}
+.seat.danger{color:var(--signal);border-color:var(--signal)}
+#ring .seat.danger.hot{background:var(--signal);color:#060708}
+.seat .hold{position:absolute;inset:0;background:var(--signal);transform-origin:left;transform:scaleX(0);mix-blend-mode:screen;opacity:.8}
+.seat.holding .hold{transform:scaleX(1);transition:transform .55s linear}
+.rhub{position:absolute;left:var(--cx);top:var(--cy);width:12px;height:12px;margin:-6px;border:1.5px solid var(--ink);transform:rotate(45deg) scale(.4);opacity:0;transition:.15s}
+#ring.open .rhub{opacity:1;transform:rotate(45deg) scale(1)}
+.rlabel{position:absolute;left:var(--cx);top:calc(var(--cy) - var(--r) - 66px);transform:translateX(-50%);font:600 10px var(--fm);letter-spacing:.14em;text-transform:uppercase;color:var(--vpt);white-space:nowrap;opacity:0;transition:opacity .15s}
+#ring.open .rlabel{opacity:1}
+
+/* toast */
+#toast{position:absolute;left:50%;top:calc(var(--sat) + 86px);z-index:45;transform:translate(-50%,-6px);opacity:0;pointer-events:none;
+  background:var(--ink);color:var(--plate);padding:8px 12px;font:600 11px var(--fm);letter-spacing:.08em;text-transform:uppercase;white-space:nowrap;
+  max-width:calc(100% - 32px);overflow:hidden;text-overflow:ellipsis;transition:opacity .15s var(--e-out),transform .2s var(--e-out)}
+#toast.on{opacity:1;transform:translate(-50%,0);transition:opacity .2s var(--e-in),transform .3s var(--e-in)}
+#toast.blink{animation:blink .5s steps(1) 1}
+@keyframes blink{0%{opacity:0}25%{opacity:1}50%{opacity:0}75%{opacity:1}}
+
+/* shared mode chips */
+.m-object{--c:var(--m-obj);--on-c:var(--on-obj)} .m-vertex{--c:var(--m-vtx);--on-c:#060708}
+.m-edge{--c:var(--m-edg);--on-c:#060708} .m-face{--c:var(--m-fce);--on-c:#060708}
+
+#app.lite *{backdrop-filter:none!important;-webkit-backdrop-filter:none!important}
+#app[data-layout=depth][data-panel]:not([data-panel=""]) #ov,#app[data-skin=h][data-panel]:not([data-panel=""]):not([data-panel=scene]) #ov{opacity:0}
+
+@media (prefers-reduced-motion:reduce){
+  #app *,#app{transition-duration:.01ms!important;animation-duration:.01ms!important}
+}
+
+/* ================= LAYOUT: DECK (G, H, I) ================= */
+#app[data-layout=deck]{--vt:110px;--vb:175px;--deckH:calc(166px + var(--sab))}
+.d-top{position:absolute;left:12px;right:12px;top:calc(var(--sat) + 8px);display:flex;justify-content:space-between;align-items:flex-start;gap:8px;pointer-events:none}
+.d-top > *{pointer-events:auto}
+.d-mode{display:flex;height:52px;min-width:0;clip-path:polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,10px 100%,0 calc(100% - 10px))}
+.d-mode .blk{display:flex;flex-direction:column;justify-content:center;padding:0 14px 0 12px;background:var(--mc);color:var(--mc-on);min-width:68px}
+.d-mode .blk b{font:800 21px/1 var(--fd);font-stretch:125%;letter-spacing:-.01em}
+.d-mode .blk span{font:600 9.5px var(--fm);letter-spacing:.14em;margin-top:4px;opacity:.72}
+.d-mode .nm{display:flex;flex-direction:column;justify-content:center;padding:0 18px 0 12px;background:var(--plate);border:1px solid var(--line);border-left:0;min-width:0}
+.d-mode .nm b{font:700 15px var(--fd);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40vw}
+.d-mode .nm span{font:500 10px var(--fm);letter-spacing:.08em;color:var(--inkd);text-transform:uppercase;margin-top:2px;white-space:nowrap}
+.d-ib{width:52px;height:52px;display:grid;place-items:center;background:var(--plate);border:1px solid var(--line);color:var(--ink);flex:none;position:relative}
+.d-ib::before,.d-ib::after{content:"";position:absolute;width:7px;height:7px;background:linear-gradient(var(--lines),var(--lines)) center/1px 100% no-repeat,linear-gradient(var(--lines),var(--lines)) center/100% 1px no-repeat}
+.d-ib::before{left:-4px;top:-4px}.d-ib::after{right:-4px;bottom:-4px}
+.d-ib.on{background:var(--ink);color:var(--plate)}
+.d-coords{position:absolute;left:14px;top:calc(var(--sat) + 70px);font:500 9.5px var(--fm);letter-spacing:.14em;color:var(--vpd);text-transform:uppercase;pointer-events:none}
+.d-deck{position:absolute;left:0;right:0;bottom:0;background:var(--plate);border-top:1px solid var(--lines);padding:10px 12px calc(12px + var(--sab))}
+.d-head{display:flex;justify-content:space-between;gap:8px;font:500 9.5px var(--fm);letter-spacing:.14em;text-transform:uppercase;color:var(--micro)}
+.d-ticks{height:9px;margin:6px 0 8px;background:repeating-linear-gradient(90deg,var(--lines) 0 1px,transparent 1px 8px);opacity:.5}
+.d-modes{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
+.d-modes button{height:52px;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;padding:0 10px;background:var(--plate2);color:var(--inkd);font:800 14px var(--fd);font-stretch:112%;text-transform:uppercase;position:relative;transition:background .15s,color .15s}
+.d-modes button i{font:500 9.5px var(--fm);font-style:normal;letter-spacing:.12em;color:var(--micro);margin-bottom:2px}
+.d-modes button::after{content:"";position:absolute;left:0;right:0;bottom:0;height:3px;background:var(--c)}
+.d-modes button.on{background:var(--c);color:var(--on-c)}
+.d-modes button.on i{color:inherit;opacity:.65}
+.d-tools{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;margin-top:4px}
+.d-tools button{height:52px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;background:var(--plate2);font:600 9.5px var(--fm);letter-spacing:.12em;text-transform:uppercase;color:var(--ink);transition:background .15s,color .15s}
+.d-tools button em{font-style:normal;color:var(--mc)}
+.d-tools button.on{background:var(--mc);color:var(--mc-on)}
+.d-tools button.on em{color:inherit}
+.d-tools button:disabled{color:var(--micro);cursor:default}
+.d-tools button:active:not(:disabled),.d-modes button:active{box-shadow:inset 0 0 0 1px var(--lines);transform:translateY(1px)}
+.d-deck .sympop{left:50%;margin-left:-87px;bottom:calc(100% + 10px)}
+#app[data-layout=deck] #ov .brk{display:block}
+#app[data-layout=deck] #ov .lead,#app[data-layout=deck] #ov .callout{display:block}
+#app[data-layout=deck] .brk i{width:9px;height:9px;border-width:0!important;background:linear-gradient(var(--vpt),var(--vpt)) center/1px 100% no-repeat,linear-gradient(var(--vpt),var(--vpt)) center/100% 1px no-repeat}
+#app[data-layout=deck] .brk i:nth-child(1){left:-18px;top:-18px}#app[data-layout=deck] .brk i:nth-child(2){right:-18px;top:-18px}
+#app[data-layout=deck] .brk i:nth-child(3){left:-18px;bottom:-18px}#app[data-layout=deck] .brk i:nth-child(4){right:-18px;bottom:-18px}
+#app[data-layout=deck] .seat{width:78px;height:78px;margin:-39px 0 0 -39px;clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%);border:0;background:var(--lines)}
+#app[data-layout=deck] .seat::before{content:"";position:absolute;inset:1.5px;clip-path:inherit;background:var(--plate);z-index:-1}
+#app[data-layout=deck] .seat{isolation:isolate}
+#app[data-layout=deck] .seat.hot::before{background:var(--mc)}
+#app[data-layout=deck] .seat.danger{background:var(--signal)}
+#app[data-layout=deck] .seat.danger.hot::before{background:var(--signal)}
+@container app (min-width:820px){
+  #app[data-layout=deck]{--vt:90px;--vb:40px}
+  #app[data-layout=deck] #stage{left:300px}
+  #app[data-layout=deck] #p-scene{left:0;top:0;bottom:0;right:auto;width:300px;max-height:none;transform:none;visibility:visible;border-top:0;border-right:1px solid var(--lines);padding-top:calc(var(--sat) + 4px)}
+  #app[data-layout=deck] .t-scene{display:none!important}
+  #app[data-layout=deck] .d-top{left:312px}
+  #app[data-layout=deck] .d-coords{left:314px}
+  #app[data-layout=deck] .d-deck{left:auto;right:16px;bottom:16px;width:280px;border:1px solid var(--lines)}
+  #app[data-layout=deck] .d-tools{grid-template-columns:repeat(4,1fr)}
+  #app[data-layout=deck] #opdeck{left:316px;right:auto;width:440px;bottom:16px;border:1px solid var(--lines)}
+  #app[data-layout=deck] .panel:not(#p-scene){left:auto;right:16px;width:380px;bottom:16px;border:1px solid var(--lines)}
+  #app[data-layout=deck][data-panel=scene] #scrim{opacity:0;visibility:hidden}
+}
+
+/* ---- G · Ночь ---- */
+#app[data-skin=g]{--bg1:#0f1216;--bg2:#040506}
+/* ---- H · Кость ---- */
+#app[data-skin=h]{--plate:#e8e6df;--plate2:#d9d6cd;--press:#c9c5ba;--ink:#0b0c0e;--inkd:#55585d;--micro:#86888c;--line:rgb(0 0 0/.12);--lines:rgb(0 0 0/.45);--bg1:#10131a;--bg2:#040506}
+#app[data-skin=h] .d-modes .m-object.on{background:var(--ink);color:var(--plate)}
+#app[data-skin=h][data-panel]:not([data-panel=""]) #stage{transform:scale(.955);border-radius:10px}
+@container app (min-width:820px){#app[data-skin=h][data-panel=scene] #stage{transform:none;border-radius:0}}
+/* ---- I · Бумага ---- */
+#app[data-skin=i]{--bg1:#e7e6e1;--bg2:#c9c9c2;--plate:#f6f5f0;--plate2:#e8e7e1;--press:#d7d6cf;--ink:#0b0c0e;--inkd:#55585d;--micro:#8a8c90;--line:rgb(0 0 0/.1);--lines:rgb(0 0 0/.45);
+  --vpt:#0b0c0e;--vpd:#5f6166;--m-obj:#0b0c0e;--on-obj:#f6f5f0}
+#app[data-skin=i] #scrim{background:rgb(40 40 36/.25)}
+
+/* ================= LAYOUT: FRAME (J · Телеметрия) ================= */
+#app[data-layout=frame]{--bg1:#0b0c0e;--bg2:#060708;--plate:#0e1013;--plate2:#15181c;--press:#20242a;--line:#2b3037;--lines:#5c636b;--fd:var(--f-m);
+  --vt:110px;--vb:120px;--deckH:calc(64px + var(--sab))}
+.j-frame{position:absolute;left:10px;right:10px;top:calc(var(--sat) + 30px);bottom:calc(var(--sab) + 32px);border:1px solid var(--line);pointer-events:none!important;transition:border-color .15s}
+#app[data-layout=frame]:not([data-mode=object]) .j-frame{border-color:var(--mc)}
+.j-tabs{position:absolute;left:10px;top:calc(var(--sat) + 8px);display:flex}
+.j-tabs button,.j-tools button,.j-menu{height:44px;min-width:48px;padding:0 12px;display:flex;align-items:center;justify-content:center;gap:6px;background:var(--plate);border:1px solid var(--line);margin-left:-1px;
+  font:600 11px var(--f-m);letter-spacing:.12em;text-transform:uppercase;color:var(--inkd);transition:background .15s,color .15s,border-color .15s}
+.j-tabs button.on{background:var(--c);border-color:var(--c);color:var(--on-c)}
+.j-menu{position:absolute;right:10px;top:calc(var(--sat) + 8px);color:var(--ink)}
+.j-menu.on,.j-tools button.on{background:var(--ink);color:var(--plate);border-color:var(--ink)}
+.j-ro{position:absolute;left:22px;top:calc(var(--sat) + 66px);display:flex;flex-direction:column;gap:2px;font:500 10px/1.5 var(--f-m);letter-spacing:.12em;text-transform:uppercase;color:var(--inkd);pointer-events:none}
+.j-ro b{color:var(--ink);font-weight:600}
+.j-tools{position:absolute;left:10px;right:10px;bottom:calc(var(--sab) + 8px);display:flex}
+.j-tools button{height:52px;flex:1;color:var(--ink)}
+.j-tools button:disabled{color:var(--micro)}
+.j-tools button em{font-style:normal;color:var(--mc)}
+.j-tools button:active:not(:disabled),.j-tabs button:active{background:var(--press);border-color:var(--lines)}
+#app[data-layout=frame] .sympop{left:50%;margin-left:-87px;bottom:calc(var(--sab) + 70px)}
+#app[data-layout=frame] #ov .brk,#app[data-layout=frame] #ov .dim,#app[data-layout=frame] #ov .scale{display:block}
+#app[data-layout=frame] #opdeck{left:10px;right:10px;border:1px solid var(--lines);bottom:calc(var(--sab) + 60px)}
+#app[data-layout=frame] .op-val{font:500 40px/1 var(--f-m);letter-spacing:-.03em;width:5.2ch}
+#app[data-layout=frame] .op-ok{padding:0 18px;font:600 12px var(--f-m);letter-spacing:.14em}
+#app[data-layout=frame] .op-ok::after{display:none}
+#app[data-layout=frame] .panel{left:10px;right:10px;bottom:calc(var(--sab) + 60px);border:1px solid var(--lines);max-height:66%}
+#app[data-layout=frame] .panel h2{font:600 13px var(--f-m);letter-spacing:.14em}
+#app[data-layout=frame] .prow b{font:500 13px var(--f-m)}
+#app[data-layout=frame] #scrim{background:rgb(0 0 0/.25)}
+#app[data-layout=frame] .seat{width:92px;height:44px;margin:-22px 0 0 -46px;font:600 10px var(--f-m);letter-spacing:.12em;border-color:var(--lines)}
+#app[data-layout=frame] #toast{top:calc(var(--sat) + 44px)}
+@container app (min-width:820px){
+  #app[data-layout=frame]{--vt:80px;--vb:80px}
+  #app[data-layout=frame] #stage{left:326px}
+  #app[data-layout=frame] #p-scene{left:16px;top:calc(var(--sat) + 30px);bottom:calc(var(--sab) + 32px);right:auto;width:300px;max-height:none;transform:none;visibility:visible}
+  #app[data-layout=frame] .t-scene{display:none!important}
+  #app[data-layout=frame] .j-frame{left:16px;right:16px}
+  #app[data-layout=frame] .j-tabs{left:340px}
+  #app[data-layout=frame] .j-ro{left:340px}
+  #app[data-layout=frame] .j-tools{left:auto;right:16px;width:440px}
+  #app[data-layout=frame] #opdeck{left:340px;right:auto;width:460px;bottom:calc(var(--sab) + 32px)}
+  #app[data-layout=frame] .panel:not(#p-scene){left:auto;right:16px;width:380px}
+  #app[data-layout=frame][data-panel=scene] #scrim{opacity:0;visibility:hidden}
+  #app[data-layout=frame] .scale{left:342px}
+}
+
+/* ================= LAYOUT: POSTER (K · Этикетки) ================= */
+#app[data-layout=poster]{--bg1:#101114;--bg2:#050506;--plate:#ebe8df;--plate2:#dcd9cf;--press:#c9c5ba;--ink:#0c0d0f;--inkd:#56585c;--micro:#8a8880;--line:rgb(0 0 0/.12);--lines:rgb(0 0 0/.5);
+  --vt:190px;--vb:120px;--deckH:calc(92px + var(--sab))}
+.k-word{position:absolute;left:12px;top:calc(var(--sat) + 6px);font:900 96px/.8 var(--f-d);font-stretch:125%;letter-spacing:-.035em;color:var(--mc);text-transform:uppercase;pointer-events:none!important;transition:color .15s}
+.k-word .l{display:none}
+.k-lab{position:absolute;left:12px;top:calc(var(--sat) + 96px);max-width:calc(100% - 110px);display:flex;align-items:center;gap:10px;height:46px;padding:0 16px 0 12px;background:var(--plate);color:var(--ink);
+  clip-path:polygon(0 0,calc(100% - 12px) 0,100% 12px,100% 100%,0 100%);pointer-events:none!important}
+.k-lab b{font:800 15px var(--f-d);font-stretch:112%;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.k-lab small{font:500 10px var(--f-m);letter-spacing:.1em;color:var(--inkd);text-transform:uppercase;white-space:nowrap}
+.k-bar{display:block;height:22px;flex:none}
+.k-side{position:absolute;right:0;top:calc(var(--sat) + 8px);display:flex;flex-direction:column;gap:4px}
+.k-side button{width:80px;height:54px;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;padding:0 10px;background:var(--plate);color:var(--ink);
+  font:800 13px var(--f-d);font-stretch:112%;text-transform:uppercase;clip-path:polygon(10px 0,100% 0,100% 100%,0 100%,0 10px);transition:transform .15s var(--e-std),background .15s}
+.k-side button small{font:500 9.5px var(--f-m);letter-spacing:.1em;color:var(--inkd);text-transform:uppercase}
+.k-side button:first-child{margin-bottom:84px}
+.k-side button.on{background:var(--mc);color:var(--mc-on);transform:translateX(-6px)}
+.k-side button.on small{color:inherit}
+.k-side button:disabled{color:#a09d94}
+.k-side button:active:not(:disabled){transform:translateX(-3px);background:var(--press)}
+.k-modes{position:absolute;left:12px;right:12px;bottom:calc(var(--sab) + 14px);display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
+.k-modes button{height:66px;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-start;padding:8px 10px;background:var(--c);color:var(--on-c);
+  font:900 17px var(--f-d);font-stretch:125%;text-transform:uppercase;clip-path:polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,0 100%);opacity:.38;transition:opacity .15s,transform .2s var(--e-std)}
+.k-modes button small{font:600 9.5px var(--f-m);letter-spacing:.12em;margin-bottom:auto}
+.k-modes button.on{opacity:1;transform:translateY(-6px)}
+#app[data-skin=k] .k-modes .m-object{--c:#ebe8df}
+#app[data-skin=k]{--m-obj:#ebe8df}
+#app[data-layout=poster] .sympop{right:88px;top:calc(var(--sat) + 330px);background:var(--plate)}
+#app[data-layout=poster] #ov .lead,#app[data-layout=poster] #ov .callout{display:block}
+#app[data-layout=poster] .callout{font:800 12px var(--f-d);font-stretch:112%;letter-spacing:.02em;background:var(--plate);color:var(--ink);padding:6px 10px;clip-path:polygon(0 0,calc(100% - 8px) 0,100% 8px,100% 100%,0 100%)}
+#app[data-layout=poster] .callout b{font:600 10px var(--f-m);letter-spacing:.1em}
+#app[data-layout=poster] #opdeck{left:12px;right:12px;border:0;padding:14px;clip-path:polygon(0 0,calc(100% - 16px) 0,100% 16px,100% 100%,0 100%);bottom:calc(var(--sab) + 96px)}
+#app[data-layout=poster] .op-val{font:900 58px/.82 var(--f-d);font-stretch:125%;width:4.2ch;letter-spacing:-.03em}
+#app[data-layout=poster] .op-name{font:900 18px var(--f-d);font-stretch:125%}
+#app[data-layout=poster] .op-ruler{background:repeating-linear-gradient(90deg,var(--ink) 0 2px,transparent 2px 9px) 0 16px/100% 24px no-repeat}
+#app[data-layout=poster] .op-ruler .fill{top:16px;height:24px;mix-blend-mode:multiply}
+#app[data-layout=poster] .panel{left:12px;right:12px;bottom:calc(var(--sab) + 96px);border:0;clip-path:polygon(0 0,calc(100% - 16px) 0,100% 16px,100% 100%,0 100%);max-height:62%}
+#app[data-layout=poster] .panel h2{font:900 26px var(--f-d);font-stretch:125%}
+#app[data-layout=poster] #scrim{background:rgb(0 0 0/.3)}
+#app[data-layout=poster] .seat{width:96px;height:48px;margin:-24px 0 0 -48px;border:0;background:var(--plate);color:var(--ink);font:800 12px var(--f-d);font-stretch:112%;clip-path:polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,0 100%)}
+#app[data-layout=poster] .seat.danger{background:var(--signal);color:#060708}
+#app[data-layout=poster] #toast{top:auto;bottom:calc(var(--sab) + 104px)}
+@container app (min-width:820px){
+  #app[data-layout=poster]{--vt:140px;--vb:110px}
+  #app[data-layout=poster] .k-word{font-size:170px}
+  #app[data-layout=poster] .k-word .s{display:none}#app[data-layout=poster] .k-word .l{display:inline}
+  #app[data-layout=poster] .k-lab{top:calc(var(--sat) + 150px);left:18px}
+  #app[data-layout=poster] .k-modes{left:auto;right:100px;width:520px}
+  #app[data-layout=poster] #opdeck{left:24px;right:auto;width:460px;bottom:calc(var(--sab) + 24px)}
+  #app[data-layout=poster] .panel{left:auto;right:96px;width:400px;top:calc(var(--sat) + 8px);bottom:auto}
+}
+
+/* ================= LAYOUT: VECTOR (L · Вектор) ================= */
+#app[data-layout=vector]{--bg1:#0a0b0e;--bg2:#050506;--plate:rgb(8 9 11/.94);--plate2:rgb(230 236 242/.05);--press:rgb(230 236 242/.12);--line:rgb(230 236 242/.14);--lines:rgb(230 236 242/.3);
+  --ink:#e6ecf2;--inkd:#86909b;--vt:120px;--vb:200px;--deckH:calc(190px + var(--sab))}
+.l-name{position:absolute;left:22px;top:calc(var(--sat) + 14px);right:80px;pointer-events:none!important}
+.l-name b{display:block;font:300 32px/1 var(--f-d);font-stretch:62%;letter-spacing:.14em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink);transition:color .15s}
+#app[data-layout=vector]:not([data-mode=object]) .l-name b{color:var(--mc)}
+.l-name small{display:block;font:400 10px var(--f-m);letter-spacing:.14em;color:var(--inkd);margin-top:8px;text-transform:uppercase}
+.l-o{width:48px;height:48px;border:1px solid var(--line);border-radius:50%;display:grid;place-items:center;color:var(--ink);transition:border-color .15s,background .15s,color .15s}
+.l-o.on{background:var(--ink);color:#060708;border-color:var(--ink)}
+.l-o:active:not(:disabled){border-color:var(--ink);background:var(--press)}
+.l-o:disabled{color:#4a525b;cursor:default}
+.l-menu{position:absolute;right:18px;top:calc(var(--sat) + 12px)}
+.l-col{position:absolute;left:18px;top:calc(var(--sat) + 92px);display:flex;flex-direction:column;gap:8px}
+.l-arc{position:absolute;left:50%;bottom:calc(var(--sab) + 84px);width:300px;height:150px;margin-left:-150px;--ox:150px;--oy:150px;--rr:140px}
+.l-arc svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.l-arc svg path{fill:none;stroke:var(--line);stroke-width:1}
+.l-arc .arc-t{display:none}
+.l-m{position:absolute;left:calc(var(--ox) + var(--rr) * cos(var(--aa) * 1deg));top:calc(var(--oy) - var(--rr) * sin(var(--aa) * 1deg));--aa:var(--a);
+  width:64px;height:52px;margin:-26px 0 0 -32px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;font:500 11px var(--f-d);font-stretch:62%;letter-spacing:.32em;text-transform:uppercase;color:var(--inkd)}
+.l-m i{width:8px;height:8px;border:1px solid var(--inkd);border-radius:50%;transition:transform .2s var(--e-spring),background .15s,border-color .15s}
+.l-m.on{color:var(--c)}
+.l-m.on i{background:var(--c);border-color:var(--c);transform:scale(1.6)}
+.l-hist{position:absolute;left:50%;bottom:calc(var(--sab) + 24px);display:flex;gap:10px;transform:translateX(-50%)}
+#app[data-layout=vector] .sympop{left:74px;top:calc(var(--sat) + 196px);border-radius:28px;background:var(--plate)}
+#app[data-layout=vector] .pop button{border-radius:50%;border:1px solid var(--line);background:none}
+#app[data-layout=vector] .pop button.on{background:var(--mc);border-color:var(--mc)}
+#app[data-layout=vector] #ov .brk{display:block}
+#app[data-layout=vector] .brk i{border-color:var(--mc);width:10px;height:10px}
+#app[data-layout=vector] #ov .lead,#app[data-layout=vector] #ov .callout{display:block}
+#app[data-layout=vector] .callout{font:400 10px var(--f-m);letter-spacing:.14em}
+#app[data-layout=vector] .callout b{background:none;color:var(--mc);border:1px solid var(--mc);border-radius:10px;padding:2px 8px}
+#app[data-layout=vector] #opdeck{left:0;right:0;bottom:0;background:linear-gradient(to top,rgb(5 5 6/.96) 55%,transparent);border:0;padding:60px 16px calc(var(--sab) + 18px);display:grid;justify-items:center}
+#app[data-layout=vector][data-op]:not([data-op=""]) .l-arc,#app[data-layout=vector][data-op]:not([data-op=""]) .l-hist{opacity:0;pointer-events:none}
+#app[data-layout=vector] .l-arc,#app[data-layout=vector] .l-hist{transition:opacity .2s}
+#app[data-layout=vector] .op-ruler{display:none}
+#app[data-layout=vector] .op-arc{display:block;width:280px;height:140px;margin-top:-120px;order:-1;touch-action:none;cursor:ew-resize;overflow:visible}
+#app[data-layout=vector] .op-arc .trk{fill:none;stroke:var(--line);stroke-width:1.5}
+#app[data-layout=vector] .op-arc .fil{fill:none;stroke:var(--mc);stroke-width:2.5;stroke-dasharray:calc(var(--opp,0) * 100) 100}
+#app[data-layout=vector] .op-head{flex-direction:column;align-items:center;gap:4px;margin-top:-86px}
+#app[data-layout=vector] .op-val{font:300 52px/1 var(--f-d);font-stretch:62%;letter-spacing:.04em;text-align:center;width:4ch}
+#app[data-layout=vector] .op-meta{align-items:center}
+#app[data-layout=vector] .op-name{font:500 11px var(--f-d);font-stretch:62%;letter-spacing:.34em;color:var(--inkd)}
+#app[data-layout=vector] .op-kick,#app[data-layout=vector] .op-hint{display:none}
+#app[data-layout=vector] .op-row{margin-top:18px;width:100%;max-width:360px;align-items:center;justify-content:center;gap:10px}
+#app[data-layout=vector] .op-seg button{border-radius:22px;border:1px solid var(--line);background:none;height:44px;font:500 11px var(--f-d);font-stretch:62%;letter-spacing:.28em}
+#app[data-layout=vector] .op-seg button.on{background:var(--mc);border-color:var(--mc);color:#060708}
+#app[data-layout=vector] .op-x{border-radius:50%;width:48px;height:48px;border:1px solid var(--line);background:none;margin-left:0}
+#app[data-layout=vector] .op-ok{border-radius:50%;width:64px;height:64px;padding:0;font-size:0}
+#app[data-layout=vector] .op-ok::after{display:none}
+#app[data-layout=vector] .op-ok::before{content:"";position:absolute;left:22px;top:18px;width:18px;height:10px;border:solid #060708;border-width:0 0 2px 2px;transform:rotate(-45deg)}
+#app[data-layout=vector] .panel{left:12px;right:12px;bottom:calc(var(--sab) + 12px);border:1px solid var(--line);border-radius:28px;background:rgb(10 11 14/.96)}
+#app[data-layout=vector] .panel h2{font:300 22px var(--f-d);font-stretch:62%;letter-spacing:.2em}
+#app[data-layout=vector] .prow{border-radius:0}
+#app[data-layout=vector] .mcard,#app[data-layout=vector] .pfoot button,#app[data-layout=vector] .mseg button{border-radius:22px;background:none;border:1px solid var(--line)}
+#app[data-layout=vector] .mcard{border-radius:18px}
+#app[data-layout=vector] .mcard.on{border-color:var(--mc)}
+#app[data-layout=vector] .tog{border-radius:16px}#app[data-layout=vector] .tog i{border-radius:50%}
+#app[data-layout=vector] .seat{border-radius:50%;background:rgb(8 9 11/.9);border-color:var(--lines);font:500 9.5px var(--f-d);font-stretch:62%;letter-spacing:.24em;width:74px;height:74px;margin:-37px 0 0 -37px}
+#app[data-layout=vector] #toast{background:none;border:1px solid var(--line);color:var(--ink);border-radius:18px;font:400 10px var(--f-m);letter-spacing:.16em}
+@container app (min-width:820px){
+  #app[data-layout=vector]{--vt:100px;--vb:60px;--deckH:0px}
+  #app[data-layout=vector] .l-arc{left:auto;right:0;bottom:0;margin:0;width:300px;height:300px;--ox:300px;--oy:300px;--rr:240px}
+  #app[data-layout=vector] .l-m{--aa:var(--a2)}
+  #app[data-layout=vector] .l-arc .arc-p{display:none}#app[data-layout=vector] .l-arc .arc-t{display:block}
+  #app[data-layout=vector] .l-hist{left:40px;transform:none;bottom:calc(var(--sab) + 32px)}
+  #app[data-layout=vector] .l-col{top:auto;bottom:calc(var(--sab) + 100px);left:40px;flex-direction:row}
+  #app[data-layout=vector] .sympop{left:40px;top:auto;bottom:calc(var(--sab) + 160px)}
+  #app[data-layout=vector] #opdeck{left:50%;right:auto;width:460px;margin-left:-230px;background:none}
+  #app[data-layout=vector] .panel{left:auto;right:auto;left:24px;width:380px;top:calc(var(--sat) + 90px);bottom:auto}
+}
+
+/* ================= LAYOUT: DEPTH (M · Глубина) ================= */
+#app[data-layout=depth]{--bg1:#1a2130;--bg2:#05070a;--plate:rgb(24 29 38/.62);--plate2:rgb(255 255 255/.07);--press:rgb(255 255 255/.14);--line:rgb(255 255 255/.1);--lines:rgb(255 255 255/.22);
+  --ink:#f3f6fa;--inkd:#98a2ae;--micro:#6b7480;--m-vtx:#d6ff4a;--m-edg:#62e6ff;--m-fce:#ff72b8;
+  --glass:rgb(24 29 38/.55);--glass-solid:#171c25;--hi:rgb(255 255 255/.16);--vt:100px;--vb:150px;--deckH:calc(104px + var(--sab));--tilt:0;--tiltY:0}
+#app[data-layout=depth].lite{--glass:var(--glass-solid);--plate:var(--glass-solid)}
+.glass{background:var(--glass);-webkit-backdrop-filter:blur(22px) saturate(160%);backdrop-filter:blur(22px) saturate(160%);
+  box-shadow:inset 0 1px 0 var(--hi),inset 0 0 0 1px rgb(255 255 255/.06),0 20px 40px -18px rgb(0 0 0/.7)}
+.m-island{position:absolute;left:50%;top:calc(var(--sat) + 10px);transform:translateX(-50%) translate3d(calc(var(--tilt) * 1px),calc(var(--tiltY) * 1px),0);
+  border-radius:26px;display:grid;grid-template-rows:auto 0fr;transition:grid-template-rows .45s var(--e-sheet),border-radius .45s var(--e-sheet);min-width:220px;max-width:calc(100% - 100px)}
+.m-island.open{grid-template-rows:auto 1fr;border-radius:26px}
+.m-pill{display:flex;align-items:center;justify-content:center;gap:10px;height:52px;padding:0 20px;font:600 14px var(--f-d);white-space:nowrap;color:var(--ink)}
+.m-pill .dot{width:8px;height:8px;border-radius:50%;background:var(--mc);box-shadow:0 0 12px var(--mc);transition:background .15s}
+.m-pill b{font:800 14px var(--f-d);font-stretch:112%;letter-spacing:.04em;text-transform:uppercase}
+.m-pill span{color:var(--inkd);overflow:hidden;text-overflow:ellipsis}
+.m-modes{overflow:hidden;display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:0 6px;min-height:0}
+.m-island.open .m-modes{padding:0 6px 6px}
+.m-modes button{height:62px;border-radius:20px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;font:600 10px var(--f-m);letter-spacing:.08em;text-transform:uppercase;color:var(--inkd);transition:background .15s,color .15s}
+.m-modes button.on{background:var(--c);color:#060708}
+.m-hint{position:absolute;left:0;right:0;top:calc(var(--sat) + 72px);text-align:center;font:500 10px var(--f-m);letter-spacing:.14em;text-transform:uppercase;color:var(--inkd);pointer-events:none!important;transition:opacity .2s}
+.m-menu{position:absolute;right:14px;top:calc(var(--sat) + 12px);width:48px;height:48px;border-radius:50%;display:grid;place-items:center;color:var(--ink)}
+.m-menu.on{background:var(--ink);color:#060708}
+.m-dock{position:absolute;left:50%;bottom:calc(var(--sab) + 16px);transform:translateX(-50%) translate3d(calc(var(--tilt) * -1px),calc(var(--tiltY) * -1px),0);display:flex;align-items:center;gap:2px;padding:6px;border-radius:30px}
+.m-dock button{width:58px;height:60px;border-radius:24px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font:600 9px var(--f-m);letter-spacing:.08em;text-transform:uppercase;color:var(--ink);transition:background .15s,color .15s,transform .15s var(--e-std)}
+.m-dock button.on{background:var(--mc);color:#060708}
+.m-dock button:active:not(:disabled){transform:scale(.94);background:var(--press)}
+.m-dock button:disabled{color:#56606c;cursor:default}
+.m-sep{width:1px;height:28px;background:var(--line);margin:0 4px}
+#app[data-layout=depth] .sympop{left:50%;margin-left:-88px;bottom:calc(var(--sab) + 100px);border-radius:24px;border:0}
+#app[data-layout=depth] .pop button{border-radius:16px;background:var(--plate2)}
+#app[data-layout=depth] #ov .brk,#app[data-layout=depth] #ov .lead,#app[data-layout=depth] #ov .callout{display:block}
+#app[data-layout=depth] .brk i{border-color:var(--mc);border-radius:3px}
+#app[data-layout=depth] .callout{font:600 11px var(--f-d);letter-spacing:.02em;text-transform:none}
+#app[data-layout=depth] .callout b{border-radius:8px;font:700 10px var(--f-m);letter-spacing:.08em}
+#app[data-layout=depth][data-panel]:not([data-panel=""]) #stage{transform:scale(.92) translateY(-1.5%);border-radius:30px;filter:brightness(.6) blur(4px)}
+#app[data-layout=depth].lite[data-panel]:not([data-panel=""]) #stage{filter:brightness(.55)}
+#app[data-layout=depth] #scrim{background:transparent}
+#app[data-layout=depth] .panel{left:10px;right:10px;bottom:calc(var(--sab) + 10px);border:0;border-radius:30px;background:var(--glass);-webkit-backdrop-filter:blur(26px) saturate(170%);backdrop-filter:blur(26px) saturate(170%);
+  box-shadow:inset 0 1px 0 var(--hi),0 30px 60px -20px rgb(0 0 0/.8)}
+#app[data-layout=depth].lite .panel{background:var(--glass-solid)}
+#app[data-layout=depth] .panel h2{font:800 22px var(--f-d);font-stretch:100%;text-transform:none}
+#app[data-layout=depth] .prow{border-top:0;margin:0 8px;border-radius:16px;padding-left:12px}
+#app[data-layout=depth] .mcard{border-radius:20px}
+#app[data-layout=depth] .pfoot button,#app[data-layout=depth] .mseg button{border-radius:14px}
+#app[data-layout=depth] .mrow{border-top-color:rgb(255 255 255/.06)}
+#app[data-layout=depth] .tog{border-radius:16px;border-color:var(--line)}#app[data-layout=depth] .tog i{border-radius:12px}
+#app[data-layout=depth] #opdeck{left:10px;right:10px;border:0;border-radius:28px;background:var(--glass);-webkit-backdrop-filter:blur(22px) saturate(160%);backdrop-filter:blur(22px) saturate(160%);box-shadow:inset 0 1px 0 var(--hi),0 20px 40px -18px rgb(0 0 0/.7);bottom:calc(var(--sab) + 102px)}
+#app[data-layout=depth].lite #opdeck{background:var(--glass-solid)}
+#app[data-layout=depth] .op-val{font:700 44px/.9 var(--f-d);font-stretch:100%}
+#app[data-layout=depth] .op-ruler{height:40px;background:none}
+#app[data-layout=depth] .op-ruler::before{content:"";position:absolute;left:0;right:0;top:17px;height:6px;border-radius:3px;background:var(--plate2)}
+#app[data-layout=depth] .op-ruler .fill{top:17px;height:6px;border-radius:3px;box-shadow:0 0 16px var(--mc)}
+#app[data-layout=depth] .op-ruler .needle{top:8px;bottom:auto;height:24px;width:24px;margin-left:-12px;border-radius:50%;background:#fff;box-shadow:0 4px 12px rgb(0 0 0/.5)}
+#app[data-layout=depth] .op-ruler .needle::before{display:none}
+#app[data-layout=depth] .op-seg button,#app[data-layout=depth] .op-x{border-radius:16px}
+#app[data-layout=depth] .op-ok{border-radius:16px;padding:0 22px}
+#app[data-layout=depth] .op-ok::after{display:none}
+#app[data-layout=depth] .seat{border-radius:50%;border:0;background:var(--glass);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);box-shadow:inset 0 1px 0 var(--hi),inset 0 0 0 1px rgb(255 255 255/.08);
+  font:700 10px var(--f-d);font-stretch:100%;letter-spacing:.02em;text-transform:none;width:76px;height:76px;margin:-38px 0 0 -38px}
+#app[data-layout=depth].lite .seat{background:var(--glass-solid)}
+#app[data-layout=depth] .seat.danger{box-shadow:inset 0 0 0 1.5px var(--signal)}
+#app[data-layout=depth] #toast{border-radius:18px;background:var(--glass);color:var(--ink);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);font:600 12px var(--f-d);letter-spacing:.01em;text-transform:none;box-shadow:inset 0 1px 0 var(--hi)}
+#app[data-layout=depth] #ring .veil{background:radial-gradient(circle at var(--cx) var(--cy),rgb(5 7 10/.35) 0,rgb(5 7 10/.1) calc(var(--r) * 2.2))}
+@container app (min-width:820px){
+  #app[data-layout=depth]{--vb:120px}
+  #app[data-layout=depth] .panel{left:auto;right:16px;width:400px;top:calc(var(--sat) + 76px);bottom:calc(var(--sab) + 110px);max-height:none}
+  #app[data-layout=depth][data-panel]:not([data-panel=""]) #stage{transform:scale(.94) translateX(-10%);filter:brightness(.72) blur(2px)}
+  #app[data-layout=depth] #opdeck{left:50%;right:auto;width:480px;margin-left:-240px}
+}
+
+/* ================= LAYOUT: CLASSIC (N · Гибрид) =================
+   Today's Kubik layout, dressed in G (type, plates, underlines, microtype)
+   and lit with M (translucent plates, depth when a panel opens, HUD drift). */
+#app[data-layout=classic]{--bg1:#10141a;--bg2:#040506;--glass:rgb(13 15 19/.5);--glass-solid:#111418;--glass-thick:rgb(13 15 19/.84);--gblur:16px;--hi:rgb(255 255 255/.07);
+  --hazard:repeating-linear-gradient(135deg,var(--signal) 0 6px,transparent 6px 12px);
+  --vt:118px;--vb:120px;--deckH:calc(84px + var(--sab));--tilt:0;--tiltY:0}
+#app[data-layout=classic].lite{--glass:var(--glass-solid);--glass-thick:var(--glass-solid)}
+.gl{background-color:var(--glass);-webkit-backdrop-filter:blur(var(--gblur)) saturate(150%);backdrop-filter:blur(var(--gblur)) saturate(150%);box-shadow:inset 0 1px 0 var(--hi),inset 0 0 0 1px var(--line)}
+
+/* Chamfers: one size, one corner, everywhere. Every plate and every control
+   30px or taller loses its bottom-right corner by --ch, and translucent ones
+   draw a hairline along the cut so their outline does not break. */
+#app[data-layout=classic]{--ch:10px;--cl:var(--lines)}
+.cut,#app[data-layout=classic] :is(#opdeck,.panel,#toast,.mcard,.op-seg button,.op-x,.op-ok,.pfoot button,.mseg button){clip-path:polygon(0 0,100% 0,100% calc(100% - var(--ch)),calc(100% - var(--ch)) 100%,0 100%)}
+.cut,#app[data-layout=classic] :is(#opdeck,.panel,.mcard,.op-seg button,.op-x,.pfoot button,.mseg button){background-image:linear-gradient(to bottom right,transparent calc(50% - 1.4px),var(--cl) calc(50% - 1.4px),var(--cl) calc(50% - .2px),transparent calc(50% - .2px));background-repeat:no-repeat;background-size:var(--ch) var(--ch);background-position:100% 100%}
+.par-a{transform:translate3d(calc(var(--tilt) * .7px),calc(var(--tiltY) * .7px),0)}
+.par-b{transform:translate3d(calc(var(--tilt) * -.5px),calc(var(--tiltY) * -.5px),0)}
+.n-top{position:absolute;left:12px;right:12px;top:calc(var(--sat) + 8px);display:flex;gap:4px;align-items:stretch;pointer-events:none!important}
+.n-top > *{pointer-events:auto}
+.n-ib{width:52px;height:52px;display:grid;place-items:center;color:var(--ink);position:relative;flex:none}
+.n-ib::before,.n-ib::after{content:"";position:absolute;width:7px;height:7px;background:linear-gradient(var(--lines),var(--lines)) center/1px 100% no-repeat,linear-gradient(var(--lines),var(--lines)) center/100% 1px no-repeat}
+.n-ib::before{left:4px;top:4px}.n-ib::after{display:none}
+.n-ib.on{background-color:var(--ink);color:#060708;--cl:var(--ink)}
+.n-mode{display:flex;height:52px;min-width:0}
+.n-mode .blk{display:flex;flex-direction:column;justify-content:center;padding:0 12px 0 10px;background:var(--mc);color:var(--mc-on);min-width:64px}
+.n-mode .blk b{font:800 21px/1 var(--f-d);font-stretch:125%;letter-spacing:-.01em}
+.n-mode .blk span{font:600 9.5px var(--f-m);letter-spacing:.14em;margin-top:4px;opacity:.72}
+.n-mode .nm{display:flex;flex-direction:column;justify-content:center;padding:0 14px 0 10px;min-width:0}
+.n-mode .nm b{font:700 15px var(--f-d);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.n-mode .nm span{font:500 9.5px var(--f-m);letter-spacing:.02em;color:var(--inkd);text-transform:uppercase;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.n-sym{display:flex;gap:4px;margin-left:auto;flex:none}
+.n-sym button{width:44px;height:52px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;position:relative;font:600 15px var(--f-m);color:var(--inkd);transition:color .15s,background .15s}
+.n-sym button small{font:500 8.5px var(--f-m);letter-spacing:.14em;color:var(--micro);text-transform:uppercase}
+.n-sym button::after{content:"";position:absolute;left:0;right:0;bottom:0;height:2px;background:var(--lines);transition:background .15s,height .15s}
+.n-sym button.on{color:var(--ink);background-color:color-mix(in srgb,var(--mc) 16%,transparent)}
+.n-sym button.on::after{background:var(--mc);height:3px}
+.n-sym button.on small{color:var(--mc)}
+.n-read{position:absolute;left:14px;top:calc(var(--sat) + 68px);display:flex;flex-direction:column;gap:5px;pointer-events:none!important}
+.n-read span{font:500 9.5px var(--f-m);letter-spacing:.14em;color:var(--vpd);text-transform:uppercase}
+.n-read i{display:block;width:132px;height:7px;background:repeating-linear-gradient(90deg,var(--lines) 0 1px,transparent 1px 6px);opacity:.6}
+.n-cube{position:absolute;right:10px;top:calc(var(--sat) + 70px);width:92px;height:92px;perspective:340px}
+.c3{position:absolute;inset:0;transform-style:preserve-3d}
+.c3 .f{position:absolute;left:16px;top:16px;width:60px;height:60px;backface-visibility:hidden;-webkit-backface-visibility:hidden;display:grid;place-items:center;
+  background:rgb(22 26 32/.55);border:1px solid rgb(255 255 255/.2);font:600 8.5px var(--f-m);letter-spacing:.12em;text-transform:uppercase;color:var(--inkd);transition:color .15s,background .15s}
+.c3 .f.on{color:var(--ink);background:rgb(34 40 48/.72);box-shadow:inset 0 -2px 0 var(--mc)}
+.c3 .f-front{transform:translateZ(30px)} .c3 .f-back{transform:rotateY(180deg) translateZ(30px)}
+.c3 .f-right{transform:rotateY(90deg) translateZ(30px)} .c3 .f-left{transform:rotateY(-90deg) translateZ(30px)}
+.c3 .f-top{transform:rotateX(90deg) translateZ(30px)} .c3 .f-bottom{transform:rotateX(-90deg) translateZ(30px)}
+.n-cube .cap{position:absolute;left:0;right:0;bottom:-12px;text-align:center;font:500 8.5px var(--f-m);letter-spacing:.16em;color:var(--micro);pointer-events:none;text-transform:uppercase}
+.n-tabs{position:absolute;left:0;top:calc(var(--sat) + 156px);display:flex;flex-direction:column;gap:6px}
+.n-tab{width:44px;height:116px;display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:10px 0 12px;position:relative;
+  color:var(--inkd);transition:color .15s,background-color .15s}
+.n-tab i{font:500 8.5px var(--f-m);font-style:normal;letter-spacing:.12em;color:var(--micro)}
+.n-tab span{writing-mode:vertical-rl;transform:rotate(180deg);font:600 10px var(--f-m);letter-spacing:.16em;text-transform:uppercase;color:var(--ink)}
+.n-tab::after{content:"";position:absolute;right:0;top:0;bottom:10px;width:2px;background:var(--lines);transition:background .15s,width .15s}
+.n-tab.on{background-color:color-mix(in srgb,var(--mc) 14%,var(--glass))}
+.n-tab.on::after{background:var(--mc);width:3px}
+.n-hist{position:absolute;left:12px;bottom:calc(var(--sab) + 12px);display:flex;flex-direction:column;gap:6px}
+.n-hist .row{display:flex;gap:4px}
+.n-hist button{width:62px;height:54px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font:600 9px var(--f-m);letter-spacing:.14em;text-transform:uppercase;color:var(--ink);transition:transform .12s var(--e-std),background .15s}
+.n-hist button:active:not(:disabled){transform:translateY(1px);background-color:rgb(255 255 255/.08)}
+.n-hist button:disabled{color:var(--micro);cursor:default}
+.n-micro{font:500 9px var(--f-m);letter-spacing:.14em;text-transform:uppercase;color:var(--micro);pointer-events:none}
+.n-hub{position:absolute;right:16px;bottom:calc(var(--sab) + 14px);width:74px;height:74px;display:grid;place-items:center}
+.n-hub .d{position:absolute;inset:6px;background:var(--mc);clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%);transition:transform .2s var(--e-spring)}
+.n-hub::before{content:"";position:absolute;inset:14px;border:1px solid var(--lines);transform:rotate(45deg) scale(1.28)}
+.n-hub .ico{position:relative;color:var(--mc-on)}
+.n-hub:active .d{transform:scale(.92)}
+.n-hubcap{position:absolute;right:16px;bottom:calc(var(--sab) + 94px);width:74px;text-align:center;pointer-events:none!important}
+#app[data-layout=classic] #ov .brk,#app[data-layout=classic] #ov .lead,#app[data-layout=classic] #ov .callout{display:block}
+#app[data-layout=classic] .brk i{width:9px;height:9px;border-width:0!important;background:linear-gradient(var(--vpt),var(--vpt)) center/1px 100% no-repeat,linear-gradient(var(--vpt),var(--vpt)) center/100% 1px no-repeat}
+#app[data-layout=classic] .brk i:nth-child(1){left:-18px;top:-18px}#app[data-layout=classic] .brk i:nth-child(2){right:-18px;top:-18px}
+#app[data-layout=classic] .brk i:nth-child(3){left:-18px;bottom:-18px}#app[data-layout=classic] .brk i:nth-child(4){right:-18px;bottom:-18px}
+#app[data-layout=classic] #opdeck{left:12px;right:12px;bottom:calc(var(--sab) + 84px);border:0;-webkit-backdrop-filter:blur(var(--gblur)) saturate(150%);backdrop-filter:blur(var(--gblur)) saturate(150%);box-shadow:inset 0 0 0 1px var(--line)}
+#app[data-layout=classic] #opdeck::before{content:"";position:absolute;left:0;right:0;top:-6px;height:6px;background:var(--hazard)}
+#app[data-layout=classic] .op-seg button,#app[data-layout=classic] .op-x{background:rgb(255 255 255/.06)}
+#app[data-layout=classic] .op-seg button.on{background:rgb(255 255 255/.1);color:var(--ink);box-shadow:inset 0 -3px 0 var(--mc)}
+#app[data-layout=classic] #scrim{background:rgb(4 5 6/.2)}
+#app[data-layout=classic][data-panel]:not([data-panel=""]) #stage{transform:translateX(5%) scale(.94);border-radius:8px;filter:brightness(.6) blur(3px)}
+#app[data-layout=classic].lite[data-panel]:not([data-panel=""]) #stage{filter:brightness(.55)}
+#app[data-layout=classic][data-panel]:not([data-panel=""]) #ov{opacity:0}
+#app[data-layout=classic] .panel{left:0;right:auto;width:min(340px,88%);top:calc(var(--sat) + 70px);bottom:calc(var(--sab) + 84px);max-height:none;border:0;
+  box-shadow:inset 0 1px 0 var(--hi),inset -1px 0 0 var(--lines);transform:translateX(-104%);padding-bottom:10px}
+#app[data-layout=classic] #p-menu{top:0;bottom:0;padding-top:var(--sat);padding-bottom:calc(var(--sab) + 10px)}
+#app[data-layout=classic] .panel header{border-bottom:1px solid var(--line);position:relative}
+#app[data-layout=classic] .panel header::after{content:"";position:absolute;left:16px;bottom:-1px;width:48px;height:2px;background:var(--mc)}
+#app[data-layout=classic] .prow.sel{background:color-mix(in srgb,var(--mc) 16%,transparent);color:var(--ink);box-shadow:inset 3px 0 0 var(--mc)}
+#app[data-layout=classic] .prow.sel i,#app[data-layout=classic] .prow.sel small,#app[data-layout=classic] .prow.sel .eye{color:var(--inkd);opacity:1}
+#app[data-layout=classic] .mcard,#app[data-layout=classic] .pfoot button,#app[data-layout=classic] .mseg button{background-color:rgb(255 255 255/.05)}
+#app[data-layout=classic] .mcard.on{border-color:transparent;box-shadow:inset 0 -3px 0 var(--mc);background-color:rgb(255 255 255/.09)}
+#app[data-layout=classic] .mseg button.on{background:rgb(255 255 255/.1);color:var(--ink);box-shadow:inset 0 -3px 0 var(--mc)}
+#app[data-layout=classic] .seat{width:62px;height:62px;margin:-31px 0 0 -31px;padding:0;border:1px solid var(--lines);background:var(--glass);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+  transform:translate(var(--cx),var(--cy)) rotate(45deg) scale(.9);font:800 9.5px/1.1 var(--f-d);font-stretch:112%}
+#app[data-layout=classic] .seat > span:last-child{transform:rotate(-45deg);display:block;width:80px;text-align:center}
+#app[data-layout=classic] #ring.open .seat{transform:translate(var(--x),var(--y)) rotate(45deg) scale(1)}
+#app[data-layout=classic] #ring .seat.hot{transform:translate(var(--x),var(--y)) rotate(45deg) scale(1.1);background:var(--mc);border-color:var(--mc)}
+#app[data-layout=classic] .seat[class*=" m-"]{color:var(--c);box-shadow:inset 0 0 0 1px var(--c)}
+#app[data-layout=classic] #ring .seat[class*=" m-"].hot{background:var(--c);color:var(--on-c)}
+#app[data-layout=classic].lite .seat{background:var(--glass-solid)}
+#app[data-layout=classic] #toast{top:auto;bottom:calc(var(--sab) + 104px);background:var(--glass-thick);color:var(--ink);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);box-shadow:inset 0 0 0 1px var(--line),inset 0 -2px 0 var(--mc)}
+
+#app[data-layout=classic] #opdeck{background-color:var(--glass-thick);padding-top:18px}
+#app[data-layout=classic] #opdeck::before{top:0;height:5px}
+#app[data-layout=classic] .panel{background-color:var(--glass-thick)}
+@container app (min-width:820px){
+  #app[data-layout=classic]{--vb:90px}
+  #app[data-layout=classic] #opdeck{left:50%;right:auto;width:480px;margin-left:-240px;bottom:calc(var(--sab) + 24px)}
+  #app[data-layout=classic] .panel{width:360px;bottom:calc(var(--sab) + 24px)}
+  #app[data-layout=classic][data-panel]:not([data-panel=""]) #stage{transform:translateX(12%) scale(.94)}
+}
+</style>
+
+<div id="lab">
+  <header id="bar">
+    <div class="brand">Kubik <span>UI Lab</span></div>
+    <nav id="variants" role="tablist" aria-label="Variants"></nav>
+    <div class="ctl">
+      <div class="lseg dev" role="group" aria-label="Device">
+        <button id="devPhone" data-dev="phone" aria-pressed="true">Phone</button>
+        <button id="devTablet" data-dev="tablet" aria-pressed="false">Tablet</button>
+      </div>
+      <div class="lseg" role="group" aria-label="Effects">
+        <button id="fxFull" data-fx="full" aria-pressed="true">FX</button>
+        <button id="fxLite" data-fx="lite" aria-pressed="false">Lite</button>
+      </div>
+      <button id="infoBtn" aria-label="About this variant" aria-expanded="false">i</button>
+    </div>
+  </header>
+  <main id="bench">
+    <div id="well">
+      <div id="device" data-device="phone">
+        <div id="app" data-skin="h" data-layout="deck" data-mode="object" data-panel="" data-op="">
+          <div id="stage"><canvas id="cv" aria-label="3D viewport. Drag to orbit, tap to select, hold for tools."></canvas></div>
+          <div id="ov" aria-hidden="true">
+            <svg class="lead"><line id="leadLine"/><circle id="leadDot" r="2.5"/></svg>
+            <div class="brk"><i></i><i></i><i></i><i></i></div>
+            <div class="dim"><span data-b="widthLine"></span></div>
+            <div class="scale"><span style="--n:0">0</span><span style="--n:1">1</span><span style="--n:2">2</span><span style="--n:3">3 m</span></div>
+            <div class="callout" id="callout"><b data-b="calloutTag"></b><span data-b="calloutTxt"></span></div>
+          </div>
+          <div id="chrome"></div>
+          <div id="scrim" data-act="close"></div>
+          <section id="p-scene" class="panel" aria-label="Scene">
+            <header><h2>Scene</h2><span class="sub" data-b="objCountShort"></span><button class="px" data-act="close" aria-label="Close scene">X</button></header>
+            <div class="plist" id="objList"></div>
+            <div class="pfoot">
+              <button data-act="add:cube">+ Cube</button><button data-act="add:tube">+ Tube</button>
+              <button data-act="dup" data-dis="nosel">Duplicate</button><button class="danger" data-act="del" data-dis="nosel">Delete</button>
+            </div>
+          </section>
+          <section id="p-mat" class="panel" aria-label="Materials">
+            <header><h2>Material</h2><span class="sub" data-b="matOn"></span><button class="px" data-act="close" aria-label="Close materials">X</button></header>
+            <div class="mgrid" id="matList"></div>
+          </section>
+          <section id="p-menu" class="panel" aria-label="Menu">
+            <header><h2>Kubik</h2><span class="sub">Prototype</span><button class="px" data-act="close" aria-label="Close menu">X</button></header>
+            <div class="mbody">
+              <div class="mrow"><span>Light</span><div class="mseg"><button data-act="light:studio" data-on="light:studio">Studio</button><button data-act="light:night" data-on="light:night">Night</button><button data-act="light:dusk" data-on="light:dusk">Dusk</button></div></div>
+              <div class="mrow"><span>Grid</span><button class="tog" data-act="grid" data-on="grid" aria-label="Grid"><i></i></button></div>
+              <div class="mrow"><span>X-ray</span><button class="tog" data-act="xray" data-on="xray" aria-label="X-ray"><i></i></button></div>
+              <div class="mrow"><span>Shadows</span><button class="tog" data-act="shadow" data-on="shadow" aria-label="Shadows"><i></i></button></div>
+              <div class="mrow"><span>Effects</span><div class="mseg"><button data-act="fx:full" data-on="fx:full">Full</button><button data-act="fx:lite" data-on="fx:lite">Lite</button></div></div>
+              <p class="mnote">Files, export and import live here in the real app. The prototype leaves them out.</p>
+            </div>
+          </section>
+          <div id="opdeck" role="group" aria-label="Operation">
+            <div class="op-head">
+              <input id="opVal" class="op-val" inputmode="decimal" autocomplete="off" spellcheck="false" aria-label="Amount">
+              <div class="op-meta"><span class="op-kick" data-b="opKick"></span><b class="op-name" data-b="opName"></b></div>
+              <span class="op-hint">Drag anywhere<br>Tap away to apply</span>
+            </div>
+            <div class="op-ruler" data-scrub><i class="fill"></i><s class="needle"></s></div>
+            <svg class="op-arc" data-scrub viewBox="0 0 280 140" aria-hidden="true"><path class="trk" d="M10 140 A130 130 0 0 1 270 140"/><path class="fil" pathLength="100" d="M10 140 A130 130 0 0 1 270 140"/></svg>
+            <div class="op-row">
+              <div class="op-seg"><button data-act="opt:face" data-on="opt:face">Per face</button><button data-act="opt:region" data-on="opt:region">Region</button></div>
+              <button class="op-x" data-act="cancel" aria-label="Cancel">X</button>
+              <button class="op-ok" data-act="apply">Apply</button>
+            </div>
+          </div>
+          <div id="ring"></div>
+          <div id="toast" role="status" aria-live="polite"></div>
+        </div>
+      </div>
+    </div>
+    <aside id="brief" aria-label="About this variant"></aside>
+  </main>
+</div>
+
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+
+const $ = s => document.querySelector(s);
+const app = $('#app'), stageEl = $('#stage'), cv = $('#cv'), chrome = $('#chrome'), ov = $('#ov'),
+  ringEl = $('#ring'), toastEl = $('#toast'), device = $('#device'), well = $('#well'), brief = $('#brief'), opVal = $('#opVal');
+const V3 = THREE.Vector3;
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+/* ---------------- variants ---------------- */
+const DARK3 = { grid: '#ffffff', gridA: .07, shadow: .5, m3: { object: '#f2f2f2', vertex: '#c0fe04', edge: '#01e8ff', face: '#ff4fa3' }, dim: '#59616a', dot: '#b9c0c7' };
+const VARIANTS = {
+  n: { tag: 'N', name: 'Гибрид', layout: 'classic', three: DARK3,
+    thesis: 'Раскладка нынешнего Kubik без переучивания: меню, плашка режима и X/Y/Z сверху, Outliner и Materials на левом краю, куб вида справа, история слева внизу, ромб режима справа. Одета в G: широкий Archivo, моноширинный микротекст, цветные подчёркивания, засечки и выноски. У всех плашек и кнопок один и тот же скос 10px в правом нижнем углу, как у плашки режима в нынешнем Kubik. Освещена M: полупрозрачные плашки с размытием, сцена отъезжает назад под панелью, интерфейс чуть дрейфует при вращении.',
+    pros: ['Ни одна кнопка не переезжает, привычки сохраняются', 'Характер G и глубина M без их раскладок', 'Куб вида стал настоящим 3D и вращается вместе с камерой'],
+    cons: ['Размытие на постоянных плашках работает и во время вращения, на iPhone это главный расход, Lite его выключает', 'Полупрозрачные плашки на светлой модели читаются хуже сплошных'] },
+  g: { tag: 'G', name: 'Ночь', layout: 'deck', three: DARK3,
+    thesis: 'Тёмные плашки на тёмной сцене. Кислотный цвет появляется только блоком активного режима и у выделения. Самый тихий вариант линии и самый короткий путь от нынешнего Kubik.',
+    pros: ['Спокойный для долгой работы и для OLED', 'Переход с текущей версии почти без переучивания', 'Кислота работает сильнее, потому что её мало'],
+    cons: ['Характер держится на мелочах: микротексте, засечках, выносках', 'На маленьком экране часть этих мелочей теряется'] },
+  h: { tag: 'H', name: 'Кость', layout: 'deck', three: DARK3,
+    thesis: 'Как интерфейсы Marathon: тёмная сцена, а элементы управления это светлые «костяные» плашки с чёрной печатью, как ярлыки на оборудовании. Когда открыт лист, сцена чуть отъезжает назад.',
+    pros: ['Самый узнаваемый и дорогой на вид', 'Читается с вытянутой руки и на солнце', 'Модель остаётся на тёмном фоне'],
+    cons: ['Светлые плашки ярче в темноте', 'Плашек должно быть мало, иначе шумно', 'Каждая новая кнопка сразу заметна, нужна дисциплина'] },
+  i: { tag: 'I', name: 'Бумага', layout: 'deck',
+    three: { grid: '#000000', gridA: .09, shadow: .26, m3: { object: '#0b0c0e', vertex: '#4c7a00', edge: '#0082a8', face: '#d4246f' }, dim: '#9a9ca1', dot: '#2a2c30' },
+    thesis: 'Полностью светлый, как ключевые арты Marathon: серая бумажная сцена, белые плашки, чёрный шрифт, кислотные блоки. Модель выглядит как макет на столе.',
+    pros: ['Самый плакатный и ни на что не похожий', 'Лучше всех на улице и при свете', 'Кислота на светлом выглядит именно как Marathon'],
+    cons: ['Ярче и дороже по батарее на OLED, нужна пара с тёмным вариантом', 'Лайм и циан годятся только как заливка, для линий их пришлось затемнить'] },
+  j: { tag: 'J', name: 'Телеметрия', layout: 'frame', three: { ...DARK3, gridA: .06 },
+    thesis: 'Экран обведён тонкой рамкой прибора, кнопки это вырезы в ней. Каждая отметка несёт данные: шкала слева в метрах у точки вращения, уголки по габариту выделения, размерная линия с настоящей шириной.',
+    pros: ['Самый «инженерный» и полезный при моделировании', 'Размеры видны без открытия панелей', 'Ничего не висит в воздухе, всё привязано к рамке'],
+    cons: ['Рамка забирает по 10px с краёв', 'Моноширинные подписи приходится сокращать', 'Выноски пересчитываются во время вращения камеры'] },
+  k: { tag: 'K', name: 'Этикетки', layout: 'poster', three: DARK3,
+    thesis: 'Плакат вместо панели. Слово режима набрано огромным и само служит индикатором. Всё управление это вырубные этикетки: костяная бумага, чёрная печать, срезанный угол, штрихкод объекта. Режимы всегда в цвете.',
+    pros: ['Самый «Marathon» из всех', 'Режим невозможно пропустить', 'Kubik узнаётся по одному скриншоту'],
+    cons: ['Громко, может утомлять при долгой работе', 'Большое слово занимает верх экрана', 'Правило «цвет только при правке» отменено'] },
+  l: { tag: 'L', name: 'Вектор', layout: 'vector', three: { ...DARK3, gridA: .05 },
+    thesis: 'Самый лёгкий: всё нарисовано контуром в 1px, залито только одно активное. Узкий тонкий шрифт с широкой разрядкой, режимы на дуге внизу, значение операции выставляется по дуге.',
+    pros: ['Меньше всего визуального веса, модель главная', 'Самый дешёвый по отрисовке', 'Узнаваемая типографика'],
+    cons: ['Контурные кнопки хуже видно на солнце', 'Тонкий узкий шрифт требует крупного кегля', 'До крайних режимов на дуге дальше тянуться'] },
+  m: { tag: 'M', name: 'Глубина', layout: 'depth',
+    three: { ...DARK3, m3: { object: '#f3f6fa', vertex: '#d6ff4a', edge: '#62e6ff', face: '#ff72b8' } },
+    thesis: 'Новый вариант про глубину. Интерфейс лежит на слоях: стеклянные капсулы с размытием, «остров» режима сверху раскрывается в переключатель, сцена отъезжает назад под листом, а интерфейс чуть смещается при вращении камеры, как HUD на визоре.',
+    pros: ['Самый «дорогой» и живой на ощупь', 'Иерархия слоёв видна без рамок', 'Переходы объясняют, откуда что пришло'],
+    cons: ['Размытие поверх живой сцены стоит GPU: только на плавающих слоях и только пока они открыты', 'На солнце стекло читается хуже плашек', 'Режим Lite выключает размытие, это и есть решение для iPhone'] },
+};
+const REFS = [
+  ['Marathon, сайт игры', 'https://www.marathonthegame.com/', 'токены прочитаны из CSS: #C0FE04, #F24723, радиус 0, уголки 300 мс, двойное мигание'],
+  ['80.lv: арт-директор Marathon о влияниях', 'https://80.lv/articles/marathon-art-director-shares-the-team-s-creative-influences', 'Graphic Realism, Wipeout, The Designers Republic'],
+  ['Критика UI Marathon', 'https://josephkerrdesign.com/bungies-overdesigned-uis-what-marathon-gets-wrong', 'стиль в хроме, не в данных'],
+  ['Nomad Sculpt, инструменты', 'https://nomadsculpt.com/manual/tools', 'отмена двумя пальцами, «липкие» кнопки'],
+  ['WWDC23: анимации со spring', 'https://developer.apple.com/videos/play/wwdc2023/10158', 'bounce около 0.15'],
+  ['vaul: лист с отъездом фона', 'https://github.com/emilkowalski/vaul/blob/main/src/constants.ts', '500 мс, (0.32, 0.72, 0, 1)'],
+  ['Material 3: easing и длительности', 'https://m3.material.io/styles/motion/easing-and-duration', 'вход (0.05, 0.7, 0.1, 1), выход (0.3, 0, 0.8, 0.15)'],
+  ['Teenage Engineering OP-1', 'https://teenage.engineering/guides/op-1/original/layout', 'цвет привязан к конкретному органу управления'],
+];
+
+/* ---------------- icons (Kubik's own set) ---------------- */
+const IC = {
+  menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+  undo: '<path d="M4 9h11a5 5 0 0 1 0 10h-6"/><path d="M8 5L4 9l4 4"/>',
+  redo: '<path d="M20 9H9a5 5 0 0 0 0 10h6"/><path d="M16 5l4 4-4 4"/>',
+  close: '<path d="M6 6l12 12M18 6L6 18"/>',
+  list: '<path d="M9 6h11M9 12h11M9 18h11M4 6h1M4 12h1M4 18h1"/>',
+  mat: '<circle cx="12" cy="12" r="8"/><path d="M8.5 9.5a4.5 4.5 0 0 1 4-3"/>',
+  sym: '<path d="M12 3v18" stroke-dasharray="2 2.5"/><path d="M9 7l-5 5 5 5M15 7l5 5-5 5"/>',
+  eye: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff: '<path d="M3 3l18 18"/><path d="M10.6 5.1A10 10 0 0 1 12 5c6 0 10 7 10 7a17 17 0 0 1-3 3.6M6.1 6.1A17 17 0 0 0 2 12s4 7 10 7a9.5 9.5 0 0 0 4.4-1.1"/>',
+  object: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/>',
+  vertex: '<path d="M5 5h14v14H5z"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/>',
+  edge: '<path d="M5 5h14v14H5z"/><path d="M5 19L19 5" stroke-width="3.2"/>',
+  face: '<path d="M5 5h14v14H5z"/><path d="M5 5h14v14z" fill="currentColor" stroke="none" opacity=".55"/>',
+};
+const ic = (n, s = 20) => `<svg class="ic" viewBox="0 0 24 24" width="${s}" height="${s}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n]}</svg>`;
+document.querySelectorAll('.px').forEach(b => b.innerHTML = ic('close', 18));
+$('.op-x').innerHTML = ic('close', 18);
+
+const MODES = ['object', 'vertex', 'edge', 'face'];
+const SH = { object: 'OBJ', vertex: 'VTX', edge: 'EDG', face: 'FCE' };
+const LG = { object: 'Object', vertex: 'Vertex', edge: 'Edge', face: 'Face' };
+const symPop = () => `<div class="pop sympop" data-show="sympop">${['x', 'y', 'z'].map(a => `<button data-act="sym:${a}" data-on="sym:${a}" aria-label="Symmetry ${a.toUpperCase()}">${a.toUpperCase()}</button>`).join('')}</div>`;
+
+const TEMPLATES = {
+  classic: () => `
+    <div class="n-top par-a">
+      <button class="n-ib gl cut" data-act="panel:menu" data-on="panel:menu" aria-label="Menu">${ic('menu')}</button>
+      <div class="n-mode gl cut"><div class="blk"><b data-b="modeShort"></b><span data-b="modeIdx"></span></div><div class="nm"><b data-b="objName"></b><span data-b="toolLine"></span></div></div>
+      <div class="n-sym">${['x', 'y', 'z'].map(a => `<button class="gl cut" data-act="sym:${a}" data-on="sym:${a}" aria-label="Symmetry ${a.toUpperCase()}">${a.toUpperCase()}<small>Sym</small></button>`).join('')}</div>
+    </div>
+    <div class="n-read par-a"><span data-b="pivotLine"></span><i></i></div>
+    <div class="n-cube par-a"><div class="c3">${[['front', 'Front'], ['back', 'Back'], ['right', 'Right'], ['left', 'Left'], ['top', 'Top'], ['bottom', 'Bottom']].map(([k, l]) => `<button class="f f-${k}" data-face="${k}" data-act="view:${k}" aria-label="View from ${l}">${l}</button>`).join('')}</div><div class="cap">Persp</div></div>
+    <div class="n-tabs par-a">
+      <button class="n-tab gl cut t-scene" data-act="panel:scene" data-on="panel:scene"><i>01</i><span>Outliner</span></button>
+      <button class="n-tab gl cut" data-act="panel:mat" data-on="panel:mat"><i>02</i><span>Materials</span></button>
+    </div>
+    <div class="n-hist par-b">
+      <div class="n-micro" data-b="histLine"></div>
+      <div class="row">
+        <button class="gl cut" data-act="undo" data-dis="undo">${ic('undo')}<span>Undo</span></button>
+        <button class="gl cut" data-act="redo" data-dis="redo">${ic('redo')}<span>Redo</span></button>
+      </div>
+    </div>
+    <div class="n-micro n-hubcap par-b" data-b="modeLong"></div>
+    <button class="n-hub par-b" data-act="cyclemode" data-holdring="modes" aria-label="Mode. Tap to switch, hold for all modes"><span class="d"></span><span class="ico" data-bhtml="modeIcon"></span></button>`,
+  deck: () => `
+    <div class="d-top">
+      <div class="d-mode"><div class="blk"><b data-b="modeShort"></b><span data-b="modeIdx"></span></div><div class="nm"><b data-b="objName"></b><span data-b="toolLine"></span></div></div>
+      <button class="d-ib" data-act="panel:menu" data-on="panel:menu" aria-label="Menu">${ic('menu')}</button>
+    </div>
+    <div class="d-coords passive" data-b="pivotLine"></div>
+    <div class="d-deck">
+      <div class="d-head"><span data-b="sceneLine"></span><span data-b="symLine"></span></div>
+      <div class="d-ticks"></div>
+      <div class="d-modes">${MODES.map((m, i) => `<button class="m-${m}" data-act="mode:${m}" data-on="mode:${m}"><i>0${i + 1}</i>${SH[m]}</button>`).join('')}</div>
+      <div class="d-tools">
+        <button class="t-scene" data-act="panel:scene" data-on="panel:scene">${ic('list')}<span>Scene</span></button>
+        <button data-act="panel:mat" data-on="panel:mat">${ic('mat')}<span>Mat</span></button>
+        <button data-act="sympop" data-on="symany">${ic('sym')}<span>Sym <em data-b="symShort"></em></span></button>
+        <button data-act="undo" data-dis="undo">${ic('undo')}<span>Undo</span></button>
+        <button data-act="redo" data-dis="redo">${ic('redo')}<span>Redo</span></button>
+      </div>
+      ${symPop()}
+    </div>`,
+  frame: () => `
+    <div class="j-frame"></div>
+    <div class="j-tabs">${MODES.map(m => `<button class="m-${m}" data-act="mode:${m}" data-on="mode:${m}">${SH[m]}</button>`).join('')}</div>
+    <button class="j-menu" data-act="panel:menu" data-on="panel:menu" aria-label="Menu">${ic('menu', 18)}</button>
+    <div class="j-ro"><b data-b="objName"></b><span data-b="compInfo"></span><span data-b="toolLine"></span><span data-b="pivotLine"></span></div>
+    <div class="j-tools">
+      <button class="t-scene" data-act="panel:scene" data-on="panel:scene">Scene</button>
+      <button data-act="panel:mat" data-on="panel:mat">Mat</button>
+      <button data-act="sympop" data-on="symany">Sym <em data-b="symShort"></em></button>
+      <button data-act="undo" data-dis="undo" aria-label="Undo">${ic('undo', 18)}</button>
+      <button data-act="redo" data-dis="redo" aria-label="Redo">${ic('redo', 18)}</button>
+    </div>
+    ${symPop()}`,
+  poster: () => `
+    <div class="k-word"><span class="s" data-b="modeShort"></span><span class="l" data-b="modeLong"></span></div>
+    <div class="k-lab"><b data-b="objName"></b><small data-b="compInfo"></small><span class="k-bar" data-bhtml="barcode"></span></div>
+    <div class="k-side">
+      <button data-act="panel:menu" data-on="panel:menu" aria-label="Menu">${ic('menu')}</button>
+      <button class="t-scene" data-act="panel:scene" data-on="panel:scene">Scene<small data-b="objCountShort"></small></button>
+      <button data-act="panel:mat" data-on="panel:mat">Mat<small data-b="matShort"></small></button>
+      <button data-act="sympop" data-on="symany">Sym<small data-b="symShort"></small></button>
+      <button data-act="undo" data-dis="undo">Undo<small data-b="undoN"></small></button>
+      <button data-act="redo" data-dis="redo">Redo<small data-b="redoN"></small></button>
+    </div>
+    ${symPop()}
+    <div class="k-modes">${MODES.map((m, i) => `<button class="m-${m}" data-act="mode:${m}" data-on="mode:${m}"><small>0${i + 1}</small>${SH[m]}</button>`).join('')}</div>`,
+  vector: () => `
+    <div class="l-name"><b data-b="headWord"></b><small data-b="subLine"></small></div>
+    <button class="l-o l-menu" data-act="panel:menu" data-on="panel:menu" aria-label="Menu">${ic('menu', 18)}</button>
+    <div class="l-col">
+      <button class="l-o t-scene" data-act="panel:scene" data-on="panel:scene" aria-label="Scene">${ic('list', 18)}</button>
+      <button class="l-o" data-act="panel:mat" data-on="panel:mat" aria-label="Materials">${ic('mat', 18)}</button>
+      <button class="l-o" data-act="sympop" data-on="symany" aria-label="Symmetry">${ic('sym', 18)}</button>
+    </div>
+    ${symPop()}
+    <div class="l-arc">
+      <svg class="arc-p" viewBox="0 0 300 150" aria-hidden="true"><path d="M10 150 A140 140 0 0 1 290 150"/></svg>
+      <svg class="arc-t" viewBox="0 0 300 300" aria-hidden="true"><path d="M60 300 A240 240 0 0 1 300 60"/></svg>
+      ${MODES.map((m, i) => `<button class="l-m m-${m}" style="--a:${[160, 120, 60, 20][i]};--a2:${[172, 147, 122, 98][i]}" data-act="mode:${m}" data-on="mode:${m}"><i></i><span>${SH[m]}</span></button>`).join('')}
+    </div>
+    <div class="l-hist">
+      <button class="l-o" data-act="undo" data-dis="undo" aria-label="Undo">${ic('undo', 18)}</button>
+      <button class="l-o" data-act="redo" data-dis="redo" aria-label="Redo">${ic('redo', 18)}</button>
+    </div>`,
+  depth: () => `
+    <div class="m-island glass" data-island>
+      <button class="m-pill" data-act="island" aria-label="Change mode"><i class="dot"></i><b data-b="modeLong"></b><span data-b="objName"></span></button>
+      <div class="m-modes">${MODES.map(m => `<button class="m-${m}" data-act="mode:${m}" data-on="mode:${m}">${ic(m, 18)}<span>${LG[m]}</span></button>`).join('')}</div>
+    </div>
+    <button class="m-menu glass" data-act="panel:menu" data-on="panel:menu" aria-label="Menu">${ic('menu', 18)}</button>
+    <div class="m-hint" data-b="toolLine"></div>
+    <div class="m-dock glass">
+      <button class="t-scene" data-act="panel:scene" data-on="panel:scene">${ic('list')}<span>Scene</span></button>
+      <button data-act="panel:mat" data-on="panel:mat">${ic('mat')}<span>Material</span></button>
+      <button data-act="sympop" data-on="symany">${ic('sym')}<span>Sym</span></button>
+      <i class="m-sep"></i>
+      <button data-act="undo" data-dis="undo">${ic('undo')}<span>Undo</span></button>
+      <button data-act="redo" data-dis="redo">${ic('redo')}<span>Redo</span></button>
+    </div>
+    ${symPop().replace('class="pop', 'class="glass pop')}`,
+};
+
+/* ---------------- state ---------------- */
+const S = {
+  skin: 'h', mode: 'object', sel: null, comp: new Set(), op: null,
+  sym: { x: false, y: false, z: false }, sympop: false, island: false, panel: null,
+  fx: 'full', light: 'studio', grid: true, xray: false, shadow: true,
+  hist: [], redo: [],
+};
+const MATS = {
+  clay: { name: 'Clay', c: '#6f757d', r: .78, m: 0 },
+  graphite: { name: 'Graphite', c: '#2a2e34', r: .42, m: .35 },
+  chrome: { name: 'Chrome', c: '#dde1e6', r: .12, m: 1 },
+  bone: { name: 'Bone', c: '#c9c3b6', r: .74, m: 0 },
+  signal: { name: 'Signal', c: '#f24723', r: .5, m: 0 },
+  acid: { name: 'Acid', c: '#c0fe04', r: .55, m: 0 },
+  cobalt: { name: 'Cobalt', c: '#3558ff', r: .38, m: .15 },
+  ink: { name: 'Ink', c: '#15171b', r: .7, m: 0 },
+};
+
+/* ---------------- polygon meshes ---------------- */
+function polyBox(sx, sy, sz) {
+  const x = sx / 2, y = sy / 2, z = sz / 2;
+  const v = [[-x, -y, -z], [x, -y, -z], [x, y, -z], [-x, y, -z], [-x, -y, z], [x, -y, z], [x, y, z], [-x, y, z]].map(a => new V3(...a));
+  return { v, f: [[4, 5, 6, 7], [1, 0, 3, 2], [0, 4, 7, 3], [5, 1, 2, 6], [7, 6, 2, 3], [0, 1, 5, 4]] };
+}
+function polyCyl(r, h, n) {
+  const v = [];
+  for (let k = 0; k < 2; k++) for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2; v.push(new V3(Math.cos(a) * r, k ? h / 2 : -h / 2, Math.sin(a) * r)); }
+  const f = [];
+  for (let i = 0; i < n; i++) { const j = (i + 1) % n; f.push([i, n + i, n + j, j]); }
+  f.push([...Array(n).keys()].map(i => n + n - 1 - i));
+  f.push([...Array(n).keys()]);
+  return { v, f };
+}
+function polyIco(r) {
+  const g = new THREE.IcosahedronGeometry(r, 0), p = g.attributes.position, v = [], map = new Map(), f = [];
+  for (let t = 0; t < p.count; t += 3) {
+    const face = [];
+    for (let k = 0; k < 3; k++) {
+      const q = new V3().fromBufferAttribute(p, t + k), key = q.toArray().map(x => x.toFixed(4)).join();
+      if (!map.has(key)) { map.set(key, v.length); v.push(q); }
+      face.push(map.get(key));
+    }
+    f.push(face);
+  }
+  g.dispose();
+  return { v, f };
+}
+function clonePoly(p) { return { v: p.v.map(q => q.clone()), f: p.f.map(a => a.slice()) }; }
+function faceNormal(v, f) {
+  const n = new V3();
+  for (let i = 0; i < f.length; i++) { const a = v[f[i]], b = v[f[(i + 1) % f.length]]; n.x += (a.y - b.y) * (a.z + b.z); n.y += (a.z - b.z) * (a.x + b.x); n.z += (a.x - b.x) * (a.y + b.y); }
+  return n.normalize();
+}
+function faceCenter(v, f) { const c = new V3(); f.forEach(i => c.add(v[i])); return c.multiplyScalar(1 / f.length); }
+function edgesOf(p) {
+  const m = new Map();
+  p.f.forEach(f => f.forEach((a, i) => { const b = f[(i + 1) % f.length], k = a < b ? a + '_' + b : b + '_' + a; if (!m.has(k)) m.set(k, [Math.min(a, b), Math.max(a, b)]); }));
+  return [...m.values()];
+}
+function compact(p) {
+  const used = new Map(), v = [];
+  const f = p.f.map(face => face.map(i => { if (!used.has(i)) { used.set(i, v.length); v.push(p.v[i]); } return used.get(i); }));
+  return { v, f };
+}
+function buildGeo(p) {
+  const pos = [], tri2f = [];
+  p.f.forEach((f, fi) => { for (let k = 1; k < f.length - 1; k++) { for (const idx of [f[0], f[k], f[k + 1]]) { const q = p.v[idx]; pos.push(q.x, q.y, q.z); } tri2f.push(fi); } });
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.computeVertexNormals(); g.computeBoundingBox(); g.computeBoundingSphere();
+  g.userData.tri2f = tri2f;
+  return g;
+}
+function extrude(base, faces, d, region) {
+  const v = base.v.map(q => q.clone()), f = base.f.map(a => a.slice()), newSel = [];
+  if (!region) {
+    for (const fi of faces) {
+      const face = f[fi], n = faceNormal(v, face);
+      const map = face.map(i => { v.push(v[i].clone().addScaledVector(n, d)); return v.length - 1; });
+      for (let k = 0; k < face.length; k++) { const k2 = (k + 1) % face.length; f.push([face[k], face[k2], map[k2], map[k]]); }
+      f[fi] = map; newSel.push(fi);
+    }
+  } else {
+    const dir = new Map(), n = new V3();
+    for (const fi of faces) { const face = f[fi]; n.add(faceNormal(v, face)); face.forEach((a, k) => { const b = face[(k + 1) % face.length]; dir.set(a + '_' + b, [a, b]); }); }
+    n.normalize();
+    const vmap = new Map(), get = i => { if (!vmap.has(i)) { v.push(v[i].clone().addScaledVector(n, d)); vmap.set(i, v.length - 1); } return vmap.get(i); };
+    for (const [, [a, b]] of dir) if (!dir.has(b + '_' + a)) f.push([a, b, get(b), get(a)]);
+    for (const fi of faces) { f[fi] = f[fi].map(get); newSel.push(fi); }
+  }
+  return { v, f, newSel };
+}
+function inset(base, faces, t) {
+  const v = base.v.map(q => q.clone()), f = base.f.map(a => a.slice()), newSel = [];
+  for (const fi of faces) {
+    const face = f[fi], c = faceCenter(v, face);
+    const map = face.map(i => { v.push(c.clone().lerp(v[i], 1 - t)); return v.length - 1; });
+    for (let k = 0; k < face.length; k++) { const k2 = (k + 1) % face.length; f.push([face[k], face[k2], map[k2], map[k]]); }
+    f[fi] = map; newSel.push(fi);
+  }
+  return { v, f, newSel };
+}
+
+/* ---------------- three ---------------- */
+const renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: true, alpha: true, powerPreference: 'high-performance' });
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+const scene = new THREE.Scene();
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), .04).texture;
+const camera = new THREE.PerspectiveCamera(30, 1, .05, 200);
+const controls = new OrbitControls(camera, cv);
+controls.enableDamping = true; controls.dampingFactor = .1; controls.rotateSpeed = .85;
+controls.minDistance = 2.2; controls.maxDistance = 22; controls.maxPolarAngle = Math.PI * .495;
+controls.mouseButtons.RIGHT = null;
+controls.target.set(0, .5, 0);
+camera.position.setFromSphericalCoords(8.5, THREE.MathUtils.degToRad(63), THREE.MathUtils.degToRad(36)).add(controls.target);
+
+const key = new THREE.DirectionalLight('#ffffff', 1.6);
+key.castShadow = true; key.shadow.mapSize.set(1024, 1024); key.shadow.radius = 5;
+Object.assign(key.shadow.camera, { left: -5, right: 5, top: 5, bottom: -5, near: .5, far: 24 });
+key.shadow.bias = -.0004; key.shadow.normalBias = .02;
+scene.add(key, key.target);
+const rim = new THREE.DirectionalLight('#9fb4ff', 0); scene.add(rim);
+const shadowPlane = new THREE.Mesh(new THREE.PlaneGeometry(40, 40).rotateX(-Math.PI / 2), new THREE.ShadowMaterial({ opacity: .45 }));
+shadowPlane.receiveShadow = true; scene.add(shadowPlane);
+const gridMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false,
+  uniforms: { uColor: { value: new THREE.Color('#fff') }, uAlpha: { value: .07 }, uFade: { value: 11 } },
+  vertexShader: 'varying vec3 vW; void main(){ vec4 w = modelMatrix * vec4(position,1.); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
+  fragmentShader: `uniform vec3 uColor; uniform float uAlpha; uniform float uFade; varying vec3 vW;
+    float gl2(vec2 p, float s){ vec2 q = p / s; vec2 g = abs(fract(q - .5) - .5) / fwidth(q); return 1. - min(min(g.x, g.y), 1.); }
+    void main(){ float a = gl2(vW.xz, .5) * .55 + gl2(vW.xz, 2.5) * 1.; float d = length(vW.xz); a *= 1. - smoothstep(uFade * .3, uFade, d); if (a < .01) discard; gl_FragColor = vec4(uColor, a * uAlpha * 4.); }`,
+});
+const grid = new THREE.Mesh(new THREE.PlaneGeometry(60, 60).rotateX(-Math.PI / 2), gridMat);
+grid.position.y = .001; grid.renderOrder = -1; scene.add(grid);
+
+const matCache = {};
+function matFor(o) {
+  const k = o.mat + (S.xray ? '_x' : '');
+  if (!matCache[k]) {
+    const d = MATS[o.mat];
+    matCache[k] = new THREE.MeshStandardMaterial({ color: d.c, roughness: d.r, metalness: d.m, flatShading: true, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
+      transparent: S.xray, opacity: S.xray ? .32 : 1, depthWrite: !S.xray });
+  }
+  return matCache[k];
+}
+
+let nextId = 1;
+const objs = [];
+const byId = id => objs.find(o => o.id === id);
+const cur = () => { const o = byId(S.sel); return o && !o.hidden ? o : null; };
+function makeObj(name, poly, pos, mat, id) {
+  const o = { id: id ?? nextId++, name, poly, mat, hidden: false };
+  if (id != null) nextId = Math.max(nextId, id + 1);
+  o.mesh = new THREE.Mesh(buildGeo(poly), matFor(o));
+  o.mesh.position.set(...pos); o.mesh.castShadow = true; o.mesh.receiveShadow = true; o.mesh.userData.oid = o.id;
+  scene.add(o.mesh); objs.push(o);
+  return o;
+}
+function refreshGeo(o) { o.mesh.geometry.dispose(); o.mesh.geometry = buildGeo(o.poly); }
+function removeObj(o) {
+  if (helpers.parent === o.mesh) o.mesh.remove(helpers);
+  scene.remove(o.mesh); o.mesh.geometry.dispose(); objs.splice(objs.indexOf(o), 1);
+}
+makeObj('Plate', polyBox(2.6, .08, 1.8), [0, .04, 0], 'graphite');
+makeObj('Cube 1', polyBox(1, 1, 1), [0, .58, 0], 'clay');
+makeObj('Tube 2', polyCyl(.32, 1.1, 10), [1.85, .55, -.35], 'chrome');
+makeObj('Ico 3', polyIco(.44), [-1.75, .37, -.15], 'bone');
+S.sel = 2;
+
+/* selection helpers */
+const lineMat = new LineMaterial({ linewidth: 1.8, vertexColors: true, worldUnits: false, depthTest: true });
+let selLines = new LineSegments2(new LineSegmentsGeometry(), lineMat);
+selLines.renderOrder = 3;
+const ptsMat = new THREE.PointsMaterial({ size: 8, sizeAttenuation: false, vertexColors: true });
+const selPts = new THREE.Points(new THREE.BufferGeometry(), ptsMat); selPts.renderOrder = 4;
+const faceMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: .55, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, side: THREE.DoubleSide });
+const faceHi = new THREE.Mesh(new THREE.BufferGeometry(), faceMat); faceHi.renderOrder = 2;
+const arrow = new THREE.ArrowHelper(new V3(0, 1, 0), new V3(), .5, 0xffffff, .12, .07);
+const mirrorMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: .07, side: THREE.DoubleSide, depthWrite: false });
+const mirrors = { x: new THREE.Mesh(new THREE.PlaneGeometry(2.2, 2.2).rotateY(Math.PI / 2), mirrorMat), y: new THREE.Mesh(new THREE.PlaneGeometry(2.2, 2.2).rotateX(Math.PI / 2), mirrorMat), z: new THREE.Mesh(new THREE.PlaneGeometry(2.2, 2.2), mirrorMat) };
+const helpers = new THREE.Group();
+helpers.add(selLines, selPts, faceHi, arrow, mirrors.x, mirrors.y, mirrors.z);
+
+function skinCfg() { return VARIANTS[S.skin].three; }
+function updateHelpers() {
+  objs.forEach(o => { o.mesh.material = matFor(o); o.mesh.visible = !o.hidden; });
+  const o = cur(), cfg = skinCfg();
+  if (!o) { if (helpers.parent) helpers.parent.remove(helpers); return; }
+  if (helpers.parent !== o.mesh) o.mesh.add(helpers);
+  const mc = new THREE.Color(cfg.m3[S.mode]), dim = new THREE.Color(cfg.dim), dot = new THREE.Color(cfg.dot);
+  const E = edgesOf(o.poly), pos = [], col = [];
+  let selEdges = new Set();
+  if (S.mode === 'edge') selEdges = S.comp;
+  if (S.mode === 'face') { const fs = [...S.comp].map(i => o.poly.f[i]).filter(Boolean); const set = new Set(); fs.forEach(f => f.forEach((a, k) => { const b = f[(k + 1) % f.length]; set.add(a < b ? a + '_' + b : b + '_' + a); })); E.forEach((e, i) => { if (set.has(e[0] + '_' + e[1])) selEdges.add(i); }); }
+  E.forEach(([a, b], i) => {
+    const A = o.poly.v[a], B = o.poly.v[b]; pos.push(A.x, A.y, A.z, B.x, B.y, B.z);
+    const c = S.mode === 'object' || selEdges.has(i) ? mc : dim; col.push(c.r, c.g, c.b, c.r, c.g, c.b);
+  });
+  helpers.remove(selLines); selLines.geometry.dispose();
+  const g = new LineSegmentsGeometry(); g.setPositions(pos); g.setColors(col);
+  selLines = new LineSegments2(g, lineMat); selLines.renderOrder = 3; helpers.add(selLines);
+  lineMat.linewidth = S.mode === 'object' ? 2 : 1.5;
+  selPts.visible = S.mode === 'vertex';
+  if (selPts.visible) {
+    const p = [], c = [];
+    const used = new Set(o.poly.f.flat());
+    o.poly.v.forEach((q, i) => { if (!used.has(i)) return; p.push(q.x, q.y, q.z); const k = S.comp.has(i) ? mc : dot; c.push(k.r, k.g, k.b); });
+    selPts.geometry.dispose(); selPts.geometry = new THREE.BufferGeometry();
+    selPts.geometry.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
+    selPts.geometry.setAttribute('color', new THREE.Float32BufferAttribute(c, 3));
+    ptsMat.size = 8;
+  }
+  faceHi.visible = S.mode === 'face' && S.comp.size > 0;
+  arrow.visible = faceHi.visible;
+  if (faceHi.visible) {
+    const sub = { v: o.poly.v, f: [...S.comp].map(i => o.poly.f[i]).filter(Boolean) };
+    faceHi.geometry.dispose(); faceHi.geometry = buildGeo(sub); faceMat.color.copy(mc);
+    const n = new V3(), c = new V3(); sub.f.forEach(f => { n.add(faceNormal(o.poly.v, f)); c.add(faceCenter(o.poly.v, f)); });
+    c.multiplyScalar(1 / sub.f.length); arrow.position.copy(c); arrow.setDirection(n.normalize()); arrow.setColor(mc);
+    arrow.setLength(S.op && S.op.kind === 'extrude' ? .3 + Math.abs(S.op.v) * .2 : .42, .1, .06);
+  }
+  mirrorMat.color.copy(mc);
+  for (const a of ['x', 'y', 'z']) mirrors[a].visible = S.sym[a];
+}
+
+/* ---------------- render loop (on demand) ---------------- */
+let raf = 0, dirty = true, anim = null, tilt = 0, tiltY = 0, lastAz = null, lastPol = null;
+function invalidate() { dirty = true; if (!raf) raf = requestAnimationFrame(loop); }
+controls.addEventListener('change', invalidate);
+function loop(now) {
+  raf = 0;
+  let moving = controls.update();
+  if (anim) {
+    const t = clamp((now - anim.t0) / anim.dur, 0, 1), e = 1 - Math.pow(1 - t, 3);
+    controls.target.lerpVectors(anim.fromT, anim.toT, e); camera.position.lerpVectors(anim.fromP, anim.toP, e);
+    if (t >= 1) anim = null; moving = true;
+  }
+  if (app.dataset.layout === 'depth' || app.dataset.layout === 'classic') {
+    const az = controls.getAzimuthalAngle(), pol = controls.getPolarAngle();
+    if (lastAz !== null) { tilt = tilt * .82 + clamp((az - lastAz) * 260, -10, 10) * .18; tiltY = tiltY * .82 + clamp((pol - lastPol) * 200, -8, 8) * .18; }
+    lastAz = az; lastPol = pol;
+    app.style.setProperty('--tilt', tilt.toFixed(2)); app.style.setProperty('--tiltY', tiltY.toFixed(2));
+    if (Math.abs(tilt) > .05 || Math.abs(tiltY) > .05) moving = true;
+  }
+  if (dirty || moving) { dirty = false; renderer.render(scene, camera); project(); viewCube(); }
+  if (moving || pd) raf = requestAnimationFrame(loop);
+}
+
+/* the view cube follows the camera: CSS space is world space with y flipped */
+const Sflip = new THREE.Matrix4().makeScale(1, -1, 1), Rm = new THREE.Matrix4(), Mc = new THREE.Matrix4();
+const FACE_N = { front: new V3(0, 0, 1), back: new V3(0, 0, -1), right: new V3(1, 0, 0), left: new V3(-1, 0, 0), top: new V3(0, 1, 0), bottom: new V3(0, -1, 0) };
+let cubeEl = null, cubeFace = '';
+function viewCube() {
+  if (!cubeEl) return;
+  camera.updateMatrixWorld();
+  Rm.extractRotation(camera.matrixWorldInverse);
+  Mc.copy(Sflip).multiply(Rm).multiply(Sflip);
+  cubeEl.style.transform = `matrix3d(${Mc.elements.map(x => x.toFixed(5)).join(',')})`;
+  const dir = camera.position.clone().sub(controls.target).normalize();
+  let best = '', bd = -2;
+  for (const k in FACE_N) { const d = FACE_N[k].dot(dir); if (d > bd) { bd = d; best = k; } }
+  if (best !== cubeFace) { cubeFace = best; cubeEl.querySelectorAll('.f').forEach(f => f.classList.toggle('on', f.dataset.face === best)); }
+}
+
+/* screen projection, in app coordinates */
+const tmp = new V3();
+function toApp(w) {
+  tmp.copy(w).project(camera);
+  return { x: stageEl.offsetLeft + (tmp.x * .5 + .5) * cv.clientWidth, y: stageEl.offsetTop + (-tmp.y * .5 + .5) * cv.clientHeight, z: tmp.z };
+}
+let lastSelKey = '';
+function selWorldPoints() {
+  const o = cur(); if (!o) return [];
+  const m = o.mesh.matrixWorld, pts = [];
+  if (S.mode === 'object' || !S.comp.size) {
+    const b = o.mesh.geometry.boundingBox;
+    for (let i = 0; i < 8; i++) pts.push(new V3(i & 1 ? b.max.x : b.min.x, i & 2 ? b.max.y : b.min.y, i & 4 ? b.max.z : b.min.z).applyMatrix4(m));
+  } else {
+    const ids = new Set();
+    if (S.mode === 'vertex') S.comp.forEach(i => ids.add(i));
+    if (S.mode === 'edge') { const E = edgesOf(o.poly); S.comp.forEach(i => E[i] && E[i].forEach(a => ids.add(a))); }
+    if (S.mode === 'face') S.comp.forEach(i => (o.poly.f[i] || []).forEach(a => ids.add(a)));
+    ids.forEach(i => o.poly.v[i] && pts.push(o.poly.v[i].clone().applyMatrix4(m)));
+  }
+  return pts;
+}
+let readTop = 120;
+function project() {
+  const pts = selWorldPoints();
+  if (!pts.length) { ov.classList.remove('on'); return; }
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  pts.forEach(p => { const s = toApp(p); x0 = Math.min(x0, s.x); y0 = Math.min(y0, s.y); x1 = Math.max(x1, s.x); y1 = Math.max(y1, s.y); });
+  if (S.mode !== 'object' && pts.length === 1) { x0 -= 6; x1 += 6; y0 -= 6; y1 += 6; }
+  const W = app.clientWidth;
+  ov.style.cssText = `--x0:${x0}px;--y0:${y0}px;--x1:${x1}px;--y1:${y1}px`;
+  const right = W - x1 >= x0, ax = right ? x1 : x0, ay = Math.max(y0, readTop + 30);
+  const lx = right ? ax + 28 : ax - 28, ly = ay - 26;
+  const L = $('#leadLine'); L.setAttribute('x1', ax); L.setAttribute('y1', ay); L.setAttribute('x2', lx); L.setAttribute('y2', ly);
+  $('#leadDot').setAttribute('cx', ax); $('#leadDot').setAttribute('cy', ay);
+  const co = $('#callout'); co.style.left = (right ? lx + 6 : 'auto') + (right ? 'px' : ''); co.style.right = right ? 'auto' : (W - lx + 6) + 'px'; co.style.top = ly + 'px'; co.style.maxWidth = Math.max(60, (right ? W - lx - 16 : lx - 16)) + 'px';
+  const t = controls.target, g = toApp(new V3(t.x, 0, t.z)), u = toApp(new V3(t.x, 1, t.z));
+  ov.style.setProperty('--g', g.y + 'px'); ov.style.setProperty('--ppm', Math.max(8, g.y - u.y) + 'px');
+  ov.classList.add('on');
+  const k = S.sel + S.mode + [...S.comp].join();
+  if (k !== lastSelKey) { lastSelKey = k; ov.classList.remove('draw'); void ov.offsetWidth; ov.classList.add('draw'); }
+}
+
+/* ---------------- sizing ---------------- */
+let lastFit = '';
+function readPx(name) { return parseFloat(getComputedStyle(app).getPropertyValue(name)) || 0; }
+function resize() {
+  const w = cv.clientWidth, h = cv.clientHeight; if (!w || !h) return;
+  renderer.setPixelRatio(S.fx === 'full' ? Math.min(devicePixelRatio, 2) : 1);
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  const fitKey = device.dataset.device + (w / h < .8 ? 'p' : 'l');
+  if (fitKey !== lastFit) { lastFit = fitKey; const dist = w / h < .8 ? 13 : 9.5; const dir = camera.position.clone().sub(controls.target).normalize(); camera.position.copy(controls.target).addScaledVector(dir, dist); controls.update(); }
+  const vt = readPx('--vt'), vb = readPx('--vb');
+  camera.setViewOffset(w, h, 0, (vb - vt) / 2, w, h);
+  camera.updateProjectionMatrix();
+  lineMat.resolution.set(w, h);
+  invalidate();
+}
+new ResizeObserver(resize).observe(stageEl);
+
+/* ---------------- picking ---------------- */
+const ray = new THREE.Raycaster();
+function canvasLocal(e) { const r = cv.getBoundingClientRect(), k = cv.clientWidth / r.width; return { x: (e.clientX - r.left) * k, y: (e.clientY - r.top) * k }; }
+function appLocal(e) { const r = app.getBoundingClientRect(), k = app.clientWidth / r.width; return { x: (e.clientX - r.left) * k, y: (e.clientY - r.top) * k }; }
+function setRay(c) { ray.setFromCamera(new THREE.Vector2(c.x / cv.clientWidth * 2 - 1, -(c.y / cv.clientHeight) * 2 + 1), camera); }
+function pickObj(c, only) {
+  setRay(c);
+  const list = only ? [only.mesh] : objs.filter(o => !o.hidden).map(o => o.mesh);
+  return ray.intersectObjects(list, false)[0] || null;
+}
+function toCanvas(w) { tmp.copy(w).project(camera); return { x: (tmp.x * .5 + .5) * cv.clientWidth, y: (-tmp.y * .5 + .5) * cv.clientHeight }; }
+function occluded(o, wp) {
+  if (S.xray) return false;
+  const dir = wp.clone().sub(camera.position), dist = dir.length();
+  ray.set(camera.position, dir.normalize());
+  const h = ray.intersectObject(o.mesh, false)[0];
+  return h && h.distance < dist - .01;
+}
+function nearVert(c) {
+  const o = cur(); if (!o) return null;
+  let best = null, bd = 30;
+  const used = new Set(o.poly.f.flat());
+  o.poly.v.forEach((q, i) => {
+    if (!used.has(i)) return;
+    const w = q.clone().applyMatrix4(o.mesh.matrixWorld), s = toCanvas(w), d = Math.hypot(s.x - c.x, s.y - c.y);
+    if (d < bd && !occluded(o, w)) { bd = d; best = i; }
+  });
+  return best;
+}
+function nearEdge(c) {
+  const o = cur(); if (!o) return null;
+  let best = null, bd = 22;
+  edgesOf(o.poly).forEach(([a, b], i) => {
+    const A = o.poly.v[a].clone().applyMatrix4(o.mesh.matrixWorld), B = o.poly.v[b].clone().applyMatrix4(o.mesh.matrixWorld);
+    const sa = toCanvas(A), sb = toCanvas(B), dx = sb.x - sa.x, dy = sb.y - sa.y, L = dx * dx + dy * dy || 1;
+    const t = clamp(((c.x - sa.x) * dx + (c.y - sa.y) * dy) / L, 0, 1), d = Math.hypot(sa.x + dx * t - c.x, sa.y + dy * t - c.y);
+    if (d < bd && !occluded(o, A.clone().lerp(B, .5))) { bd = d; best = i; }
+  });
+  return best;
+}
+function pickComp(c) {
+  const o = cur(); if (!o) return null;
+  if (S.mode === 'vertex') return nearVert(c);
+  if (S.mode === 'edge') return nearEdge(c);
+  if (S.mode === 'face') { const h = pickObj(c, o); return h ? o.mesh.geometry.userData.tri2f[h.faceIndex] : null; }
+  return null;
+}
+
+/* ---------------- history ---------------- */
+function snap() {
+  return { objs: objs.map(o => ({ id: o.id, name: o.name, v: o.poly.v.map(q => [q.x, q.y, q.z]), f: o.poly.f.map(f => f.slice()), p: o.mesh.position.toArray(), h: o.hidden, m: o.mat })),
+    sel: S.sel, mode: S.mode, comp: [...S.comp] };
+}
+function restore(s) {
+  const keep = new Set(s.objs.map(x => x.id));
+  [...objs].forEach(o => { if (!keep.has(o.id)) removeObj(o); });
+  s.objs.forEach(x => {
+    const poly = { v: x.v.map(a => new V3(...a)), f: x.f.map(f => f.slice()) };
+    let o = byId(x.id);
+    if (!o) o = makeObj(x.name, poly, x.p, x.m, x.id);
+    else { o.poly = poly; o.mesh.position.fromArray(x.p); o.name = x.name; o.mat = x.m; refreshGeo(o); }
+    o.hidden = x.h;
+  });
+  objs.sort((a, b) => s.objs.findIndex(x => x.id === a.id) - s.objs.findIndex(x => x.id === b.id));
+  S.sel = s.sel; S.mode = s.mode; S.comp = new Set(s.comp);
+}
+function pushHist() { S.hist.push(snap()); if (S.hist.length > 60) S.hist.shift(); S.redo.length = 0; }
+function undo() { if (S.op) { cancelOp(); return; } if (!S.hist.length) { toast('Nothing to undo'); return; } S.redo.push(snap()); restore(S.hist.pop()); toast('Undo'); }
+function redo() { if (!S.redo.length) { toast('Nothing to redo'); return; } S.hist.push(snap()); restore(S.redo.pop()); toast('Redo'); }
+
+/* ---------------- operations ---------------- */
+const OPS = { extrude: { name: 'Extrude', def: .35, min: -.8, max: 1.5 }, inset: { name: 'Inset', def: .3, min: 0, max: .95 } };
+function beginOp(kind) {
+  const o = cur();
+  if (!o || S.mode !== 'face' || !S.comp.size) { toast('Pick a face first'); return; }
+  S.op = { kind, v: OPS[kind].def, opt: 'face', pre: snap(), base: clonePoly(o.poly), faces: [...S.comp], oid: o.id };
+  previewOp();
+}
+function previewOp() {
+  const op = S.op, o = byId(op.oid);
+  const r = op.kind === 'extrude' ? extrude(op.base, op.faces, op.v, op.opt === 'region') : inset(op.base, op.faces, op.v);
+  o.poly = { v: r.v, f: r.f }; S.comp = new Set(r.newSel); refreshGeo(o);
+}
+function setOpVal(v) { if (!S.op) return; const d = OPS[S.op.kind]; S.op.v = Math.round(clamp(v, d.min, d.max) * 100) / 100; previewOp(); render(); }
+function applyOp() { if (!S.op) return; S.hist.push(S.op.pre); S.redo.length = 0; toast(`${OPS[S.op.kind].name} ${S.op.v.toFixed(2)}`, true); S.op = null; }
+function cancelOp() { if (!S.op) return; const o = byId(S.op.oid); o.poly = clonePoly(S.op.base); S.comp = new Set(S.op.faces); refreshGeo(o); S.op = null; toast('Cancelled'); }
+function setMode(m) {
+  if (S.op) applyOp();
+  S.mode = m; S.comp.clear(); S.island = false;
+  if (m !== 'object' && !cur()) { const first = objs.find(o => !o.hidden && o.name !== 'Plate') || objs[0]; S.sel = first.id; }
+}
+function freeSpot() {
+  for (let k = 0; k < 40; k++) {
+    const a = Math.random() * Math.PI * 2, r = 1.6 + Math.random() * 1.6, p = new V3(Math.cos(a) * r, 0, Math.sin(a) * r);
+    if (objs.every(o => o.mesh.position.distanceTo(new V3(p.x, o.mesh.position.y, p.z)) > 1.2)) return p;
+  }
+  return new V3(2.8, 0, 1.4);
+}
+function addObj(kind) {
+  pushHist();
+  const n = objs.length, p = freeSpot();
+  const o = kind === 'tube' ? makeObj(`Tube ${n}`, polyCyl(.32, 1.1, 10), [p.x, .55, p.z], 'chrome')
+    : kind === 'ico' ? makeObj(`Ico ${n}`, polyIco(.44), [p.x, .37, p.z], 'bone')
+    : makeObj(`Cube ${n}`, polyBox(1, 1, 1), [p.x, .5, p.z], 'clay');
+  S.sel = o.id; S.mode = 'object'; S.comp.clear();
+  toast(`Added ${o.name}`);
+}
+function dup() {
+  const o = cur(); if (!o) return;
+  pushHist();
+  const p = o.mesh.position.clone().add(new V3(1.2, 0, .4));
+  const c = makeObj(`${o.name.split(' ')[0]} ${objs.length}`, clonePoly(o.poly), [p.x, p.y, p.z], o.mat);
+  S.sel = c.id; toast(`Duplicated as ${c.name}`);
+}
+function delObj() { const o = cur(); if (!o) return; pushHist(); removeObj(o); S.sel = null; S.comp.clear(); S.mode = 'object'; toast(`Deleted ${o.name}. Undo brings it back`); }
+function delFaces() {
+  const o = cur(); if (!o || !S.comp.size) return;
+  pushHist(); o.poly = compact({ v: o.poly.v, f: o.poly.f.filter((_, i) => !S.comp.has(i)) }); S.comp.clear(); refreshGeo(o); toast('Faces deleted');
+}
+function merge() {
+  const o = cur(); if (!o || S.comp.size < 2) { toast('Pick two vertices or more'); return; }
+  pushHist();
+  const ids = [...S.comp], c = new V3(); ids.forEach(i => c.add(o.poly.v[i])); c.multiplyScalar(1 / ids.length);
+  const keep = ids[0]; o.poly.v[keep] = c;
+  const f = o.poly.f.map(face => { const out = []; face.map(i => S.comp.has(i) ? keep : i).forEach(i => { if (out[out.length - 1] !== i) out.push(i); }); if (out.length > 1 && out[0] === out[out.length - 1]) out.pop(); return out; }).filter(x => x.length >= 3);
+  o.poly = compact({ v: o.poly.v, f }); S.comp.clear(); refreshGeo(o); toast(`Merged ${ids.length} vertices`);
+}
+function selAll() {
+  const o = cur(); if (!o) return;
+  const n = S.mode === 'vertex' ? o.poly.v.length : S.mode === 'edge' ? edgesOf(o.poly).length : o.poly.f.length;
+  S.comp = new Set([...Array(n).keys()]);
+}
+function ringSelect() {
+  const o = cur(); if (!o || S.mode !== 'edge' || !S.comp.size) { toast('Pick an edge first'); return; }
+  const E = edgesOf(o.poly), key = (a, b) => a < b ? a + '_' + b : b + '_' + a, idx = new Map(E.map((e, i) => [key(...e), i]));
+  const res = new Set(S.comp), q = [...S.comp];
+  while (q.length) {
+    const [a, b] = E[q.pop()];
+    for (const f of o.poly.f) {
+      if (f.length !== 4) continue;
+      const ia = f.indexOf(a), ib = f.indexOf(b);
+      if (ia < 0 || ib < 0 || ((ia + 1) % 4 !== ib && (ib + 1) % 4 !== ia)) continue;
+      const oi = idx.get(key(f[(ia + 2) % 4], f[(ib + 2) % 4]));
+      if (oi != null && !res.has(oi)) { res.add(oi); q.push(oi); }
+    }
+  }
+  S.comp = res; toast(`Edge ring: ${res.size} edges`);
+}
+function focusSel() {
+  const pts = selWorldPoints(); if (!pts.length) return;
+  const c = new V3(); pts.forEach(p => c.add(p)); c.multiplyScalar(1 / pts.length);
+  const d = c.clone().sub(controls.target);
+  anim = { t0: performance.now(), dur: 420, fromT: controls.target.clone(), toT: c, fromP: camera.position.clone(), toP: camera.position.clone().add(d) };
+  invalidate();
+}
+const LIGHTS = {
+  studio: { env: .55, key: ['#fff3e6', 1.5], rim: .25, pos: [4, 7, 3], exp: .95 },
+  night: { env: .16, key: ['#a9bcff', 1], rim: 1.2, pos: [-3, 6, -2], exp: 1.1 },
+  dusk: { env: .3, key: ['#ffab6b', 2.4], rim: .45, pos: [6, 2.4, 1.5], exp: .95 },
+};
+function applyLight() {
+  const L = LIGHTS[S.light];
+  scene.environmentIntensity = L.env; key.color.set(L.key[0]); key.intensity = L.key[1]; key.position.set(...L.pos);
+  rim.intensity = L.rim; rim.position.set(-L.pos[0], 3, -L.pos[2]); renderer.toneMappingExposure = L.exp;
+}
+function applyView() {
+  const cfg = skinCfg();
+  grid.visible = S.grid; gridMat.uniforms.uColor.value.set(cfg.grid); gridMat.uniforms.uAlpha.value = cfg.gridA;
+  key.castShadow = S.shadow; shadowPlane.visible = S.shadow; shadowPlane.material.opacity = cfg.shadow;
+}
+
+/* ---------------- ring ---------------- */
+const RING = {
+  world: [['Add cube', 'add:cube'], ['Add tube', 'add:tube'], ['Add ico', 'add:ico'], ['Grid', 'grid'], ['X-ray', 'xray'], ['Light', 'light:next']],
+  modes: [['Object', 'mode:object', 0, 'm-object'], ['Vertex', 'mode:vertex', 0, 'm-vertex'], ['Edge', 'mode:edge', 0, 'm-edge'], ['Face', 'mode:face', 0, 'm-face']],
+  object: [['Duplicate', 'dup'], ['Focus', 'focus'], ['Material', 'panel:mat'], ['Edit faces', 'mode:face'], ['Add cube', 'add:cube'], ['Delete', 'del', 1]],
+  vertex: [['Merge', 'merge'], ['Select all', 'all'], ['Focus', 'focus'], ['Sym X', 'sym:x'], ['Deselect', 'none'], ['Object', 'mode:object']],
+  edge: [['Ring', 'ringsel'], ['Select all', 'all'], ['Focus', 'focus'], ['Deselect', 'none'], ['Faces', 'mode:face'], ['Object', 'mode:object']],
+  face: [['Extrude', 'op:extrude'], ['Inset', 'op:inset'], ['Select all', 'all'], ['Focus', 'focus'], ['Object', 'mode:object'], ['Delete', 'delf', 1]],
+};
+const ring = { open: false, hot: null, cx: 0, cy: 0 };
+function ringItemsAt(c) {
+  const h = pickObj(c);
+  if (S.mode === 'object') { if (h) { S.sel = h.object.userData.oid; return { title: byId(S.sel).name, items: RING.object }; } return { title: 'Scene', items: RING.world }; }
+  const o = cur(); if (!o) return { title: 'Scene', items: RING.world };
+  const el = pickComp(c);
+  if (el != null && !S.comp.has(el)) { S.comp.clear(); S.comp.add(el); }
+  return { title: `${o.name} / ${LG[S.mode]}`, items: RING[S.mode] };
+}
+function openRing(c, a) {
+  const { title, items } = ringItemsAt(c);
+  render();
+  showRing(a, title, items);
+}
+function showRing(a, title, items) {
+  const W = app.clientWidth, H = app.clientHeight, r = app.dataset.layout === 'frame' || app.dataset.layout === 'poster' ? 108 : 100;
+  const cx = clamp(a.x, r + 56, W - r - 56), cy = clamp(a.y, r + 90, H - r - 70);
+  const start = Math.atan2(a.y - cy, a.x - cx) + Math.PI;
+  ringEl.style.cssText = `--cx:${cx}px;--cy:${cy}px;--r:${r}px`;
+  ringEl.innerHTML = `<div class="veil" data-act="ringclose"></div><div class="rhub"></div><div class="rlabel">${title}</div>` + items.map(([label, act, danger, cls], i) => {
+    const ang = -Math.PI / 2 + i / items.length * Math.PI * 2;
+    return `<button class="seat${danger ? ' danger' : ''}${cls ? ' ' + cls : ''}" data-act="${act}" ${danger ? 'data-hold="1"' : ''} style="--x:${(cx + Math.cos(ang) * r).toFixed(1)}px;--y:${(cy + Math.sin(ang) * r).toFixed(1)}px;--i:${i}">${danger ? '<span class="hold"></span>' : ''}<span>${label}</span></button>`;
+  }).join('');
+  void ringEl.offsetWidth; ringEl.classList.remove('closing'); ringEl.classList.add('open');
+  ring.open = true; ring.hot = null; ring.cx = cx; ring.cy = cy;
+  if (navigator.vibrate) try { navigator.vibrate(8); } catch (e) {}
+  void start;
+}
+function closeRing() {
+  if (!ring.open) return;
+  ring.open = false; ring.hot = null; ringEl.classList.add('closing'); ringEl.classList.remove('open');
+  setTimeout(() => { if (!ring.open) { ringEl.innerHTML = ''; ringEl.classList.remove('closing'); } }, 200);
+}
+function hotAt(a) {
+  let best = null, bd = 50;
+  ringEl.querySelectorAll('.seat').forEach(s => { const x = parseFloat(s.style.getPropertyValue('--x')), y = parseFloat(s.style.getPropertyValue('--y')), d = Math.hypot(x - a.x, y - a.y); if (d < bd) { bd = d; best = s; } });
+  ringEl.querySelectorAll('.seat').forEach(s => s.classList.toggle('hot', s === best));
+  ring.hot = best;
+  const lab = ringEl.querySelector('.rlabel');
+  if (best && lab) lab.textContent = best.dataset.hold ? 'Hold to delete' : best.textContent;
+}
+let holdTimer = 0;
+ringEl.addEventListener('pointerdown', e => {
+  const s = e.target.closest('.seat[data-hold]'); if (!s) return;
+  s.classList.add('holding');
+  holdTimer = setTimeout(() => { s.classList.remove('holding'); closeRing(); act(s.dataset.act); }, 560);
+});
+ringEl.addEventListener('pointerup', e => {
+  const s = e.target.closest('.seat[data-hold]'); if (!s) return;
+  clearTimeout(holdTimer); if (s.classList.contains('holding')) { s.classList.remove('holding'); toast('Hold to delete'); }
+});
+ringEl.addEventListener('pointerleave', () => { clearTimeout(holdTimer); ringEl.querySelectorAll('.holding').forEach(s => s.classList.remove('holding')); });
+
+/* hold a chrome button for its ring (the mode diamond) */
+let hr = null;
+app.addEventListener('pointerdown', e => {
+  const t = e.target.closest('[data-holdring]'); if (!t) return;
+  hr = { t, id: e.pointerId, open: false };
+  hr.timer = setTimeout(() => {
+    if (!hr) return;
+    hr.open = true; t.dataset.suppress = '1';
+    const r = t.getBoundingClientRect(), ar = app.getBoundingClientRect(), k = app.clientWidth / ar.width;
+    showRing({ x: (r.left + r.width / 2 - ar.left) * k, y: (r.top + r.height / 2 - ar.top) * k }, 'Mode', RING[t.dataset.holdring]);
+  }, 400);
+});
+window.addEventListener('pointermove', e => { if (hr && hr.open && e.pointerId === hr.id) hotAt(appLocal(e)); });
+window.addEventListener('pointerup', e => {
+  if (!hr || e.pointerId !== hr.id) return;
+  clearTimeout(hr.timer);
+  if (hr.open && ring.hot && !ring.hot.dataset.hold) { const s = ring.hot; closeRing(); act(s.dataset.act); }
+  hr = null;
+});
+
+/* ---------------- pointer on the viewport ---------------- */
+const pointers = new Map();
+let pd = null, two = null;
+const drag = {};
+const plane = new THREE.Plane();
+function hitPlane(c) { setRay(c); return ray.ray.intersectPlane(plane, new V3()); }
+function startVDrag(c) {
+  const o = cur(); pushHist();
+  const ids = [...S.comp], cen = new V3(); ids.forEach(i => cen.add(o.poly.v[i].clone().applyMatrix4(o.mesh.matrixWorld))); cen.multiplyScalar(1 / ids.length);
+  plane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(new V3()), cen);
+  const mirror = [];
+  const flip = q => new V3(S.sym.x ? -q.x : q.x, S.sym.y ? -q.y : q.y, S.sym.z ? -q.z : q.z);
+  if (S.sym.x || S.sym.y || S.sym.z) ids.forEach(i => { const t = flip(o.poly.v[i]); const j = o.poly.v.findIndex((q, k) => k !== i && !S.comp.has(k) && q.distanceTo(t) < 1e-4); if (j >= 0) mirror.push([j, o.poly.v[j].clone()]); });
+  Object.assign(drag, { o, ids, start: hitPlane(c), base: ids.map(i => o.poly.v[i].clone()), mirror, flip });
+}
+function moveVDrag(c) {
+  const p = hitPlane(c); if (!p || !drag.start) return;
+  const d = p.sub(drag.start);
+  drag.ids.forEach((i, k) => drag.o.poly.v[i].copy(drag.base[k]).add(d));
+  drag.mirror.forEach(([j, b]) => drag.o.poly.v[j].copy(b).add(drag.flip(d)));
+  refreshGeo(drag.o); updateHelpers(); invalidate();
+}
+function startODrag(c) {
+  const o = cur(); pushHist();
+  plane.set(new V3(0, 1, 0), -o.mesh.position.y);
+  Object.assign(drag, { o, start: hitPlane(c), base: o.mesh.position.clone() });
+}
+function moveODrag(c) {
+  const p = hitPlane(c); if (!p || !drag.start) return;
+  const d = p.sub(drag.start); drag.o.mesh.position.set(drag.base.x + d.x, drag.base.y, drag.base.z + d.z); invalidate();
+}
+function handleTap(c) {
+  const h = pickObj(c);
+  if (S.mode === 'object') { S.sel = h ? h.object.userData.oid : null; if (!h) S.sympop = false; return; }
+  const o = cur();
+  if (!o) { if (h) S.sel = h.object.userData.oid; return; }
+  const el = pickComp(c);
+  if (el == null) {
+    if (h && h.object.userData.oid !== o.id) toast(`Editing ${o.name}. Switch in Object mode`);
+    else S.comp.clear();
+  } else if (S.comp.has(el)) S.comp.delete(el); else S.comp.add(el);
+}
+cv.addEventListener('contextmenu', e => { e.preventDefault(); if (S.op) return; openRing(canvasLocal(e), appLocal(e)); });
+cv.addEventListener('pointerdown', e => {
+  if (e.button === 2) return;
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (S.sympop || S.island) { S.sympop = false; S.island = false; render(); }
+  if (pointers.size === 2) {
+    two = { t0: performance.now(), moved: 0, start: [...pointers.values()].map(p => ({ ...p })) };
+    if (pd) { clearTimeout(pd.timer); if (pd.kind === 'vdrag' || pd.kind === 'odrag') { /* keep the move, history already pushed */ } }
+    pd = null; controls.enabled = true; return;
+  }
+  if (pointers.size > 2) return;
+  const c = canvasLocal(e), a = appLocal(e);
+  pd = { id: e.pointerId, c, a, c0: { ...c }, a0: { ...a }, kind: 'tap' };
+  if (S.op) { pd.kind = 'op'; pd.v0 = S.op.v; controls.enabled = false; invalidate(); return; }
+  if (S.mode === 'vertex' && S.comp.size) { const vi = nearVert(c); if (vi != null && S.comp.has(vi)) { pd.kind = 'vdrag-c'; controls.enabled = false; } }
+  else if (S.mode === 'object' && S.sel != null) { const h = pickObj(c); if (h && h.object.userData.oid === S.sel) { pd.kind = 'odrag-c'; controls.enabled = false; } }
+  pd.timer = setTimeout(() => { if (!pd) return; pd.ring = true; controls.enabled = false; openRing(pd.c, pd.a); }, 430);
+  invalidate();
+});
+window.addEventListener('pointermove', e => {
+  if (pointers.has(e.pointerId)) { const p = pointers.get(e.pointerId); if (two) two.moved = Math.max(two.moved, Math.hypot(e.clientX - p.x, e.clientY - p.y) > 0 ? two.moved + Math.hypot(e.movementX || 0, e.movementY || 0) : two.moved); }
+  if (!pd || e.pointerId !== pd.id) return;
+  const c = canvasLocal(e), a = appLocal(e), dist = Math.hypot(c.x - pd.c0.x, c.y - pd.c0.y);
+  pd.c = c; pd.a = a;
+  if (pd.ring) { hotAt(a); return; }
+  if (pd.kind === 'op') { const d = OPS[S.op.kind]; setOpVal(pd.v0 + ((pd.c0.y - c.y) * 1.4 + (c.x - pd.c0.x) * .5) / cv.clientHeight * (d.max - d.min)); return; }
+  if (dist > 7) {
+    clearTimeout(pd.timer);
+    if (pd.kind === 'vdrag-c') { startVDrag(pd.c0); pd.kind = 'vdrag'; }
+    else if (pd.kind === 'odrag-c') { startODrag(pd.c0); pd.kind = 'odrag'; }
+    else if (pd.kind === 'tap') pd.kind = 'orbit';
+  }
+  if (pd.kind === 'vdrag') moveVDrag(c); else if (pd.kind === 'odrag') moveODrag(c);
+});
+function pointerEnd(e) {
+  const wasTwo = two && pointers.size === 2;
+  pointers.delete(e.pointerId);
+  if (wasTwo) {
+    if (performance.now() - two.t0 < 280 && two.moved < 24 && !S.op) { undo(); render(); }
+    if (!pointers.size) two = null;
+    return;
+  }
+  if (!pointers.size) two = null;
+  if (!pd || e.pointerId !== pd.id) return;
+  clearTimeout(pd.timer);
+  const k = pd.kind, moved = Math.hypot(pd.c.x - pd.c0.x, pd.c.y - pd.c0.y);
+  if (pd.ring) {
+    if (ring.hot) { const s = ring.hot; if (s.dataset.hold) { toast('Hold to delete'); } else { closeRing(); act(s.dataset.act); } }
+  } else if (k === 'op') { if (moved < 7) { applyOp(); } }
+  else if (k === 'tap' || k === 'vdrag-c' || k === 'odrag-c') handleTap(pd.c);
+  else if (k === 'odrag') toast(`Moved ${drag.o.name}`);
+  pd = null; controls.enabled = true; render();
+}
+window.addEventListener('pointerup', pointerEnd);
+window.addEventListener('pointercancel', pointerEnd);
+
+/* scrub on the ruler / arc */
+app.querySelectorAll('[data-scrub]').forEach(el => {
+  const setFrom = e => { if (!S.op) return; const r = el.getBoundingClientRect(), d = OPS[S.op.kind]; setOpVal(d.min + clamp((e.clientX - r.left) / r.width, 0, 1) * (d.max - d.min)); };
+  el.addEventListener('pointerdown', e => { el.setPointerCapture(e.pointerId); setFrom(e); el.onpointermove = setFrom; });
+  el.addEventListener('pointerup', () => { el.onpointermove = null; });
+});
+opVal.addEventListener('focus', () => opVal.select());
+opVal.addEventListener('change', () => { const v = parseFloat(opVal.value.replace(',', '.')); if (!isNaN(v)) setOpVal(v); });
+opVal.addEventListener('keydown', e => { if (e.key === 'Enter') { opVal.blur(); const v = parseFloat(opVal.value.replace(',', '.')); if (!isNaN(v)) setOpVal(v); applyOp(); render(); } });
+
+/* ---------------- actions ---------------- */
+function act(a) {
+  const [k, v] = a.split(':');
+  switch (k) {
+    case 'mode': setMode(v); break;
+    case 'undo': undo(); break;
+    case 'redo': redo(); break;
+    case 'sympop': S.sympop = !S.sympop; S.island = false; break;
+    case 'sym': S.sym[v] = !S.sym[v]; toast(S.sym[v] ? `Symmetry ${v.toUpperCase()} on` : `Symmetry ${v.toUpperCase()} off`); break;
+    case 'panel': S.panel = S.panel === v ? null : v; S.sympop = false; S.island = false; break;
+    case 'close': S.panel = null; S.sympop = false; break;
+    case 'ringclose': closeRing(); break;
+    case 'apply': applyOp(); break;
+    case 'cancel': cancelOp(); break;
+    case 'opt': if (S.op) { S.op.opt = v; previewOp(); } break;
+    case 'op': closeRing(); beginOp(v); break;
+    case 'obj': if (S.op) applyOp(); S.sel = +v; if (S.mode !== 'object') { S.comp.clear(); } focusSel(); break;
+    case 'eye': { const o = byId(+v); pushHist(); o.hidden = !o.hidden; toast(o.hidden ? `${o.name} hidden` : `${o.name} shown`); break; }
+    case 'mat': { const o = cur(); if (!o) { toast('Select a model first'); break; } pushHist(); o.mat = v; toast(`${o.name}: ${MATS[v].name}`); break; }
+    case 'add': addObj(v); break;
+    case 'dup': dup(); break;
+    case 'del': delObj(); break;
+    case 'delf': delFaces(); break;
+    case 'merge': merge(); break;
+    case 'all': selAll(); break;
+    case 'none': S.comp.clear(); break;
+    case 'ringsel': ringSelect(); break;
+    case 'focus': focusSel(); break;
+    case 'light': S.light = v === 'next' ? { studio: 'night', night: 'dusk', dusk: 'studio' }[S.light] : v; applyLight(); toast(`Light: ${S.light}`); break;
+    case 'grid': S.grid = !S.grid; applyView(); break;
+    case 'xray': S.xray = !S.xray; toast(S.xray ? 'X-ray on' : 'X-ray off'); break;
+    case 'shadow': S.shadow = !S.shadow; applyView(); break;
+    case 'fx': setFx(v); break;
+    case 'island': S.island = !S.island; S.sympop = false; break;
+    case 'cyclemode': setMode(MODES[(MODES.indexOf(S.mode) + 1) % 4]); toast(LG[S.mode]); break;
+    case 'view': {
+      const D = { front: [0, 0, 1], back: [0, 0, -1], right: [1, 0, 0], left: [-1, 0, 0], top: [0, 1, .002], bottom: [0, -.2, 1] }[v];
+      const dist = camera.position.distanceTo(controls.target);
+      anim = { t0: performance.now(), dur: 480, fromT: controls.target.clone(), toT: controls.target.clone(), fromP: camera.position.clone(), toP: controls.target.clone().add(new V3(...D).normalize().multiplyScalar(dist)) };
+      invalidate(); toast(`View: ${v}`); break;
+    }
+
+  }
+  render();
+}
+app.addEventListener('click', e => {
+  const t = e.target.closest('[data-act]');
+  if (!t || !app.contains(t) || t.disabled) return;
+  if (t.dataset.hold) return;
+  if (t.dataset.suppress) { delete t.dataset.suppress; return; }
+  if (t.classList.contains('seat')) closeRing();
+  act(t.dataset.act);
+});
+app.addEventListener('keydown', e => {
+  const t = e.target.closest('[role=button][data-act]');
+  if (t && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); act(t.dataset.act); }
+});
+window.addEventListener('keydown', e => {
+  if (e.target.matches('input,select,textarea')) return;
+  const k = e.key.toLowerCase();
+  if ((e.ctrlKey || e.metaKey) && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+  else if ((e.ctrlKey || e.metaKey) && k === 'y') { e.preventDefault(); redo(); }
+  else if (k === 'escape') { if (ring.open) closeRing(); else if (S.op) cancelOp(); else if (S.panel || S.sympop || S.island) { S.panel = null; S.sympop = false; S.island = false; } else S.comp.clear(); }
+  else if (k === 'enter' && S.op) applyOp();
+  else if (['1', '2', '3', '4'].includes(k) && !e.ctrlKey && !e.metaKey) setMode(MODES[+k - 1]);
+  else if (k === 'e' && S.mode === 'face') beginOp('extrude');
+  else if (k === 'i' && S.mode === 'face') beginOp('inset');
+  else if (k === 'f') focusSel();
+  else return;
+  render();
+});
+
+/* ---------------- render (DOM) ---------------- */
+function barcode(s) {
+  let h = 2166136261; for (const ch of s) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
+  let x = 0, bars = '';
+  for (let i = 0; i < 22; i++) { const w = 1 + ((h >>> (i % 29)) & 1) + ((h >>> ((i * 7) % 31)) & 1); if (i % 2 === 0) bars += `<rect x="${x}" y="0" width="${w}" height="22"/>`; x += w; }
+  return `<svg width="${x}" height="22" viewBox="0 0 ${x} 22" fill="currentColor" aria-hidden="true">${bars}</svg>`;
+}
+function binds() {
+  const o = cur(), m = S.mode, n = objs.length;
+  const unit = { vertex: 'vert', edge: 'edge', face: 'face' }[m];
+  const faces = o ? o.poly.f.length : 0, verts = o ? new Set(o.poly.f.flat()).size : 0;
+  const compInfo = !o ? 'Tap a model' : m === 'object' ? `${faces}F ${verts}V` : `${S.comp.size} ${unit}${S.comp.size === 1 ? '' : 's'}`;
+  const pts = selWorldPoints(), c = new V3(), bb = new THREE.Box3();
+  pts.forEach(p => { c.add(p); bb.expandByPoint(p); }); if (pts.length) c.multiplyScalar(1 / pts.length);
+  const sz = pts.length ? bb.getSize(new V3()) : new V3();
+  const axes = ['x', 'y', 'z'].filter(a => S.sym[a]).map(a => a.toUpperCase()).join('');
+  const opName = S.op ? OPS[S.op.kind].name : '';
+  const first = [...S.comp][0];
+  return {
+    modeShort: SH[m], modeLong: LG[m], modeIdx: `0${MODES.indexOf(m) + 1}/04`,
+    objName: o ? o.name : 'No selection',
+    toolLine: S.op ? `${opName}: drag to set` : !o ? 'Tap a model' : m === 'object' ? 'Move · Axis' : S.comp.size ? `${compInfo}` : `Tap a ${unit}`,
+    compInfo, pivotLine: pts.length ? `X ${c.x.toFixed(2)}  Y ${c.y.toFixed(2)}  Z ${c.z.toFixed(2)}` : '',
+    sceneLine: `Scene ${n} obj / ${objs.reduce((s, x) => s + x.poly.f.length, 0)}F`, symLine: `Sym ${axes || 'off'}`, symShort: axes || '',
+    objCountShort: `${n} obj`, matShort: o ? MATS[o.mat].name : '', matOn: o ? `${o.name}: ${MATS[o.mat].name}` : 'No selection',
+    undoN: String(S.hist.length), redoN: String(S.redo.length),
+    opName, opKick: S.op ? `op.${S.op.kind} / m` : '',
+    calloutTag: m === 'object' ? 'Sel' : `${SH[m]}.${String((first ?? 0) + 1).padStart(2, '0')}`,
+    calloutTxt: S.op ? `${S.op.v >= 0 ? '+' : ''}${S.op.v.toFixed(2)}` : compInfo,
+    widthLine: `W ${sz.x.toFixed(3)}  H ${sz.y.toFixed(3)}`,
+    headWord: m === 'object' ? (o ? o.name : 'Kubik') : LG[m],
+    subLine: m === 'object' ? (o ? `object / ${faces} faces / move` : 'tap a model') : `${o ? o.name : ''} / ${compInfo}`,
+    barcode: o ? barcode(o.name + o.id) : '',
+    modeIcon: ic(m, 24), histLine: `Hist ${S.hist.length} / ${S.redo.length}`,
+  };
+}
+function isOn(key) {
+  const [k, v] = key.split(':');
+  switch (k) {
+    case 'mode': return S.mode === v; case 'panel': return S.panel === v; case 'sym': return S.sym[v];
+    case 'symany': return S.sympop || S.sym.x || S.sym.y || S.sym.z; case 'opt': return S.op && S.op.opt === v;
+    case 'light': return S.light === v; case 'fx': return S.fx === v; case 'grid': return S.grid; case 'xray': return S.xray; case 'shadow': return S.shadow;
+    case 'sympop': return S.sympop;
+  }
+  return false;
+}
+function isDis(key) { return key === 'undo' ? !S.hist.length && !S.op : key === 'redo' ? !S.redo.length : key === 'nosel' ? !cur() : false; }
+function renderLists() {
+  $('#objList').innerHTML = objs.map((o, i) => `<div class="prow${o.id === S.sel ? ' sel' : ''}${o.hidden ? ' hid' : ''}" role="button" tabindex="0" data-act="obj:${o.id}"><i>${String(i + 1).padStart(2, '0')}</i><b>${o.name}</b><small>${o.poly.f.length}F</small><button class="eye" data-act="eye:${o.id}" aria-label="${o.hidden ? 'Show' : 'Hide'} ${o.name}">${ic(o.hidden ? 'eyeOff' : 'eye', 18)}</button></div>`).join('');
+  const o = cur();
+  $('#matList').innerHTML = Object.entries(MATS).map(([id, d]) => `<button class="mcard${o && o.mat === id ? ' on' : ''}" data-act="mat:${id}"><span class="sw${d.m > .5 ? ' metal' : ''}" style="--sw:${d.c}"></span><b>${d.name}</b><small>rough ${d.r.toFixed(2)}${d.m ? ` / metal ${d.m.toFixed(2)}` : ''}</small></button>`).join('');
+}
+function render() {
+  app.dataset.mode = S.mode; app.dataset.panel = S.panel || ''; app.dataset.op = S.op ? S.op.kind : '';
+  const B = binds();
+  app.querySelectorAll('[data-b]').forEach(el => { const v = B[el.dataset.b] ?? ''; if (el.textContent !== v) el.textContent = v; });
+  app.querySelectorAll('[data-bhtml]').forEach(el => { el.innerHTML = B[el.dataset.bhtml] || ''; });
+  app.querySelectorAll('[data-on]').forEach(el => { const on = isOn(el.dataset.on); el.classList.toggle('on', !!on); if (el.tagName === 'BUTTON') el.setAttribute('aria-pressed', on ? 'true' : 'false'); });
+  app.querySelectorAll('[data-dis]').forEach(el => { el.disabled = isDis(el.dataset.dis); });
+  app.querySelectorAll('[data-show]').forEach(el => el.classList.toggle('vis', isOn(el.dataset.show)));
+  const isl = app.querySelector('[data-island]'); if (isl) { isl.classList.toggle('open', S.island); isl.querySelector('.m-pill').setAttribute('aria-expanded', S.island ? 'true' : 'false'); }
+  if (S.op) { const d = OPS[S.op.kind]; app.style.setProperty('--opp', ((S.op.v - d.min) / (d.max - d.min)).toFixed(3)); if (document.activeElement !== opVal) opVal.value = S.op.v.toFixed(2); }
+  renderLists();
+  updateHelpers();
+  lastSelKey = lastSelKey; invalidate();
+}
+
+let toastT = 0;
+function toast(msg, commit) {
+  toastEl.textContent = msg; toastEl.classList.remove('blink'); toastEl.classList.add('on');
+  if (commit) { void toastEl.offsetWidth; toastEl.classList.add('blink'); }
+  clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove('on', 'blink'), 1600);
+}
+
+/* ---------------- lab chrome ---------------- */
+const DEV = { phone: { w: 390, h: 844, sat: 50, sab: 26 }, tablet: { w: 1180, h: 820, sat: 22, sab: 18 } };
+const isTouch = matchMedia('(pointer:coarse)').matches;
+function fit() {
+  const d = device.dataset.device;
+  if (d === 'fill') { app.style.setProperty('--sat', '0px'); app.style.setProperty('--sab', '0px'); return; }
+  const D = DEV[d];
+  device.style.width = D.w + 'px'; device.style.height = D.h + 'px';
+  const s = Math.min((well.clientWidth - 48) / D.w, (well.clientHeight - 48) / D.h, 1);
+  device.style.transform = `translate(-50%, -50%) scale(${s})`;
+  app.style.setProperty('--sat', D.sat + 'px'); app.style.setProperty('--sab', D.sab + 'px');
+}
+function setDevice(d) {
+  device.dataset.device = isTouch ? 'fill' : d;
+  $('#devPhone').setAttribute('aria-pressed', d === 'phone'); $('#devTablet').setAttribute('aria-pressed', d === 'tablet');
+  try { localStorage.setItem('kubikLabDev', d); } catch (e) {}
+  fit(); requestAnimationFrame(resize);
+}
+function setFx(v) {
+  S.fx = v; app.classList.toggle('lite', v === 'lite');
+  $('#fxFull').setAttribute('aria-pressed', v === 'full'); $('#fxLite').setAttribute('aria-pressed', v === 'lite');
+  resize(); render();
+}
+function renderBrief() {
+  const V = VARIANTS[S.skin];
+  brief.innerHTML = `<button class="b-close" data-lab="close" aria-label="Close">X</button>
+    <div class="b-kick">Вариант ${V.tag}</div><h1>${V.name}</h1><p>${V.thesis}</p>
+    <h3>Сильные стороны</h3><ul>${V.pros.map(x => `<li>${x}</li>`).join('')}</ul>
+    <h3>Цена</h3><ul>${V.cons.map(x => `<li>${x}</li>`).join('')}</ul>
+    <h3>Что попробовать</h3><ol>
+      <li>Тап по модели выделяет, тап по пустому месту снимает выделение.</li>
+      <li>Удержание на модели или на пустом месте раскрывает кольцо. Веди палец к слову и отпускай. На компьютере ещё правая кнопка.</li>
+      <li>Delete в кольце срабатывает только от удержания, полоска показывает прогресс.</li>
+      <li>Режим Face, тап по грани, кольцо, Extrude. Тяни по экрану или по линейке, тап мимо применяет, число можно ввести.</li>
+      <li>Vertex: выдели точку и тяни её. Включи Sym X, и парная точка пойдёт зеркально.</li>
+      <li>Тап двумя пальцами отменяет последний шаг. Scene, Material и меню со светом работают.</li>
+      <li>Переключатель FX / Lite сравнивает полные эффекты и экономный режим для iPhone.</li>
+    </ol>
+    <h3>Референсы</h3><ul class="refs">${REFS.map(([t, u, n]) => `<li><a href="${u}" target="_blank" rel="noopener">${t}</a> <span>${n}</span></li>`).join('')}</ul>`;
+}
+function setSkin(id) {
+  if (!VARIANTS[id]) id = 'n';
+  if (S.op) applyOp();
+  closeRing();
+  S.skin = id; S.panel = null; S.sympop = false; S.island = false;
+  const V = VARIANTS[id];
+  app.dataset.skin = id; app.dataset.layout = V.layout;
+  chrome.innerHTML = TEMPLATES[V.layout]();
+  cubeEl = chrome.querySelector('.c3'); cubeFace = '';
+  document.querySelectorAll('#variants button').forEach(b => b.setAttribute('aria-selected', b.dataset.skin === id ? 'true' : 'false'));
+  try { localStorage.setItem('kubikLabSkin', id); history.replaceState(null, '', '#' + id); } catch (e) {}
+  lastAz = null; tilt = tiltY = 0; app.style.setProperty('--tilt', 0); app.style.setProperty('--tiltY', 0);
+  applyView(); renderBrief(); render(); requestAnimationFrame(resize);
+  const tab = document.querySelector('#variants [aria-selected=true]'); if (tab) tab.scrollIntoView({ inline: 'center', block: 'nearest' });
+}
+$('#variants').innerHTML = Object.entries(VARIANTS).map(([id, V]) => `<button role="tab" data-skin="${id}" aria-selected="false"><b>${V.tag}</b>${V.name}</button>`).join('');
+$('#variants').addEventListener('click', e => { const b = e.target.closest('[data-skin]'); if (b) { setSkin(b.dataset.skin); b.scrollIntoView({ inline: 'nearest', block: 'nearest' }); } });
+document.querySelectorAll('[data-dev]').forEach(b => b.addEventListener('click', () => setDevice(b.dataset.dev)));
+document.querySelectorAll('[data-fx]').forEach(b => b.addEventListener('click', () => setFx(b.dataset.fx)));
+$('#infoBtn').addEventListener('click', () => { const o = brief.classList.toggle('open'); $('#infoBtn').setAttribute('aria-expanded', o); });
+brief.addEventListener('click', e => { if (e.target.closest('[data-lab=close]')) { brief.classList.remove('open'); $('#infoBtn').setAttribute('aria-expanded', 'false'); } });
+new ResizeObserver(fit).observe(well);
+
+let startSkin = 'n', startDev = 'phone';
+try { startSkin = (location.hash || '').slice(1) || localStorage.getItem('kubikLabSkin') || 'h'; startDev = localStorage.getItem('kubikLabDev') || 'phone'; } catch (e) {}
+applyLight();
+setDevice(startDev);
+setSkin(startSkin);
+window.__lab = { S, objs, act, render, camera, controls, setSkin, setDevice };
+</script>
