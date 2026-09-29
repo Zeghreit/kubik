@@ -2782,7 +2782,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.79</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.80</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -31890,7 +31890,7 @@ function editableFromCSGResult(res, topoIn, topoOpt) {
      One tolerance, the app's own: the same 1e-4 rounding computeLogicalOf
      and importWeldKey use, so a boolean result welds exactly as tightly as
      everything else here. */
-  const positions = [];
+  let positions = [];
   const weld = new Map();
   const slotVert = new Int32Array(count);
   const p = new THREE.Vector3();
@@ -31949,13 +31949,14 @@ function editableFromCSGResult(res, topoIn, topoOpt) {
   if (topoIn && topoIn.length) {
     const nV = positions.length / 3;
     seam = new Set();
+    const owner = new Int32Array(nV).fill(-1);
     for (let i = 0; i < nV; i++) {
       const k = Math.round(positions[i * 3] * 1e4) + '_' + Math.round(positions[i * 3 + 1] * 1e4) + '_' +
                 Math.round(positions[i * 3 + 2] * 1e4);
-      let c = 0;
-      topoIn.forEach(t => { if (t.keys.has(k)) c++; });
+      let c = 0, who = -1;
+      topoIn.forEach((t, ii) => { if (t.keys.has(k)) { c++; who = ii; } });
       // No input had it (the cut made it) or two did (the inputs touch there).
-      if (c !== 1) seam.add(i);
+      if (c !== 1) seam.add(i); else owner[i] = who;
     }
     const segs = [];
     topoIn.forEach(t => { for (let i = 0; i < t.segs.length; i++) segs.push(t.segs[i]); });
@@ -31977,9 +31978,22 @@ function editableFromCSGResult(res, topoIn, topoOpt) {
       const both = a.filter(f => b.indexOf(f) >= 0 && c.indexOf(f) >= 0);
       if (both.length === 1) faceOf[ti] = both[0];
     });
+    const quads = !!(topoOpt && topoOpt.type === 'quads');
     topo = topoNgon(positions, healed.tris, ti => healed.matOf[ti], seam, IMPORT_COPLANAR_DOT,
-                    blocked || undefined, faceOf, topoOpt);
+                    blocked || undefined, faceOf, quads ? { type: 'ngon', seed: 0 } : topoOpt);
     if (topo && topo.miss) return { miss: true };
+    /* QUADS (v2.80) builds on the N-gon layout: that is what it falls back
+       to, piece by piece, and what stays outside the band. */
+    if (topo && quads) {
+      const surf = topoIn.every(t => t.P && t.tri) ? topoIn.map(t => ({ P: t.P, tri: t.tri })) : null;
+      const q = topoQuads(positions, topo.groups, seam, owner, surf,
+                          { seed: topoOpt.seed | 0, width: topoOpt.width });
+      if (q.miss) return { miss: true };
+      positions = q.positions;
+      topo = { groups: q.groups, dissolved: topo.dissolved, bridged: topo.bridged, frozen: topo.frozen,
+               space: q.space, hash: q.hash, stats: q.stats, rebuilt: q.rebuilt, failed: q.failed, ways: q.ways,
+               band: q.band, snapped: q.snapped };
+    }
     if (topo) groups = topo.groups;
   }
   if (!groups) groups = mergeCoplanarTriangles(positions, healed.tris, ti => healed.matOf[ti]);
@@ -32065,7 +32079,8 @@ function editableFromCSGResult(res, topoIn, topoOpt) {
   return { positions: positions, groups: groups,
            triCount: healed.tris.length, capped: healed.capped,
            topo: topo ? { dissolved: topo.dissolved, bridged: topo.bridged, frozen: topo.frozen,
-                          space: topo.space, hash: topo.hash, stats: topo.stats } : null,
+                          space: topo.space, hash: topo.hash, stats: topo.stats,
+                          rebuilt: topo.rebuilt, failed: topo.failed, ways: topo.ways, band: topo.band, snapped: topo.snapped } : null,
            shadeMarks: shadeMarks, angle: angle };
 }
 
@@ -32102,8 +32117,12 @@ function booleanTopoInput(brush, o) {
     if (!l) faceOfKey.set(k, l = []);
     if (l[l.length - 1] !== fi) l.push(fi);
   })));
+  /* Its own surface too (v2.80): Quads asks it which input a face lies on
+     when every corner of the face is on the cut - a hole wall. */
+  const tri = [];
+  faces.forEach(f => f.forEach(t => tri.push(t[0], t[1], t[2])));
   return { keys: keys, faceOfKey: faceOfKey, angle: effectiveSmoothAngle(o.mesh),
-           segs: topoDivisions(P, faces, IMPORT_COPLANAR_DOT) };
+           segs: topoDivisions(P, faces, IMPORT_COPLANAR_DOT), P: P, tri: tri };
 }
 
 /* ===== TOPOLOGY AFTER A BOOLEAN (v2.78) =====================================
@@ -32926,6 +32945,1159 @@ function topoHash(groups, region, nV) {
   return (h >>> 0).toString(16) + ':' + region.length;
 }
 
+/* ===== QUADS ALONG THE CUT (v2.80, Zeghreit 29.09) ==========================
+
+   "и кривые тоже - органично сшивать при объединении и пересчитывать
+   геометрию в новых зонах при разнице и вычитании, адаптируя к геометрии,
+   которая остаётся от оригинала."
+
+   The N-gon and Tris types only rejoin vertices. This one REBUILDS a band of
+   geometry along the cut, flat walls and curved alike, and so it keeps a
+   different promise:
+   1. Outside the band nothing moves - same positions, same faces.
+   2. The band's outer edge is the original's own vertices, so the rebuilt
+      zone meets what is left with matching edge counts.
+   3. Every new point lies on the surface of the side it belongs to (it is
+      projected onto that side's own result triangles); the cut itself is
+      kept, and only ever gains points that lie ON it.
+   4. A side that cannot be rebuilt cleanly stays exactly as N-gon made it -
+      the result is never worse than N-gon.
+
+   How: the band is every face carrying a seam vertex (grown by one more ring
+   of faces on a Generate variant), split by which input it came from. Each
+   piece must be an ANNULUS - one loop on the seam, the other on original
+   vertices (or, for a hole wall, two seam loops). The seam loop is given at
+   least as many points as the frozen loop (midpoints of its longest edges),
+   so the rings can run as pure quads; when the seam is the denser one, its
+   extra spokes end in 3:1 transitions next to the frozen loop, away from the
+   cut. Spokes run from each frozen vertex to its matched seam vertex, so the
+   original's edges arriving at the band carry on to the cut.
+
+   Pure: positions + faces in, positions (grown) + faces out. No THREE, no
+   App, so the future Retopo op and a node fixture call exactly this. */
+/* Two rings of faces by default (decided on Zeghreit's model, 29.09: with
+   one, a ball's dense cut crowded its 3:1 steps against the body's big
+   faces; with two they spread, and both pieces laid out on the first try). */
+const TOPO_Q_WIDTH_DEFAULT = 2;
+const TOPO_Q_ROTS = 3;                    // spoke matching: best, 2nd, 3rd
+const TOPO_Q_RING_DELTAS = [0, 1, -1];    // rings: auto, one more, one fewer
+const TOPO_Q_SPACE = 2 * TOPO_Q_ROTS * TOPO_Q_RING_DELTAS.length;
+const TOPO_Q_MAX_STRIPS = 7;
+const TOPO_Q_MAX_RINGS_AUTO = 5;
+const TOPO_Q_MAX_LOOP = 2000;
+const TOPO_Q_CREASE_COS = Math.cos(40 * Math.PI / 180);
+const TOPO_Q_FOLD_COS = 0.5;             // a new triangle may lean 60 degrees off its surface, no more
+const TOPO_Q_SAG = 0.2;
+const TOPO_Q_ISLAND = 6;                  // faces: an enclosed patch this small joins the band
+const TOPO_Q_GRAZE = 0.35;                // a boundary point this close to the cut (per its edge) joins the band                  // a new face's middle, off the surface, per edge length
+
+/* Seed -> variant. Width alternates first, so the other band width is one
+   Generate away; then one more / one fewer ring; then the spoke matching. */
+function topoQuadVariant(seed, wDef) {
+  return { width: seed % 2 === 0 ? wDef : (wDef === 1 ? 2 : 1),
+           rd: TOPO_Q_RING_DELTAS[Math.floor(seed / 2) % 3],
+           rot: Math.floor(seed / 6) % TOPO_Q_ROTS };
+}
+
+// Closest point on triangle abc to p (Ericson, Real-Time Collision Detection 5.1.5).
+function topoClosestOnTri(p, a, b, c, out) {
+  const abx = b[0] - a[0], aby = b[1] - a[1], abz = b[2] - a[2];
+  const acx = c[0] - a[0], acy = c[1] - a[1], acz = c[2] - a[2];
+  const apx = p[0] - a[0], apy = p[1] - a[1], apz = p[2] - a[2];
+  const d1 = abx * apx + aby * apy + abz * apz, d2 = acx * apx + acy * apy + acz * apz;
+  const set = (x, y, z) => { out[0] = x; out[1] = y; out[2] = z; return out; };
+  if (d1 <= 0 && d2 <= 0) return set(a[0], a[1], a[2]);
+  const bpx = p[0] - b[0], bpy = p[1] - b[1], bpz = p[2] - b[2];
+  const d3 = abx * bpx + aby * bpy + abz * bpz, d4 = acx * bpx + acy * bpy + acz * bpz;
+  if (d3 >= 0 && d4 <= d3) return set(b[0], b[1], b[2]);
+  const vc = d1 * d4 - d3 * d2;
+  if (vc <= 0 && d1 >= 0 && d3 <= 0) { const v = d1 / (d1 - d3); return set(a[0] + v * abx, a[1] + v * aby, a[2] + v * abz); }
+  const cpx = p[0] - c[0], cpy = p[1] - c[1], cpz = p[2] - c[2];
+  const d5 = abx * cpx + aby * cpy + abz * cpz, d6 = acx * cpx + acy * cpy + acz * cpz;
+  if (d6 >= 0 && d5 <= d6) return set(c[0], c[1], c[2]);
+  const vb = d5 * d2 - d1 * d6;
+  if (vb <= 0 && d2 >= 0 && d6 <= 0) { const w = d2 / (d2 - d6); return set(a[0] + w * acx, a[1] + w * acy, a[2] + w * acz); }
+  const va = d3 * d6 - d5 * d4;
+  if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0) {
+    const w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+    return set(b[0] + w * (c[0] - b[0]), b[1] + w * (c[1] - b[1]), b[2] + w * (c[2] - b[2]));
+  }
+  const den = 1 / (va + vb + vc), v = vb * den, w = vc * den;
+  return set(a[0] + abx * v + acx * w, a[1] + aby * v + acy * w, a[2] + abz * v + acz * w);
+}
+
+/* Row counts of one gap between two through-spokes: e[0] = E edges on the
+   big loop, e[S] = 1 on the small one. Transitions sit next to the small
+   loop; a step may shed an odd count only where it must (one triangle). */
+function topoQuadCounts(E, S) {
+  // The row against the cut never sheds: its count is the cut's own.
+  if (E > 1) {
+    if (S < 2) return null;
+    const r = topoQuadCountsIn(E, S - 1);
+    return r ? [E].concat(r) : null;
+  }
+  return topoQuadCountsIn(E, S);
+}
+function topoQuadCountsIn(E, S) {
+  const e = new Array(S + 1);
+  e[S] = 1;
+  for (let j = S - 1; j >= 1; j--) {
+    let c = Math.min(E, 3 * e[j + 1]);
+    if (c < E && ((E - c) & 1)) c--;
+    e[j] = Math.max(c, e[j + 1]);
+  }
+  e[0] = E;
+  for (let j = 0; j < S; j++) if (e[j] < e[j + 1] || e[j] > 3 * e[j + 1]) return null;
+  return e;
+}
+
+/* Cyclic monotone matching: every point of `small` to its own point of
+   `big`, in order, cheapest total squared distance, with a price on gaps of
+   odd length (an odd gap costs a triangle). Returns candidates ranked by
+   cost, each { cost, m } where m[i] is small[i]'s big index, unrolled. */
+function topoQuadMatch(small, big, pos, lam, cost) {
+  const ns = small.length, nb = big.length, W = nb - ns;
+  const d2 = cost ? (i, j) => cost(i, ((j % nb) + nb) % nb) : (i, j) => {
+    const a = small[i] * 3, b = big[((j % nb) + nb) % nb] * 3;
+    const x = pos[a] - pos[b], y = pos[a + 1] - pos[b + 1], z = pos[a + 2] - pos[b + 2];
+    return x * x + y * y + z * z;
+  };
+  let starts = [];
+  for (let j = 0; j < nb; j++) starts.push(j);
+  if (nb > 160) starts = starts.map(j => [d2(0, j), j]).sort((x, y) => x[0] - y[0]).slice(0, 40).map(x => x[1]);
+  const out = [];
+  starts.forEach(j0 => {
+    let prev = new Float64Array(W + 1).fill(Infinity);
+    prev[0] = d2(0, j0);
+    const back = [];
+    for (let i = 1; i < ns; i++) {
+      const cur = new Float64Array(W + 1).fill(Infinity), bk = new Int32Array(W + 1).fill(-1);
+      let m0 = Infinity, a0 = -1, m1 = Infinity, a1 = -1;     // running minima by parity of x'
+      for (let x = 0; x <= W; x++) {
+        // r' = i-1+x' < r = i+x  <=>  x' <= x
+        if (prev[x] < ((x & 1) ? m1 : m0)) { if (x & 1) { m1 = prev[x]; a1 = x; } else { m0 = prev[x]; a0 = x; } }
+        // gap = x - x'; odd when parities differ
+        const same = (x & 1) ? m1 : m0, sa = (x & 1) ? a1 : a0;
+        const diff = (x & 1) ? m0 : m1, da = (x & 1) ? a0 : a1;
+        let best = same, arg = sa;
+        if (diff + lam < best) { best = diff + lam; arg = da; }
+        if (arg < 0) continue;
+        cur[x] = best + d2(i, j0 + i + x);
+        bk[x] = arg;
+      }
+      back.push(bk);
+      prev = cur;
+    }
+    let best = Infinity, bx = -1;
+    for (let x = 0; x <= W; x++) {
+      const c = prev[x] + (((W - x) & 1) ? lam : 0);
+      if (c < best) { best = c; bx = x; }
+    }
+    if (bx < 0) return;
+    const m = new Array(ns);
+    let x = bx;
+    for (let i = ns - 1; i >= 0; i--) {
+      m[i] = j0 + i + x;
+      if (i > 0) x = back[i - 1][x];
+    }
+    out.push({ cost: best, m: m });
+  });
+  out.sort((a, b) => a.cost - b.cost || a.m[0] - b.m[0]);
+  return out;
+}
+
+function topoQuads(P0, groups, seam, owner, surf, opt) {
+  opt = opt || {};
+  const seed = Math.max(0, opt.seed | 0);
+  if (seed >= TOPO_Q_SPACE) return { miss: true };
+  const V = topoQuadVariant(seed, opt.width || TOPO_Q_WIDTH_DEFAULT);
+  const P = Array.from(P0);
+  const nV0 = P0.length / 3;
+  let snapped = 0;
+  /* CRACKS ALONG THE CUT CLOSED FIRST. The evaluator can leave two cut
+     points a hair apart - 1.3e-4 measured, just past the 1e-4 weld grid - and
+     the faces on either side end on different ones: an open seam, and no
+     piece of the band reads as an annulus. Seam points closer than twice the
+     boolean's own weld tolerance are one point here. Seam points live only in
+     band faces, so nothing outside the band changes. */
+  {
+    const cell = new Map(), rep = new Map();
+    const cutLen = [];
+    groups.forEach(g => g.triangles.forEach(t => { for (let k = 0; k < 3; k++) {
+      const a = t[k], b = t[(k + 1) % 3];
+      if (seam.has(a) && seam.has(b) && a < b) cutLen.push(Math.hypot(P[a * 3] - P[b * 3], P[a * 3 + 1] - P[b * 3 + 1], P[a * 3 + 2] - P[b * 3 + 2]));
+    } }));
+    // Never more than a quarter of the cut's own typical edge: a tiny model's
+    // whole cut is a few weld tolerances long (fable, 1e-2 units: 40 of 64 merged).
+    cutLen.sort((x, y) => x - y);
+    const tol = Math.min(2 * CSG_WELD_TOL, cutLen.length ? 0.25 * cutLen[cutLen.length >> 1] : 0);
+    const ck = (x, y, z) => x + '_' + y + '_' + z;
+    Array.from(seam).sort((a, b) => a - b).forEach(v => {
+      const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2];
+      const gx = Math.floor(x / tol), gy = Math.floor(y / tol), gz = Math.floor(z / tol);
+      let hit = -1;
+      for (let dx = -1; dx <= 1 && hit < 0; dx++) for (let dy = -1; dy <= 1 && hit < 0; dy++) for (let dz = -1; dz <= 1 && hit < 0; dz++) {
+        const l = cell.get(ck(gx + dx, gy + dy, gz + dz));
+        if (l) for (const u of l) if (Math.hypot(P[u * 3] - x, P[u * 3 + 1] - y, P[u * 3 + 2] - z) < tol) { hit = u; break; }
+      }
+      if (hit >= 0) { rep.set(v, hit); return; }
+      const k = ck(gx, gy, gz);
+      if (!cell.has(k)) cell.set(k, []);
+      cell.get(k).push(v);
+    });
+    const tn = t => { const a = t[0] * 3, b = t[1] * 3, c = t[2] * 3;
+      const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2], vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
+      return [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx]; };
+    /* A merge is undone when it turns a triangle over (found by fable: box U
+       sphere, a 3e-4 cut edge merged and a kept face flipped) or makes one
+       directed edge serve two triangles (a star prism's broken result gained
+       two doubled edges). A sliver between two merged points just goes. */
+    const dirCount = map => { const m = new Map(), who = new Map();
+      groups.forEach(g => g.triangles.forEach(t => {
+        const u = t.map(v => { const r = map ? map.get(v) : undefined; return r !== undefined ? r : v; });
+        if (u[0] === u[1] || u[1] === u[2] || u[0] === u[2]) return;
+        for (let k = 0; k < 3; k++) { const key = u[k] + ',' + u[(k + 1) % 3]; m.set(key, (m.get(key) || 0) + 1); if (!who.has(key)) who.set(key, []); who.get(key).push(t); }
+      }));
+      return { m, who }; };
+    const before = dirCount(null).m;
+    for (let round = 0; round < 6 && rep.size; round++) {
+      let undo = false;
+      groups.forEach(g => g.triangles.forEach(t => {
+        const u = t.map(v => { const r = rep.get(v); return r !== undefined ? r : v; });
+        if (u[0] === u[1] || u[1] === u[2] || u[0] === u[2] || (u[0] === t[0] && u[1] === t[1] && u[2] === t[2])) return;
+        const n0 = tn(t), n1 = tn(u);
+        if (n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2] <= 0) { t.forEach(v => { if (rep.delete(v)) undo = true; }); }
+      }));
+      const after = dirCount(rep);
+      after.m.forEach((n, key) => {
+        if (n < 2 || (before.get(key) || 0) >= n) return;
+        after.who.get(key).forEach(t => t.forEach(v => { if (rep.delete(v)) undo = true; }));
+      });
+      if (!undo) break;
+    }
+    snapped = rep.size;
+    if (rep.size) {
+      groups = groups.map(g => {
+        let ch = false;
+        const T = [];
+        g.triangles.forEach(t => {
+          const u = t.map(v => { const r = rep.get(v); if (r !== undefined) { ch = true; return r; } return v; });
+          if (u[0] !== u[1] && u[1] !== u[2] && u[0] !== u[2]) T.push(u);
+        });
+        return ch ? { triangles: T, mat: g.mat } : g;
+      });                    // an emptied face keeps its place, so indices still name the same faces
+    }
+  }
+  const pt = i => [P[i * 3], P[i * 3 + 1], P[i * 3 + 2]];
+  const addP = q => { P.push(q[0], q[1], q[2]); return P.length / 3 - 1; };
+  const dist = (a, b) => Math.hypot(P[a * 3] - P[b * 3], P[a * 3 + 1] - P[b * 3 + 1], P[a * 3 + 2] - P[b * 3 + 2]);
+
+  // ---- The band: faces carrying a seam vertex, grown by rings of faces.
+  const facesOfV = new Map();
+  groups.forEach((g, gi) => g.triangles.forEach(t => t.forEach(v => {
+    let s = facesOfV.get(v);
+    if (!s) facesOfV.set(v, s = new Set());
+    s.add(gi);
+  })));
+  const inBand = new Uint8Array(groups.length);
+  let front = [];
+  groups.forEach((g, gi) => {
+    if (g.triangles.some(t => seam.has(t[0]) || seam.has(t[1]) || seam.has(t[2]))) { inBand[gi] = 1; front.push(gi); }
+    else if (!g.triangles.length) inBand[gi] = 1;           // a sliver the snap closed: changed, so in the band
+  });
+  /* Grown a ring at a time through shared corners, but never over a hard
+     crease: a band that wraps a cube's edge makes quads folded across it. */
+  const fN = gi => {
+    let x = 0, y = 0, z = 0;
+    groups[gi].triangles.forEach(t => {
+      const a = t[0] * 3, b = t[1] * 3, c = t[2] * 3;
+      const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
+      const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
+      x += uy * vz - uz * vy; y += uz * vx - ux * vz; z += ux * vy - uy * vx;
+    });
+    const l = Math.hypot(x, y, z) || 1;
+    return [x / l, y / l, z / l];
+  };
+  for (let r = 1; r < V.width; r++) {
+    const next = [];
+    front.forEach(gi => {
+      const n0 = fN(gi);
+      groups[gi].triangles.forEach(t => t.forEach(v => facesOfV.get(v).forEach(f => {
+        if (inBand[f]) return;
+        const n1 = fN(f);
+        if (n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2] < TOPO_Q_CREASE_COS) return;
+        inBand[f] = 1; next.push(f);
+      })));
+    });
+    front = next;
+  }
+
+  /* WHERE THE CUT GRAZES AN ORIGINAL POINT, the band takes the faces around
+     it. A boundary point a hair from the cut leaves a strip of no width to
+     lay rows in (measured: 0.004 on a sphere union), and every row there
+     folds. Its faces join the band, so the boundary steps out to the next
+     original points. Twice at most, and never over a hard crease. */
+  {
+    const sv = Array.from(seam);
+    const cellS = Math.max(1e-6, (() => { let e = 0, k = 0; groups.forEach((g, gi) => { if (!inBand[gi]) return;
+      g.triangles.forEach(t => { for (let i = 0; i < 3; i++) { e += Math.hypot(P[t[i] * 3] - P[t[(i + 1) % 3] * 3], P[t[i] * 3 + 1] - P[t[(i + 1) % 3] * 3 + 1], P[t[i] * 3 + 2] - P[t[(i + 1) % 3] * 3 + 2]); k++; } }); });
+      return k ? e / k : 1; })());
+    const grid = new Map(), gk = (x, y, z) => x + '_' + y + '_' + z;
+    sv.forEach(v => { const k = gk(Math.floor(P[v * 3] / cellS), Math.floor(P[v * 3 + 1] / cellS), Math.floor(P[v * 3 + 2] / cellS));
+      if (!grid.has(k)) grid.set(k, []); grid.get(k).push(v); });
+    const nearSeam = v => {
+      const gx = Math.floor(P[v * 3] / cellS), gy = Math.floor(P[v * 3 + 1] / cellS), gz = Math.floor(P[v * 3 + 2] / cellS);
+      let bd = Infinity;
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+        const l = grid.get(gk(gx + dx, gy + dy, gz + dz));
+        if (l) for (const u of l) bd = Math.min(bd, Math.hypot(P[u * 3] - P[v * 3], P[u * 3 + 1] - P[v * 3 + 1], P[u * 3 + 2] - P[v * 3 + 2]));
+      }
+      return bd;
+    };
+    for (let pass = 0; pass < 2; pass++) {
+      const add = [];
+      facesOfV.forEach((fs, v) => {
+        if (seam.has(v)) return;
+        let inB = false, outB = false;
+        fs.forEach(f => { if (inBand[f]) inB = true; else outB = true; });
+        if (!inB || !outB) return;
+        // its own spacing: the mean of its edges to other original points
+        let e = 0, k = 0;
+        fs.forEach(f => groups[f].triangles.forEach(t => { const i = t.indexOf(v); if (i < 0) return;
+          [t[(i + 1) % 3], t[(i + 2) % 3]].forEach(u => { if (seam.has(u)) return;
+            e += Math.hypot(P[u * 3] - P[v * 3], P[u * 3 + 1] - P[v * 3 + 1], P[u * 3 + 2] - P[v * 3 + 2]); k++; }); }));
+        if (k && nearSeam(v) < TOPO_Q_GRAZE * e / k) add.push(v);
+      });
+      if (!add.length) break;
+      add.forEach(v => {
+        const own = Array.from(facesOfV.get(v)).filter(f => inBand[f]).map(fN);
+        facesOfV.get(v).forEach(f => {
+          if (inBand[f]) return;
+          const n1 = fN(f);
+          if (own.some(n0 => n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2] >= TOPO_Q_CREASE_COS)) inBand[f] = 1;
+        });
+      });
+    }
+  }
+
+  // ---- Which side each band face is on: the input its own corners came from,
+  // else (every corner on the cut - a hole wall) the input surface it lies on.
+  const side = new Int32Array(groups.length).fill(-2);     // -2: not asked yet
+  const tmp = [0, 0, 0];
+  const sideOf = gi => {
+    if (side[gi] !== -2) return side[gi];
+    const g = groups[gi];
+    const votes = new Map(), seen = new Set();
+    g.triangles.forEach(t => t.forEach(v => {
+      if (seen.has(v)) return;
+      seen.add(v);
+      const o = owner[v];
+      if (o >= 0) votes.set(o, (votes.get(o) || 0) + 1);
+    }));
+    let best = -1, bv = 0;
+    votes.forEach((c, o) => { if (c > bv || (c === bv && o < best)) { bv = c; best = o; } });
+    if (best < 0 && surf && g.triangles.length) {
+      let cx = 0, cy = 0, cz = 0, w = 0;
+      g.triangles.forEach(t => {
+        const a = pt(t[0]), b = pt(t[1]), c = pt(t[2]);
+        const ar = Math.hypot((b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
+                              (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
+                              (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) + 1e-30;
+        cx += ar * (a[0] + b[0] + c[0]) / 3; cy += ar * (a[1] + b[1] + c[1]) / 3; cz += ar * (a[2] + b[2] + c[2]) / 3; w += ar;
+      });
+      const q = [cx / w, cy / w, cz / w];
+      let bd = Infinity;
+      surf.forEach((s, si) => {
+        const T = s.tri, SP = s.P;
+        for (let k = 0; k + 2 < T.length; k += 3) {
+          const a = [SP[T[k] * 3], SP[T[k] * 3 + 1], SP[T[k] * 3 + 2]];
+          const b = [SP[T[k + 1] * 3], SP[T[k + 1] * 3 + 1], SP[T[k + 1] * 3 + 2]];
+          const c = [SP[T[k + 2] * 3], SP[T[k + 2] * 3 + 1], SP[T[k + 2] * 3 + 2]];
+          topoClosestOnTri(q, a, b, c, tmp);
+          const d = (tmp[0] - q[0]) ** 2 + (tmp[1] - q[1]) ** 2 + (tmp[2] - q[2]) ** 2;
+          if (d < bd) { bd = d; best = si; }
+        }
+      });
+    }
+    return (side[gi] = best);
+  };
+
+  const nVx = nV0 + 1;
+  const ukey = (a, b) => (a < b ? a * nVx + b : b * nVx + a);
+  // How many triangles use each edge whose two ends are on the cut.
+  const seamEdgeUse = new Map();
+  groups.forEach(g => g.triangles.forEach(t => { for (let k = 0; k < 3; k++) {
+    const a = t[k], b = t[(k + 1) % 3];
+    if (seam.has(a) && seam.has(b)) { const key = ukey(a, b); seamEdgeUse.set(key, (seamEdgeUse.get(key) || 0) + 1); }
+  } }));
+  // Every directed edge of every face, for walking across a loop.
+  const dirFace = new Map();
+  groups.forEach((g, gi) => g.triangles.forEach(t => { for (let k = 0; k < 3; k++) dirFace.set(t[k] * nVx + t[(k + 1) % 3], gi); }));
+
+  /* ISLANDS ARE TAKEN IN. A piece with a third loop has untouched faces
+     enclosed by the band (a face the cut went around, measured on
+     Zeghreit's model minus a ball: loops of 6, 6 and 54). Walked from each
+     frozen loop outward: the walk that does not end (or the biggest) is the
+     outside, the others are islands and join the band. Then the pieces are
+     read again - at most twice. */
+  let comps = [], seamLoops = new Map();
+  const loopKey = l => l.slice().sort((a, b) => a - b).join(',');
+  for (let pass = 0; pass < 3; pass++) {
+    const absorb = [];
+    // ---- Pieces: band faces of one side joined across shared edges.
+    const edgeFaces = new Map();
+    groups.forEach((g, gi) => {
+      if (!inBand[gi]) return;
+      g.triangles.forEach(t => { for (let k = 0; k < 3; k++) {
+        const key = ukey(t[k], t[(k + 1) % 3]);
+        let s = edgeFaces.get(key);
+        if (!s) edgeFaces.set(key, s = new Set());
+        s.add(gi);
+      } });
+    });
+    const uf = new Int32Array(groups.length);
+    for (let i = 0; i < uf.length; i++) uf[i] = i;
+    const find = x => { while (uf[x] !== x) { uf[x] = uf[uf[x]]; x = uf[x]; } return x; };
+    edgeFaces.forEach(s => {
+      const l = Array.from(s);
+      for (let i = 1; i < l.length; i++) {
+        if (sideOf(l[i]) === sideOf(l[0]) && sideOf(l[0]) >= 0) { const a = find(l[0]), b = find(l[i]); if (a !== b) uf[Math.max(a, b)] = Math.min(a, b); }
+      }
+    });
+    const compOf = new Map();
+    groups.forEach((g, gi) => {
+      if (!inBand[gi] || !g.triangles.length) return;
+      const r = find(gi);
+      let c = compOf.get(r);
+      if (!c) compOf.set(r, c = { faces: [], ok: true, why: '' });
+      c.faces.push(gi);
+    });
+    comps = Array.from(compOf.values());
+    seamLoops = new Map();
+
+    // ---- Each piece must be an annulus (the cut + a frozen loop, or two cuts)
+    // or a disk inside the cut.
+    comps.forEach(c => {
+      const fail = w => { c.ok = false; c.why = w; };
+      if (sideOf(c.faces[0]) < 0) return fail('no side');
+      const tris = [];
+      const mats = new Map();
+      c.faces.forEach(gi => {
+        groups[gi].triangles.forEach(t => tris.push(t));
+        mats.set(groups[gi].mat, (mats.get(groups[gi].mat) || 0) + groups[gi].triangles.length);
+      });
+      let mb = -1, mv = -1;
+      mats.forEach((n, m) => { if (n > mv) { mv = n; mb = m; } });
+      c.mat = mb;
+      c.tris = tris;
+      const dir = new Set(), und = new Set(), verts = new Set();
+      for (const t of tris) for (let k = 0; k < 3; k++) {
+        const a = t[k], b = t[(k + 1) % 3], key = a * nVx + b;
+        if (dir.has(key)) return fail('doubled edge');
+        dir.add(key); und.add(ukey(a, b)); verts.add(a);
+      }
+      const nxt = new Map();
+      for (const t of tris) for (let k = 0; k < 3; k++) {
+        const a = t[k], b = t[(k + 1) % 3];
+        if (dir.has(b * nVx + a)) continue;
+        if (nxt.has(a)) return fail('pinch');
+        nxt.set(a, b);
+      }
+      const loops = [], used = new Set();
+      for (const s of nxt.keys()) {
+        if (used.has(s)) continue;
+        const l = [];
+        let v = s;
+        while (!used.has(v)) { used.add(v); l.push(v); v = nxt.get(v); if (v === undefined) return fail('open loop'); }
+        if (v !== s) return fail('loop does not close');
+        loops.push(l);
+      }
+      // A surface with k boundary loops and no handles has V - E + F = 2 - k.
+      if (verts.size - und.size + tris.length !== 2 - loops.length) return fail('not a plain surface');
+      const Ls = loops.map(l => {
+        const ns = l.filter(v => seam.has(v)).length;
+        const kind = ns === l.length ? 'seam' : ns === 0 ? 'frozen' : 'mixed';
+        return { kind: kind, verts: l, key: kind === 'seam' ? loopKey(l) : null };
+      });
+      if (Ls.some(L => L.kind === 'mixed' || L.verts.length < 3)) return fail('mixed loop');
+      /* THE CUT MUST BE CLOSED WHERE WE TOUCH IT. An evaluator result that is
+         not two-manifold along the cut (a seam edge with one face, or three)
+         would be fanned and rebuilt against faces that are not really there,
+         and the result gained open or doubled edges (found by fable: a
+         mirrored cutter, 6 open -> 7). Such a piece stays as N-gon made it. */
+      if (Ls.some(L => L.kind === 'seam' && L.verts.some((v, i) => (seamEdgeUse.get(ukey(v, L.verts[(i + 1) % L.verts.length])) || 0) !== 2))) return fail('cut not closed');
+      const nSeam = Ls.filter(L => L.kind === 'seam').length;
+      const frozen = Ls.filter(L => L.kind === 'frozen');
+      const keep = Math.max(0, 2 - nSeam);
+      if (nSeam === 1 && frozen.length > keep) {
+        if (pass >= 2) return fail(loops.length + ' loops');
+        // An island is a few faces the cut went around; a walk that goes on
+        // is the outside - or the rest of a limb the band wraps (measured on
+        // the model: a ball as thick as the arm took the whole hand in).
+        const inC = new Set(c.faces), lim = TOPO_Q_ISLAND;
+        const walks = frozen.map(L => {
+          const seen = new Set(), st = [];
+          L.verts.forEach((a, i) => { const b = L.verts[(i + 1) % L.verts.length], f = dirFace.get(b * nVx + a);
+            if (f !== undefined && !inBand[f] && !seen.has(f)) { seen.add(f); st.push(f); } });
+          while (st.length && seen.size <= lim) {
+            const f = st.pop();
+            groups[f].triangles.forEach(t => { for (let k = 0; k < 3; k++) {
+              const g2 = dirFace.get(t[(k + 1) % 3] * nVx + t[k]);
+              if (g2 !== undefined && !inBand[g2] && !inC.has(g2) && !seen.has(g2)) { seen.add(g2); st.push(g2); }
+            } });
+          }
+          return { faces: seen, open: seen.size > lim };
+        });
+        const order = walks.map((w, i) => i).sort((x, y) => (walks[y].open - walks[x].open) || (walks[y].faces.size - walks[x].faces.size));
+        let ok = true;
+        order.slice(keep).forEach(i => { if (walks[i].open) ok = false; else walks[i].faces.forEach(f => absorb.push(f)); });
+        return fail(ok ? 'island' : loops.length + ' loops');
+      }
+      if (Ls.length === 1 && nSeam === 1) {
+        // A disk inside the cut: rings down to an inner loop of four, one quad in the middle.
+        c.disk = true;
+        c.loops = Ls;
+      } else {
+        if (Ls.length !== 2) return fail(Ls.length + ' loops');
+        if (Ls[0].kind === 'frozen' && Ls[1].kind === 'frozen') return fail('no cut in it');
+        /* Two cut loops bound a WALL the cut made: every point of it on the
+           cut. A piece with original points inside and the cut on both sides
+           is the outside of the shape wrapping from one hole to the other (a
+           cube's walls between the two ends of a bore) - blending across
+           that goes through the solid. */
+        if (Ls[0].kind === 'seam' && Ls[1].kind === 'seam' && Array.from(verts).some(v => !seam.has(v))) return fail('wraps');
+        c.loops = Ls;
+      }
+      c.loops.forEach(L => {
+        if (L.kind !== 'seam') return;
+        if (!seamLoops.has(L.key)) seamLoops.set(L.key, { verts: L.verts.slice(), target: L.verts.length });
+      });
+    });
+    if (!absorb.length) break;
+    absorb.forEach(f => { inBand[f] = 1; });
+  }
+
+  // ---- How many points each seam loop needs: at least its frozen partner's
+  // count, and the same count across a hole wall. Monotone, so it settles.
+  for (let it = 0; it < 16; it++) {
+    let changed = false;
+    comps.forEach(c => {
+      if (!c.ok || c.disk) return;
+      const L0 = c.loops[0], L1 = c.loops[1];
+      if (L0.kind === 'seam' && L1.kind === 'seam') {
+        const a = seamLoops.get(L0.key), b = seamLoops.get(L1.key);
+        const m = Math.max(a.target, b.target);
+        if (a.target !== m || b.target !== m) { a.target = b.target = m; changed = true; }
+      } else {
+        const s = seamLoops.get((L0.kind === 'seam' ? L0 : L1).key), f = (L0.kind === 'seam' ? L1 : L0);
+        if (s.target < f.verts.length) { s.target = f.verts.length; changed = true; }
+      }
+    });
+    if (!changed) break;
+  }
+
+  // ---- Points ON the cut: the longest seam edge halved until the count is met.
+  const ins = new Map();         // directed "u,v" -> new points from u to v
+  seamLoops.forEach(rec => {
+    if (rec.target > TOPO_Q_MAX_LOOP) rec.target = rec.verts.length;
+    const L = rec.verts.slice();
+    const orig = new Set(L);
+    while (L.length < rec.target) {
+      let bi = 0, bl = -1;
+      for (let i = 0; i < L.length; i++) { const d = dist(L[i], L[(i + 1) % L.length]); if (d > bl) { bl = d; bi = i; } }
+      const a = L[bi], b = L[(bi + 1) % L.length];
+      const id = addP([(P[a * 3] + P[b * 3]) / 2, (P[a * 3 + 1] + P[b * 3 + 1]) / 2, (P[a * 3 + 2] + P[b * 3 + 2]) / 2]);
+      L.splice(bi + 1, 0, id);
+    }
+    rec.full = L;
+    // runs between original vertices
+    const n = L.length;
+    let i0 = 0;
+    while (!orig.has(L[i0])) i0++;
+    for (let k = 0; k < n;) {
+      const u = L[(i0 + k) % n];
+      const run = [];
+      let j = k + 1;
+      while (!orig.has(L[(i0 + j) % n])) { run.push(L[(i0 + j) % n]); j++; }
+      const v = L[(i0 + j) % n];
+      if (run.length) ins.set(u + ',' + v, run);
+      k = j;
+    }
+  });
+  const expand = l => {
+    const out = [];
+    for (let i = 0; i < l.length; i++) {
+      const a = l[i], b = l[(i + 1) % l.length];
+      out.push(a);
+      let r = ins.get(a + ',' + b);
+      if (r) { for (const x of r) out.push(x); continue; }
+      r = ins.get(b + ',' + a);
+      if (r) for (let k = r.length - 1; k >= 0; k--) out.push(r[k]);
+    }
+    return out;
+  };
+
+  // ---- Fill each annulus with rings and spokes.
+  const newGroups = [];
+  let rebuilt = 0;
+  comps.forEach(c => {
+    if (!c.ok) return;
+    /* Tried in a fixed order, first clean one wins: laid out flat and evened
+       out there, laid out flat as placed, then by
+       straight blends between the loops, the same relaxed on the surface,
+       the next spoke matching, one more ring. Deterministic, so a seed
+       always names the same layout. */
+    const save = P.length;
+    const tries = [Object.assign({}, V, { even: true }), V, Object.assign({}, V, { blend: true }), Object.assign({}, V, { blend: true, relax: true }),
+                   Object.assign({}, V, { rot: V.rot + 1 }), Object.assign({}, V, { rd: V.rd + 1, blend: true, relax: true })];
+    let res = null, why = [];
+    for (let ti = 0; ti < tries.length; ti++) {
+      c.why = '';
+      res = topoQuadFill(c, expand, P, tries[ti], addP, pt);
+      if (res) { c.how = ti; break; }
+      why.push(c.why);
+      P.length = save;
+    }
+    c.tried = why;
+    if (!res) { c.ok = false; c.why = why[0] || 'fill'; return; }
+    rebuilt++;
+    res.forEach(f => newGroups.push(f));
+  });
+
+  // ---- Assemble. Every face outside a rebuilt piece stays; one that shares a
+  // seam edge given new points is fanned from its far corner so the mesh stays
+  // closed (the points lie on that edge, so its shape does not change).
+  const drop = new Uint8Array(groups.length);
+  comps.forEach(c => { if (c.ok) c.faces.forEach(gi => { drop[gi] = 1; }); });
+  const out = [], region = [];
+  groups.forEach((g, gi) => {
+    if (drop[gi] || !g.triangles.length) return;
+    let T = g.triangles, changed = false;
+    if (ins.size) {
+      const work = T.slice(), done = [];
+      while (work.length) {
+        const t = work.pop();
+        let hit = -1, run = null;
+        for (let k = 0; k < 3 && hit < 0; k++) {
+          const a = t[k], b = t[(k + 1) % 3];
+          run = ins.get(a + ',' + b);
+          if (run) { hit = k; break; }
+          const r = ins.get(b + ',' + a);
+          if (r) { run = r.slice().reverse(); hit = k; }
+        }
+        if (hit < 0) { done.push(t); continue; }
+        changed = true;
+        const a = t[hit], b = t[(hit + 1) % 3], cc = t[(hit + 2) % 3];
+        const chain = [a].concat(run, [b]);
+        for (let k = 0; k + 1 < chain.length; k++) work.push([chain[k], chain[k + 1], cc]);
+      }
+      if (changed) T = done;
+    }
+    if (inBand[gi] || changed) region.push(out.length);
+    out.push(changed ? { triangles: T, mat: g.mat } : g);
+  });
+  newGroups.forEach(f => { region.push(out.length); out.push(f); });
+  const stats = { faces: region.length, tris: 0, quads: 0, ngons: 0 };
+  region.forEach(gi => {
+    const n = out[gi].triangles.length + 2;
+    if (n === 3) stats.tris++; else if (n === 4) stats.quads++; else stats.ngons++;
+  });
+  const nV = P.length / 3;
+  const band = [];
+  groups.forEach((g, gi) => { if (inBand[gi]) band.push(gi); });
+  return { groups: out, positions: P, region: region, stats: stats, space: TOPO_Q_SPACE, band: band, snapped: snapped,
+           hash: topoHash(out, region, nV) + ':' + nV, rebuilt: rebuilt,
+           failed: comps.filter(c => !c.ok).map(c => c.why),
+           ways: comps.filter(c => c.ok && c.how !== undefined).map(c => c.how + (c.tried && c.tried.length ? ' after ' + c.tried.join('/') : '')) };
+}
+
+/* THE PIECE, LAID FLAT (v2.80). Its outer loop pinned on the unit circle
+   at angles by arclength; the hole of an annulus closed by a fan to one
+   extra point, so the piece is a disk; every other point at the average of
+   its neighbours - Tutte's embedding, which cannot fold a disk. (Pinning the
+   inner loop to a circle too was tried and is wrong by construction: a
+   triangle on three running cut points then lands in the hole, flipped.)
+   Rows laid out in this flat piece cannot cross, and a point found here maps
+   back through the triangle it lands in - exactly onto the surface it came
+   from. `inner`: the inner loop's own points, in order, or null for a disk.
+   Null back when the map folds anyway. */
+function topoQuadDomain(tris, P, outer, thO, inner, sg) {
+  const D = new Map(), fixed = new Set();
+  outer.forEach((v, k) => { D.set(v, [Math.cos(thO[k]), Math.sin(thO[k])]); fixed.add(v); });
+  const nbr = new Map();
+  const link = (a, b) => { if (!nbr.has(a)) nbr.set(a, new Set()); nbr.get(a).add(b); };
+  tris.forEach(t => { for (let k = 0; k < 3; k++) { link(t[k], t[(k + 1) % 3]); link(t[(k + 1) % 3], t[k]); } });
+  const HUB = -1;
+  if (inner) inner.forEach(v => { link(v, HUB); link(HUB, v); });
+  const free = Array.from(nbr.keys()).filter(v => !fixed.has(v)).sort((a, b) => a - b);
+  free.forEach(v => D.set(v, [0, 0]));
+  for (let it = 0; it < 6000; it++) {
+    let moved = 0;
+    for (const v of free) {
+      let x = 0, y = 0, k = 0;
+      nbr.get(v).forEach(u => { const d = D.get(u); if (d) { x += d[0]; y += d[1]; k++; } });
+      if (!k) continue;
+      const d = D.get(v), nx = d[0] + 1.6 * (x / k - d[0]), ny = d[1] + 1.6 * (y / k - d[1]);
+      moved = Math.max(moved, Math.abs(nx - d[0]) + Math.abs(ny - d[1]));
+      d[0] = nx; d[1] = ny;
+    }
+    if (moved < 1e-10) break;
+  }
+  if (tris.some(t => !D.has(t[0]) || !D.has(t[1]) || !D.has(t[2]))) return null;
+  const T2 = tris.map(t => ({ t: t, a: D.get(t[0]), b: D.get(t[1]), c: D.get(t[2]) }));
+  // A folded map maps a point to two places: every triangle the same way round, or none of it.
+  if (sg && T2.some(q => sg * ((q.b[0] - q.a[0]) * (q.c[1] - q.a[1]) - (q.b[1] - q.a[1]) * (q.c[0] - q.a[0])) <= 0)) return null;
+  // (X, Y) in the flat piece -> the point on the surface, through its triangle.
+  const at = (X, Y) => {
+    let best = null, bo = Infinity;
+    for (const q of T2) {
+      const x0 = q.a[0], y0 = q.a[1];
+      const e1x = q.b[0] - x0, e1y = q.b[1] - y0, e2x = q.c[0] - x0, e2y = q.c[1] - y0;
+      const den = e1x * e2y - e1y * e2x;
+      if (Math.abs(den) < 1e-18) continue;
+      const px = X - x0, py = Y - y0;
+      const l1 = (px * e2y - py * e2x) / den, l2 = (e1x * py - e1y * px) / den, l0 = 1 - l1 - l2;
+      const out = Math.max(0, -l0) + Math.max(0, -l1) + Math.max(0, -l2);
+      if (out < bo) { bo = out; best = [q.t, l0, l1, l2]; if (!out) break; }
+    }
+    if (!best || bo > 0.02) return null;
+    let [t, l0, l1, l2] = best;
+    l0 = Math.max(0, l0); l1 = Math.max(0, l1); l2 = Math.max(0, l2);
+    const sm = l0 + l1 + l2 || 1;
+    l0 /= sm; l1 /= sm; l2 /= sm;
+    return [0, 1, 2].map(k => l0 * P[t[0] * 3 + k] + l1 * P[t[1] * 3 + k] + l2 * P[t[2] * 3 + k]);
+  };
+  return { at: at, D: D, hub: inner ? D.get(HUB) : [0, 0] };
+}
+
+/* One annulus: its two loops (seam loops with their new points), matched
+   spoke to spoke, rows of quads between. Returns face groups, or null when
+   anything is off - and then the piece stays as N-gon made it. */
+function topoQuadFill(c, expand, P, V, addP, pt) {
+  // The surface this piece lies on: its own result triangles, as they came.
+  const T = c.tris.map(t => { const a = pt(t[0]), b = pt(t[1]), q = pt(t[2]);
+    const n = [(b[1] - a[1]) * (q[2] - a[2]) - (b[2] - a[2]) * (q[1] - a[1]),
+               (b[2] - a[2]) * (q[0] - a[0]) - (b[0] - a[0]) * (q[2] - a[2]),
+               (b[0] - a[0]) * (q[1] - a[1]) - (b[1] - a[1]) * (q[0] - a[0])];
+    const l = Math.hypot(n[0], n[1], n[2]) || 1;
+    return { a: a, b: b, c: q, n: [n[0] / l, n[1] / l, n[2] / l] }; });
+  const tmp = [0, 0, 0];
+  // The nearest crossing of the line through q along dir, either way (Moller-Trumbore).
+  const rayHit = (q, dir) => {
+    let bt = Infinity, bp = null;
+    for (const t of T) {
+      const e1 = [t.b[0] - t.a[0], t.b[1] - t.a[1], t.b[2] - t.a[2]], e2 = [t.c[0] - t.a[0], t.c[1] - t.a[1], t.c[2] - t.a[2]];
+      const pv = [dir[1] * e2[2] - dir[2] * e2[1], dir[2] * e2[0] - dir[0] * e2[2], dir[0] * e2[1] - dir[1] * e2[0]];
+      const det = e1[0] * pv[0] + e1[1] * pv[1] + e1[2] * pv[2];
+      if (Math.abs(det) < 1e-18) continue;
+      const inv = 1 / det, tv = [q[0] - t.a[0], q[1] - t.a[1], q[2] - t.a[2]];
+      const u = (tv[0] * pv[0] + tv[1] * pv[1] + tv[2] * pv[2]) * inv;
+      if (u < -1e-9 || u > 1 + 1e-9) continue;
+      const qv = [tv[1] * e1[2] - tv[2] * e1[1], tv[2] * e1[0] - tv[0] * e1[2], tv[0] * e1[1] - tv[1] * e1[0]];
+      const v = (dir[0] * qv[0] + dir[1] * qv[1] + dir[2] * qv[2]) * inv;
+      if (v < -1e-9 || u + v > 1 + 1e-9) continue;
+      const tt = (e2[0] * qv[0] + e2[1] * qv[1] + e2[2] * qv[2]) * inv;
+      if (Math.abs(tt) < Math.abs(bt)) { bt = tt; bp = [q[0] + tt * dir[0], q[1] + tt * dir[1], q[2] + tt * dir[2]]; }
+    }
+    return bp;
+  };
+  const project = q => {
+    let bd = Infinity, bp = null, bn = null;
+    for (const t of T) {
+      topoClosestOnTri(q, t.a, t.b, t.c, tmp);
+      const d = (tmp[0] - q[0]) ** 2 + (tmp[1] - q[1]) ** 2 + (tmp[2] - q[2]) ** 2;
+      if (d < bd) { bd = d; bp = [tmp[0], tmp[1], tmp[2]]; bn = t.n; }
+    }
+    return { p: bp, n: bn };
+  };
+
+  const firstNew = P.length / 3;
+  const L0 = c.loops[0];
+  let L1 = c.loops[1];
+  const A = L0.kind === 'seam' ? expand(L0.verts) : L0.verts.slice();
+  let diskDom = null;
+  if (c.disk) {
+    /* A disk: four points part-way in from the cut, evenly by arclength,
+       stand in for the second loop; the quad they make closes the middle. */
+    if (A.length < 4) return (c.why = 'small loop', null);
+    let cx = 0, cy = 0, cz = 0, w = 0;
+    T.forEach(t => { const n = Math.hypot((t.b[1] - t.a[1]) * (t.c[2] - t.a[2]) - (t.b[2] - t.a[2]) * (t.c[1] - t.a[1]),
+      (t.b[2] - t.a[2]) * (t.c[0] - t.a[0]) - (t.b[0] - t.a[0]) * (t.c[2] - t.a[2]),
+      (t.b[0] - t.a[0]) * (t.c[1] - t.a[1]) - (t.b[1] - t.a[1]) * (t.c[0] - t.a[0])) + 1e-30;
+      cx += n * (t.a[0] + t.b[0] + t.c[0]) / 3; cy += n * (t.a[1] + t.b[1] + t.c[1]) / 3; cz += n * (t.a[2] + t.b[2] + t.c[2]) / 3; w += n; });
+    const ctr = [cx / w, cy / w, cz / w];
+    const cum = [0];
+    for (let k = 1; k <= A.length; k++) { const a = pt(A[k - 1]), b = pt(A[k % A.length]); cum.push(cum[k - 1] + Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2])); }
+    // Eight around a pole of four for a long cut, else four and one quad.
+    const K = A.length >= 24 ? 8 : 4, f = K === 8 ? 0.4 : 0.45;
+    if (!V.blend) {
+      diskDom = topoQuadDomain(c.tris, P, A, cum.slice(0, A.length).map(x => 2 * Math.PI * x / cum[A.length]), null, 1);
+      if (!diskDom) return (c.why = 'flat map', null);
+    }
+    const inner = [];
+    c.innerTh = [];
+    for (let q = 0; q < K; q++) {
+      const target = cum[A.length] * q / K;
+      let k = 0;
+      while (k < A.length - 1 && cum[k + 1] <= target) k++;
+      const a = pt(A[k]);
+      const th = 2 * Math.PI * q / K;
+      c.innerTh.push(th);
+      const hit = diskDom && diskDom.at(f * Math.cos(th), f * Math.sin(th));
+      if (diskDom && !hit) return (c.why = 'flat map', null);
+      inner.push(addP(hit || project([ctr[0] + f * (a[0] - ctr[0]), ctr[1] + f * (a[1] - ctr[1]), ctr[2] + f * (a[2] - ctr[2])]).p));
+    }
+    c.inner = inner;
+    c.innerR = f;
+    const hc = diskDom && diskDom.at(0, 0);
+    c.center = K === 8 ? addP(hc || project(ctr).p) : -1;
+    L1 = { kind: 'inner', verts: inner.slice().reverse() };      // as the surface walks it
+  }
+  const B = (L1.kind === 'seam' ? expand(L1.verts) : L1.verts.slice()).reverse();   // same sense as A
+  let big = A, small = B, flip = false;
+  if (B.length > A.length) { big = B; small = A; flip = true; }
+  const nb = big.length, ns = small.length;
+  if (ns < 3) return (c.why = 'small loop', null);
+  const len = (a, b) => Math.hypot(P[a * 3] - P[b * 3], P[a * 3 + 1] - P[b * 3 + 1], P[a * 3 + 2] - P[b * 3 + 2]);
+  let hb = 0;
+  for (let i = 0; i < nb; i++) hb += len(big[i], big[(i + 1) % nb]);
+  hb /= nb;
+  let sp2 = 0;
+  for (let i = 0; i < ns; i++) { let b2 = Infinity; for (let j = 0; j < nb; j++) b2 = Math.min(b2, len(small[i], big[j]) ** 2); sp2 += b2; }
+  sp2 /= ns;
+  const arcTh = L => { const cum = [0]; for (let k = 1; k <= L.length; k++) cum.push(cum[k - 1] + len(L[k - 1], L[k % L.length]));
+    return cum.slice(0, L.length).map(x => 2 * Math.PI * x / (cum[L.length] || 1)); };
+  /* THE FLAT PIECE FIRST (unless this attempt blends): the big loop pinned
+     on the unit circle, the small one wherever the mesh puts it. Angles and
+     radii of the small loop are read off the solve, about the hub. */
+  const sg = flip ? -1 : 1;
+  let dom = null, thB = null, thS = null, rS = null;
+  if (!V.blend) {
+    thB = arcTh(big);
+    if (c.disk) {
+      dom = diskDom;
+      thS = c.innerTh.slice(); rS = thS.map(() => c.innerR);
+    } else {
+      const inTri = new Set(); c.tris.forEach(t => t.forEach(v => inTri.add(v)));
+      const bo = [], bt = [];
+      big.forEach((v, k) => { if (inTri.has(v)) { bo.push(v); bt.push(thB[k]); } });
+      dom = topoQuadDomain(c.tris, P, bo, bt, small.filter(v => inTri.has(v)), sg);
+      if (!dom) return (c.why = 'flat map', null);
+      // every small point in the flat piece: its own, or (added on the cut) along its edge
+      const xy = new Array(ns);
+      const own = [];
+      small.forEach((v, k) => { if (inTri.has(v)) { xy[k] = dom.D.get(v).slice(); own.push(k); } });
+      if (!own.length) return (c.why = 'flat map', null);
+      for (let q = 0; q < own.length; q++) {
+        const k0 = own[q], k1 = own[(q + 1) % own.length];
+        const run = [];
+        for (let k = (k0 + 1) % ns; k !== k1; k = (k + 1) % ns) run.push(k);
+        if (!run.length) continue;
+        const L = [0];
+        let prev = small[k0];
+        run.concat([k1]).forEach(k => { L.push(L[L.length - 1] + len(prev, small[k])); prev = small[k]; });
+        const tot = L[L.length - 1] || 1, a = xy[k0], b = xy[k1];
+        run.forEach((k, r) => { const f = L[r + 1] / tot; xy[k] = [a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1])]; });
+      }
+      const hub = dom.hub;
+      thS = xy.map(p => Math.atan2(p[1] - hub[1], p[0] - hub[0]));
+      rS = xy.map(p => Math.hypot(p[0] - hub[0], p[1] - hub[1]));
+      c.hub = hub;
+      c.smallXY = xy;
+    }
+  }
+
+  /* MATCHED BY ANGLE AROUND THE CUT, not by distance alone. Measured on
+     Zeghreit's model minus a ball: six original points around 54 cut points,
+     and nearest-first put all six spokes on one side (gaps 37,5,5,3,3,1).
+     Angles about the loops' shared middle, in the plane of the big loop
+     (Newell), keep the spokes spread; a quarter of the squared distance
+     still breaks ties the geometric way. */
+  const ctr = [0, 0, 0], nrm = [0, 0, 0];
+  big.concat(small).forEach(v => { ctr[0] += P[v * 3]; ctr[1] += P[v * 3 + 1]; ctr[2] += P[v * 3 + 2]; });
+  ctr[0] /= nb + ns; ctr[1] /= nb + ns; ctr[2] /= nb + ns;
+  for (let k = 0; k < nb; k++) {
+    const a = pt(big[k]), b = pt(big[(k + 1) % nb]);
+    nrm[0] += (a[1] - b[1]) * (a[2] + b[2]); nrm[1] += (a[2] - b[2]) * (a[0] + b[0]); nrm[2] += (a[0] - b[0]) * (a[1] + b[1]);
+  }
+  const nl = Math.hypot(nrm[0], nrm[1], nrm[2]);
+  let cost = null;
+  if (dom) {
+    // in the flat piece the angle is the mesh's own; a quarter of the squared distance breaks ties
+    const rr = hb * nb / (2 * Math.PI);
+    cost = (i, j) => {
+      let d = Math.abs(thS[i] - thB[j]) % (2 * Math.PI);
+      if (d > Math.PI) d = 2 * Math.PI - d;
+      return (d * rr) ** 2 + 0.25 * len(small[i], big[j]) ** 2;
+    };
+  } else if (nl > 1e-12) {
+    const n = [nrm[0] / nl, nrm[1] / nl, nrm[2] / nl];
+    const u0 = Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+    let u = [n[1] * u0[2] - n[2] * u0[1], n[2] * u0[0] - n[0] * u0[2], n[0] * u0[1] - n[1] * u0[0]];
+    const ul = Math.hypot(u[0], u[1], u[2]); u = [u[0] / ul, u[1] / ul, u[2] / ul];
+    const w = [n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]];
+    const ang = v => { const x = P[v * 3] - ctr[0], y = P[v * 3 + 1] - ctr[1], z = P[v * 3 + 2] - ctr[2];
+      return Math.atan2(x * w[0] + y * w[1] + z * w[2], x * u[0] + y * u[1] + z * u[2]); };
+    const as = small.map(ang), ab = big.map(ang);
+    let rr = 0;
+    big.concat(small).forEach(v => { rr += Math.hypot(P[v * 3] - ctr[0], P[v * 3 + 1] - ctr[1], P[v * 3 + 2] - ctr[2]); });
+    rr /= nb + ns;
+    cost = (i, j) => {
+      let d = Math.abs(as[i] - ab[j]) % (2 * Math.PI);
+      if (d > Math.PI) d = 2 * Math.PI - d;
+      return (d * rr) ** 2 + 0.25 * len(small[i], big[j]) ** 2;
+    };
+  }
+  const cands = topoQuadMatch(small, big, P, sp2 + 4 * hb * hb, cost);
+  if (!cands.length) return (c.why = 'no match', null);
+  const m = cands[Math.min(V.rot, cands.length - 1)].m;
+
+  // Rings: square-ish rows against the frozen loop's own spacing; a hole
+  // wall keeps the one row its input had.
+  let spoke = 0;
+  for (let i = 0; i < ns; i++) spoke += len(small[i], big[((m[i] % nb) + nb) % nb]);
+  spoke /= ns;
+  let ref = 0;
+  // a disk has no frozen loop: its rows follow the cut's own spacing
+  const frozen = L0.kind === 'frozen' ? L0.verts : L1.kind === 'frozen' ? L1.verts : c.disk ? A : null;
+  if (frozen) { for (let i = 0; i < frozen.length; i++) ref += len(frozen[i], frozen[(i + 1) % frozen.length]); ref /= frozen.length; }
+  const Rauto = frozen && ref > 0 ? Math.min(TOPO_Q_MAX_RINGS_AUTO, Math.max(0, Math.round(spoke / ref) - 1)) : 0;
+  const R = Rauto;
+  const gaps = [];
+  for (let i = 0; i < ns; i++) gaps.push((i + 1 < ns ? m[i + 1] : m[0] + nb) - m[i]);
+  /* A transition never sits against the cut: when any gap sheds spokes,
+     there are at least two rows, and the shedding happens in the outer one. */
+  let Smin = 1;
+  for (; Smin <= TOPO_Q_MAX_STRIPS; Smin++) if (gaps.every(E => topoQuadCounts(E, Smin))) break;
+  if (Smin > TOPO_Q_MAX_STRIPS) return (c.why = 'too many rows', null);
+  // The ring variant is one more or one fewer than this, never below what the steps need.
+  const S = Math.min(TOPO_Q_MAX_STRIPS, Math.max(Smin, Math.max(R + 1, Smin) + V.rd));
+  const counts = gaps.map(E => topoQuadCounts(E, S));
+  if (!counts.every(Boolean)) return (c.why = 'rows', null);
+
+  const bigAt = j => big[((j % nb) + nb) % nb];
+  const faces = [];
+  const TAU = 2 * Math.PI;
+  const unwrapNear = (x, ref) => x + TAU * Math.round((ref - x) / TAU);
+  // Where each point sits in the flat piece: the loops pinned, new points as placed.
+  const flat = new Map();
+  if (dom) {
+    big.forEach((v, k) => flat.set(v, [Math.cos(thB[k]), Math.sin(thB[k])]));
+    small.forEach((v, k) => flat.set(v, c.disk ? [rS[k] * Math.cos(thS[k]), rS[k] * Math.sin(thS[k])] : c.smallXY[k]));
+    if (c.disk && c.center >= 0) flat.set(c.center, [0, 0]);
+  }
+  // Through-spoke points, shared by the two gaps on either side of them.
+  const through = [];
+  const place = (i, u, t) => {        // a point of gap i at (u across, t down)
+    const g = through.gapGeo[i];
+    if (dom) {
+      const target = u * g.total;
+      let k = 0;
+      while (k < g.cum.length - 2 && g.cum[k + 1] < target) k++;
+      const seg = g.cum[k + 1] - g.cum[k], f = seg > 0 ? (target - g.cum[k]) / seg : 0;
+      // the big loop is on the unit circle about the origin; the small loop
+      // about the hub - blended point by point, the hub sliding with t
+      const tb = g.th[k] + f * (g.th[k + 1] - g.th[k]);
+      const bX = Math.cos(tb), bY = Math.sin(tb);
+      const ts = g.ts0 + u * (g.ts1 - g.ts0), rs = g.rs0 + u * (g.rs1 - g.rs0);
+      const hb2 = c.disk ? [0, 0] : c.hub;
+      const sX = hb2[0] + rs * Math.cos(ts), sY = hb2[1] + rs * Math.sin(ts);
+      const X = (1 - t) * bX + t * sX, Y = (1 - t) * bY + t * sY;
+      const hit = dom.at(X, Y);
+      if (!hit) { dom.miss = true; return addP(pt(g.ids[0])); }
+      const id = addP(hit);
+      flat.set(id, [X, Y]);
+      return id;
+    }
+    let x, y, z;
+    // along the big loop at arclength fraction u
+    const target = u * g.total;
+    let k = 0;
+    while (k < g.cum.length - 2 && g.cum[k + 1] < target) k++;
+    const seg = g.cum[k + 1] - g.cum[k], f = seg > 0 ? (target - g.cum[k]) / seg : 0;
+    const a = g.pts[k], b = g.pts[k + 1];
+    const bx = a[0] + f * (b[0] - a[0]), by = a[1] + f * (b[1] - a[1]), bz = a[2] + f * (b[2] - a[2]);
+    const sx = g.s0[0] + u * (g.s1[0] - g.s0[0]), sy = g.s0[1] + u * (g.s1[1] - g.s0[1]), sz = g.s0[2] + u * (g.s1[2] - g.s0[2]);
+    x = (1 - t) * bx + t * sx; y = (1 - t) * by + t * sy; z = (1 - t) * bz + t * sz;
+    /* Along the surface's own normal, blended from the two ends, not to the
+       nearest point: in a dent the blend sits in the empty space above the
+       surface, where "nearest" jumps about (measured: a quad folded right
+       over in a ball-shaped dent). Nearest point only when the ray misses. */
+    const nb_ = project([bx, by, bz]).n, ns_ = project([sx, sy, sz]).n;
+    const d = [(1 - t) * nb_[0] + t * ns_[0], (1 - t) * nb_[1] + t * ns_[1], (1 - t) * nb_[2] + t * ns_[2]];
+    const dl = Math.hypot(d[0], d[1], d[2]);
+    if (dl > 1e-9) {
+      const hit = rayHit([x, y, z], [d[0] / dl, d[1] / dl, d[2] / dl]);
+      if (hit) return addP(hit);
+    }
+    return addP(project([x, y, z]).p);
+  };
+  through.gapGeo = gaps.map((E, i) => {
+    const ids = [];
+    for (let k = 0; k <= E; k++) ids.push(bigAt(m[i] + k));
+    const pts = ids.map(pt), cum = [0];
+    for (let k = 1; k < pts.length; k++) cum.push(cum[k - 1] + Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1], pts[k][2] - pts[k - 1][2]));
+    const G = { ids: ids, pts: pts, cum: cum, total: cum[cum.length - 1] || 1,
+                s0: pt(small[i]), s1: pt(small[(i + 1) % ns]) };
+    if (dom) {
+      // unrolled: the big loop's angles only ever increase along the gap
+      G.th = [];
+      for (let k = 0; k <= E; k++) { const j = m[i] + k; G.th.push(thB[((j % nb) + nb) % nb] + TAU * Math.floor(j / nb)); }
+      G.ts0 = unwrapNear(thS[i], G.th[0]);
+      let d1 = (thS[(i + 1) % ns] - thS[i]) % TAU;
+      if (d1 <= 0) d1 += TAU;
+      G.ts1 = G.ts0 + (ns === 1 ? TAU : d1);
+      G.rs0 = rS[i]; G.rs1 = rS[(i + 1) % ns];
+    }
+    return G;
+  });
+  for (let i = 0; i < ns; i++) {
+    const col = [bigAt(m[i])];
+    for (let j = 1; j < S; j++) col.push(place(i, 0, j / S));
+    col.push(small[i]);
+    through.push(col);
+  }
+  const face = (ids) => faces.push(flip ? ids.slice().reverse() : ids);
+  for (let i = 0; i < ns; i++) {
+    const g = through.gapGeo[i], e = counts[i], i1 = (i + 1) % ns;
+    let upper = { ids: g.ids, u: g.cum.map(x => x / g.total) };
+    for (let j = 0; j < S; j++) {
+      const eu = e[j], el = e[j + 1], d = eu - el;
+      const p3 = d >> 1, p2 = d & 1;
+      // spans of the lower edges: 3:1 transitions spread evenly, a 2:1 in the middle
+      const span = new Array(el).fill(1);
+      for (let q = 0; q < p3; q++) span[Math.min(el - 1, Math.floor((q + 0.5) * el / p3))] = 3;
+      if (p2) {
+        let at = -1, bd = Infinity;
+        for (let l = 0; l < el; l++) if (span[l] === 1 && Math.abs(l - (el - 1) / 2) < bd) { bd = Math.abs(l - (el - 1) / 2); at = l; }
+        if (at < 0) return (c.why = 'no 2:1 slot', null);
+        span[at] = 2;
+      }
+      if (span.reduce((s, x) => s + x, 0) !== eu) return (c.why = 'spans', null);
+      const t1 = (j + 1) / S, tm = (j + 0.5) / S;
+      const lower = { ids: [through[i][j + 1]], u: [0] };
+      let ptr = 0;
+      for (let l = 0; l < el; l++) {
+        ptr += span[l];
+        if (l === el - 1) { lower.ids.push(through[i1][j + 1]); lower.u.push(1); }
+        else { const u = upper.u[ptr]; lower.ids.push(place(i, u, t1)); lower.u.push(u); }
+      }
+      ptr = 0;
+      for (let l = 0; l < el; l++) {
+        const U = upper.ids, L0 = lower.ids[l], L1_ = lower.ids[l + 1], w = span[l];
+        if (w === 1) face([U[ptr], U[ptr + 1], L1_, L0]);
+        else if (w === 2) { face([U[ptr], U[ptr + 1], L0]); face([U[ptr + 1], U[ptr + 2], L1_, L0]); }
+        else {
+          const p = place(i, upper.u[ptr + 1], tm), q = place(i, upper.u[ptr + 2], tm);
+          face([U[ptr], U[ptr + 1], p, L0]); face([U[ptr + 1], U[ptr + 2], q, p]);
+          face([U[ptr + 2], U[ptr + 3], L1_, q]); face([p, q, L1_, L0]);
+        }
+        ptr += w;
+      }
+      upper = lower;
+    }
+  }
+
+  if (dom && dom.miss) return (c.why = 'flat map', null);
+  if (c.disk) {
+    const q = c.inner;
+    if (q.length === 4) face(q.slice());
+    else for (let k = 0; k < q.length; k += 2) face([q[k], q[k + 1], q[(k + 2) % q.length], c.center]);
+  }
+  /* EVENED OUT IN THE FLAT PIECE. Rows placed by blending sit where the
+     blend puts them; a 3:1 step leaves a fan of thin quads converging on
+     one original point (measured on Zeghreit's model: the cut three times
+     as dense as the body round it). A few rounds of "to the middle of your
+     neighbours" in the flat annulus - where nothing can cross - then back
+     onto the surface through the triangle each lands in. The loops stay. */
+  if (dom && V.even) {
+    const nb2 = new Map();
+    const link2 = (a, b) => { if (!nb2.has(a)) nb2.set(a, new Set()); nb2.get(a).add(b); };
+    faces.forEach(f => f.forEach((v, k) => { link2(v, f[(k + 1) % f.length]); link2(f[(k + 1) % f.length], v); }));
+    const pin = new Set(big.concat(small));
+    if (c.disk && c.center >= 0) pin.add(c.center);
+    const mv = Array.from(flat.keys()).filter(v => !pin.has(v) && nb2.has(v)).sort((a, b) => a - b);
+    const placed = new Map(mv.map(v => [v, flat.get(v).slice()]));
+    for (let it = 0; it < 8; it++) {
+      const nx = mv.map(v => { let x = 0, y = 0, k = 0;
+        nb2.get(v).forEach(u => { const d = flat.get(u); if (d) { x += d[0]; y += d[1]; k++; } });
+        if (!k) return flat.get(v);
+        // inside the outer edge of the flat piece; a point in the hole finds no triangle and ends the attempt
+        const X = x / k, Y = y / k, rho = Math.hypot(X, Y), hi = Math.cos(Math.PI / nb) * 0.999;
+        return rho > hi ? [X * hi / rho, Y * hi / rho] : [X, Y]; });
+      mv.forEach((v, i) => flat.set(v, nx[i]));
+    }
+    for (const v of mv) {
+      const d = flat.get(v), hit = dom.at(d[0], d[1]);
+      if (!hit) { flat.set(v, placed.get(v)); continue; }      // evened into the hole: it stays where it was placed
+      P[v * 3] = hit[0]; P[v * 3 + 1] = hit[1]; P[v * 3 + 2] = hit[2];
+    }
+  }
+
+  /* RELAXED ON THE SURFACE. The rows are placed by straight blends between
+     the two loops, which is right on average and wrong where a loop doubles
+     back (a saddle seam, a tight transition). A few rounds of "every new
+     point to the middle of its neighbours, then back onto the surface" untie
+     that; the loops themselves never move. */
+  {
+    const nbr = new Map();
+    const link = (a, b) => { if (a < firstNew && b < firstNew) return;
+      if (!nbr.has(a)) nbr.set(a, new Set()); if (!nbr.has(b)) nbr.set(b, new Set());
+      nbr.get(a).add(b); nbr.get(b).add(a); };
+    faces.forEach(f => f.forEach((v, k) => link(v, f[(k + 1) % f.length])));
+    const mv = Array.from(nbr.keys()).filter(v => v >= firstNew).sort((a, b) => a - b);
+    for (let it = 0; it < (V.relax ? 6 : 0); it++) {
+      const nx = mv.map(v => {
+        let x = 0, y = 0, z = 0, k = 0;
+        nbr.get(v).forEach(u => { x += P[u * 3]; y += P[u * 3 + 1]; z += P[u * 3 + 2]; k++; });
+        const q = [x / k, y / k, z / k], n0 = project([P[v * 3], P[v * 3 + 1], P[v * 3 + 2]]).n;
+        return rayHit(q, n0) || project(q).p;           // along the normal, as the rows were placed
+      });
+      mv.forEach((v, i) => { P[v * 3] = nx[i][0]; P[v * 3 + 1] = nx[i][1]; P[v * 3 + 2] = nx[i][2]; });
+    }
+  }
+
+  // Check before anything is kept: no face folded against the surface it
+  // lies on, none crushed flat. Any doubt and the piece stays N-gon.
+  const out = [];
+  for (const f of faces) {
+    let tris;
+    if (f.length === 3) tris = [f];
+    else {
+      /* The split whose smaller triangle is the bigger one, measured along
+         the quad's own normal (Newell) - the shorter diagonal alone picks a
+         crushed, flipped triangle when three corners nearly line up. */
+      const nq = [0, 0, 0];
+      for (let k = 0; k < 4; k++) {
+        const a = pt(f[k]), b = pt(f[(k + 1) % 4]);
+        nq[0] += (a[1] - b[1]) * (a[2] + b[2]); nq[1] += (a[2] - b[2]) * (a[0] + b[0]); nq[2] += (a[0] - b[0]) * (a[1] + b[1]);
+      }
+      const sa = t => { const a = pt(t[0]), b = pt(t[1]), q = pt(t[2]);
+        return ((b[1] - a[1]) * (q[2] - a[2]) - (b[2] - a[2]) * (q[1] - a[1])) * nq[0] +
+               ((b[2] - a[2]) * (q[0] - a[0]) - (b[0] - a[0]) * (q[2] - a[2])) * nq[1] +
+               ((b[0] - a[0]) * (q[1] - a[1]) - (b[1] - a[1]) * (q[0] - a[0])) * nq[2]; };
+      const s1 = [[f[0], f[1], f[2]], [f[0], f[2], f[3]]], s2 = [[f[0], f[1], f[3]], [f[1], f[2], f[3]]];
+      const q1 = Math.min(sa(s1[0]), sa(s1[1])), q2 = Math.min(sa(s2[0]), sa(s2[1]));
+      tris = q1 > q2 || (q1 === q2 && len(f[0], f[2]) <= len(f[1], f[3])) ? s1 : s2;
+    }
+    for (const t of tris) {
+      const a = pt(t[0]), b = pt(t[1]), q = pt(t[2]);
+      const n = [(b[1] - a[1]) * (q[2] - a[2]) - (b[2] - a[2]) * (q[1] - a[1]),
+                 (b[2] - a[2]) * (q[0] - a[0]) - (b[0] - a[0]) * (q[2] - a[2]),
+                 (b[0] - a[0]) * (q[1] - a[1]) - (b[1] - a[1]) * (q[0] - a[0])];
+      const ar = Math.hypot(n[0], n[1], n[2]);
+      const L = Math.max(len(t[0], t[1]), len(t[1], t[2]), len(t[2], t[0]));
+      if (!(ar / L > 1e-3 * hb)) return (c.why = 'crushed', null);                 // crushed
+      const mid = [(a[0] + b[0] + q[0]) / 3, (a[1] + b[1] + q[1]) / 3, (a[2] + b[2] + q[2]) / 3];
+      const pj = project(mid), src = pj.n;
+      if (Math.hypot(pj.p[0] - mid[0], pj.p[1] - mid[1], pj.p[2] - mid[2]) > TOPO_Q_SAG * L) return (c.why = 'sags', null);
+      if ((n[0] * src[0] + n[1] * src[1] + n[2] * src[2]) / ar < TOPO_Q_FOLD_COS) return (c.why = 'folded', null);
+    }
+    out.push({ triangles: tris, mat: c.mat });
+  }
+  return out;
+}
+
 // The old fallback, unchanged in meaning: coplanar pairs across a clean edge.
 function topoPairs(p, tris, edgeTris, ek, out) {
   const inP = new Set(p.tris);
@@ -33043,7 +34215,8 @@ function booleanBuild(objs, kind, opt) {
     mats: outMats,
     shadeMarks: ed.shadeMarks || [],
     angle: ed.angle,
-    topo: ed.topo ? { space: ed.topo.space, hash: ed.topo.hash, stats: ed.topo.stats } : null,
+    topo: ed.topo ? { space: ed.topo.space, hash: ed.topo.hash, stats: ed.topo.stats,
+                      rebuilt: ed.topo.rebuilt, failed: ed.topo.failed } : null,
     note: ed.capped ? 'too tangled to close fully' : ''
   };
 }
@@ -38251,12 +39424,15 @@ const OP_SETUP = {
               tip: 'Leave what went in standing beside the result', norebuild: true },
     /* TOPOLOGY OF THE CUT (v2.79, Zeghreit). A second row of chips says what
        the flat faces along the cut are made of; Generate walks the layouts
-       of that type, and a tap of Undo walks back. The shape never moves -
-       only which vertices are joined to which. */
-    chips2: [['ngon', 'N-gon'], ['tris', 'Tris']],
+       of that type, and a tap of Undo walks back. N-gon and Tris never move
+       the shape - only which vertices are joined to which. Quads (v2.80)
+       rebuilds a band along the cut, flat and curved, with new points on
+       the surfaces they came from (topoQuads). */
+    chips2: [['ngon', 'N-gon'], ['tris', 'Tris'], ['quads', 'Quads']],
     chip2Key: 'topo',
     chip2Tip: (k) => (k === 'ngon' ? 'Big flat faces along the cut, holes bridged'
-                    : 'Every flat face along the cut as triangles'),
+                    : k === 'tris' ? 'Every flat face along the cut as triangles'
+                    : 'Rebuild a band along the cut as rings of quads, curved walls too'),
     onChip2: () => { App.opSetup.p.seed = 0; },
     defaults: () => ({ kind: 'union', keep: !!App.boolKeep, topo: 'ngon', seed: 0 }),
     build: (s) => {
@@ -38275,7 +39451,7 @@ const OP_SETUP = {
       if (st.quads) parts.push(st.quads + (st.quads === 1 ? ' quad' : ' quads'));
       if (st.tris) parts.push(st.tris + (st.tris === 1 ? ' tri' : ' tris'));
       if (st.ngons) parts.push(st.ngons + (st.ngons === 1 ? ' n-gon' : ' n-gons'));
-      return (s.p.topo === 'tris' ? 'Tris' : 'N-gon') + ' · var ' + (seen.indexOf(t.hash) + 1) +
+      return (s.p.topo === 'tris' ? 'Tris' : s.p.topo === 'quads' ? 'Quads' : 'N-gon') + ' · var ' + (seen.indexOf(t.hash) + 1) +
              ' · ' + st.faces + (st.faces === 1 ? ' face' : ' faces') +
              (parts.length ? ' (' + parts.join(', ') + ')' : '');
     },

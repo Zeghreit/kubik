@@ -20,8 +20,8 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~50,570 lines)
-- Version at time of writing: **2.78d**
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~51,750 lines)
+- Version at time of writing: **2.80**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -105,6 +105,11 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
     minted by a file open or an import. (`hardening-v23bc.md`)
 15. **`flushMatBin` is missed on `applyPendingOp`'s object-gone branch.**
     (`hardening-v23bc.md`)
+16. **Some booleans hang the tab before any topology runs** - found by fable
+    at v2.80 (not measured in the app): cylinder & cylinder intersections and
+    tilted dense cylinders in the node fixture never return from
+    `healTJunctions` / the merge inside `editableFromCSGResult`. Main does
+    the same; not caused by Quads.
 
 ### Decisions owed to Zeghreit
 
@@ -148,6 +153,84 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Warp the lookup, not the distance** — same doc, §5B.
 - **Curves** still lack edge snapping while drawing, and a Lathe that sweeps
   an arc rather than a full turn.
+
+## Quads along the cut (2.80)
+
+The Boolean bar's second chip row is **N-gon / Tris / Quads**. Quads is the
+first type that REBUILDS geometry: a band along the cut, flat and curved walls
+alike, comes back as rings of quads (Zeghreit, 29.09: stitch organically on a
+union, remesh the new zones on difference/intersect, adapting to what is left
+of the original). Readout: `Quads · var 1 · 301 faces (300 quads, 1 tri)`.
+
+**The invariant is different from N-gon/Tris** (those two still never move a
+point):
+1. Outside the band it reports, every face and every original point is
+   unchanged.
+2. The band's outer boundary is the original's own vertices; the cut keeps its
+   points and only gains new ones that lie ON its edges. A face beside such an
+   edge that is not rebuilt is fanned so the mesh stays closed.
+3. Every new point lies on the surface of its own side.
+4. A piece that cannot be rebuilt cleanly stays exactly as N-gon made it, so
+   Quads is never worse than N-gon.
+
+How `topoQuads` works (pure, after `topoNgon` seed 0, which is its fallback):
+- **Crack snap first.** The evaluator can leave two cut points 1.3e-4 apart,
+  just past the 1e-4 weld grid, and faces on either side end on different
+  ones. Seam points closer than min(2x `CSG_WELD_TOL`, a quarter of the cut's
+  median edge) merge, unless the merge turns a triangle over or doubles a
+  directed edge (both found by fable). This also closes the 4 open edges N-gon
+  leaves on Zeghreit's model - the old loose end - wherever Quads rebuilds.
+- **The band**: faces carrying a seam point, grown by one more ring of faces
+  by default (`TOPO_Q_WIDTH_DEFAULT` = 2, decided on the model), never across a
+  crease over 40 degrees. A boundary point closer to the cut than 0.35 of its
+  own edges pulls its faces in too (a band of no width folds).
+- **Pieces**: band faces of one side (the input their own corners came from;
+  a face with every corner on the cut asks the inputs' surfaces, carried on
+  `booleanTopoInput` as `P`/`tri`). Each must be an ANNULUS (the cut + a loop
+  of original points, or two cuts = a hole wall made only of cut points) or a
+  DISK inside the cut (a cap - rings down to 4 or 8 points and a middle). A
+  third loop around at most 6 faces is an island and joins the band; a loop
+  around more (a ball as thick as the arm, the band wraps the limb) is not.
+  A piece whose cut is not two-manifold (a broken evaluator result) is left.
+- **Counts**: a seam loop gets at least as many points as its frozen partner
+  (midpoints of its longest edges), the same count across a hole wall. When
+  the cut is the denser one, spokes end in 3:1 steps (2:1 plus one triangle
+  when a gap is odd) in the rows away from the cut; the row against the cut
+  never sheds.
+- **The flat map** (`topoQuadDomain`): the big loop pinned on the unit circle
+  by arclength, the hole closed by a fan to a virtual hub, everything else
+  averaged (Tutte) - it cannot fold, and one that does is refused. Spokes are
+  matched by angle in it (cyclic monotone DP, `topoQuadMatch`), rows laid out
+  in it, evened out there, and every new point mapped back through the
+  triangle it lands in. Pinning the inner loop to a circle too was tried and
+  is wrong by construction (a triangle on three running cut points lands in
+  the hole, flipped).
+- **Validation per piece**: no triangle leaning over 60 degrees off its source
+  surface, none crushed, none sagging over 0.2 of its edge. Tried in order:
+  flat + evened, flat, straight blends, blends relaxed, next spoke matching.
+- **Generate** (`TOPO_Q_SPACE` 18): band width (other width first), one more
+  / one fewer ring, spoke matching rank. The hash covers the point count.
+
+Measured: node fixture `_topo280fx.mjs` 40/40 - sphere - cylinder (3 pieces,
+128 quads), tilted, T-pipe, cube - rod (all quads), divided cube, sphere
+unions/dents, sphere & cube, far offset, 12-case fuzz, Zeghreit's model with a
+ball on the chest (difference and union: 2 pieces each, about 300 quads and 1
+triangle) and on the arm (falls back, closed), plus fable's three repros.
+Every one of 18 seeds per case: closed, frozen outside the band, on the
+surface, unfolded, deterministic. Six broken builds all caught.
+`_topo279fx` 59/59, `_topo278fx` 571/571. Probe `_bool280_probe.js` all green
+through the real chips (model commits 0 open edges vs N-gon's 4);
+`_shot280.js` takes pictures (`PROBE_QS=&topo=quads&op=union&seed=1`).
+Reviewed by fable: 2 real defects (snap across a real edge flipped a face;
+fanning a broken evaluator result changed its open/doubled counts) and 3
+minor, all fixed and in the fixture.
+
+Cost: a Quads build is 30-150 ms on the model, the worst Generate tap about
+1 s (the arm, where every attempt fails).
+
+Not done: the band is still busy where the cutter is much denser than the host
+(3:1 steps crowd); a limb-thick cutter falls back; UVs and seams dropped as
+by every boolean; Loops type (2.81).
 
 ## Topology types and Generate in the Boolean bar (2.79)
 
@@ -193,8 +276,8 @@ Zeghreit's model − cube. Reviewed by fable (no defects; 3456 variant seeds,
 0 hash collisions in 2044 layouts) and opus (4 lifecycle defects, all
 fixed). The model − cube keeps the 4 open edges main has (v2.77 too).
 
-Not done: Quads (2.80) and Loops (2.81) types; curved walls are never
-touched - Zeghreit's call whether Generate should.
+Not done here: Loops (2.81). Quads (2.80, above) is the type that touches
+curved walls.
 
 ## Topology after a boolean (2.78)
 
