@@ -698,7 +698,9 @@
      back to. Terms carry the same icon() glyph the real button draws, so
      what you read here matches what is on screen. */
   #helpCard .insp-head {
-    position: sticky; top: -16px; z-index: 1; background: var(--glass-thick);
+    /* Solid (v2.92a): at the glass's 86% the section titles scrolling
+       under it showed through the heading. */
+    position: sticky; top: -16px; z-index: 1; background: var(--panel);
     padding: 16px 0 8px; margin: -16px 0 0;
   }
   .help-sec { border-bottom: var(--rule) solid var(--line); }
@@ -2863,7 +2865,7 @@
          blooms on a long press over empty space, along with Add Cube and the
          select-gesture choice, which is what finally clears the viewport
          edges. -->
-    <div id="toolChip" title="Two fingers switch tool, three switch mode"></div>
+    <div id="toolChip" title="Two fingers switch tool, three switch Free / Axis"></div>
     <div id="vignette"></div>
     <!-- v2.87. What is selected in Object mode: marks at the corners of its
          bounds and a tag with its name. See #selMarks in the stylesheet. -->
@@ -50731,28 +50733,46 @@ const helpOverlayEl = document.getElementById('helpOverlay');
 const HELP_QUICKSTART = [
   'Hold on empty space, slide to Add geo, lift, then pick a shape.',
   'It arrives half-built. Done keeps it — a tap off the shape throws it away.',
-  'Round button, bottom-left: one press takes you into Component mode.',
-  'Tap a face. The first thing you tap locks what you can pick.',
+  'The diamond, bottom-right: one tap takes you into Component mode, the next one back to Object.',
+  'Tap a face. What lights up under your finger is what the tap will pick.',
   'Hold it — its tools bloom. Slide to Extrude, lift, drag it out.',
-  'Undo is bottom-centre. Your work saves itself and comes back.'
+  'Undo is bottom-left. Your work saves itself and comes back.'
 ];
 
 /* Every multi-finger action in one list, and nowhere else. Before this they
    were spread across three sections with the three-finger slide written up
    twice, in two different ways - which is how a reader ends up believing
-   there are two of them. */
+   there are two of them.
+
+   v2.92a: rewritten against the app as it is - the card still described the
+   round button bottom-left, Undo bottom-centre, two buttons under the view
+   cube, Face flattened into panels and the old drawer. Around the screen,
+   Outliner, Curves and UV are new sections; nothing else moved. */
 const HELP_SECTIONS = [
+  {
+    title: 'Around the screen',
+    lead: 'What stays on screen. Everything else comes to your finger when you hold.',
+    rows: [
+      [null, 'Mode button', 'The diamond, bottom-right, and the mode word at the top are the same control. A tap switches between Object and Component. Hold it for its ring: Object, Component, Soft and UV.'],
+      [null, 'The readout', 'The line under the mode word: the tool, Free or Axis, Pivot and Snap when they are on, then what is selected and on which object.'],
+      ['mirror', 'X  Y  Z', 'Symmetry, top-right. A lit axis mirrors your edits across it; several can be lit, none lit is off.'],
+      [null, 'View cube', 'Top-right. Tap a face to look square-on.'],
+      [null, 'Left edge', '01 Outliner and 02 Materials. One shelf open at a time.'],
+      ['undo', 'Undo / Redo', 'Bottom-left.'],
+      [null, 'Menu', 'The three lines, top-left. On a phone held upright it rises from the bottom and the model moves up to stay in view.']
+    ]
+  },
   {
     title: 'Camera and view',
     rows: [
       [null, 'Orbit', 'One finger on empty space.'],
       [null, 'Zoom', 'Pinch, or the scroll wheel.'],
       [null, 'Pan', 'Two fingers together.'],
-      [null, 'View cube', 'Top-right. Tap a face for a square-on, flat view. Panning and zooming stay flat; turning the view brings perspective back.'],
-      [null, 'Perspective / Orthographic', 'The right of the two buttons under the cube says which one you are in, and switches it. Flat view, in the ring on empty space, is the same switch.'],
-      [null, 'The view follows the mode', 'Vertex dims the surface and grows the dots, Edge lights the wireframe, Face flattens into panels with dark seams. Object mode shows the model plain, and opening the material tray does too.'],
+      [null, 'Square-on views', 'Tap a face of the view cube for a flat, orthographic look. Panning and zooming stay flat; turning the camera brings perspective back.'],
+      [null, 'Flat view', 'In the ring on empty space. The same flat look, but it stays until you switch it off.'],
+      [null, 'The view follows the mode', 'Vertex and Face dim the surface a little so the dots and edges read; Edge lights the wireframe. Object mode shows the model plain, and so does an open material tray.'],
       [null, 'Double tap', 'On empty space, frames your work. Inside a tool, cancels it.'],
-      [null, 'Isolate', 'Three-finger pinch, Object mode — squeeze and everything else goes, spread brings it back. Also a seat in the ring on empty space, for one-handed use. A chip says how many are hidden.'],
+      [null, 'Isolate', 'Three-finger pinch, Object mode — squeeze and everything else goes, spread brings it back. Also a seat in the ring on empty space, for one-handed use. A chip under the header says how many are hidden, and Show all brings them back.'],
       ['eye', 'See-through', 'Lets the selection show through the surface. From the ring on empty space.']
     ]
   },
@@ -50762,7 +50782,7 @@ const HELP_SECTIONS = [
     rows: [
       [null, 'One finger', 'Orbits on empty space. On your selection, drags it.'],
       [null, 'Two fingers', 'Pan, and pinch to zoom.'],
-      [null, 'Two-finger tap', 'Move / Rotate / Scale. The chip at the top says which.'],
+      [null, 'Two-finger tap', 'Move / Rotate / Scale. The readout at the top says which.'],
       [null, 'Three-finger tap', 'Free / Axis.'],
       [null, 'Three-finger slide', 'Soft ON, it sizes the falloff. Soft off in a component mode, it grows and shrinks the selection — and sliding home returns what you picked.'],
       [null, 'Three-finger pinch', 'Object mode: isolates the selection, or brings everything back.'],
@@ -50781,7 +50801,7 @@ const HELP_SECTIONS = [
       [null, 'A hatched seat', 'Diagonal stripes mean it has nothing to work on just now. It still runs — and says what is missing, which is more use than a dead button.'],
       [null, 'On a selection', 'A third of a second. That selection’s own tools, and they change with the mode.'],
       [null, 'On empty space', 'Half a second — a careful orbit starts the same way. Add geo, the pivot, snap, the floor grid, isolate, see-through, flat view, and the three ways of selecting.'],
-      ['object', 'Add geo', 'Five shapes on a ring of their own. That one waits for a fresh press — aim and lift as usual, or aim well past it to back out.'],
+      ['object', 'Add geo', 'Six on a ring of their own: Cube, Cylinder, Sphere, Torus, Plane and Curve. That ring waits for a fresh press — aim and lift as usual, or aim well past it to back out.'],
       [null, 'The setup bar', 'Divisions and size, live on the new shape itself. Done keeps it; a tap anywhere but the shape throws the whole thing away.']
     ]
   },
@@ -50790,15 +50810,16 @@ const HELP_SECTIONS = [
     lead: 'Measured in screen pixels, not in 3D — whatever looks nearest your finger is what you get, at any zoom.',
     rows: [
       [null, 'Tap', 'The nearest visible thing. Empty space clears.'],
+      [null, 'Before you lift', 'What the tap will pick lights up under your finger — a ring on a vertex, a line on an edge, a wash on a face — in the colour of the mode it will leave you in. Drag, or add a finger, and it goes. A mouse gets it as a hover.'],
       [null, 'Ties', 'A vertex beats its own edges. Aim at a corner, get the corner.'],
-      [null, 'Type lock', 'The first thing you tap decides whether you are picking vertices, edges or faces. Only that kind can be picked until you clear.'],
+      [null, 'Type lock', 'With something selected, only that kind can be picked until you clear. With nothing selected, a tap takes the nearest vertex, edge or face and switches the mode to it.'],
       ['free', 'Tap select', 'Plain tapping. The default — and the way back, once one of the other two is on.'],
       ['box', 'Box select', 'Drag a rectangle. One seat in the ring on empty space cycles through all three.'],
       ['lasso', 'Lasso select', 'Draw the shape freehand.'],
       [null, 'Double tap, face', 'A strip of faces. Direction comes from the edge nearest your tap.'],
       [null, 'Double tap, edge', 'The whole loop. Tap one edge, double-tap another within a second and a half for the run between them.'],
       [null, 'Grow and shrink', 'Three-finger slide, in a component mode with Soft off.'],
-      [null, 'Soft', 'One press on from Component. What you drag carries its neighbours with it, fading out over the radius, and the button wears a ring.'],
+      [null, 'Soft', 'A seat in the mode button’s ring. What you drag carries its neighbours with it, fading out over the radius, and the button wears a ring.'],
       [null, 'Soft reach', 'Measured ALONG the surface, so the far side of a fold stays put and a separate object is never touched. The three-finger slide sizes it and the dots light up to show it.']
     ]
   },
@@ -50806,7 +50827,7 @@ const HELP_SECTIONS = [
     title: 'Move, rotate, scale',
     lead: 'No gizmo. Grab what is selected and drag it.',
     rows: [
-      [null, 'The tool', 'Two-finger tap cycles Move, Rotate and Scale. The chip at the top centre says which — and whether snapping is on and the pivot is pinned.'],
+      [null, 'The tool', 'Two-finger tap cycles Move, Rotate and Scale. The readout under the mode word says which — and whether snapping is on and the pivot is pinned.'],
       [null, 'Free or Axis', 'Three-finger tap. Axis is the default.'],
       [null, 'Axis', 'Decided in the first few pixels of the drag and held until you lift.'],
       [null, 'Scaling an object', 'Runs along the OBJECT’S own axis, not the world’s, so a turned object stretches along its own length. The guide draws that axis.'],
@@ -50814,8 +50835,8 @@ const HELP_SECTIONS = [
       [null, 'Free rotate', 'Axis from the direction you swipe.'],
       [null, 'Free scale', 'Reads the axes as they project on screen, so depth is reachable. Matching none scales evenly.'],
       ['pivot', 'Pivot', 'Rotate and scale turn around it. From the ring on empty space: put it on the selection, on an object’s centre, or drag it by hand. Auto puts it back.'],
-      ['snap', 'Snap', 'Cycles off, then the grid (step sizes in the drawer), then geometry — where the PIVOT lands exactly on a vertex, an edge or a face you point at.'],
-      [null, 'Exact numbers', 'Values, in the drawer, types them instead of dragging.']
+      ['snap', 'Snap', 'Cycles off, then the grid (step sizes in the menu, under Tools), then geometry — where the PIVOT lands exactly on a vertex, an edge or a face you point at.'],
+      [null, 'Exact numbers', 'Values, in the menu under Tools, types them instead of dragging.']
     ]
   }
 ];
@@ -50854,8 +50875,8 @@ HELP_SECTIONS.push(
       ['slide', 'Slide', 'Runs the loop toward one neighbouring ring or the other, stopping just short of it.'],
       ['sharp', 'Mark Sharp', 'Breaks the shading across an edge whatever the angle says. Tap it again on the same edges to let the angle decide again.'],
       ['crease', 'Crease', 'Holds an edge hard through smoothing and Subdivide.'],
-      ['uncrease', 'Clear creases', 'Takes every crease off the object. The same button is in the drawer, under Editing.'],
-      ['seam', 'Mark seam', 'Marks an edge as a cut for the UV unwrap. Does not touch shading — a seam is only about how the mesh will one day be flattened.'],
+      ['uncrease', 'Clear creases', 'Takes every crease off the object. The same button is in the menu, under Tools.'],
+      ['seam', 'Mark seam', 'Marks an edge as a cut for the UV unwrap. Does not touch shading — a seam is only about how the mesh is flattened. See UV.'],
       ['unseam', 'Clear seams', 'Takes every seam off the object.']
     ]
   },
@@ -50889,12 +50910,24 @@ HELP_SECTIONS.push(
       ['solidify', 'Solidify', 'Gives a surface thickness. Behind leaves the face you can see exactly where it is; Centred and In front move it.'],
       ['join', 'Join', 'Merges the selected objects into one.'],
       ['separate', 'Separate', 'One object per loose piece.'],
-      ['boolop', 'Boolean', 'The other answer to “these become one mesh”: Union keeps both, Difference cuts the second out of the first, Intersect keeps only the overlap. Needs two objects selected, and sits one seat in from Join.'],
+      ['boolop', 'Boolean', 'The other answer to “these become one mesh”: Union keeps both, Difference cuts the others out of the first one you tapped, Intersect keeps only the overlap. Needs two objects selected. The bar also chooses the faces along the cut: N-gon keeps big flat ones, Tris makes triangles, Quads rebuilds a band of quads, Loops carries the body’s own edges on to the cut. Generate shows another layout.'],
       [null, 'FINISH — a door', 'Shade, Smooth by angle, Flip normals, Clean up, Centre, Unwrap.'],
       ['smoothangle', 'Smooth by angle', 'One threshold for the whole object: edges sharper than it stay hard, the rest blend. It keeps deciding for geometry you have not made yet.'],
       ['cleanup', 'Clean up', 'Tris to quads pairs triangles back into faces — the fix for an imported model that will not loop cut. Merge by distance welds points that are almost touching.'],
       ['centre', 'Centre', 'Back to the middle, resting on the floor.'],
-      ['unwrap', 'Unwrap', 'Lays out the whole object’s UV from its current islands — flat for a panel, wrapped around for a tube-shaped one. Mark seam (Edge or UV mode) decides where it cuts; UV mode itself previews the islands automatically, no separate toggle.']
+      ['unwrap', 'Unwrap', 'Lays out the whole object’s UV from its current islands — flat for a panel, wrapped around for a tube-shaped one. Mark seam decides where it cuts. See UV.']
+    ]
+  },
+  {
+    title: 'Outliner',
+    lead: 'The upper of the two tabs on the left edge. Objects and groups — not their parts.',
+    rows: [
+      [null, 'Tap a row', 'Selects that object. In a component mode it becomes the one you are editing.'],
+      ['eye', 'The eye', 'Hides or shows it. The last one still showing cannot be hidden. A hidden row is dimmed and struck through; tap it to bring it back.'],
+      [null, 'Double tap', 'Renames. Enter keeps the name, Esc drops it.'],
+      [null, 'Swipe left / right', 'Left deletes, right duplicates — the row under your finger, not the selection. A short swipe springs back; Undo brings anything back.'],
+      [null, 'Hold, then drag', 'Onto the middle of another row makes a group, or adds to one. Between rows reorders. Out of a group takes it out.'],
+      ['group', 'A group', 'The arrow opens it. A tap on the row selects every member; its eye hides all or none. In the viewport a tap on any member picks the whole group — a row inside the open group picks just that one. One level deep.']
     ]
   },
   {
@@ -50913,14 +50946,36 @@ HELP_SECTIONS.push(
     ]
   },
   {
+    title: 'Curves',
+    lead: 'Add geo, then Curve. Tap to place points on the plane the X / Y / Z / Free chips choose, then OK. A point near the model lands on its vertex.',
+    rows: [
+      ['curve', 'Editing points', 'Select the curve and press the mode button. Drag a point, tap the line to add one, tap empty space to carry on from the end. Undo steps back inside the bar.'],
+      [null, 'Handles', 'A Bézier curve shows handles on the selected point. Dragging one makes the point smooth; Corner breaks the pair.'],
+      [null, 'Its ring', 'Hold the curve: Add points, Poly or Bézier, Open or Close, Segments, Delete, Duplicate, Lathe, Tube.'],
+      [null, 'Lathe', 'Spins the curve round X, Y or Z — any sweep from 15° to a full turn.'],
+      [null, 'Tube', 'A tube along the curve: Round, Square, Flat or Half, with radius, sides and caps. Drag a ring on it to thicken the tube there. It stays a tube you can reopen and change until Make geo freezes it into a mesh.']
+    ]
+  },
+  {
+    title: 'UV',
+    lead: 'Hold the mode button and pick UV. The islands are tinted on the model as you work, no toggle needed.',
+    rows: [
+      ['seam', 'Seams', 'Tap edges, hold, Mark seam — that is where the unwrap will cut. Auto seams guesses them for you.'],
+      [null, 'Islands', 'Tap a face to pick its whole island. Merge islands joins the picked ones.'],
+      ['unwrap', 'Unwrap', 'Lays the islands out flat. Also in the ring on empty space here, and in Object mode’s Finish door.'],
+      [null, 'The 2D view', 'Open 2D UV, in the ring on empty space. Full screen; the mode button steps between island, vertex, edge and face; the 3D seat in the same ring takes you back.'],
+      [null, 'In the 2D view', 'Drag an island to move it. Pinch a selected island to turn and scale it — it snaps to 15° and to simple ratios. Two fingers anywhere else move the view. Double tap frames.'],
+      [null, 'Its rings', 'On empty space: Pack all, Even density, Stretch to square, Relax, Unfold. On an island: turn, flip and align. On points: Weld.']
+    ]
+  },
+  {
     title: 'Symmetry and Mirror',
     lead: 'Symmetry is a mode you leave switched on. Mirror is a one-off.',
     rows: [
-      ['mirror', 'Symmetry', 'The left of the two buttons under the view cube. Lit means on.'],
+      ['mirror', 'Symmetry', 'X, Y and Z at the top-right. A lit axis is on; several can be on at once.'],
       [null, 'The plane', 'Captured when you switch it on, at the middle of the object, and it travels with the object. If a model stops mirroring after a big change, switch it off and on again.'],
       [null, 'What mirrors', 'Component edits, run once across both halves so nothing is built at the seam. Moving a whole object does not.'],
       [null, 'The catch', 'It pairs up vertices that already have a twin. It keeps a model symmetric; it cannot put symmetry back.'],
-      [null, 'The axis', 'X, Y or Z, in the drawer under Editing.'],
       ['mirroraction', 'Mirror', 'The one-off version of all this, on the object ring. See Object tools.']
     ]
   }
@@ -50928,15 +50983,13 @@ HELP_SECTIONS.push(
 
 HELP_SECTIONS.push(
   {
-    title: 'The drawer',
-    lead: 'Hamburger, top-left. Settings and lists only — the tools all live in the rings.',
+    title: 'The menu',
+    lead: 'The three lines, top-left. Settings and files only — the tools all live in the rings. On a phone held upright it rises from the bottom; swipe its grip down to close it.',
     rows: [
-      [null, 'Scene', 'Every object. Tap one to make it active.'],
-      [null, 'Appearance', 'The light’s TYPE is the row of presets here; you aim it with two fingers held still anywhere.'],
-      [null, 'Editing', 'Exact transform values, Clear creases, Drag speed, symmetry axis.'],
-      ['snap', 'Snap amounts', 'How far one snapped step moves, turns and scales.'],
-      [null, 'Models', 'Saves the scene inside the browser under a name.'],
-      [null, 'Files', 'Writes it to disk, and exports.'],
+      [null, 'This model', 'Its saved name, and Save. Save as writes a copy under a new name and leaves the old one as it was.'],
+      [null, 'Light', 'The light’s type, each shown as a lit ball. Aim it with two fingers held still anywhere. Glass off makes every panel solid, which spares a warm phone.'],
+      [null, 'Tools', 'Snap amounts and drag speed, set with − and + (hold to repeat). Values types exact numbers. Clear creases.'],
+      [null, 'Saved and Files', 'Models kept in the app, New scene, a .json to download or open, exports, a picture of the view, and Bring in a model.'],
       ['grid', 'Floor grid', 'Not here — it is in the ring on empty space. Off is sometimes easier to read.']
     ]
   },
@@ -50944,11 +50997,12 @@ HELP_SECTIONS.push(
     title: 'Saving and exporting',
     rows: [
       [null, 'It saves itself', 'Your scene is kept as you go and comes back when you return. Nothing to press.'],
-      ['undo', 'Undo / Redo', 'Bottom-centre. Every edit is a step.'],
-      [null, 'Models vs Files', 'Two different places on purpose: one is the browser, one is your disk.'],
+      ['undo', 'Undo / Redo', 'Bottom-left. Every edit is a step.'],
+      [null, 'Saved vs Files', 'Two different places on purpose: one is inside the app, one is your disk.'],
       ['save', 'Download .json', 'The whole scene, openable again.'],
       ['load', 'Open .json', 'Reads one back in.'],
-      ['file_export', 'Export', 'glTF, OBJ or STL. A one-way trip — the shape, not the scene.']
+      ['file_export', 'Export', 'glTF, OBJ or STL. A one-way trip — the shape, not the scene.'],
+      [null, 'Bring in a model', '.glb, .gltf, .obj, .stl or .fbx. It comes in as faces, not triangles, so it edits like something built here. Pick an .obj together with its .mtl for its colours.']
     ]
   }
 );
@@ -52304,7 +52358,7 @@ function refreshObjComponentBtn() {
       ? 'Object mode - tap to edit components'
       : (App.soft
           ? 'Soft (' + App.mode + ') - three fingers slide to size it, tap for Object'
-          : 'Component mode (' + App.mode + ') - tap for Soft');
+          : 'Component mode (' + App.mode + ') - tap for Object, hold for Soft and UV');
   }
 
   /* Moved here from module scope, where drawing its glyph would have hit the

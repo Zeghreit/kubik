@@ -27,11 +27,24 @@ hunt for, no handle to miss on a small screen.
 **Nothing is on screen that doesn't need to be.** Press and hold, and the
 tools that apply right now appear around your finger. Lift, and they're gone.
 
-Underneath that it's a real modelling app: object, vertex, edge and face
-selection, extrude, inset, bevel, bridge, loop cuts, subdivide, symmetry and
-mirroring, undo, and export to glTF, OBJ or STL.
+**It shows you what a tap will pick before you lift.** The vertex, edge or
+face under your finger lights up the moment you touch, so a near miss is
+fixed before it happens.
 
-There's a Help card in the app that explains the gestures properly.
+Underneath that it's a real modelling app:
+
+- object, vertex, edge and face selection, with box and lasso;
+- extrude, inset, bevel, bridge, loop cuts, knife, subdivide, solidify,
+  array, symmetry and mirroring;
+- booleans that let you choose the faces along the cut (n-gons, triangles,
+  quads, or the body's own edge loops);
+- curves you can turn into tubes or spin into lathed shapes;
+- materials with masks, and UV seams, unwrapping and a 2D UV view;
+- an outliner with groups, undo, saves that stay in the app, and export to
+  glTF, OBJ or STL. Bring in .glb, .obj, .stl or .fbx.
+
+There's a Help card in the app: open the menu and tap **Gestures and
+tools**. It covers every gesture, every ring and every tool.
 
 ## Running it
 

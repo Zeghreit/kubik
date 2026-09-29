@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~52,400 lines)
-- Version at time of writing: **2.92**
+- Version at time of writing: **2.92a**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -43,6 +43,25 @@ than none. Prefer rewriting a section over appending to it.
 its own probe passes, the suite is clean apart from `_imp_probe`'s known CDN
 flake - commit and `git push`. The push IS the ship; the app is live at the
 URL above and a commit sitting unpushed helps nobody. Do not stop to ask.
+
+## The Help card catches up (v2.92a)
+
+`HELP_QUICKSTART` / `HELP_SECTIONS` rewritten against the app as it is. It
+still described the round button bottom-left, Undo bottom-centre, two
+buttons under the view cube (perspective, symmetry), Soft on the tap cycle,
+five Add geo shapes, Face "flattened into panels" and the old drawer.
+- New sections: **Around the screen** (mode button, readout, X Y Z, cube,
+  left tabs, Undo, menu), **Outliner**, **Curves**, **UV**. "The drawer" is
+  now **The menu** (This model, Light, Tools, Saved and Files).
+- Selecting gains **Before you lift** (pre-select) and the true type lock
+  (nothing selected = the tap may switch the mode). The Boolean row names
+  the four topology types and Generate.
+- The card's sticky heading is solid (`--panel`): titles showed through
+  the 86% glass. Two tooltips fixed (`#toolChip`: three fingers = Free /
+  Axis; the hub in Component: tap for Object, hold for Soft and UV).
+- README's feature list follows.
+`_help_probe` PASS: 19 sections, 168 rows, every ring seat written up, no
+ghost tools.
 
 ## Pre-select (v2.92) - the last design-pass item
 
