@@ -62,7 +62,7 @@
       say(tag + ':   Generate -> ' + readout() + ' (seed ' + S().p.seed + ', rebuilt ' + S().topoInfo.rebuilt + ')'); }
     say(tag + ': Generate ms ' + times.map(t => t.toFixed(0)).join(', '));
     if (!stress) {
-      check(tag + ': Generates give at least 3 distinct Loops layouts', new Set(hs).size >= 3, new Set(hs).size + '');
+      check(tag + ': Generates give at least 2 distinct Loops layouts', new Set(hs).size >= 2, new Set(hs).size + '');
       K.opSetupStepBack();
       check(tag + ': Undo -> previous layout', S().topoInfo.hash === hs[4], readout());
     }

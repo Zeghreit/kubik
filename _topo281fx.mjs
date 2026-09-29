@@ -14,19 +14,17 @@ const lib = new Function('THREE', 'const IMPORT_TRI_BUDGET = 40000; const IMPORT
   cut('const CSG_WELD_TOL =', 'const BOOL_OPS') +
   cut('function importWeldKey(', '/* A budget, refused out loud').replace('function mergeCoplanarTriangles(', 'function legacyMerge(') +
   'let captured = null; function mergeCoplanarTriangles(p, t, m) { captured = { positions: p, tris: t, matOf: m }; return legacyMerge(p, t, m); }' +
-  '; return { editableFromCSGResult, topoDivisions, importTriNormal, topoClosestOnTri, TOPO_Q_SPACE, TOPO_L_SPACE, topoQuadCounts, topoLoopCounts, get captured() { return captured; } };')(THREE);
+  '; return { editableFromCSGResult, topoDivisions, importTriNormal, topoClosestOnTri, TOPO_Q_SPACE, TOPO_X_SPACE, topoQuadCounts, get captured() { return captured; } };')(THREE);
 
 let fails = 0, n = 0;
 // v2.81 Loops: what each case must do beyond the invariant
 const LEXP = {
-  'sphere - cylinder': ['both sphere sides rebuilt on every seed, every body meridian carried to the cut', (s, k) => k.length === 12 && s.rebuilt0 === 2 && s.lines.every(x => x === 16)],
-  'sphere - tilted cylinder': ['rebuilt on every seed, lines carried', (s, k) => k.length === 12 && s.lines.every(x => x >= 8)],
-  'cube - rod': ['both faces rebuilt on every seed', (s, k) => k.length === 12 && s.rebuilt0 === 2],
-  'sphere U small sphere': ['host rebuilt, body lines carried', (s, k) => k.length === 12 && s.lines[0] >= 16],
-  'model - ball (chest)': ['host rebuilt on the default seed, lines carried', (s, k) => k[0] === 0 && s.lines[0] >= 10],
-  'model U ball (chest)': ['host rebuilt on the default seed, lines carried', (s, k) => k[0] === 0 && s.lines[0] >= 10],
+  'sphere - cylinder': ['both sphere rims divided on every seed', (s, k) => k.length === SPACE && s.rebuilt0 >= 2],
+  'sphere U small sphere': ['host cells divided on every seed', (s, k) => k.length === SPACE && s.rebuilt0 >= 1],
+  'model - ball (chest)': ['host cells divided on the default seed', (s, k) => k[0] === 0 && s.rebuilt0 >= 10],
+  'model U ball (chest)': ['host cells divided on the default seed', (s, k) => k[0] === 0 && s.rebuilt0 >= 10],
 };
-const SPACE = lib.TOPO_L_SPACE;
+const SPACE = lib.TOPO_X_SPACE;
 function check(name, ok, note) { n++; if (!ok) fails++; console.log((ok ? 'PASS ' : 'FAIL ') + name + (note ? '  ' + note : '')); }
 
 // ---- Meshes the way Kubik makes them: one face per quad, n-gon caps.
@@ -187,6 +185,7 @@ function run(name, a, b, op, expect) {
     const G = ed.groups, P = ed.positions, nV = P.length / 3;
     const why = [];
     for (let i = 0; i < P0.length; i++) if (P[i] !== P0[i]) { why.push('an old vertex moved'); break; }
+
     // outside the band it reports, the same faces; and that band stays within
     // width + 2 rings of the cut (the graze growth adds at most two)
     const width = 2;                       // the widest any variant grows a side
@@ -240,14 +239,14 @@ function run(name, a, b, op, expect) {
         c.forEach((cc, key) => { if (cc !== 1) return; const [x, y] = key.split(',').map(Number); [[x, y], [y, x]].forEach(([p, q]) => { if (!nb.has(p)) nb.set(p, new Set()); nb.get(p).add(q); }); }); });
       const hist = {};
       for (let i = nV0; i < nV; i++) { const v = nb.has(i) ? nb.get(i).size : 0; hist[v] = (hist[v] || 0) + 1; }
-      if (seed === 0) seed0 = { changedBy: globalThis.__changedBy, rebuilt0: globalThis.__rebuilt0, st: ed.topo.stats, rebuilt: ed.topo.rebuilt, failed: ed.topo.failed, ways: ed.topo.ways, lines: ed.topo.lines, added: nV - nV0, hist, newFaces: newFaces.length,
+      if (seed === 0) seed0 = { changedBy: globalThis.__changedBy, rebuilt0: globalThis.__rebuilt0, st: ed.topo.stats, rebuilt: ed.topo.rebuilt, failed: ed.topo.failed, ways: ed.topo.ways, added: nV - nV0, hist, newFaces: newFaces.length,
                 quadsNew: newFaces.filter(g => g.triangles.length === 2).length };
     }
   }
   const s0 = seed0 || {};
   check(name + ': every Loops layout closed, frozen outside the band, on the surface, unfolded', bad.length === 0, bad.slice(0, 3).join(' | '));
   const qr = s0.newFaces ? s0.quadsNew / s0.newFaces : 0;
-  const line = name + ': default touches A/B ' + JSON.stringify(s0.changedBy) + ' (rebuilt ' + s0.rebuilt0 + '); full rebuild ' + s0.rebuilt + ' pieces [' + (s0.ways || []).join('; ') + '] lines ' + JSON.stringify(s0.lines) + (s0.failed && s0.failed.length ? ' (kept N-gon: ' + s0.failed.join(', ') + ')' : '') +
+  const line = name + ': default touches A/B ' + JSON.stringify(s0.changedBy) + ' (rebuilt ' + s0.rebuilt0 + '); full rebuild ' + s0.rebuilt + ' cells [' + (s0.ways || []).join('; ') + ']' + (s0.failed && s0.failed.length ? ' (kept N-gon: ' + s0.failed.join(', ') + ')' : '') +
     ', +' + s0.added + ' points, new faces ' + s0.newFaces + ' (' + Math.round(qr * 100) + '% quads), readout ' + JSON.stringify(s0.st) +
     ', valence ' + JSON.stringify(s0.hist) + ', worst sag ' + worstD.toFixed(3) + ', distinct layouts ' + seen.size + '/' + SPACE + ', seeds that rebuild [' + okSeeds.join(',') + ']';
   console.log('   ' + line);

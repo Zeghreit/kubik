@@ -154,49 +154,57 @@ repeatedly; the v2.8d audit found three of nine items already fixed.
 - **Curves** still lack edge snapping while drawing, and a Lathe that sweeps
   an arc rather than a full turn.
 
-## Loops along the cut (2.81)
+## Loops, exact (2.81a) - and an evener Quads
 
-Fourth chip in the Boolean bar: **N-gon / Tris / Quads / Loops**. DECISION
-29.09 (Zeghreit): "the body's grid carried to the hole" - no concentric rings
-around the cut. Same band, pieces, flat map, invariant and checks as Quads
-(below); only the fill differs (`topoQuads(..., { loops: true })`).
+Fourth chip: **N-gon / Tris / Quads / Loops**. DECISION 29.09 (Zeghreit,
+after measurements): "the most exact shape - sharp corners stay sharp - but
+clean topology". v2.81's Loops rebuilt a band like Quads and, like Quads, cut
+the creases between the old facets (measured: up to 0.3% of the size on his
+model, 1.3% on a 16-segment sphere). **Loops no longer rebuilds anything**
+(`topoLoopsExact`, on top of N-gon seed 0):
+- every body face stays exactly as it was; only the HOST's cells that the cut
+  went through (n-gons carrying cut points) are divided. The smaller input
+  stays as cut. The body's grid reaches the cut by construction.
+- **`topoCellStrip`**: the usual cell is a run of m body edges facing a run of
+  k cut edges. For m <= k <= 3m it is ONE row against the cut: 1:1 a quad,
+  2:1 a triangle standing on the cut + a quad, 3:1 two new points half-way up
+  + four quads. New points lie on the cell's own triangles (barycentric), so
+  the shape does not change. One row only - a point on a side edge would
+  leave the next cell a T. Every face must be strictly convex in the cell's
+  plane.
+- **Else `topoCellSplit`**: the cell divided by its own diagonals, the best of
+  all triangle/quad divisions by DP (quads cheaper, corners near 90 degrees,
+  triangles on a cut edge cheaper, 3-cut-corner fans pay; cells up to
+  `TOPO_X_MAX` 48 points). A triangle turned over against the cell's normal
+  -> the cell stays an n-gon.
+- Generate (`TOPO_X_SPACE` 4) walks the DP weights.
 
-- **Lines, not rings.** At every original point on the band's edge, the body
-  edge arriving from outside (face outlines of non-band faces, `outNbr`) is
-  carried on straight in the flat piece to the other loop. The direction is
-  taken in the tangent plane at the point (normal = sum of its piece
-  triangles), then through the piece triangle whose corner holds it (fable:
-  solved in 3D, a curved band rejected every edge). The spoke DP
-  (`topoQuadMatch`) is priced by angular distance to that landing + 2x the
-  Quads angle cost; a point with no edge heading squarely in
-  (`TOPO_L_ACROSS` cos 0.5) keeps the angle cost. `topo.lines` = points that
-  carried a line, per rebuilt piece.
-- **Steps at the cut.** Rows: the fewest the gaps need (`topoLoopRows`: one
-  per x3 of cut edges under one body edge), counts from the cut side
-  (`topoLoopCounts`: ceil(e/3) each row), so 3:1 / 2:1 sit in the row against
-  the cut, not in the body. Tries: fewest rows (evened, plain), then one more
-  row (evened, plain), next spoke rank, blend+relax.
-- **Band:** host two rings by default, one ring on Generate; the smaller input
-  always kept as cut; caps (disks) are never Loops' business ('cap kept as
-  cut'). If every piece of a seed folds, the seed retries the other width
-  before falling back to N-gon (on the model each width folded on one of two
-  near-identical ball placements).
-- **Generate** (`TOPO_L_SPACE` 12): width, one more row, spoke rank.
+Measured: `_topo281fx.mjs` 34/34 on every seed - old points never move, new
+ones on the surface, closed, nothing outside the cells changes, the arm-thick
+ball now divided too (Quads still falls back there). Model ∪ chest ball: 44
+faces (24 quads, 20 triangles, 0 n-gons) against N-gon's 52 (23 n-gons). The
+triangles left are fans in cells where one body edge faces more than three
+cut edges, or where a cell has one body point.
 
-Measured: `_topo281fx.mjs` 36/36 - every seed on the Quads cases, closed,
-frozen outside the band, on the surface, unfolded, deterministic; sphere -
-cylinder carries all 16 meridians on both sides; model ∪/− ball on the chest
-rebuilt on seed 0 with 13 lines. Probe `_bool281_probe.js` all green through
-the real chips; on the model: union 143 faces (116 quads) vs Quads 181, commit
-0 open edges vs N-gon's 4. Fable: 1 defect (the 3D corner test above, fixed),
-80 random booleans x 12 seeds + 14 density cases clean.
-
-Why two rows on the model: its body is three times sparser than the ball (16
-body points against 49 cut points around the chest ball) - one row folds.
-Zeghreit accepted a second row where needed (29.09: "норм, оставляем").
-
-Not done: the arm-thick ball still falls back; a partly rebuilt seed does not
-try the other width.
+**Quads, evener (2.81a)** - same invariant, measured by `_meas281.mjs`
+(quad side ratio, corner angles, shape deviation, volume vs N-gon):
+- the flat map uses mean-value weights (Floater; slivers capped at 150
+  degrees and a quarter of the median edge), the old uniform map tried right
+  behind each flat attempt (on the model a spiky frozen loop folded under the
+  new map);
+- rows are graded: each row's height follows its own width
+  (`TOPO_ROW_GRADE`);
+- a guarded smoothing pass (`TOPO_SMOOTH` 10 rounds): every new point toward
+  the area-weighted middle of its faces, back onto its surface along its
+  normal; a move that leans, crushes or sags a face is not made, and a
+  result that fails the checks goes back to the layout as placed.
+- sphere − cylinder: side ratio 4.2 -> 1.9, corners 23 -> 14 degrees off
+  square in the median; on the model little change (a spiky frozen loop, the
+  body three times sparser than the ball). Smoothing slides points across
+  facet creases, so Quads' shape error grew on spheres (1.2 -> 2.9 per mille
+  of the size) - Quads is the "even" type, Loops the "exact" one.
+- switches are `let` (`TOPO_X_STRIP`, `TOPO_SMOOTH`, `TOPO_ROW_GRADE`,
+  `TOPO_MVC`) so a fixture can A/B them.
 
 ## Quads along the cut (2.80)
 
