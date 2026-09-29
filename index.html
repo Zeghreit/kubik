@@ -1978,12 +1978,24 @@
        so the eye had nowhere to land first. The bar earns its edge from a
        shadow instead, the segments go neutral-on-recessed, and the accent
        is left meaning exactly one thing on screen: THIS COMMITS. */
-    background: var(--panel); border: var(--rule) solid var(--line); border-left: none; border-right: none;
     border-radius: 0;
-    padding: 10px calc(12px + env(safe-area-inset-right, 0px)) 8px calc(12px + env(safe-area-inset-left, 0px));
+    padding: 16px calc(12px + env(safe-area-inset-right, 0px)) 8px calc(12px + env(safe-area-inset-left, 0px));
   }
+  /* THE DECKS ARE THICK GLASS (v2.83), and cut like every other plate. The
+     hazard band moved INSIDE the top edge: the cut clips anything outside
+     the box, and a band that marks "this edge holds a transient surface"
+     says it as well from the inside. 5px of it, then the 11px it used to
+     float above comes back as padding. */
+  #opBar, #geoBar {
+    border: var(--rule) solid var(--hair); border-left: none; border-right: none;
+    background: var(--cut-line), var(--glass-thick);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+    backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+    clip-path: var(--cut);
+  }
+  html.lite #opBar, html.lite #geoBar { -webkit-backdrop-filter: none; backdrop-filter: none; }
   #opBar::before {
-    content: ''; position: absolute; left: 0; right: 0; top: -8px; height: 6px;
+    content: ''; position: absolute; left: 0; right: 0; top: 0; height: 5px;
     background: var(--hazard); pointer-events: none;
   }
   #opBar.show { display: flex; }
@@ -2013,7 +2025,7 @@
   /* The op's name in caps, with the signal's full stop after it - the
      canvas's "EXTRUDE." Beside the numeral, before the slider. */
   #opLabel {
-    flex-shrink: 0; font-size: 13px; font-weight: 800; letter-spacing: .08em;
+    flex-shrink: 0; font-size: 13px; font-weight: 800; font-stretch: 112%; letter-spacing: .06em;
     text-transform: uppercase; color: var(--text);
   }
   #opLabel::after { content: '.'; color: var(--signal); }
@@ -2069,7 +2081,7 @@
     width: 44px; min-height: 44px; padding: 0; justify-content: center;
     font-size: 16px; line-height: 1; border: none; background: transparent;
   }
-  .stepper span { min-width: 18px; text-align: center; font-size: 13px; font-weight: 600; }
+  .stepper span { min-width: 18px; text-align: center; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
   #opValue {
     /* A READOUT BESIDE THE SLIDER THAT SETS IT (a2.63), not a boxed field
        floating next to it - the box was a second bordered object in a bar
@@ -2085,7 +2097,7 @@
        decimals, 106px) - an input SCROLLS rather than overflows, so a
        wider readout would clip silently; keep the widths honest. */
     width: 118px; min-height: 44px; background: transparent; border: none; color: var(--text);
-    padding: 0; font-size: 36px; font-weight: 800; letter-spacing: -.02em; line-height: 1; text-align: left;
+    padding: 0; font-size: 36px; font-weight: 800; font-stretch: 125%; letter-spacing: -.02em; line-height: 1; text-align: left;
     font-variant-numeric: tabular-nums; flex-shrink: 0;
   }
   #opValue:focus { outline: none; box-shadow: inset 0 -2px 0 var(--accent); }
@@ -2142,10 +2154,15 @@
     content: ''; position: absolute; top: 0; bottom: 0; right: 0; width: 22px;
     background: repeating-linear-gradient(135deg, rgb(11 13 16 / .45) 0 4px, transparent 4px 8px);
   }
-  #opBar .group { background: var(--bg); }
+  #opBar .group { background: var(--cut-line), #0c0e11; }
   #opBar .group button { border: var(--rule) solid transparent; }
-  #opBar .group button.active { background: #666d76; color: var(--text); }
-  #opBar .stepper { background: var(--bg); }
+  /* v2.83: the chosen chip is lit from below in the mode's hue - the axes'
+     underline and the tabs' edge, a third time - and it keeps a mid-grey
+     fill, solid on a solid track, because the chosen chip must read by its
+     fill alone at 3:1 (_theme 11 checks it) for anyone who cannot tell the
+     hue of a 3px line. */
+  #opBar .group button.active { background-color: #5a616b; color: var(--text); box-shadow: inset 0 -3px 0 var(--accent-mode); }
+  #opBar .stepper { background: var(--cut-line), #0c0e11; clip-path: var(--cut); }
   #opBar button.ok { background: var(--signal); color: var(--on-accent); border-color: var(--signal); font-weight: 600; }
 
   /* Wears the op bar's clothes deliberately. Its own rules are only what the
@@ -2156,27 +2173,26 @@
     bottom: calc(var(--edge-b) + 72px);   /* the op deck's slot (a2.106) */
     z-index: 17; display: none; align-items: flex-end; justify-content: flex-start;
     flex-wrap: wrap; gap: 8px;
-    background: var(--panel); border: var(--rule) solid var(--line); border-left: none; border-right: none;
     border-radius: 0;
-    padding: 10px calc(12px + env(safe-area-inset-right, 0px)) 8px calc(12px + env(safe-area-inset-left, 0px));
+    padding: 16px calc(12px + env(safe-area-inset-right, 0px)) 8px calc(12px + env(safe-area-inset-left, 0px));
   }
   #geoBar::before {
-    content: ''; position: absolute; left: 0; right: 0; top: -8px; height: 6px;
+    content: ''; position: absolute; left: 0; right: 0; top: 0; height: 5px;
     background: var(--hazard); pointer-events: none;
   }
   #geoBar.show { display: flex; }
   #geoLabel {
-    font-size: 13px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase;
+    font-size: 13px; font-weight: 800; font-stretch: 112%; letter-spacing: .06em; text-transform: uppercase;
     color: var(--text); flex-shrink: 0; align-self: center;
   }
   #geoLabel::after { content: '.'; color: var(--signal); }
   .geo-field { display: flex; flex-direction: column; align-items: center; gap: 3px; flex-shrink: 0; }
-  .geo-cap { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; }
+  .geo-cap { font-family: var(--mono); font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .1em; }
   .geo-field input {
     /* 16px or iOS Safari zooms the page when the field takes focus, which
        drags the whole interface off screen - the same reason #opValue is. */
-    width: 62px; background: var(--panel2); border: var(--rule) solid var(--line); color: var(--text);
-    border-radius: var(--r-sm); padding: 6px 4px; font-size: 16px; text-align: center;
+    width: 62px; min-height: 44px; background: var(--panel2); border: var(--rule) solid var(--line); color: var(--text);
+    border-radius: var(--r-sm); padding: 6px 4px; font-size: 16px; text-align: center; font-variant-numeric: tabular-nums;
     -moz-appearance: textfield;
   }
   .geo-field input::-webkit-outer-spin-button,
@@ -2583,8 +2599,8 @@
   .insp-row { display: flex; align-items: center; gap: 4px; margin-top: 5px; }
   .insp-label { font-size: 11px; color: var(--text-dim); width: 34px; flex-shrink: 0; }
   .insp-row input {
-    width: 62px; background: var(--panel2); border: var(--rule) solid var(--line); color: var(--text);
-    border-radius: var(--r-sm); padding: 6px 4px; font-size: 16px; text-align: center;
+    width: 62px; min-height: 44px; background: var(--panel2); border: var(--rule) solid var(--line); color: var(--text);
+    border-radius: var(--r-sm); padding: 6px 4px; font-size: 16px; text-align: center; font-variant-numeric: tabular-nums;
     -moz-appearance: textfield;
   }
   .insp-row input::-webkit-outer-spin-button,
@@ -2930,7 +2946,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.82</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.83</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
