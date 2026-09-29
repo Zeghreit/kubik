@@ -44,6 +44,34 @@ its own probe passes, the suite is clean apart from `_imp_probe`'s known CDN
 flake - commit and `git push`. The push IS the ship; the app is live at the
 URL above and a commit sitting unpushed helps nobody. Do not stop to ask.
 
+## The feel layer (v2.90) - and two small design-pass fixes
+
+Design pass steps 2, 4 and 5 (Zeghreit: "liven the response with highlight
+and micro-animation"; Apple-style: short, springy, every motion answers the
+finger). All off under prefers-reduced-motion.
+- **Press**: every `button` sinks to `scale: .96` in 50ms and springs back
+  (`cubic-bezier(.34,1.56,.64,1)`, 260ms). A rule that sets its own
+  `transition` loses the spring, not the press.
+- **Touch ring** (`#touchRing`, made on first use): a ring in the mode's
+  colour opens where a control was touched (capture-phase pointerdown on
+  `button, [role=button]`), 420ms.
+- **Mode swap**: a MutationObserver on `data-mode` puts `html.mode-swap` on
+  for 420ms - the mode word springs in, the mode strip sweeps from the left;
+  a 6ms buzz where the phone can.
+- **Commit glow** (`feel.commit(objId)`): after `applyPendingOp` and
+  `finishOpSetup(true)`, a second mesh on the same geometry, additive, in
+  the mode colour, 0.3 -> 0 over 420ms, then removed. A child of the model
+  (the photo drops it), never touching its possibly shared materials; 10ms
+  buzz.
+- **Toast** lands with a spring (translate .34s).
+- **Step 2**: a lit SYM chip keeps its underline and caption but no tint -
+  in Vertex mode four lime blocks competed; now the mode word and the
+  primary action carry the hue.
+- **Step 5**: on screens up to 640px `#isoChip` sits below the view cube
+  (top 207px) - centred at 52px it ran into the cube.
+Probe `_feel290.js` 6/6; `_bool281_probe` green, `_shotchk` 26/26.
+`_feelvid.py` records a phone-size video of it (webm -> mp4/gif by ffmpeg).
+
 ## The studio floor (v2.89)
 
 Design pass, step 1 of 5 (Zeghreit, 29.09: scene, accent hierarchy, drawer,
