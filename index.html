@@ -1027,6 +1027,32 @@
      would be recomputed on every one of those frames. `:has` reads the
      state the drawer and the help card already carry, so no script had to
      learn about it. */
+  /* SELECTION MARKS (v2.87). In Object mode the only sign of a selection
+     was the wireframe going a little lighter - measured, a one-to-two pixel
+     difference along the edges, and nothing in the chrome changed. Four
+     registration crosses at the corners of the selection's bounds on screen
+     and a tag with its name now say it from across the room. They follow
+     the camera, drawn by the frame that draws the model, and they are
+     pointer-events: none throughout, so a tap still lands on the model. */
+  #selMarks { position: absolute; z-index: 12; display: none; pointer-events: none; }
+  #selMarks.show { display: block; }
+  #selMarks i {
+    position: absolute; width: 9px; height: 9px;
+    background: linear-gradient(var(--text), var(--text)) center / 1px 100% no-repeat,
+                linear-gradient(var(--text), var(--text)) center / 100% 1px no-repeat;
+  }
+  #selMarks i:nth-child(1) { left: -14px; top: -14px; }
+  #selMarks i:nth-child(2) { right: -14px; top: -14px; }
+  #selMarks i:nth-child(3) { left: -14px; bottom: -14px; }
+  #selMarks i:nth-child(4) { right: -14px; bottom: -14px; }
+  #selTag {
+    position: absolute; left: calc(100% + 16px); top: -30px; white-space: nowrap;
+    padding: 3px 10px 3px 6px; clip-path: polygon(0 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%);
+    background: var(--glass-thick); color: var(--text);
+    font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase;
+  }
+  #selTag::before { content: 'Sel'; background: var(--accent-mode); color: var(--on-accent); padding: 2px 5px; margin-right: 7px; }
+  #selMarks.left #selTag { left: auto; right: calc(100% + 16px); }
   #viewport > canvas { transform-origin: 70% 45%; transition: transform .5s cubic-bezier(.32, .72, 0, 1); }
   #app:has(#drawer.open) #viewport > canvas,
   #app:has(#helpOverlay.show) #viewport > canvas { transform: scale(.94); }
@@ -2709,6 +2735,9 @@
          edges. -->
     <div id="toolChip" title="Two fingers switch tool, three switch mode"></div>
     <div id="vignette"></div>
+    <!-- v2.87. What is selected in Object mode: marks at the corners of its
+         bounds and a tag with its name. See #selMarks in the stylesheet. -->
+    <div id="selMarks" aria-hidden="true"><i></i><i></i><i></i><i></i><span id="selTag"></span></div>
     <div id="selectBox"></div>
     <svg id="lassoSvg"><polyline id="lassoPath" /></svg>
     <!-- Was wrapped in #thumbZone until v1.99c. That wrapper applied
@@ -3001,7 +3030,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.86</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.87</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -48716,6 +48745,55 @@ function hudDrift() {
   for (const el of driftEls) el.style.translate = v;
 }
 
+/* SELECTION MARKS (v2.87): see #selMarks in the stylesheet. Called after
+   each rendered frame. The bounds come from each selected object's geometry
+   box, recomputed only when the position attribute's version moves - an
+   edit, not a camera turn - so a heavy mesh is not re-measured per frame.
+   Nothing is written to the DOM unless the rectangle or the name changed. */
+const selMarksEl = document.getElementById('selMarks');
+const selTagEl = document.getElementById('selTag');
+const _smBox = new THREE.Box3(), _smObjBox = new THREE.Box3(), _smV = new THREE.Vector3();
+let selMarksLast = '';
+function selMarks() {
+  let key = '';
+  if (App.mode === 'object' && App.selectedObjectIds.size && !uvViewObj) {
+    _smBox.makeEmpty();
+    let name = '', n = 0;
+    for (const id of App.selectedObjectIds) {
+      const o = findObject(id);
+      if (!o || !o.mesh || !o.mesh.visible) continue;
+      const g = o.mesh.geometry, pos = g && g.attributes && g.attributes.position;
+      if (!pos) continue;
+      if (!g.boundingBox || g.userData.smVer !== pos.version) { g.computeBoundingBox(); g.userData.smVer = pos.version; }
+      _smObjBox.copy(g.boundingBox).applyMatrix4(o.mesh.matrixWorld);
+      _smBox.union(_smObjBox);
+      name = o.name; n++;
+    }
+    if (n) {
+      const r = viewportRect();
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, behind = false;
+      for (let i = 0; i < 8; i++) {
+        _smV.set(i & 1 ? _smBox.max.x : _smBox.min.x, i & 2 ? _smBox.max.y : _smBox.min.y, i & 4 ? _smBox.max.z : _smBox.min.z).project(camera);
+        if (_smV.z > 1) behind = true;
+        const sx = (_smV.x * .5 + .5) * r.width, sy = (-_smV.y * .5 + .5) * r.height;
+        x0 = Math.min(x0, sx); x1 = Math.max(x1, sx); y0 = Math.min(y0, sy); y1 = Math.max(y1, sy);
+      }
+      if (!behind && x1 > 0 && y1 > 0 && x0 < r.width && y0 < r.height) {
+        const left = r.width - x1 < 150 && x0 > r.width - x1;
+        key = [x0.toFixed(0), y0.toFixed(0), (x1 - x0).toFixed(0), (y1 - y0).toFixed(0), left ? 1 : 0, n > 1 ? n + ' objects' : name].join('\u0001');
+      }
+    }
+  }
+  if (key === selMarksLast) return;
+  selMarksLast = key;
+  if (!key) { selMarksEl.classList.remove('show'); return; }
+  const [x, y, w, h, left, label] = key.split('\u0001');
+  Object.assign(selMarksEl.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
+  selMarksEl.classList.toggle('left', left === '1');
+  selTagEl.textContent = label;
+  selMarksEl.classList.add('show');
+}
+
 function stepFrame(now) {
   const delta = Math.min((now - lastFrameTime) / 1000, 0.1);
   lastFrameTime = now;
@@ -48786,6 +48864,7 @@ function stepFrame(now) {
     lastRenderAt = now;
     PERF.render++;
     renderer.render(scene, camera);
+    selMarks();
     /* Separate renderer - cannot affect the main viewport above. Its picture is
        a pure function of the camera's DIRECTION - cubeSync reads nothing
        else, and the cube has no hover state - so panning and dollying
