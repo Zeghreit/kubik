@@ -1016,8 +1016,29 @@
 
   /* ---- Drawer: rarely-touched settings, for the assisting finger ---- */
   #scrim {
-    position: fixed; inset: 0; background: rgb(var(--shadow) / .28); z-index: 30;
+    position: fixed; inset: 0; background: rgb(var(--shadow) / .34); z-index: 30;
     display: none;
+  }
+  /* DEPTH (v2.86). A sheet over the scene pushes the scene BACK: the model
+     scales to 94% toward the far side and the scrim dims it, so the drawer
+     and the help card read as nearer than the work, not as a lid on it.
+     Transform only - no blur on the canvas: the canvas can still repaint
+     under the scrim (a scroll in the drawer wakes the loop), and a filter
+     would be recomputed on every one of those frames. `:has` reads the
+     state the drawer and the help card already carry, so no script had to
+     learn about it. */
+  #viewport > canvas { transform-origin: 70% 45%; transition: transform .5s cubic-bezier(.32, .72, 0, 1); }
+  #app:has(#drawer.open) #viewport > canvas,
+  #app:has(#helpOverlay.show) #viewport > canvas { transform: scale(.94); }
+  /* THE CHROME DRIFTS (v2.86). While the camera turns, the header, the rail
+     and the bottom row lean a few pixels against the turn and settle back
+     when it stops - the plates are nearer than the model, and this is how
+     nearer things move. The script writes `translate` on these five only
+     while the camera moves; the easing back is this transition, so no frame
+     is drawn to let them settle. */
+  #hdr, #toolChip, #outFly, #matFly, #quickRow { transition: translate .35s cubic-bezier(.2, 0, 0, 1); }
+  @media (prefers-reduced-motion: reduce) {
+    #viewport > canvas, #hdr, #toolChip, #outFly, #matFly, #quickRow { transition: none; }
   }
   #scrim.show { display: block; }
   #drawer {
@@ -2980,7 +3001,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.85</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.86</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -3007,6 +3028,12 @@
         <div class="drawer-note">Lighting - pick the type here. Hold two fingers still
           anywhere, then slide with the other hand to aim it.</div>
         <div id="lightMenu"></div>
+        <!-- v2.86. The one setting the look has: the plates' blur is what a
+             phone pays for while the camera moves, so it can be switched
+             off for the session that is running warm. -->
+        <div class="drawer-row" style="margin-top:10px"><span class="label">Glass</span>
+          <div class="group" id="glassGroup"><button data-glass="on">On</button><button data-glass="off">Off</button></div></div>
+        <div class="drawer-note">Off makes every plate solid. The blur is the part of the look the phone works for while the camera turns.</div>
       </div>
 
 
@@ -45175,6 +45202,27 @@ function setDrawerOpen(open) {
   scrimEl.classList.toggle('show', open);
 }
 document.getElementById('btnMenu').addEventListener('click', () => setDrawerOpen(true));
+
+/* GLASS, ON OR OFF (v2.86). html.lite swaps every plate's glass for the
+   solid panel and drops the blur (see --glass in the stylesheet). Stored,
+   because a phone that runs warm runs warm every session. */
+const GLASS_KEY = 'kubik.glass';
+function applyGlass(on) {
+  document.documentElement.classList.toggle('lite', !on);
+  document.querySelectorAll('#glassGroup button').forEach(b => b.classList.toggle('active', (b.dataset.glass === 'on') === on));
+}
+{
+  let on = true;
+  try { on = localStorage.getItem(GLASS_KEY) !== 'off'; } catch (err) { /* private mode: default on */ }
+  applyGlass(on);
+  document.getElementById('glassGroup').addEventListener('click', (ev) => {
+    const b = ev.target.closest('button[data-glass]');
+    if (!b) return;
+    const next = b.dataset.glass === 'on';
+    applyGlass(next);
+    try { localStorage.setItem(GLASS_KEY, next ? 'on' : 'off'); } catch (err) { /* not remembered, still applied */ }
+  });
+}
 document.getElementById('drawerClose').addEventListener('click', () => setDrawerOpen(false));
 scrimEl.addEventListener('click', () => setDrawerOpen(false));
 
@@ -48643,6 +48691,31 @@ function animate() {
 }
 
 let lastSizeCheck = -1e9;
+/* THE CHROME DRIFTS WITH THE CAMERA (v2.86). Called once per rendered
+   frame, after orbit.update. It reads how far the camera turned since the
+   last frame and leans the header, the rail and the bottom row against it,
+   at most 6px; a frame that did not turn writes 0, and the stylesheet's
+   transition carries them home - so settling costs no frames. Nothing is
+   written while nothing changes. */
+const driftEls = ['hdr', 'toolChip', 'outFly', 'matFly', 'quickRow'].map(id => document.getElementById(id)).filter(Boolean);
+const driftReduced = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+let driftAz = null, driftPol = null, driftLast = '';
+function hudDrift() {
+  const az = orbit.getAzimuthalAngle(), pol = orbit.getPolarAngle();
+  let dx = 0, dy = 0;
+  if (driftAz !== null && !(driftReduced && driftReduced.matches)) {
+    let d = az - driftAz;
+    if (d > Math.PI) d -= Math.PI * 2; else if (d < -Math.PI) d += Math.PI * 2;
+    dx = Math.max(-6, Math.min(6, d * 240));
+    dy = Math.max(-4, Math.min(4, (pol - driftPol) * 180));
+  }
+  driftAz = az; driftPol = pol;
+  const v = (Math.abs(dx) < .3 && Math.abs(dy) < .3) ? '' : dx.toFixed(1) + 'px ' + dy.toFixed(1) + 'px';
+  if (v === driftLast) return;
+  driftLast = v;
+  for (const el of driftEls) el.style.translate = v;
+}
+
 function stepFrame(now) {
   const delta = Math.min((now - lastFrameTime) / 1000, 0.1);
   lastFrameTime = now;
@@ -48682,6 +48755,7 @@ function stepFrame(now) {
   // ALWAYS - it is what advances the damping, and it fires 'change' while it
   // is still settling, which is what keeps the frames coming during a flick.
   orbit.update();
+  hudDrift();
   /* orbit.update's own lookAt recomposes matrixWorld from the PREVIOUS
      quaternion before assigning the new one, so at this point the camera
      carries this frame's position with last frame's orientation. Everything
