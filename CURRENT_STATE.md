@@ -20,7 +20,7 @@ work. What is gone is the implied ceiling.
   count.js skips localhost and file:// itself. It is DELIBERATE - do not
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
-- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~51,950 lines)
+- Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~52,400 lines)
 - Version at time of writing: **2.80a**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
@@ -43,6 +43,30 @@ than none. Prefer rewriting a section over appending to it.
 its own probe passes, the suite is clean apart from `_imp_probe`'s known CDN
 flake - commit and `git push`. The push IS the ship; the app is live at the
 URL above and a commit sitting unpushed helps nobody. Do not stop to ask.
+
+## The studio floor (v2.89)
+
+Design pass, step 1 of 5 (Zeghreit, 29.09: scene, accent hierarchy, drawer,
+live feedback, the ISOLATED chip over the view cube - in that order). The
+scene was chosen from pictures on his model: "studio" with "horizon" under
+it, calmer, the grid not dimmed much.
+- **Grid** (`buildGrid`, still `grid`, `.visible` toggled by the floor-grid
+  button): one plane, a shader draws a line every 0.25 (the Move snap), a
+  stronger one every unit, X and Z a step warmer (`STUDIO.axis`), fading to
+  nothing by `STUDIO.fade` units - no hard edge. `userData.floorGrid` marks
+  it for probes.
+- **Floor glow** (`floorGlow`): a soft pool of light at the origin, hidden
+  with the grid.
+- **Backdrop** (`studioBackdrop`): a sphere round the camera coloured by view
+  direction - a calm gradient with a faint band on the TRUE horizon, so it
+  stays there as you orbit. Fog takes `STUDIO.horizon`. The photo keeps the
+  backdrop (`userData.backdrop`); `scene.background` stays the flat theme
+  colour underneath.
+- All three follow `sceneScale` (`syncStudioScale`).
+- `_shotchk` finds the grid by the marker and measures ink past 60 levels
+  (the backdrop's gradient is ~42 corner to corner); 26/26.
+- An object crossing the floor (a new cube is centred on it) shows the grid
+  over its submerged half - geometric truth, as before, just more visible.
 
 ## The look: the hybrid (v2.79-v2.87, branch ui-hybrid)
 

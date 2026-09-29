@@ -3038,7 +3038,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.88</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.89</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -3777,16 +3777,99 @@ shadowCatcher.receiveShadow = true;
 shadowCatcher.visible = SHOW_FLOOR_SHADOW;
 scene.add(shadowCatcher);
 
+/* THE STUDIO FLOOR (v2.89, Zeghreit: studio + a quiet horizon, "the grid
+   not dimmed that much"). Chosen from pictures on his model. Three parts:
+   - the GRID is drawn by a shader on one plane: a fine line every quarter
+     unit (the Move snap), a stronger one every unit, the X and Z axes a
+     step warmer, all fading to nothing with distance - no hard edge where
+     the old 20x20 GridHelper ended. It keeps the name `grid` and its
+     .visible, so the floor-grid toggle and the photo rule still work.
+   - a soft pool of light on the floor under the model (`floorGlow`);
+   - the BACKDROP: a sphere round the camera, coloured by view direction -
+     a calm gradient with a faint band at the true horizon, so the band stays
+     on the horizon as you orbit (a screen-space gradient would not). The
+     fog takes the horizon colour, so the distance dissolves into it.
+   All three scale with sceneScale (syncStudioScale). */
 let grid = null;
+let floorGlow = null;
+const STUDIO = {
+  sky: 0x1a1d21, upper: 0x16181c, horizon: 0x1b1e22, lower: 0x131518, ground: 0x0e0f11,
+  axis: 0x8a9a3c, gridAlpha: 0.8, step: 0.25, major: 4, fade: 5, glow: 4, glowAlpha: 0.33
+};
 function buildGrid(major, minor) {
   const wasVisible = grid ? grid.visible : true;
   if (grid) { scene.remove(grid); grid.geometry.dispose(); grid.material.dispose(); }
-  // GridHelper bakes its colours into vertex data, so a theme change means
-  // building a new one rather than tinting the old.
-  grid = new THREE.GridHelper(20, 20, major, minor);
+  const mat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, fog: false,
+    uniforms: { uMinor: { value: new THREE.Color(minor) }, uMajor: { value: new THREE.Color(major) },
+                uAxis: { value: new THREE.Color(STUDIO.axis) }, uStep: { value: STUDIO.step },
+                uMajorN: { value: STUDIO.major }, uFade: { value: STUDIO.fade }, uA: { value: STUDIO.gridAlpha } },
+    vertexShader: 'varying vec3 vW; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
+    fragmentShader: `uniform vec3 uMinor, uMajor, uAxis; uniform float uStep, uMajorN, uFade, uA; varying vec3 vW;
+      float line(vec2 p, float s, float w) { vec2 q = p / s; vec2 g = abs(fract(q - 0.5) - 0.5) / fwidth(q); return 1.0 - min(min(g.x, g.y) / w, 1.0); }
+      void main() {
+        vec2 p = vW.xz;
+        float fade = 1.0 - smoothstep(uFade * 0.35, uFade, length(p));
+        float mi = line(p, uStep, 1.3), ma = line(p, uStep * uMajorN, 1.2);
+        vec2 aw = abs(p) / fwidth(p); float ax = 1.0 - min(min(aw.x, aw.y) / 1.5, 1.0);
+        vec3 col = uMinor; float a = mi * 0.9;
+        if (ma > 0.0) { col = mix(col, uMajor, ma); a = max(a, ma * 0.8); }
+        if (ax > 0.0) { col = mix(col, uAxis, ax); a = max(a, ax * 0.55); }
+        if (a * fade < 0.004) discard;
+        gl_FragColor = vec4(col, a * fade * uA);
+      }`
+  });
+  grid = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
+  grid.rotation.x = -Math.PI / 2;
   grid.position.y = -0.001;
+  grid.renderOrder = -2;
+  grid.userData.floorGrid = true;      // probes find the grid by this, not by type
   grid.visible = wasVisible;
   scene.add(grid);
+  if (!floorGlow) {
+    floorGlow = new THREE.Mesh(new THREE.CircleGeometry(1, 64), new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, fog: false, uniforms: { uA: { value: STUDIO.glowAlpha } },
+      vertexShader: 'varying vec2 vU; void main(){ vU = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: 'uniform float uA; varying vec2 vU; void main(){ float r = length(vU - 0.5) * 2.0; gl_FragColor = vec4(0.24, 0.25, 0.28, (1.0 - smoothstep(0.0, 1.0, r)) * uA); }'
+    }));
+    floorGlow.rotation.x = -Math.PI / 2;
+    floorGlow.position.y = -0.002;
+    floorGlow.renderOrder = -3;
+    scene.add(floorGlow);
+  }
+  floorGlow.visible = grid.visible;
+  syncStudioScale();
+}
+const studioBackdrop = (() => {
+  const c = n => new THREE.Color(n);
+  const m = new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false, depthTest: false, fog: false,
+    uniforms: { uSky: { value: c(STUDIO.sky) }, uUp: { value: c(STUDIO.upper) }, uHor: { value: c(STUDIO.horizon) },
+                uLow: { value: c(STUDIO.lower) }, uGnd: { value: c(STUDIO.ground) } },
+    vertexShader: 'varying vec3 vD; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vD = w.xyz - cameraPosition; gl_Position = projectionMatrix * viewMatrix * w; }',
+    fragmentShader: `uniform vec3 uSky, uUp, uHor, uLow, uGnd; varying vec3 vD;
+      void main() {
+        float y = normalize(vD).y;                     // +1 straight up, 0 the horizon, -1 straight down
+        vec3 col = y > 0.0 ? mix(uUp, uSky, smoothstep(0.08, 0.9, y)) : mix(uLow, uGnd, smoothstep(0.12, 0.9, -y));
+        col = mix(col, uHor, exp(-pow(y / 0.045, 2.0)));   // the faint band, on the true horizon
+        gl_FragColor = vec4(col, 1.0);
+        #include <colorspace_fragment>
+      }`
+  });
+  const b = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 24), m);
+  b.renderOrder = -10;
+  b.frustumCulled = false;
+  b.userData.backdrop = true;          // the photo keeps it: it IS the background
+  // round the camera, just inside the far plane, every frame
+  b.onBeforeRender = (r, sc, cam) => { b.position.copy(cam.position); b.scale.setScalar(cam.far * 0.5); b.updateMatrixWorld(); };
+  scene.add(b);
+  return b;
+})();
+function syncStudioScale() {
+  let t = 1;
+  try { t = sceneScale; } catch (_) {}      // called before sceneScale is declared on the first theme pass
+  if (grid) { grid.scale.setScalar(STUDIO.fade * t * 1.05); grid.material.uniforms.uStep.value = STUDIO.step * Math.max(1, Math.round(t)); grid.material.uniforms.uFade.value = STUDIO.fade * t; }
+  if (floorGlow) floorGlow.scale.setScalar(STUDIO.glow * t);
 }
 
 const orbit = new OrbitControls(camera, renderer.domElement);
@@ -4844,7 +4927,7 @@ const THEME = {
   hemi: { sky: 0xaeb8ff, ground: 0x14171c, intensity: 0.9 },
   key: { color: 0xffffff, intensity: 1.4 },
   fill: { color: 0x8899bb, intensity: 0.15 },
-  grid: [0x343a42, 0x22262c],
+  grid: [0x6b7380, 0x4b515b],   // v2.89: major, minor - the studio floor's lines
   rim: { color: 0x9FB4FF, intensity: 0.75 },
   fog: { near: 15, far: 42 },
   shadow: 0.42,
@@ -5009,6 +5092,7 @@ function refreshDepthRange() {
   const t = contentScale();
   if (Math.abs(t - sceneScale) < 1e-3) return;
   sceneScale = t;
+  syncStudioScale();
   if (scene.fog) {
     scene.fog.near = THEME.fog.near * t;
     scene.fog.far = THEME.fog.far * t;
@@ -5027,12 +5111,12 @@ function refreshDepthRange() {
 function applyTheme() {
   const t = THEME;
 
-  scene.background = new THREE.Color(t.bg);
+  scene.background = new THREE.Color(t.bg);   // under the backdrop: what a photo falls back to
   // Fog in the background's own colour: distant grid dissolves instead of
   // ending in a hard line, which reads as space rather than a flat backdrop.
   // sceneScale, so a theme switch does not put the unscaled band back
   // under a large imported model.
-  scene.fog = new THREE.Fog(t.bg, t.fog.near * sceneScale, t.fog.far * sceneScale);
+  scene.fog = new THREE.Fog(STUDIO.horizon, t.fog.near * sceneScale, t.fog.far * sceneScale);
   renderer.toneMappingExposure = t.exposure;
   rimLight.color.setHex(t.rim.color);
   rimLight.intensity = t.rim.intensity;
@@ -38870,7 +38954,7 @@ function pictureHiddenParts(hidden) {
     while (p && p !== scene) { keep.add(p); p = p.parent; }
   });
   const dim = (o) => { if (o.visible) { o.visible = false; hidden.push(o); } };
-  scene.children.forEach(o => { if (!o.isLight && !keep.has(o)) dim(o); });
+  scene.children.forEach(o => { if (!o.isLight && !keep.has(o) && !o.userData.backdrop) dim(o); });
   App.objects.forEach(o => o.mesh.children.forEach(dim));
   return hidden;
 }
@@ -50439,6 +50523,7 @@ sensSliderEl.addEventListener('input', () => {
    the ring works out for itself from `on()`. */
 function toggleFloorGrid() {
   grid.visible = !grid.visible;
+  if (floorGlow) floorGlow.visible = grid.visible;
   // Tied to the same toggle rather than a separate one - the contact
   // shadow is a floor-relative cue, so it reads as part of "the floor" and
   // should come and go with it instead of lingering once the grid is gone.

@@ -40,7 +40,8 @@
     const r0 = px[0], g0 = px[1], b0 = px[2];
     let ink = 0;
     for (let i = 0; i < px.length; i += 4) {
-      if (Math.abs(px[i] - r0) + Math.abs(px[i + 1] - g0) + Math.abs(px[i + 2] - b0) > 12) ink++;
+      // v2.89: the backdrop is a gradient (up to ~42 levels from corner to corner), so ink is anything past 60
+      if (Math.abs(px[i] - r0) + Math.abs(px[i + 1] - g0) + Math.abs(px[i + 2] - b0) > 60) ink++;
     }
     return { w: c.width, h: c.height, ink: ink };
   }
@@ -68,7 +69,7 @@
     say('');
     say('2. the workshop leaves the shot and comes straight back');
     const scene = K.scene, App = K.App;
-    const grid = scene.children.find(o => o.type === 'GridHelper');
+    const grid = scene.children.find(o => o.type === 'GridHelper' || o.userData.floorGrid);
     ok('there is a grid to hide', !!grid);
     const obj = App.objects[0];
     ok('and a model to photograph', !!obj, obj ? obj.name : 'none');
