@@ -225,6 +225,7 @@
     --cut-line: linear-gradient(to bottom right, transparent calc(50% - 1.2px), var(--cut-c, var(--line)) calc(50% - 1.2px), var(--cut-c, var(--line)) calc(50% - .2px), transparent calc(50% - .2px)) 100% 100% / var(--ch) var(--ch) no-repeat border-box;
   }
   html.lite { --glass: var(--panel); --glass-thick: var(--panel); }
+  html.lite .hub-item { -webkit-backdrop-filter: none; backdrop-filter: none; }
   /* A FLOATING PLATE (v2.80): glass, a hairline edge, a highlight along the
      top, the cut. Written once as a class so the header, the rail and the
      bottom row are one material rather than three near-copies. */
@@ -643,9 +644,15 @@
      and only the picture changes. The tips reach 37px from the centre
      against the disc's 26, which is why the label gap below grew. No
      shadow: the canvas draws its chrome with rules, never with depth. */
+  /* GLASS SEATS (v2.84). A ring opens over the model, under the finger, and
+     the seats are the one surface in the app that sits right on top of what
+     you are working on - so they are the plates that most want to be seen
+     through. Thick glass, not thin: a word on each seat has to read over a
+     bright face. The blur only runs while a ring is open. */
   .hub-item {
     position: absolute; width: 52px; height: 52px; margin-left: -26px; margin-bottom: -26px;
-    border-radius: 0; background: var(--panel2); border: var(--rule) solid var(--line);
+    border-radius: 0; background: var(--glass-thick); border: var(--rule) solid var(--line);
+    -webkit-backdrop-filter: blur(12px) saturate(150%); backdrop-filter: blur(12px) saturate(150%);
     color: var(--text); display: none; flex-direction: column; align-items: center;
     justify-content: center; gap: 1px; cursor: pointer; user-select: none;
     transform: rotate(45deg);
@@ -797,9 +804,9 @@
      absence IS the answer, so there is no state to read, only one to notice. */
   #ringDoorTag {
     position: absolute; transform: translate(-50%, 50%);
-    padding: 2px 7px; background: var(--bg);
+    padding: 2px 7px; background: var(--glass-thick);
     border: var(--rule) solid var(--line);
-    font-size: 9px; font-weight: 700; letter-spacing: .09em;
+    font-family: var(--mono); font-size: 9px; font-weight: 600; letter-spacing: .1em;
     text-transform: uppercase; color: var(--text-dim);
     white-space: nowrap; pointer-events: none;
   }
@@ -2946,7 +2953,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.83</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.84</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
