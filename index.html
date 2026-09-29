@@ -571,8 +571,7 @@
     /* 78, not 62: clears the hub's ring tip, which a2.106 raised. */
     bottom: calc(var(--edge-b) + 78px); z-index: 17;
     display: flex; align-items: center; gap: 6px;
-    padding: 9px 8px 9px 14px; border-radius: var(--r-md);
-    background: var(--panel2); border: var(--rule) solid var(--line);
+    padding: 9px 8px 9px 14px; border-radius: var(--r-md); clip-path: var(--cut);
     color: var(--text-dim); font-size: 12.5px;
     /* WIDTH FIRST, THEN THE CAP (a2.66a). `left: 50%` makes shrink-to-fit
        measure against the half of the viewport to the RIGHT of the 50% mark,
@@ -584,7 +583,6 @@
     width: max-content; max-width: calc(100vw - 32px);
     text-align: center; line-height: 1.35;
     -webkit-user-select: none; user-select: none;
-    box-shadow: 0 8px 22px rgb(var(--shadow) / .20);
     /* `backwards` for the same reason as .surfacing below - `both` held
        filter: blur(0) on the chip for as long as it was on screen. */
     animation: firstHintIn 320ms cubic-bezier(.16, .84, .44, 1) backwards;
@@ -605,21 +603,30 @@
      flag, and cannot be dismissed. Nothing else in this file uses the hidden
      attribute, which is why it had no rule to inherit. */
   #firstHint[hidden] { display: none; }
+  /* A 44px target since v2.82 (it was 25x23, the smallest in the app), at
+     full --text-dim rather than .7 of it. It stays a span: the handler and
+     the learned-flag logic key on `.fh-x`, and role/tabindex give it the
+     button semantics without touching either. */
   #firstHint .fh-x {
-    color: var(--text-dim); opacity: .7; font-size: 15px; line-height: 1;
-    padding: 4px 8px; margin: -4px 0; cursor: pointer;
+    color: var(--text-dim); font-size: 15px; line-height: 1;
+    min-width: 44px; min-height: 44px; margin: -12px -6px -12px 0;
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
     pointer-events: auto; touch-action: none;
   }
   /* Surfaces rather than appears - the same rise the rings and the op bar
      will get when that lands. Reduced motion takes the plain state. */
+  /* v2.82: no blur in the keyframes. A filter re-rasterises the chip on
+     every frame of the animation over a live WebGL canvas - the single most
+     expensive thing the chrome did, for 320ms on every launch. Scale and
+     opacity alone are composited. */
   @keyframes firstHintIn {
-    from { opacity: 0; filter: blur(8px); transform: translateX(-50%) scale(.94) translateY(5px); }
-    to   { opacity: 1; filter: blur(0);   transform: translateX(-50%) scale(1) translateY(0); }
+    from { opacity: 0; transform: translateX(-50%) scale(.96) translateY(5px); }
+    to   { opacity: 1; transform: translateX(-50%) scale(1) translateY(0); }
   }
   #firstHint.going { animation: firstHintOut 200ms cubic-bezier(.55, .06, .68, .19) both; }
   @keyframes firstHintOut {
-    from { opacity: 1; filter: blur(0);   transform: translateX(-50%) scale(1); }
-    to   { opacity: 0; filter: blur(8px); transform: translateX(-50%) scale(.94); }
+    from { opacity: 1; transform: translateX(-50%) scale(1); }
+    to   { opacity: 0; transform: translateX(-50%) scale(.96); }
   }
   @media (prefers-reduced-motion: reduce) {
     #firstHint, #firstHint.going { animation: none; }
@@ -940,9 +947,18 @@
   }
   #quickRow button {
     width: 56px; height: 44px; min-height: 44px; padding: 0; justify-content: center;
-    font-size: 17px; border-radius: 0;
-    border: var(--rule) solid var(--line); background: var(--panel);
+    flex-direction: column; gap: 3px; font-size: 17px; border-radius: 0;
   }
+  /* A CAPTION UNDER THE ARROW (v2.82). Two curved arrows are Undo and Redo
+     to anyone who has used an editor, and a new person still has to guess
+     which is which from which way it curls. The word settles it, in the
+     readout voice, at the size the axes' SYM uses. */
+  #quickRow button::after {
+    font-family: var(--mono); font-size: 9px; font-weight: 500; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--text-dim); line-height: 1;
+  }
+  #btnUndo::after { content: 'Undo'; }
+  #btnRedo::after { content: 'Redo'; }
 
   /* Which transform a drag will perform, and in which mode. The only thing
      telling you what a drag will do, and everything now depends on that -
@@ -1755,13 +1771,18 @@
      because a blur over the live viewport during a drag is the one case
      that has to be measured on a real phone first, and this release does
      not measure it. */
+  /* v2.82: the blur is gone from both, for the reason #firstHint's lost
+     it - a filter over a live canvas is repainted every frame it runs. The
+     rise stays, from .96 rather than .94 (a pop from further off reads as a
+     bounce), on the enter/exit curves the chrome now shares: out of the way
+     fast, in with a long settle. */
   @keyframes surfacing {
-    from { opacity: 0; filter: blur(10px); scale: .94; }
-    to   { opacity: 1; filter: blur(0px);  scale: 1; }
+    from { opacity: 0; scale: .96; }
+    to   { opacity: 1; scale: 1; }
   }
   @keyframes submerging {
-    from { opacity: 1; filter: blur(0px);  scale: 1; }
-    to   { opacity: 0; filter: blur(10px); scale: .94; }
+    from { opacity: 1; scale: 1; }
+    to   { opacity: 0; scale: .96; }
   }
   /* `backwards`, NOT `both`, and this is the whole reason nothing is left
      on a composited layer.
@@ -1796,8 +1817,8 @@
      the combination. The backdrop blur is worth nothing during a 260ms
      transition, so it stands down for the duration. */
   .surfacing, .submerging { backdrop-filter: none; -webkit-backdrop-filter: none; }
-  .surfacing  { animation: surfacing 260ms cubic-bezier(.16, .84, .44, 1) backwards; }
-  .submerging { animation: submerging 180ms cubic-bezier(.55, .06, .68, .19) both; }
+  .surfacing  { animation: surfacing 260ms cubic-bezier(.05, .7, .1, 1) backwards; }
+  .submerging { animation: submerging 160ms cubic-bezier(.3, 0, .8, .15) both; }
   /* Persistent chrome dims in place; only things that come and go surface.
      Reduced motion takes the plain state at both ends. */
   @media (prefers-reduced-motion: reduce) {
@@ -2673,13 +2694,13 @@
     <div id="touchToolRing"></div>
 
     <!-- Shown once, ever. See #firstHint in the stylesheet. -->
-    <div id="firstHint" hidden><span>Press and hold — tools bloom under your finger</span><span class="fh-x">&times;</span></div>
+    <div id="firstHint" class="plate" hidden><span>Press and hold — tools bloom under your finger</span><span class="fh-x" role="button" tabindex="0" aria-label="Dismiss hint">&times;</span></div>
 
     <!-- Anchored to the viewport for the same reason: this needs the full
          viewport width to centre against. -->
     <div id="quickRow">
-      <button id="btnUndo" title="Undo (Ctrl+Z)">⤺</button>
-      <button id="btnRedo" title="Redo (Ctrl+Shift+Z)">⤻</button>
+      <button id="btnUndo" class="plate" title="Undo (Ctrl+Z)" aria-label="Undo">⤺</button>
+      <button id="btnRedo" class="plate" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">⤻</button>
     </div>
 
     <!-- THE OP DECK (a2.99). Two rows, in the markup: the head is the
@@ -2909,7 +2930,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.81</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.82</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
@@ -33712,6 +33733,10 @@ function maybeShowFirstHint() {
 const firstHintXEl = firstHintEl && firstHintEl.querySelector('.fh-x');
 if (firstHintXEl) {
   firstHintXEl.addEventListener('click', () => dismissFirstHint(true));
+  /* v2.82: it is a role=button now, so Enter and Space do what a tap does. */
+  firstHintXEl.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); dismissFirstHint(true); }
+  });
 }
 
 function storageAvailable() {
