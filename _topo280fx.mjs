@@ -176,7 +176,7 @@ function run(name, a, b, op, expect) {
     for (let i = 0; i < P0.length; i++) if (P[i] !== P0[i]) { why.push('an old vertex moved'); break; }
     // outside the band it reports, the same faces; and that band stays within
     // width + 2 rings of the cut (the graze growth adds at most two)
-    const width = seed % 2 === 0 ? 2 : 1;
+    const width = 2;                       // the widest any variant grows a side
     const outSigs = new Set(G.map(faceSig));
     const rep = new Set(ed.topo.band || []);
     base.groups.forEach((g, gi) => { if (!rep.has(gi) && !outSigs.has(baseSig[gi])) why.push('face ' + gi + ' outside the band changed'); });
@@ -210,21 +210,30 @@ function run(name, a, b, op, expect) {
     if (again.topo.hash !== ed.topo.hash) why.push('not deterministic');
     if (why.length) bad.push('seed ' + seed + ': ' + Array.from(new Set(why)).slice(0, 3).join('; '));
     if (!seen.has(ed.topo.hash)) seen.set(ed.topo.hash, seed);
-    if (seed === 0) {
+    // Seed 0 (the default: the smaller input kept as cut) is measured for how much
+    // it touches; seed 1 (both sides rebuilt) for what a full rebuild makes.
+    if (seed === 0 || seed === 1) {
+      // how much of each input the default touches (the smaller one: nothing but the cut): its faces that did not come back as they were
+      const changedBy = [0, 0];
+      base.groups.forEach((g, gi) => { if (outSigs.has(baseSig[gi])) return;
+        const v = [0, 0]; g.triangles.forEach(t => t.forEach(x => { const k = Math.round(P0[x * 3] * 1e4) + '_' + Math.round(P0[x * 3 + 1] * 1e4) + '_' + Math.round(P0[x * 3 + 2] * 1e4);
+          topoIn.forEach((ti, ii) => { if (ti.keys.has(k)) v[ii]++; }); }));
+        if (v[0] || v[1]) changedBy[v[1] > v[0] ? 1 : 0]++; });
+      if (seed === 0) { globalThis.__changedBy = changedBy; globalThis.__rebuilt0 = ed.topo.rebuilt; }
       // valence of new interior points
       const nb = new Map();
       G.forEach(g => { const c = new Map(); g.triangles.forEach(t => { for (let k = 0; k < 3; k++) { const x = t[k], y = t[(k + 1) % 3], key = x < y ? x + ',' + y : y + ',' + x; c.set(key, (c.get(key) || 0) + 1); } });
         c.forEach((cc, key) => { if (cc !== 1) return; const [x, y] = key.split(',').map(Number); [[x, y], [y, x]].forEach(([p, q]) => { if (!nb.has(p)) nb.set(p, new Set()); nb.get(p).add(q); }); }); });
       const hist = {};
       for (let i = nV0; i < nV; i++) { const v = nb.has(i) ? nb.get(i).size : 0; hist[v] = (hist[v] || 0) + 1; }
-      seed0 = { st: ed.topo.stats, rebuilt: ed.topo.rebuilt, failed: ed.topo.failed, ways: ed.topo.ways, added: nV - nV0, hist, newFaces: newFaces.length,
+      if (seed === 1) seed0 = { changedBy: globalThis.__changedBy, rebuilt0: globalThis.__rebuilt0, st: ed.topo.stats, rebuilt: ed.topo.rebuilt, failed: ed.topo.failed, ways: ed.topo.ways, added: nV - nV0, hist, newFaces: newFaces.length,
                 quadsNew: newFaces.filter(g => g.triangles.length === 2).length };
     }
   }
   const s0 = seed0 || {};
   check(name + ': every Quads layout closed, frozen outside the band, on the surface, unfolded', bad.length === 0, bad.slice(0, 3).join(' | '));
   const qr = s0.newFaces ? s0.quadsNew / s0.newFaces : 0;
-  const line = name + ': rebuilt ' + s0.rebuilt + ' pieces [' + (s0.ways || []).join('; ') + ']' + (s0.failed && s0.failed.length ? ' (kept N-gon: ' + s0.failed.join(', ') + ')' : '') +
+  const line = name + ': default touches A/B ' + JSON.stringify(s0.changedBy) + ' (rebuilt ' + s0.rebuilt0 + '); full rebuild ' + s0.rebuilt + ' pieces [' + (s0.ways || []).join('; ') + ']' + (s0.failed && s0.failed.length ? ' (kept N-gon: ' + s0.failed.join(', ') + ')' : '') +
     ', +' + s0.added + ' points, new faces ' + s0.newFaces + ' (' + Math.round(qr * 100) + '% quads), readout ' + JSON.stringify(s0.st) +
     ', valence ' + JSON.stringify(s0.hist) + ', worst sag ' + worstD.toFixed(3) + ', distinct layouts ' + seen.size + '/' + lib.TOPO_Q_SPACE;
   console.log('   ' + line);

@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~51,750 lines)
-- Version at time of writing: **2.80**
+- Version at time of writing: **2.80a**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -180,8 +180,13 @@ How `topoQuads` works (pure, after `topoNgon` seed 0, which is its fallback):
   median edge) merge, unless the merge turns a triangle over or doubles a
   directed edge (both found by fable). This also closes the 4 open edges N-gon
   leaves on Zeghreit's model - the old loose end - wherever Quads rebuilds.
-- **The band**: faces carrying a seam point, grown by one more ring of faces
-  by default (`TOPO_Q_WIDTH_DEFAULT` = 2, decided on the model), never across a
+- **The band, per side (2.80a, Zeghreit: "union Quads touches too much of the
+  sphere")**: the HOST (the input with the bigger surface) gives faces carrying
+  a seam point plus one more ring (two rings - decided on the model); the
+  SMALLER input by default gives none - it stays exactly as N-gon cut it, its
+  own grid intact, and only the host adapts (`TOPO_Q_WIDTHS`, piece reason
+  'kept as cut'). On the model with a ball: the ball's touched faces went 57 ->
+  3 (the 3 are fanned where the cut gained points). Growth never crosses a
   crease over 40 degrees. A boundary point closer to the cut than 0.35 of its
   own edges pulls its faces in too (a band of no width folds).
 - **Pieces**: band faces of one side (the input their own corners came from;
@@ -208,8 +213,9 @@ How `topoQuads` works (pure, after `topoNgon` seed 0, which is its fallback):
 - **Validation per piece**: no triangle leaning over 60 degrees off its source
   surface, none crushed, none sagging over 0.2 of its edge. Tried in order:
   flat + evened, flat, straight blends, blends relaxed, next spoke matching.
-- **Generate** (`TOPO_Q_SPACE` 18): band width (other width first), one more
-  / one fewer ring, spoke matching rank. The hash covers the point count.
+- **Generate** (`TOPO_Q_SPACE` 36): widths first - smaller input rebuilt one
+  ring deep, one ring each, two rings each (v2.80's look) - then one more /
+  one fewer ring, then spoke matching rank. The hash covers the point count.
 
 Measured: node fixture `_topo280fx.mjs` 40/40 - sphere - cylinder (3 pieces,
 128 quads), tilted, T-pipe, cube - rod (all quads), divided cube, sphere
