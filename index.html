@@ -222,9 +222,20 @@
     --hair: rgb(255 255 255 / .09);
     --ch: 10px;
     --cut: polygon(0 0, 100% 0, 100% calc(100% - var(--ch)), calc(100% - var(--ch)) 100%, 0 100%);
-    --cut-line: linear-gradient(to bottom right, transparent calc(50% - 1.2px), var(--line) calc(50% - 1.2px), var(--line) calc(50% - .2px), transparent calc(50% - .2px)) 100% 100% / var(--ch) var(--ch) no-repeat border-box;
+    --cut-line: linear-gradient(to bottom right, transparent calc(50% - 1.2px), var(--cut-c, var(--line)) calc(50% - 1.2px), var(--cut-c, var(--line)) calc(50% - .2px), transparent calc(50% - .2px)) 100% 100% / var(--ch) var(--ch) no-repeat border-box;
   }
   html.lite { --glass: var(--panel); --glass-thick: var(--panel); }
+  /* A FLOATING PLATE (v2.80): glass, a hairline edge, a highlight along the
+     top, the cut. Written once as a class so the header, the rail and the
+     bottom row are one material rather than three near-copies. */
+  .plate {
+    border: var(--rule) solid var(--hair);
+    background: var(--cut-line), var(--glass);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+    backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+    box-shadow: inset 0 1px 0 var(--glass-hi);
+  }
+  html.lite .plate { -webkit-backdrop-filter: none; backdrop-filter: none; }
 
   /* Vertex acid, Edge cyan, Face VIOLET (a2.105, from the a3.0 spec; the
      first two are a hair off a2.97's, the third is a different colour).
@@ -374,10 +385,11 @@
     padding: 0 20px 0 14px; display: flex; flex-direction: row; justify-content: center;
     align-items: center; gap: 8px; text-align: left;
     background: var(--accent-mode); color: var(--on-accent);
-    clip-path: polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%);
+    clip-path: var(--cut);
     touch-action: none;
   }
   #hdrMode:hover, #hdrMode:active { background: var(--accent-mode); }
+  #hdrMode:focus-visible { box-shadow: inset 0 0 0 2px var(--on-accent); }
   /* a2.106: THE GLYPH, not the word "Mode". a3.0 1.3 gives exactly five
      glyphs - the four modes and danger - plus a square-in-square for
      Soft, and the block wears the one that matches its hue. It says what
@@ -394,8 +406,11 @@
   /* a3.0 1.2's WORD: 800 at 15px with +1.6px of tracking - a label
      stamped on hardware, not a heading. 22px could not share a 44px box
      with the cap above it. */
+  /* v2.80: Archivo at its widest (125%) - the hybrid's display voice, the
+     width doing what the .107em tracking did, so the word holds the block
+     without being spaced apart. */
   #hdrModeName {
-    font-size: 15px; font-weight: 800; letter-spacing: .107em; line-height: 1;
+    font-size: 16px; font-weight: 800; font-stretch: 125%; letter-spacing: .01em; line-height: 1;
     text-transform: uppercase; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   /* a3.0 6.1 puts the drawer at the START of the row, at 14 - the first
@@ -404,8 +419,15 @@
      filled thing on this row has to stay the mode. */
   #btnMenu {
     flex: 0 0 44px; width: 44px; min-height: 0; padding: 0; justify-content: center;
-    font-size: 17px; border-radius: 0;
-    border: var(--rule) solid var(--line); background: var(--panel);
+    font-size: 17px; border-radius: 0; position: relative;
+  }
+  /* The hybrid's one mark of the instrument (v2.80): a registration cross in
+     the corner the cut leaves whole. It marks the menu as the way into the
+     settings rather than as another tool on the row. */
+  #btnMenu::before {
+    content: ''; position: absolute; left: 4px; top: 4px; width: 7px; height: 7px; pointer-events: none;
+    background: linear-gradient(var(--line), var(--line)) center / 1px 100% no-repeat,
+                linear-gradient(var(--line), var(--line)) center / 100% 1px no-repeat;
   }
   /* The brand is the caps word with the signal's full stop (a2.101), and the
      version beside it is a mono readout. checkForUpdate reads `.brand span`. */
@@ -502,25 +524,37 @@
   #symAxes button {
     position: relative;
     width: 44px; min-height: 0; padding: 0;
-    border-radius: 0; border: var(--rule) solid var(--line);
-    background: var(--panel); color: var(--text-dim);
-    display: flex; align-items: center; justify-content: center;
+    border-radius: 0; color: var(--text-dim);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
     font-family: var(--mono); font-size: 14px; font-weight: 700; letter-spacing: 0.02em;
     touch-action: none; -webkit-user-select: none; user-select: none;
+  }
+  /* WHAT THE LETTER IS FOR (v2.80): a caption under it. "X" alone is an
+     axis; "X, SYM" is a mirror you can switch on. Order 2 puts the
+     generated text under the letter in the column. */
+  #symAxes button::before {
+    content: 'Sym'; order: 2; font-size: 9px; font-weight: 500; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--text-dim);
   }
   /* THE 6px SQUARE (a3.0 1.4, a2.106): hollow off, filled on, and the
      same square wherever the app has a toggle. It replaces the tint and
      the underline: a tint says "different", a filled square says WHICH
      WAY, and it says it the same way in the world ring and the drawer. */
+  /* THE UNDERLINE (v2.80, the hybrid) replaces the filled square. The square
+     said WHICH WAY by filling; the underline says it by lighting, in the
+     mode's hue, along the edge the cut runs into - the same device the
+     rail's tabs and the op deck's chips use, so "lit underline" means "on"
+     everywhere in the chrome. */
   #symAxes button::after {
-    content: ''; position: absolute; right: 7px; bottom: 7px;
-    width: 6px; height: 6px;
-    box-shadow: inset 0 0 0 1.5px var(--text-dim);
+    content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+    background: var(--line); transition: background-color .12s, height .12s;
   }
   #symAxes button.active {
-    color: var(--accent-mode); border-color: var(--accent-mode); background: var(--panel);
+    color: var(--text);
+    background: var(--cut-line), color-mix(in srgb, var(--accent-mode) 16%, var(--glass));
   }
-  #symAxes button.active::after { background: var(--accent-mode); box-shadow: none; }
+  #symAxes button.active::before { color: var(--accent-mode); }
+  #symAxes button.active::after { background: var(--accent-mode); height: 3px; }
 
   /* THE ONE THING THE APP SAYS UNASKED (a2.66). It sits above the bottom
      row rather than beside the hub, because the gesture it describes works
@@ -932,6 +966,13 @@
        a thing politely out of the way. */
     color: var(--text-dim); font-family: var(--mono); font-size: 10px; font-weight: 600;
     letter-spacing: .12em; text-transform: uppercase; pointer-events: none;
+  }
+  /* A GAUGE AFTER THE WORDS (v2.80): a short tick rule, the hybrid's mark
+     for "this line is a readout". It sits in the row, so it moves with the
+     text and never collides with the cube. */
+  #toolChip::after {
+    content: ''; flex: 0 0 64px; height: 5px; margin-left: 10px; opacity: .7;
+    background: repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px 6px);
   }
   #toolChip .mode { color: var(--text-dim); font-weight: 500; margin-left: 8px; }
   #toolChip .mode::before { content: '\00b7'; margin-right: 8px; }
@@ -2524,16 +2565,16 @@
     <div id="hdr">
       <!-- a3.0 6.1 opens the row with the drawer, at 14, before the mode
            block. It was the last cell on the right until a2.106. -->
-      <button id="btnMenu" title="Tools, files and settings">&#9776;</button>
+      <button id="btnMenu" class="plate" title="Tools, files and settings" aria-label="Menu">&#9776;</button>
       <button id="hdrMode" title="Object/Component - tap to switch">
         <span class="hdr-glyph"></span><span id="hdrModeName">Object</span>
       </button>
       <!-- SYMMETRY (a2.90; in the header since a2.100). No on/off: a lit
            axis IS symmetry on, none lit is off. -->
       <div id="symAxes">
-        <button data-sym="x" title="Mirror edits across X">X</button>
-        <button data-sym="y" title="Mirror edits across Y">Y</button>
-        <button data-sym="z" title="Mirror edits across Z">Z</button>
+        <button data-sym="x" class="plate" title="Mirror edits across X" aria-label="Symmetry X">X</button>
+        <button data-sym="y" class="plate" title="Mirror edits across Y" aria-label="Symmetry Y">Y</button>
+        <button data-sym="z" class="plate" title="Mirror edits across Z" aria-label="Symmetry Z">Z</button>
       </div>
     </div>
     <div id="toast"></div>
@@ -2837,7 +2878,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.79</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.80</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
