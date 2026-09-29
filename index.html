@@ -553,6 +553,7 @@
     color: var(--text);
     background: var(--cut-line), color-mix(in srgb, var(--accent-mode) 16%, var(--glass));
   }
+  #symAxes button.active { border-color: var(--hair); }  /* the lit edge says it; a frame would say it twice */
   #symAxes button.active::before { color: var(--accent-mode); }
   #symAxes button.active::after { background: var(--accent-mode); height: 3px; }
 
@@ -1115,16 +1116,15 @@
   #outFly, #matFly { pointer-events: none; }
   #outFly > *, #matFly > * { pointer-events: auto; }
   #outFly.open { flex-direction: row; align-items: flex-start; z-index: 26; }
-  #outFly.open #outTab { border-right: none; background: var(--panel); }
+  #outFly.open #outTab { background-color: color-mix(in srgb, var(--accent-mode) 14%, var(--glass-thick)); }
   #outTab {
     /* 26 x 96, edge-tucked, with the 10px cut on the corner that faces the
        viewport - the cut is what says pull. 64 until v2.2; the name inside
        it is what asked for the other 32 (see .tabName). */
-    width: 26px; height: 96px; min-height: 0; padding: 0;
+    width: 44px; height: 96px; min-height: 0; padding: 0;
     border-radius: 0; border-left: none;
-    clip-path: polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%);
+    clip-path: var(--cut);
     justify-content: center; align-items: center; color: var(--text-dim);
-    background: var(--panel2);
   }
   /* THE TAB SAYS WHAT IT IS (v2.2, Zeghreit's). Both handles used to be a
      chevron, which says only "this opens" - and once the two sat one above
@@ -1142,7 +1142,7 @@
      The mono face and the tracking are the readout's, one step down: this
      is a label on a frame, not a control's own word. */
   .tabName {
-    writing-mode: vertical-rl; transform: rotate(180deg);
+    writing-mode: vertical-rl; transform: rotate(180deg); margin-top: 12px;
     font-family: var(--mono); font-size: 10px; letter-spacing: .12em;
     text-transform: uppercase; line-height: 1; white-space: nowrap;
     pointer-events: none;
@@ -1159,6 +1159,25 @@
      bezel is already on the right line and only has to stop. Widening it
      means moving the cut off the element, which is its own change. */
   #outTab, #matTab { position: relative; }
+  /* 44 WIDE SINCE v2.81 (the audit's smallest target: 26 across, the one
+     control on screen a thumb had to aim for). Plates like the header,
+     with the two things the hybrid gives every shelf tab: an INDEX at the
+     top - 01 and 02, the order they sit on the rail, which is the order
+     you read them in - and an edge that lights in the mode's hue while its
+     shelf is out, the same lit underline the axes use, turned on its side
+     because the tab is. */
+  #outTab::before, #matTab::before {
+    position: absolute; top: 7px; left: 0; right: 0; text-align: center; pointer-events: none;
+    font-family: var(--mono); font-size: 9px; font-weight: 500; letter-spacing: .1em; color: var(--text-dim);
+  }
+  #outTab::before { content: '01'; }
+  #matTab::before { content: '02'; }
+  #outTab::after, #matTab::after {
+    content: ''; position: absolute; right: 0; top: 0; bottom: var(--ch); width: 2px;
+    background: var(--line); pointer-events: none; transition: background-color .12s, width .12s;
+  }
+  #outFly.open #outTab::after, #matFly.open #matTab::after { background: var(--accent-mode); width: 3px; }
+  #outFly.open .tabName, #matFly.open .tabName { color: var(--text); }
   #outTray {
     display: none; flex-direction: column; gap: 4px;
     width: min(232px, 66vw);
@@ -1170,10 +1189,20 @@
     max-height: calc(100vh - 161px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
     overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
     margin-top: 0; padding: 8px;
-    background: var(--panel); border: var(--rule) solid var(--line); border-left: none;
-    border-radius: 0 var(--r-md) var(--r-md) 0;
+    border-left: none; border-radius: 0; clip-path: var(--cut);
   }
   #outFly.open #outTray { display: flex; }
+  /* THE SHELVES ARE THICK GLASS (v2.81): the plate material at 86%, so a
+     list you read for a while stays readable over a bright model, and the
+     model still shows through enough to say the shelf floats over it. */
+  #outTray, #matTray {
+    border: var(--rule) solid var(--hair); border-left: none;
+    background: var(--cut-line), var(--glass-thick);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+    backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+    box-shadow: inset 0 1px 0 var(--glass-hi);
+  }
+  html.lite #outTray, html.lite #matTray { -webkit-backdrop-filter: none; backdrop-filter: none; }
   /* Positioned, because the insertion line is drawn INTO it rather than
      between the rows - moving real rows apart to open a gap would fight the
      scroller for height on every frame of a drag. */
@@ -1234,9 +1263,13 @@
        it OVER the panel colour rather than replacing it. */
     background: var(--panel);
   }
+  /* v2.81: the selected row lights its LEFT edge in the hue, the hybrid's
+     lit underline once more, over a tint - the frame it had was a fourth
+     kind of border in a panel that already has three. */
   .outRow.selected {
-    border-color: var(--accent); color: var(--text);
-    background: linear-gradient(var(--accent-dim), var(--accent-dim)), var(--panel);
+    color: var(--text);
+    background: linear-gradient(color-mix(in srgb, var(--accent) 16%, transparent), color-mix(in srgb, var(--accent) 16%, transparent)), var(--panel);
+    box-shadow: inset 3px 0 0 var(--accent);
   }
   /* A GROUP READS AS A HEADING and its members as what is under it: the
      caret and the count carry the difference, and the children are indented
@@ -1283,11 +1316,10 @@
        26 is narrow for a thumb, which is why it went from 30 to 44 once;
        what gives it back the 44 is the screen edge, which a thumb entering
        from the bezel is already on. */
-    width: 26px; height: 96px; min-height: 0; padding: 0;
-    border-radius: 0; border-left: none; border-right: var(--rule) solid var(--line);
-    clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%);
+    width: 44px; height: 96px; min-height: 0; padding: 0;
+    border-radius: 0; border-left: none;
+    clip-path: var(--cut);
     justify-content: center; align-items: center; color: var(--text-dim);
-    background: var(--panel2);
   }
   /* WELDED (a2.63). Open, the tab used to take a 26px margin and a full
      radius, which floated it clear of the panel it is the handle OF - two
@@ -1305,7 +1337,7 @@
     /* The width and the fill are part of the same movement as the tray, so
        they travel with it rather than snapping. */
     transition: width .22s ease, background-color .22s ease;
-    background: var(--panel); border-left: none; border-right: none;
+    background-color: color-mix(in srgb, var(--accent-mode) 14%, var(--glass-thick)); border-left: none;
     border-radius: 0;
   }
   #matTray {
@@ -1313,8 +1345,7 @@
     transition: max-height .22s ease, opacity .22s ease;
     /* The tab is the tray's LEFT shoulder again (v2.2), which is what it
        was at a2.103 and what a2.63 built on the other side. */
-    background: var(--panel); border: var(--rule) solid var(--line); border-left: none;
-    border-radius: 0;
+    border-left: none; border-radius: 0; clip-path: var(--cut);
   }
   /* No left border: the tab is the tray's left shoulder. */
   #matFly.open #matTray { margin-top: 0; border-left: none; border-radius: 0; }
@@ -2730,7 +2761,7 @@
          What is IN the scene, consulted while working - so a shelf, not a
          page in the settings drawer. -->
     <div id="outFly">
-      <button id="outTab" title="Outliner - what is in the scene"><span class="tabName">Outliner</span></button>
+      <button id="outTab" class="plate" title="Outliner: what is in the scene" aria-label="Outliner" aria-controls="outTray"><span class="tabName">Outliner</span></button>
       <div id="outTray"><div id="outList"></div></div>
     </div>
 
@@ -2738,7 +2769,7 @@
          (v2.2). Tap rolls the
          tray of previews out, tap again rolls it back. -->
     <div id="matFly">
-      <button id="matTab" title="Materials"><span class="tabName">Materials</span></button>
+      <button id="matTab" class="plate" title="Materials" aria-label="Materials" aria-controls="matTray"><span class="tabName">Materials</span></button>
       <div id="matTray"><div id="matTrayInner"></div><div id="matEditor">
         <img id="meImg" alt="">
         <div class="me-name" id="meName"></div>
@@ -2878,7 +2909,7 @@
            the only way an iOS Home Screen app ever learns a new build exists.
            It moved here with the bar; it must not lose the element or the
            class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.80</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.81</span></div>
       <button id="drawerClose" class="small">✕</button>
     </div>
     <!-- Was pinned to the top-right of the screen. It says how many objects
