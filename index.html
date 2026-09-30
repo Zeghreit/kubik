@@ -33590,7 +33590,7 @@ const TOPO_Q_ISLAND = 6;                  // faces: an enclosed patch this small
 const TOPO_Q_GRAZE = 0.35;                // a boundary point this close to the cut (per its edge) joins the band
 
 let TOPO_X_STRIP = true, TOPO_SMOOTH = 10, TOPO_ROW_GRADE = true, TOPO_MVC = true, TOPO_MVC_MAXANG = 150 * Math.PI / 180, TOPO_MVC_FLOOR = 0.25;   // v2.81a switches (let: the fixtures A/B them)
-let TOPO_Q_THIN = false, TOPO_Q_THIN_TOL = 0.03, TOPO_Q_THIN_MIN = 8, TOPO_Q_THIN_N = 0, TOPO_Q_SLIDE = false;   // v2.94: thin the cut loop (default off until the fixture passes)
+let TOPO_Q_THIN = false, TOPO_Q_THIN_TOL = 0.03, TOPO_Q_THIN_MIN = 8, TOPO_Q_THIN_N = 0, TOPO_Q_SLIDE = false, TOPO_Q_RING2 = false;   // v2.94: thin the cut loop (default off until the fixture passes)
 
 /* LOOPS, EXACT (v2.81a, DECISION 29.09, Zeghreit: "the most exact shape -
    sharp corners stay sharp - but clean topology"). Rebuilding a band over a
@@ -34710,6 +34710,11 @@ function topoQuads(P0, groups, seam, owner, surf, opt) {
        straight blends between the loops, the same relaxed on the surface,
        the next spoke matching, one more ring. Deterministic, so a seed
        always names the same layout. */
+    if (TOPO_Q_RING2) {
+      const fl = c.loops.find(L => L.kind === 'frozen'), so = fl ? owner[fl.verts[0]] : -1; const rf = topoRingBuild(c, expand, P, addP, pt, so >= 0 && surf[so] ? (q => topoClosestOnSurf(surf[so], q)) : null);
+      if (rf) { c.how = 'ring'; c.tried = []; rebuilt++; rf.forEach(f => newGroups.push(f)); return; }
+      c.ringWhy = c.why;
+    }
     const save = P.length;
     const tries = [Object.assign({}, V, { even: true }), V, Object.assign({}, V, { blend: true }), Object.assign({}, V, { blend: true, relax: true }),
                    Object.assign({}, V, { rot: V.rot + 1 }), Object.assign({}, V, { rd: V.rd + 1, blend: true, relax: true })];
@@ -34857,6 +34862,113 @@ function topoQuadDomain(tris, P, outer, thO, inner, sg, uniform) {
     return [0, 1, 2].map(k => l0 * P[t[0] * 3 + k] + l1 * P[t[1] * 3 + k] + l2 * P[t[2] * 3 + k]);
   };
   return { at: at, D: D, hub: inner ? D.get(HUB) : [0, 0] };
+}
+
+/* ONE RING OF QUADS, THEN THE REST AS TRIANGLES (v2.94). Measured on the chest
+   ball: the cut, made even, is a clean circle; the frozen loop around it is a
+   jagged polygon two or three radii out (the body is coarse there). One row
+   from the circle to that loop folds at every spike. What a hand-solver does:
+   a ring of near-square quads against the cut, and the coarse body mesh
+   closed onto that ring's outer edge. Here: an outer ring O, one point per cut
+   point, a cut-spacing out from the cut on the surface (less where the frozen
+   loop is close); quads between the cut and O; the band between O and the
+   frozen loop zipped with triangles (the pairing of least total spoke
+   length, tried from every start). The frozen loop is not touched, so the
+   faces beyond it are not either. Any fold, crushed face or sag and the
+   piece is left to the older fill. Null back, with c.why. */
+function topoRingBuild(c, expand, P, addP, pt, snap) {
+  if (c.disk || !c.loops || c.loops.length !== 2) return null;
+  const Lf = c.loops.find(L => L.kind === 'frozen'), Ls = c.loops.find(L => L.kind === 'seam');
+  if (!Lf || !Ls) return (c.why = 'ring: not an annulus', null);
+  const C0 = expand(Ls.verts), M = C0.length, F = Lf.verts, nF = F.length, save = P.length;
+  if (M < 4 || nF < 3) return (c.why = 'ring: small loops', null);
+  const V3 = v => [P[v * 3], P[v * 3 + 1], P[v * 3 + 2]];
+  const dist = (a, b) => Math.hypot(P[a * 3] - P[b * 3], P[a * 3 + 1] - P[b * 3 + 1], P[a * 3 + 2] - P[b * 3 + 2]);
+  const T = c.tris.map(t => { const a = pt(t[0]), b = pt(t[1]), q = pt(t[2]);
+    const n = [(b[1] - a[1]) * (q[2] - a[2]) - (b[2] - a[2]) * (q[1] - a[1]), (b[2] - a[2]) * (q[0] - a[0]) - (b[0] - a[0]) * (q[2] - a[2]), (b[0] - a[0]) * (q[1] - a[1]) - (b[1] - a[1]) * (q[0] - a[0])];
+    const l = Math.hypot(n[0], n[1], n[2]) || 1;
+    return { a: a, b: b, c: q, n: [n[0] / l, n[1] / l, n[2] / l] }; });
+  const tmp = [0, 0, 0];
+  const onSurface = q => { let bd = Infinity, bn = null, bp = null;
+    for (const t of T) { topoClosestOnTri(q, t.a, t.b, t.c, tmp); const d = (tmp[0] - q[0]) ** 2 + (tmp[1] - q[1]) ** 2 + (tmp[2] - q[2]) ** 2; if (d < bd) { bd = d; bn = t.n; bp = [tmp[0], tmp[1], tmp[2]]; } }
+    return { d: Math.sqrt(bd), n: bn, p: bp }; };
+  const newell = L => { const n = [0, 0, 0]; for (let k = 0; k < L.length; k++) { const a = V3(L[k]), b = V3(L[(k + 1) % L.length]);
+    n[0] += (a[1] - b[1]) * (a[2] + b[2]); n[1] += (a[2] - b[2]) * (a[0] + b[0]); n[2] += (a[0] - b[0]) * (a[1] + b[1]); } return n; };
+  // the cut in the frozen loop's sense of rotation
+  const nf = newell(F), nc = newell(C0);
+  const C = nf[0] * nc[0] + nf[1] * nc[1] + nf[2] * nc[2] >= 0 ? C0.slice() : C0.slice().reverse();
+  // which way is "toward the frozen loop": out from the cut's middle, or in
+  const c0 = [0, 0, 0]; C.forEach(v => { const p = V3(v); c0[0] += p[0] / M; c0[1] += p[1] / M; c0[2] += p[2] / M; });
+  const rad = v => { const p = V3(v); return Math.hypot(p[0] - c0[0], p[1] - c0[1], p[2] - c0[2]); };
+  let rC = 0, rF = 0; C.forEach(v => { rC += rad(v) / M; }); F.forEach(v => { rF += rad(v) / nF; });
+  const sgn = rF >= rC ? 1 : -1;
+  let hc = 0; for (let i = 0; i < M; i++) hc += dist(C[i], C[(i + 1) % M]); hc /= M;
+  // the frozen loop's nearest approach to each cut point
+  const dF = C.map(v => { let b = Infinity; for (let j = 0; j < nF; j++) { const A = V3(F[j]), B = V3(F[(j + 1) % nF]), q = V3(v);
+    const ux = B[0] - A[0], uy = B[1] - A[1], uz = B[2] - A[2], L2 = ux * ux + uy * uy + uz * uz;
+    let t = L2 ? ((q[0] - A[0]) * ux + (q[1] - A[1]) * uy + (q[2] - A[2]) * uz) / L2 : 0; t = Math.max(0, Math.min(1, t));
+    b = Math.min(b, Math.hypot(q[0] - A[0] - t * ux, q[1] - A[1] - t * uy, q[2] - A[2] - t * uz)); } return b; });
+  const O = [];
+  for (let i = 0; i < M; i++) {
+    const p = V3(C[i]), s = onSurface(p), n = s.n;
+    let d = [p[0] - c0[0], p[1] - c0[1], p[2] - c0[2]]; const dn = d[0] * n[0] + d[1] * n[1] + d[2] * n[2];
+    d = [sgn * (d[0] - dn * n[0]), sgn * (d[1] - dn * n[1]), sgn * (d[2] - dn * n[2])];
+    const dl = Math.hypot(d[0], d[1], d[2]);
+    const step = Math.min(hc, 0.5 * dF[i]);
+    if (!(dl > 1e-12) || !(step > 0.15 * hc)) { P.length = save; return (c.why = 'ring: no room', null); }
+    const q = onSurface([p[0] + d[0] / dl * step, p[1] + d[1] / dl * step, p[2] + d[2] / dl * step]);
+    O.push(addP(snap ? snap(q.p) : q.p));
+  }
+  // the zip between O and the frozen loop: least total spoke length over every start
+  let best = null;
+  for (let s = 0; s < nF; s++) {
+    // states (i, j): i cut-side steps taken, j frozen steps; start pairs O[0] with F[s]
+    const cost = [], from = [];
+    for (let i = 0; i <= M; i++) { cost.push(new Float64Array(nF + 1).fill(Infinity)); from.push(new Int8Array(nF + 1)); }
+    cost[0][0] = dist(O[0], F[s % nF]);
+    for (let i = 0; i <= M; i++) for (let j = 0; j <= nF; j++) {
+      const cur = cost[i][j]; if (cur === Infinity) continue;
+      if (i < M) { const c2 = cur + dist(O[(i + 1) % M], F[(s + j) % nF]); if (c2 < cost[i + 1][j]) { cost[i + 1][j] = c2; from[i + 1][j] = 1; } }
+      if (j < nF) { const c2 = cur + dist(O[i % M], F[(s + j + 1) % nF]); if (c2 < cost[i][j + 1]) { cost[i][j + 1] = c2; from[i][j + 1] = 2; } }
+    }
+    if (!best || cost[M][nF] < best.cost) best = { cost: cost[M][nF], s: s, from: from };
+  }
+  // walk back the path: steps in order
+  const steps = []; { let i = M, j = nF; while (i > 0 || j > 0) { const f = best.from[i][j]; steps.push(f); if (f === 1) i--; else j--; } steps.reverse(); }
+  const faces = [];
+  // the ring of quads: cut edge k -> k+1 against O; O runs the frozen loop's way, so an O edge is walked k+1 -> k
+  for (let k = 0; k < M; k++) {
+    const a = O[(k + 1) % M], b = O[k], b2 = C[k], a2 = C[(k + 1) % M];
+          const cosOf = t => { const A = pt(t[0]), B = pt(t[1]), D = pt(t[2]);
+        const n = [(B[1] - A[1]) * (D[2] - A[2]) - (B[2] - A[2]) * (D[1] - A[1]), (B[2] - A[2]) * (D[0] - A[0]) - (B[0] - A[0]) * (D[2] - A[2]), (B[0] - A[0]) * (D[1] - A[1]) - (B[1] - A[1]) * (D[0] - A[0])];
+        const ar = Math.hypot(n[0], n[1], n[2]) || 1, s = onSurface([(A[0] + B[0] + D[0]) / 3, (A[1] + B[1] + D[1]) / 3, (A[2] + B[2] + D[2]) / 3]);
+        return Math.abs(n[0] * s.n[0] + n[1] * s.n[1] + n[2] * s.n[2]) / ar; };
+      const d1 = [[a, b, b2], [a, b2, a2]], d2 = [[a, b, a2], [b, b2, a2]];
+      faces.push(Math.min(cosOf(d1[0]), cosOf(d1[1])) >= Math.min(cosOf(d2[0]), cosOf(d2[1])) ? d1 : d2);
+  }
+  // the zip
+  { let i = 0, j = 0;
+    steps.forEach(st => {
+      if (st === 1) { faces.push([[O[(i + 1) % M], O[i % M], F[(best.s + j) % nF]]]); i++; }
+      else { faces.push([[F[(best.s + j) % nF], F[(best.s + j + 1) % nF], O[i % M]]]); j++; }
+    }); }
+    // wind every face the way the piece's own surface faces (the walk direction of the loops is not trusted)
+    for (const part of [[0, M], [M, faces.length]]) { let vote = 0; faces.slice(part[0], part[1]).forEach(f => f.forEach(t => { const A = pt(t[0]), B = pt(t[1]), D = pt(t[2]);
+      const n = [(B[1] - A[1]) * (D[2] - A[2]) - (B[2] - A[2]) * (D[1] - A[1]), (B[2] - A[2]) * (D[0] - A[0]) - (B[0] - A[0]) * (D[2] - A[2]), (B[0] - A[0]) * (D[1] - A[1]) - (B[1] - A[1]) * (D[0] - A[0])];
+      const s = onSurface([(A[0] + B[0] + D[0]) / 3, (A[1] + B[1] + D[1]) / 3, (A[2] + B[2] + D[2]) / 3]);
+      vote += n[0] * s.n[0] + n[1] * s.n[1] + n[2] * s.n[2]; }));
+      if (vote < 0) faces.slice(part[0], part[1]).forEach(f => f.forEach(t => { const x = t[1]; t[1] = t[2]; t[2] = x; })); }
+  // every new face: not crushed, not folded against, and not off, its surface
+  for (const f of faces) for (const t of f) {
+    const A = pt(t[0]), B = pt(t[1]), D = pt(t[2]);
+    const n = [(B[1] - A[1]) * (D[2] - A[2]) - (B[2] - A[2]) * (D[1] - A[1]), (B[2] - A[2]) * (D[0] - A[0]) - (B[0] - A[0]) * (D[2] - A[2]), (B[0] - A[0]) * (D[1] - A[1]) - (B[1] - A[1]) * (D[0] - A[0])];
+    const ar = Math.hypot(n[0], n[1], n[2]), L = Math.max(dist(t[0], t[1]), dist(t[1], t[2]), dist(t[2], t[0]));
+    if (!(ar / L > 1e-3 * hc)) { P.length = save; return (c.why = 'ring: crushed', null); }
+    const s = onSurface([(A[0] + B[0] + D[0]) / 3, (A[1] + B[1] + D[1]) / 3, (A[2] + B[2] + D[2]) / 3]);
+    if (s.d > TOPO_Q_SAG * L) { P.length = save; return (c.why = 'ring: sags', null); }
+    if ((n[0] * s.n[0] + n[1] * s.n[1] + n[2] * s.n[2]) / ar < TOPO_Q_FOLD_COS) {  P.length = save; return (c.why = 'ring: folded', null); }
+  }
+  return faces.map(tris => ({ triangles: tris, mat: c.mat }));
 }
 
 /* One annulus: its two loops (seam loops with their new points), matched
