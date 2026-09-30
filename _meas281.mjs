@@ -14,7 +14,7 @@ const lib = new Function('THREE', 'const IMPORT_TRI_BUDGET = 40000; const IMPORT
   cut('const CSG_WELD_TOL =', 'const BOOL_OPS') +
   cut('function importWeldKey(', '/* A budget, refused out loud').replace('function mergeCoplanarTriangles(', 'function legacyMerge(') +
   'let captured = null; function mergeCoplanarTriangles(p, t, m) { captured = { positions: p, tris: t, matOf: m }; return legacyMerge(p, t, m); }' +
-  '; return { editableFromCSGResult, topoDivisions, importTriNormal, topoClosestOnTri, TOPO_Q_SPACE, TOPO_X_SPACE, topoQuadCounts, setRing2(v) { TOPO_Q_RING2 = v; }, setThin(v, t, n, sl) { TOPO_Q_THIN = v; if (t != null) TOPO_Q_THIN_TOL = t; if (n != null) TOPO_Q_THIN_N = n; if (sl != null) TOPO_Q_SLIDE = sl; }, get captured() { return captured; } };')(THREE);
+  '; return { editableFromCSGResult, topoDivisions, importTriNormal, topoClosestOnTri, TOPO_Q_SPACE, TOPO_X_SPACE, topoQuadCounts, setRing2(v) { TOPO_Q_RING2 = v; }, setCut(v) { TOPO_Q_CUT_ONLY = v; }, setThin(v, t, n, sl) { TOPO_Q_THIN = v; if (t != null) TOPO_Q_THIN_TOL = t; if (n != null) TOPO_Q_THIN_N = n; if (sl != null) TOPO_Q_SLIDE = sl; }, get captured() { return captured; } };')(THREE);
 
 let fails = 0, n = 0;
 // v2.81 Loops: what each case must do beyond the invariant
@@ -86,6 +86,13 @@ const rot = (rx, ry, rz) => new THREE.Matrix4().makeRotationFromEuler(new THREE.
 const tr = (x, y, z) => new THREE.Matrix4().makeTranslation(x, y, z);
 
 const MAT = new THREE.MeshStandardMaterial();
+function outlineSegs(P, faces) {
+  const out = [], q = v => Math.round(P[v * 3] * 1e4) + '_' + Math.round(P[v * 3 + 1] * 1e4) + '_' + Math.round(P[v * 3 + 2] * 1e4);
+  faces.forEach(f => { const cnt = new Map();
+    f.forEach(t => { for (let k = 0; k < 3; k++) { const a = t[k], b = t[(k + 1) % 3], ka = q(a), kb = q(b); const key = ka < kb ? ka + '|' + kb : kb + '|' + ka; const e = cnt.get(key); if (e) e.n++; else cnt.set(key, { n: 1, a, b }); } });
+    cnt.forEach(e => { if (e.n === 1) out.push(P[e.a * 3], P[e.a * 3 + 1], P[e.a * 3 + 2], P[e.b * 3], P[e.b * 3 + 1], P[e.b * 3 + 2]); }); });
+  return out;
+}
 function brushOf(geom) {
   const g = geom.clone();
   const faces = [], ix = g.index;
@@ -102,7 +109,7 @@ function brushOf(geom) {
   for (let i = 0; i < pa.count; i++) keys.add(key(i));
   faces.forEach((f, fi) => f.forEach(t => t.forEach(v => { const k = key(v); let l = faceOfKey.get(k); if (!l) faceOfKey.set(k, l = []); if (l[l.length - 1] !== fi) l.push(fi); })));
   faces.forEach(f => f.forEach(t => tri.push(t[0], t[1], t[2])));
-  b.userData.topoIn = { keys, faceOfKey, angle: Math.PI, segs: lib.topoDivisions(P, faces, 0.9998), P, tri };
+  b.userData.topoIn = { keys, faceOfKey, angle: Math.PI, segs: lib.topoDivisions(P, faces, 0.9998), outl: outlineSegs(P, faces), P, tri };
   return b;
 }
 
@@ -162,8 +169,8 @@ function measure(name, a, b, op) {
   const baseSig = new Set(base.groups.map(faceSig));
   const V0 = volume(base.groups, base.positions);
   const rows = [];
-  for (const type of ['quads', 'quads+thin', 'quads+ring2', 'loops']) {
-    lib.setRing2(type === 'quads+ring2'); lib.setThin(type === 'quads+thin' || type === 'quads+ring2', process.env.TOL ? +process.env.TOL : null, process.env.NN ? +process.env.NN : 0, !!process.env.SLIDE);
+  for (const type of process.env.MATRIX ? ['quads', 'quads+cut'] : ['quads', 'quads+thin', 'quads+cut', 'quads+ring2', 'quads+cutring', 'loops']) {
+    lib.setRing2(type === 'quads+ring2' || type === 'quads+cutring'); lib.setCut(type === 'quads+cut' || type === 'quads+cutring'); lib.setThin(type === 'quads+thin' || type === 'quads+ring2' || type === 'quads+cut' || type === 'quads+cutring', process.env.TOL ? +process.env.TOL : null, process.env.NN ? +process.env.NN : 0, !!process.env.SLIDE && !type.includes('cut'));
     const ed = lib.editableFromCSGResult(res, topoIn, { type: type.split('+')[0], seed: +(process.env.SEED || 0) });
     const P = ed.positions, G = ed.groups;
     const nf = G.filter(g => !baseSig.has(faceSig(g)));
@@ -184,10 +191,12 @@ function measure(name, a, b, op) {
       const a = q(0), b = q(1), c = q(2);
       [[1/3,1/3,1/3],[.5,.5,0],[0,.5,.5],[.5,0,.5]].forEach(w => { const x = [0,1,2].map(k => w[0]*a[k] + w[1]*b[k] + w[2]*c[k]); dev.push(nearest(S, x).d / Hs); }); }));
     const mean = lens.reduce((s, x) => s + x, 0) / (lens.length || 1), cv = Math.sqrt(lens.reduce((s, x) => s + (x - mean) ** 2, 0) / (lens.length || 1)) / (mean || 1);
+    (globalThis.RES = globalThis.RES || []).push({ name, type, vol: (volume(G, P) / V0 - 1) * 100, n: nf.length, rmed: pct(ratio, 0.5), rp90: pct(ratio, 0.9), amed: pct(ang, 0.5), ap90: pct(ang, 0.9), dev: pct(dev, 1) * 1e3, reb: ed.topo.rebuilt, why: JSON.stringify(ed.topo.failed) });
     rows.push(type + ': vol ' + ((volume(G, P) / V0 - 1) * 100).toFixed(3) + '%, new ' + nf.length + ' faces, quad side ratio med ' + pct(ratio, 0.5).toFixed(2) + ' p90 ' + pct(ratio, 0.9).toFixed(2) +
       ', angle off 90 med ' + pct(ang, 0.5).toFixed(0) + ' p90 ' + pct(ang, 0.9).toFixed(0) + ', shape dev max ' + (pct(dev, 1) * 1e3).toFixed(2) + ' p90 ' + (pct(dev, 0.9) * 1e3).toFixed(2) + ' (per mille of size), edge CV ' + cv.toFixed(2) + ', rebuilt ' + ed.topo.rebuilt + ' ' + JSON.stringify(ed.topo.failed).slice(0, 160));
   }
-  console.log('== ' + name + '  (vol vs N-gon)'); rows.forEach(r => console.log('   ' + r));
+  if (process.env.MATRIX) { const a = RES.filter(r => r.name === name), q = a.find(r => r.type === 'quads'), r = a.find(r => r.type === 'quads+cut'); if (q && r) { const f = (x, d) => Number.isFinite(x) ? x.toFixed(d) : '-'; fs.appendFileSync(process.env.MXOUT || '_mx_live.txt', name.padEnd(30) + ' n ' + q.n + '>' + r.n + ' | ang p90 ' + f(q.ap90, 0) + '>' + f(r.ap90, 0) + ' | ratio p90 ' + f(q.rp90, 1) + '>' + f(r.rp90, 1) + ' | vol ' + f(q.vol, 2) + '>' + f(r.vol, 2) + ' | dev ' + f(q.dev, 1) + '>' + f(r.dev, 1) + ' | reb ' + q.reb + '>' + r.reb + ' ' + (r.why || '').slice(0, 30) + '\n'); } }
+  if (!process.env.MATRIX) { console.log('== ' + name + '  (vol vs N-gon)'); rows.forEach(r => console.log('   ' + r)); }
 }
 const sph = (r, s, rg) => brushOf(uvSphere(r, s, rg));
 measure('sphere - cylinder', sph(0.5, 16, 8), brushOf(cylinder(0.18, 2, 12)), CSG.SUBTRACTION);
@@ -205,4 +214,49 @@ measure('divided cube - rod', brushOf(box(1, 1, 1, 3)), brushOf(cylinder(0.25, 2
   const ball = at => brushOf(xf(uvSphere(0.5 * H * 0.07, 16, 8), tr(at[0], at[1], at[2])));
   measure('model - ball (chest)', brushOf(G), ball(chest), CSG.SUBTRACTION);
   measure('model U ball (chest)', brushOf(G), ball(chest), CSG.ADDITION);
+}
+
+
+if (process.env.MATRIX) {
+  const P0 = process.env.MATRIX;
+  const cutters = { 'ball': r => sph(r, 16, 8), };
+  // primitives
+  const hosts = { sphere: () => sph(0.5, 16, 8), cube3: () => brushOf(box(1, 1, 1, 3)), cyl: () => brushOf(cylinder(0.5, 1, 16)) };
+  const cuts = {
+    'ball.3 off': () => brushOf(xf(uvSphere(0.3, 16, 8), tr(0.45, 0.12, 0.05))),
+    'cyl.2 thru': () => brushOf(cylinder(0.2, 2, 12)),
+    'box.3 rot': () => brushOf(xf(box(0.3, 0.3, 0.3), rot(0.4, 0.5, 0.2).setPosition(0.3, 0.2, 0.3))),
+  };
+  for (const [hn, h] of Object.entries(hosts)) for (const [cn, c] of Object.entries(cuts)) for (const [on, op] of [['-', CSG.SUBTRACTION], ['U', CSG.ADDITION]]) {
+    try { measure(hn + ' ' + on + ' ' + cn, h(), c(), op); } catch (e) { console.log('ERR ' + hn + ' ' + on + ' ' + cn + ' ' + String(e.message).slice(0, 80)); }
+  }
+  // the model, several places
+  const doc = JSON.parse(fs.readFileSync(new URL('_dev/female.json', here), 'utf8'));
+  const o = doc.objects[0], g = o.geometry, PP = [];
+  for (let i = 0; i < g.position.length; i += 3) PP.push(g.position[i] + o.position[0], g.position[i + 1] + o.position[1], g.position[i + 2] + o.position[2]);
+  const GG = new THREE.BufferGeometry(); GG.setAttribute('position', new THREE.Float32BufferAttribute(PP, 3)); GG.setIndex(g.index);
+  g.groups.forEach(gr => GG.addGroup(gr.start, gr.count, 0));
+  let y0 = Infinity, y1 = -Infinity; for (let i = 1; i < PP.length; i += 3) { y0 = Math.min(y0, PP[i]); y1 = Math.max(y1, PP[i]); }
+  const H = y1 - y0;
+  const spot = (fy, side) => { let best = null; for (let i = 0; i < PP.length; i += 3) { if (Math.abs(PP[i + 1] - (y0 + fy * H)) > 0.02 * H) continue;
+      const k = side === 'arm' ? PP[i] : side === 'back' ? -PP[i + 2] : PP[i + 2]; if (side !== 'arm' && Math.abs(PP[i]) > 0.06 * H) continue; if (!best || k > best.k) best = { k, p: [PP[i], PP[i + 1], PP[i + 2]] }; } return best && best.p; };
+  const places = { head: spot(0.93, 'front'), belly: spot(0.56, 'front'), hip: spot(0.5, 'back'), thigh: spot(0.3, 'front'), arm: spot(0.72, 'arm') };
+  const mc = {
+    'ball.07': (p) => brushOf(xf(uvSphere(0.5 * H * 0.07, 16, 8), tr(...p))),
+    'cyl.03': (p, pl) => brushOf(xf(cylinder(0.03 * H, 0.3 * H, 12), (pl === 'arm' ? rot(0, 0, Math.PI / 2) : rot(Math.PI / 2, 0, 0)).setPosition(...p))),
+    'box.08': (p) => brushOf(xf(box(0.08 * H, 0.08 * H, 0.08 * H), rot(0.3, 0.4, 0.1).setPosition(...p))),
+  };
+  for (const [pn, p] of Object.entries(places)) if (p) for (const [cn, c] of Object.entries(mc)) for (const [on, op] of [['-', CSG.SUBTRACTION], ['U', CSG.ADDITION]]) {
+    try { measure('model ' + pn + ' ' + on + ' ' + cn, brushOf(GG), c(p, pn), op); } catch (e) { console.log('ERR model ' + pn + ' ' + on + ' ' + cn + ' ' + String(e.message).slice(0, 80)); }
+  }
+  // summary: quads vs ring2 (and thin alone)
+  const by = new Map(); RES.forEach(r => { if (!by.has(r.name)) by.set(r.name, {}); by.get(r.name)[r.type] = r; });
+  let win = 0, lose = 0, same = 0; const f = (x, d) => Number.isFinite(x) ? x.toFixed(d) : '-';
+  by.forEach((m, name) => { const q = m.quads, r = m[process.env.CMP || 'quads+cut']; if (!q || !r) return;
+    const identical = q.n === r.n && Math.abs(q.ap90 - r.ap90) < 1e-9 && Math.abs(q.vol - r.vol) < 1e-9;
+    const worse = (r.rp90 > 1.5 * q.rp90 && r.rp90 > 6) || Math.abs(r.vol) > Math.abs(q.vol) + 0.3 || r.dev > 1.5 * q.dev + 2 || r.ap90 > q.ap90 + 5 || r.n > 1.3 * q.n + 5;
+    const better = !worse && (r.ap90 < q.ap90 - 5 || r.rp90 < 0.7 * q.rp90);
+    const tag = identical ? 'same' : worse ? 'WORSE' : better ? 'better' : 'meh'; if (identical) same++; else if (worse) lose++; else if (better) win++;
+    console.log(tag.padEnd(6) + name.padEnd(30) + ' n ' + q.n + '>' + r.n + ' | ang p90 ' + f(q.ap90, 0) + '>' + f(r.ap90, 0) + ' | ratio p90 ' + f(q.rp90, 1) + '>' + f(r.rp90, 1) + ' | vol ' + f(q.vol, 2) + '>' + f(r.vol, 2) + ' | dev ' + f(q.dev, 1) + '>' + f(r.dev, 1) + ' | reb ' + q.reb + '>' + r.reb + ' ' + (r.why || '').slice(0, 40)); });
+  console.log('TOTAL better ' + win + ', WORSE ' + lose + ', same ' + same + ', other ' + (by.size - win - lose - same));
 }

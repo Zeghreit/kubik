@@ -14,7 +14,7 @@ const lib = new Function('THREE', 'const IMPORT_TRI_BUDGET = 40000; const IMPORT
   cut('const CSG_WELD_TOL =', 'const BOOL_OPS') +
   cut('function importWeldKey(', '/* A budget, refused out loud').replace('function mergeCoplanarTriangles(', 'function legacyMerge(') +
   'let captured = null; function mergeCoplanarTriangles(p, t, m) { captured = { positions: p, tris: t, matOf: m }; return legacyMerge(p, t, m); }' +
-  '; return { editableFromCSGResult, topoDivisions, importTriNormal, topoClosestOnTri, TOPO_Q_SPACE, TOPO_X_SPACE, topoQuadCounts, setRing2(v) { TOPO_Q_RING2 = v; }, setThin(v, t, n, sl) { TOPO_Q_THIN = v; if (t != null) TOPO_Q_THIN_TOL = t; if (n != null) TOPO_Q_THIN_N = n; if (sl != null) TOPO_Q_SLIDE = sl; }, get captured() { return captured; } };')(THREE);
+  '; return { editableFromCSGResult, topoDivisions, importTriNormal, topoClosestOnTri, TOPO_Q_SPACE, TOPO_X_SPACE, topoQuadCounts, setRing2(v) { TOPO_Q_RING2 = v; }, setCut(v) { TOPO_Q_CUT_ONLY = v; }, setThin(v, t, n, sl) { TOPO_Q_THIN = v; if (t != null) TOPO_Q_THIN_TOL = t; if (n != null) TOPO_Q_THIN_N = n; if (sl != null) TOPO_Q_SLIDE = sl; }, get captured() { return captured; } };')(THREE);
 
 let fails = 0, n = 0;
 // v2.81 Loops: what each case must do beyond the invariant
