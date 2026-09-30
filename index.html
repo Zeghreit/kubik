@@ -3171,7 +3171,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.93</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.94</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -32579,8 +32579,24 @@ function editableFromCSGResult(res, topoIn, topoOpt) {
        to, piece by piece, and what stays outside the band. */
     if (topo && quads) {
       const surf = topoIn.every(t => t.P && t.tri) ? topoIn.map(t => ({ P: t.P, tri: t.tri })) : null;
-      const q = topoOpt.type === 'loops' ? topoLoopsExact(positions, topo.groups, seam, owner, surf, { seed: topoOpt.seed | 0 })
+      let q = topoOpt.type === 'loops' ? topoLoopsExact(positions, topo.groups, seam, owner, surf, { seed: topoOpt.seed | 0 })
                                          : topoQuads(positions, topo.groups, seam, owner, surf, { seed: topoOpt.seed | 0, segs: topoIn.map(t => t.outl || t.segs) });
+      /* SAFE: the experimental seam switches (thinning, cutter-only points, the direct ring) only
+         stay when they do no worse than the plain Quads on the same input: not fewer pieces
+         rebuilt, and no new failure other than 'kept as cut' (which is by design). */
+      if (TOPO_Q_SAFE && topoOpt.type !== 'loops' && !q.miss && (TOPO_Q_THIN || TOPO_Q_CUT_ONLY || TOPO_Q_RING2 || TOPO_Q_SLIDE)) {
+        const sv = [TOPO_Q_THIN, TOPO_Q_CUT_ONLY, TOPO_Q_RING2, TOPO_Q_SLIDE];
+        TOPO_Q_THIN = TOPO_Q_CUT_ONLY = TOPO_Q_RING2 = TOPO_Q_SLIDE = false;
+        let b = null;
+        try { b = topoQuads(positions, topo.groups, seam, owner, surf, { seed: topoOpt.seed | 0, segs: topoIn.map(t => t.outl || t.segs) }); }
+        finally { TOPO_Q_THIN = sv[0]; TOPO_Q_CUT_ONLY = sv[1]; TOPO_Q_RING2 = sv[2]; TOPO_Q_SLIDE = sv[3]; }
+        const bad = r => (r.failed || []).filter(w => w !== 'kept as cut').length;
+        const vol = r => { let v = 0; const X = r.positions; r.groups.forEach(g => g.triangles.forEach(t => { const a = t[0] * 3, b2 = t[1] * 3, c = t[2] * 3;
+          v += (X[a] * (X[b2 + 1] * X[c + 2] - X[b2 + 2] * X[c + 1]) - X[a + 1] * (X[b2] * X[c + 2] - X[b2 + 2] * X[c]) + X[a + 2] * (X[b2] * X[c + 1] - X[b2 + 1] * X[c])) / 6; })); return v; };
+        const edgeBad = r => { const nV = r.positions.length / 3, d = new Map(); r.groups.forEach(g => g.triangles.forEach(t => { for (let k = 0; k < 3; k++) { const key = t[k] * nV + t[(k + 1) % 3]; d.set(key, (d.get(key) || 0) + 1); } }));
+          let n = 0; d.forEach((c, key) => { if (c > 1) n++; const x = Math.floor(key / nV), y = key - x * nV; if (!d.has(y * nV + x)) n++; }); return n; };
+        if (b && !b.miss && (q.rebuilt < b.rebuilt || bad(q) > bad(b) || edgeBad(q) > edgeBad(b) || Math.abs(vol(q) - vol(b)) > 0.001 * Math.abs(vol(b)))) q = b;
+      }
       if (q.miss) return { miss: true };
       positions = q.positions;
       topo = { groups: q.groups, dissolved: topo.dissolved, bridged: topo.bridged, frozen: topo.frozen,
@@ -33603,7 +33619,7 @@ const TOPO_Q_ISLAND = 6;                  // faces: an enclosed patch this small
 const TOPO_Q_GRAZE = 0.35;                // a boundary point this close to the cut (per its edge) joins the band
 
 let TOPO_X_STRIP = true, TOPO_SMOOTH = 10, TOPO_ROW_GRADE = true, TOPO_MVC = true, TOPO_MVC_MAXANG = 150 * Math.PI / 180, TOPO_MVC_FLOOR = 0.25;   // v2.81a switches (let: the fixtures A/B them)
-let TOPO_Q_THIN = false, TOPO_Q_THIN_TOL = 0.03, TOPO_Q_THIN_MIN = 8, TOPO_Q_THIN_N = 0, TOPO_Q_SLIDE = false, TOPO_Q_CUT_ONLY = false, TOPO_Q_RING_MERGE = 0.75, TOPO_Q_RING2 = false;   // v2.94: thin the cut loop (default off until the fixture passes)
+let TOPO_Q_THIN = true, TOPO_Q_THIN_TOL = 0.03, TOPO_Q_THIN_MIN = 8, TOPO_Q_THIN_N = 0, TOPO_Q_SLIDE = false, TOPO_Q_CUT_ONLY = true, TOPO_Q_RING_MERGE = 0, TOPO_Q_RING_ASPECT = 6, TOPO_Q_SAFE = true, TOPO_Q_RING2 = true;   // v2.94: thin the cut loop (default off until the fixture passes)
 
 /* LOOPS, EXACT (v2.81a, DECISION 29.09, Zeghreit: "the most exact shape -
    sharp corners stay sharp - but clean topology"). Rebuilding a band over a
@@ -34268,6 +34284,7 @@ function topoQuads(P0, groups, seam, owner, surf, opt) {
       }));
       return { m, who }; };
     const before = dirCount(null).m;
+    let stable = !rep.size;
     for (let round = 0; round < 6 && rep.size; round++) {
       let undo = false;
       groups.forEach(g => g.triangles.forEach(t => {
@@ -34281,8 +34298,10 @@ function topoQuads(P0, groups, seam, owner, surf, opt) {
         if (n < 2 || (before.get(key) || 0) >= n) return;
         if (undoTris(Array.from(after.who.get(key)))) undo = true;
       });
-      if (!undo) break;
+      if (!undo) { stable = true; break; }
     }
+    // six rounds and still undoing: the thinning was not proven safe, so it goes altogether (found by fable)
+    if (!stable && thinKeys.size) thinKeys.forEach(k => rep.delete(k));
     snapped = rep.size; thinRep = rep;
     if (rep.size) {
       groups = groups.map(g => {
@@ -34961,6 +34980,8 @@ function topoRingBuild(c, expand, P, addP, pt, snap) {
         const n = [(B[1] - A[1]) * (D[2] - A[2]) - (B[2] - A[2]) * (D[1] - A[1]), (B[2] - A[2]) * (D[0] - A[0]) - (B[0] - A[0]) * (D[2] - A[2]), (B[0] - A[0]) * (D[1] - A[1]) - (B[1] - A[1]) * (D[0] - A[0])];
         const ar = Math.hypot(n[0], n[1], n[2]) || 1, s = onSurface([(A[0] + B[0] + D[0]) / 3, (A[1] + B[1] + D[1]) / 3, (A[2] + B[2] + D[2]) / 3]);
         return Math.abs(n[0] * s.n[0] + n[1] * s.n[1] + n[2] * s.n[2]) / ar; };
+      const sd = [dist(a, b), dist(b, b2), dist(b2, a2), dist(a2, a)], smx = Math.max.apply(null, sd), smn = Math.min.apply(null, sd);
+      if (smn > 0 && smx / smn > TOPO_Q_RING_ASPECT) { P.length = save; return (c.why = 'ring: aspect', null); }
       const d1 = [[a, b, b2], [a, b2, a2]], d2 = [[a, b, a2], [b, b2, a2]];
       faces.push(Math.min(cosOf(d1[0]), cosOf(d1[1])) >= Math.min(cosOf(d2[0]), cosOf(d2[1])) ? d1 : d2);
   }

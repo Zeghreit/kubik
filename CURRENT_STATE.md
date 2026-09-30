@@ -18902,3 +18902,26 @@ because the primitive is upstream of the operation.
   `slider_coalescing` printed a number the harness could not know, and
   `8.palette` counted tones off a cube that has had three colour schemes since
   the note was written. **If a line moves, it moved because the app moved.**
+
+## Boolean seam cleanup for Quads (2.94)
+
+What is on by default (`let` switches next to the v2.81a ones): `TOPO_Q_THIN`,
+`TOPO_Q_CUT_ONLY`, `TOPO_Q_RING2`, `TOPO_Q_SAFE`. Off: `TOPO_Q_SLIDE`, `TOPO_Q_RING_MERGE`
+(0; fable found it can make non-manifold edges). Only the Quads type is touched.
+
+- The cut loop keeps ONLY the points the cutter owns (classified against REAL face outlines,
+  `topoOutline` -> `outl` in `booleanTopoInput`; the old `segs` were coplanar "divisions", not
+  outlines). Points from the body/CDT artifacts merge into them; the count never grows.
+- `topoRingBuild` (before `topoQuadFill`) tries first for an annulus piece: one ring of quads
+  around the cut (aspect <= `TOPO_Q_RING_ASPECT` 6), then a DP-zipped strip to the frozen
+  ring. Any failing gate returns null and the old fill runs.
+- `TOPO_Q_SAFE`: `editableFromCSGResult` runs Quads twice (switches on / off) and keeps the
+  new result only if it rebuilt no fewer pieces, has no new failure but 'kept as cut', no
+  extra open/doubled directed edges, and volume within 0.1 %. On the chest ball it falls back
+  to plain Quads (the frozen host ring passes 0.01 from the cut and folds every fill).
+- Matrix (`MATRIX=1 ROWS=quads,quads+cutring node _meas281.mjs`, env `SEED`, `SKIP`, `MXOUT`):
+  seeds 0-3, ~45 cases: 6-9 better (angle p90 50-60 -> 11-15 on cube/divided cube/cylinder
+  cutters, head), 2-3 flagged (more faces or thinner p90 ratio, angles still better), rest
+  identical. Pre-existing give-ups ("mixed loop", "pinch", "flat map", 3/4 loops, "cut not
+  closed") are NOT fixed.
+

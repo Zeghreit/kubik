@@ -14,7 +14,7 @@ const lib = new Function('THREE', 'const IMPORT_TRI_BUDGET = 40000; const IMPORT
   cut('const CSG_WELD_TOL =', 'const BOOL_OPS') +
   cut('function importWeldKey(', '/* A budget, refused out loud').replace('function mergeCoplanarTriangles(', 'function legacyMerge(') +
   'let captured = null; function mergeCoplanarTriangles(p, t, m) { captured = { positions: p, tris: t, matOf: m }; return legacyMerge(p, t, m); }' +
-  '; return { editableFromCSGResult, topoDivisions, importTriNormal, topoClosestOnTri, TOPO_Q_SPACE, TOPO_X_SPACE, topoQuadCounts, setRing2(v) { TOPO_Q_RING2 = v; }, setCut(v) { TOPO_Q_CUT_ONLY = v; }, setThin(v, t, n, sl) { TOPO_Q_THIN = v; if (t != null) TOPO_Q_THIN_TOL = t; if (n != null) TOPO_Q_THIN_N = n; if (sl != null) TOPO_Q_SLIDE = sl; }, get captured() { return captured; } };')(THREE);
+  '; return { editableFromCSGResult, topoDivisions, importTriNormal, topoClosestOnTri, TOPO_Q_SPACE, TOPO_X_SPACE, topoQuadCounts, setRing2(v) { TOPO_Q_RING2 = v; }, setCut(v) { TOPO_Q_CUT_ONLY = v; }, setSafe(v) { TOPO_Q_SAFE = v; }, setW0(h, m) { TOPO_Q_WIDTHS[0].host = h; if (m != null) TOPO_Q_WIDTHS[0].minor = m; }, setThin(v, t, n, sl) { TOPO_Q_THIN = v; if (t != null) TOPO_Q_THIN_TOL = t; if (n != null) TOPO_Q_THIN_N = n; if (sl != null) TOPO_Q_SLIDE = sl; }, get captured() { return captured; } };')(THREE);
 
 let fails = 0, n = 0;
 // v2.81 Loops: what each case must do beyond the invariant
@@ -160,6 +160,7 @@ function outline(g) { const d = new Set(), nx = new Map(); g.triangles.forEach(t
   const s = nx.keys().next().value, L = [s]; let v = nx.get(s); while (v !== s && L.length < 64) { L.push(v); v = nx.get(v); } return L; }
 const pct = (a, q) => { if (!a.length) return NaN; const s = a.slice().sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(q * s.length))]; };
 function measure(name, a, b, op) {
+  if (process.env.SKIP && new RegExp(process.env.SKIP).test(name)) return;
   if (process.env.ONLY && !new RegExp(process.env.ONLY).test(name)) return;
   const ev = new CSG.Evaluator(); ev.attributes = ['position', 'normal']; ev.useCDTClipping = true; ev.useGroups = true; ev.consolidateGroups = true; ev.removeUnusedMaterials = true;
   const topoIn = [a.userData.topoIn, b.userData.topoIn];
@@ -169,7 +170,9 @@ function measure(name, a, b, op) {
   const baseSig = new Set(base.groups.map(faceSig));
   const V0 = volume(base.groups, base.positions);
   const rows = [];
-  for (const type of process.env.MATRIX ? ['quads', 'quads+cut'] : ['quads', 'quads+thin', 'quads+cut', 'quads+ring2', 'quads+cutring', 'loops']) {
+  for (const type of process.env.MATRIX ? (process.env.ROWS ? process.env.ROWS.split(',') : ['quads', 'quads+cut']) : ['quads', 'quads+thin', 'quads+cut', 'quads+ring2', 'quads+cutring', 'loops']) {
+    if (process.env.WH) lib.setW0(+process.env.WH, process.env.WM != null && process.env.WM !== '' ? +process.env.WM : null);
+    lib.setSafe(!process.env.NOSAFE);
     lib.setRing2(type === 'quads+ring2' || type === 'quads+cutring'); lib.setCut(type === 'quads+cut' || type === 'quads+cutring'); lib.setThin(type === 'quads+thin' || type === 'quads+ring2' || type === 'quads+cut' || type === 'quads+cutring', process.env.TOL ? +process.env.TOL : null, process.env.NN ? +process.env.NN : 0, !!process.env.SLIDE && !type.includes('cut'));
     const ed = lib.editableFromCSGResult(res, topoIn, { type: type.split('+')[0], seed: +(process.env.SEED || 0) });
     const P = ed.positions, G = ed.groups;
