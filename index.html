@@ -32580,7 +32580,7 @@ function editableFromCSGResult(res, topoIn, topoOpt) {
     if (topo && quads) {
       const surf = topoIn.every(t => t.P && t.tri) ? topoIn.map(t => ({ P: t.P, tri: t.tri })) : null;
       const q = topoOpt.type === 'loops' ? topoLoopsExact(positions, topo.groups, seam, owner, surf, { seed: topoOpt.seed | 0 })
-                                         : topoQuads(positions, topo.groups, seam, owner, surf, { seed: topoOpt.seed | 0 });
+                                         : topoQuads(positions, topo.groups, seam, owner, surf, { seed: topoOpt.seed | 0, segs: topoIn.map(t => t.segs) });
       if (q.miss) return { miss: true };
       positions = q.positions;
       topo = { groups: q.groups, dissolved: topo.dissolved, bridged: topo.bridged, frozen: topo.frozen,
@@ -33590,6 +33590,7 @@ const TOPO_Q_ISLAND = 6;                  // faces: an enclosed patch this small
 const TOPO_Q_GRAZE = 0.35;                // a boundary point this close to the cut (per its edge) joins the band
 
 let TOPO_X_STRIP = true, TOPO_SMOOTH = 10, TOPO_ROW_GRADE = true, TOPO_MVC = true, TOPO_MVC_MAXANG = 150 * Math.PI / 180, TOPO_MVC_FLOOR = 0.25;   // v2.81a switches (let: the fixtures A/B them)
+let TOPO_Q_THIN = false, TOPO_Q_THIN_TOL = 0.03, TOPO_Q_THIN_MIN = 8;   // v2.94: thin the cut loop (default off until the fixture passes)
 
 /* LOOPS, EXACT (v2.81a, DECISION 29.09, Zeghreit: "the most exact shape -
    sharp corners stay sharp - but clean topology"). Rebuilding a band over a
@@ -34050,6 +34051,18 @@ function topoQuadMatch(small, big, pos, lam, cost) {
   return out;
 }
 
+function topoMinorInput(surf) {
+  if (!surf || surf.length < 2) return -1;
+  const areas = surf.map(sf => { let a = 0; const T = sf.tri, SP = sf.P;
+    for (let k = 0; k + 2 < T.length; k += 3) {
+      const i = T[k] * 3, j = T[k + 1] * 3, l = T[k + 2] * 3;
+      const ux = SP[j] - SP[i], uy = SP[j + 1] - SP[i + 1], uz = SP[j + 2] - SP[i + 2];
+      const vx = SP[l] - SP[i], vy = SP[l + 1] - SP[i + 1], vz = SP[l + 2] - SP[i + 2];
+      a += Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) / 2;
+    }
+    return a; });
+  return areas.indexOf(Math.min.apply(null, areas));
+}
 function topoQuads(P0, groups, seam, owner, surf, opt) {
   opt = opt || {};
   const seed = Math.max(0, opt.seed | 0);
@@ -34089,6 +34102,118 @@ function topoQuads(P0, groups, seam, owner, surf, opt) {
       if (!cell.has(k)) cell.set(k, []);
       cell.get(k).push(v);
     });
+    /* THE CUT, THINNED (v2.94). The cut loop has a point wherever an edge of
+       either input crosses a face of the other, plus the triangulation's own
+       artifacts, and they land a hair apart: 51 points on the chest ball,
+       neighbours 0.0001 to 0.051 apart, and the ring of faces around a cluster
+       fans. Points go one at a time, each merged into a neighbour ALONG the
+       cut, in the order: artifacts (on no input edge), the host's crossings,
+       then the cutter's own - its shape has priority, the crater wall matters
+       more than the body's ring. A point goes only while every point it or its
+       earlier merges stood for stays within TOPO_Q_THIN_TOL of the loop's
+       radius from the chord that replaces it. The merges join `rep` and run
+       through the same two guards below. */
+    const thinKeys = new Set();       // merges the thinning made: the guards undo these before the snap's own
+    const undoTris = list => { const all = [].concat.apply([], list), th = all.filter(v => thinKeys.has(v) && rep.has(v)); let ch = false; (th.length ? th : all).forEach(v => { if (rep.delete(v)) ch = true; }); return ch; };
+    if (TOPO_Q_THIN && opt.segs && surf && surf.length >= 2) {
+      const cutter = topoMinorInput(surf), host = cutter === 0 ? 1 : 0;
+      const nV = P.length / 3;
+      const rootOf = v => { const r = rep.get(v); return r === undefined ? v : r; };
+      const sideOf = groups.map(g => {
+        const votes = new Map();
+        g.triangles.forEach(t => t.forEach(v => { const o = owner[v]; if (o >= 0) votes.set(o, (votes.get(o) || 0) + 1); }));
+        let best = -1, bv = 0;
+        votes.forEach((c, o) => { if (c > bv || (c === bv && o < best)) { bv = c; best = o; } });
+        return best;
+      });
+      // A cut edge: two seam points, faces of BOTH inputs on it (a diagonal inside one face has one side).
+      const eg = new Map();
+      groups.forEach((g, gi) => {
+        if (sideOf[gi] < 0) return;
+        g.triangles.forEach(t => {
+          const u = t.map(rootOf);
+          for (let k = 0; k < 3; k++) {
+            const a = u[k], b = u[(k + 1) % 3];
+            if (a === b || !seam.has(a) || !seam.has(b)) continue;
+            const key = a < b ? a * nV + b : b * nV + a;
+            let s = eg.get(key);
+            if (!s) eg.set(key, s = new Set());
+            s.add(sideOf[gi]);
+          }
+        });
+      });
+      const adj = new Map();
+      const link = (a, b) => { let s = adj.get(a); if (!s) adj.set(a, s = new Set()); s.add(b); };
+      eg.forEach((sd, key) => { if (sd.size < 2) return; const a = Math.floor(key / nV), b = key - a * nV; link(a, b); link(b, a); });
+      const dSeg = (p, a, b) => {
+        const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], L2 = ux * ux + uy * uy + uz * uz;
+        let w = L2 > 0 ? ((p[0] - a[0]) * ux + (p[1] - a[1]) * uy + (p[2] - a[2]) * uz) / L2 : 0;
+        w = w < 0 ? 0 : w > 1 ? 1 : w;
+        return Math.hypot(p[0] - a[0] - w * ux, p[1] - a[1] - w * uy, p[2] - a[2] - w * uz);
+      };
+      const onEdges = (segs, p, tol) => {
+        for (let s = 0; s + 5 < segs.length; s += 6)
+          if (dSeg(p, [segs[s], segs[s + 1], segs[s + 2]], [segs[s + 3], segs[s + 4], segs[s + 5]]) <= tol) return true;
+        return false;
+      };
+      const thinLoop = lp => {
+        const m = lp.length;
+        const pts = lp.map(v => [P[v * 3], P[v * 3 + 1], P[v * 3 + 2]]);
+        let cx = 0, cy = 0, cz = 0;
+        pts.forEach(q => { cx += q[0]; cy += q[1]; cz += q[2]; });
+        cx /= m; cy /= m; cz /= m;
+        let R = 0;
+        pts.forEach(q => { R += Math.hypot(q[0] - cx, q[1] - cy, q[2] - cz); });
+        R /= m;
+        if (!(R > 0)) return;
+        const tol = TOPO_Q_THIN_TOL * R, tolOn = 1e-4 * R;
+        const tier = pts.map(q => onEdges(opt.segs[cutter], q, tolOn) ? 2 : onEdges(opt.segs[host], q, tolOn) ? 1 : 0);
+        const prev = pts.map((_, i) => (i + m - 1) % m), next = pts.map((_, i) => (i + 1) % m);
+        const alive = new Uint8Array(m).fill(1);
+        let left = m;
+        while (left > TOPO_Q_THIN_MIN) {
+          let bk = -1, bt = 9, bd = Infinity;
+          for (let k = 0; k < m; k++) {
+            if (!alive[k] || tier[k] > bt) continue;
+            const p = prev[k], n = next[k];
+            let d = 0;
+            for (let j = (p + 1) % m; j !== n; j = (j + 1) % m) d = Math.max(d, dSeg(pts[j], pts[p], pts[n]));
+            if (d > tol) continue;
+            if (tier[k] < bt || d < bd) { bk = k; bt = tier[k]; bd = d; }
+          }
+          if (bk < 0) break;
+          const p = prev[bk], n = next[bk];
+          const lp2 = (a, b) => Math.hypot(pts[a][0] - pts[b][0], pts[a][1] - pts[b][1], pts[a][2] - pts[b][2]);
+          const to = tier[p] > tier[n] ? p : tier[n] > tier[p] ? n : (lp2(bk, p) <= lp2(bk, n) ? p : n);
+          rep.set(lp[bk], lp[to]); thinKeys.add(lp[bk]);
+          alive[bk] = 0; next[p] = n; prev[n] = p; left--;
+        }
+        for (let k = 0; k < m; k++) if (!alive[k]) {          // one level: a survivor may itself have gone later
+          let r = rep.get(lp[k]);
+          while (rep.has(r)) r = rep.get(r);
+          rep.set(lp[k], r);
+        }
+      };
+      const seenV = new Set();
+      adj.forEach((_, s0) => {
+        if (seenV.has(s0)) return;
+        const comp = [], st = [s0];
+        seenV.add(s0);
+        while (st.length) { const v = st.pop(); comp.push(v); adj.get(v).forEach(w => { if (!seenV.has(w)) { seenV.add(w); st.push(w); } }); }
+        if (comp.length < 12 || comp.some(v => adj.get(v).size !== 2)) return;     // a simple closed loop only
+        const lp = [];
+        let prevV = -1, cur = s0;
+        do {
+          lp.push(cur);
+          const nb = Array.from(adj.get(cur));
+          const nx = nb[0] !== prevV ? nb[0] : nb[1];
+          prevV = cur; cur = nx;
+        } while (cur !== s0 && lp.length <= comp.length);
+        if (cur === s0 && lp.length === comp.length) thinLoop(lp);
+      });
+      // a snap merge may point at a root the thinning then merged away: one level again
+      rep.forEach((r, k) => { let x = r, n = 0; while (rep.has(x) && n++ < 64) x = rep.get(x); if (x !== r) rep.set(k, x); });
+    }
     const tn = t => { const a = t[0] * 3, b = t[1] * 3, c = t[2] * 3;
       const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2], vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
       return [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx]; };
@@ -34110,12 +34235,12 @@ function topoQuads(P0, groups, seam, owner, surf, opt) {
         const u = t.map(v => { const r = rep.get(v); return r !== undefined ? r : v; });
         if (u[0] === u[1] || u[1] === u[2] || u[0] === u[2] || (u[0] === t[0] && u[1] === t[1] && u[2] === t[2])) return;
         const n0 = tn(t), n1 = tn(u);
-        if (n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2] <= 0) { t.forEach(v => { if (rep.delete(v)) undo = true; }); }
+        if (n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2] <= 0) { if (undoTris([t])) undo = true; }
       }));
       const after = dirCount(rep);
       after.m.forEach((n, key) => {
         if (n < 2 || (before.get(key) || 0) >= n) return;
-        after.who.get(key).forEach(t => t.forEach(v => { if (rep.delete(v)) undo = true; }));
+        if (undoTris(Array.from(after.who.get(key)))) undo = true;
       });
       if (!undo) break;
     }
@@ -34165,18 +34290,7 @@ function topoQuads(P0, groups, seam, owner, surf, opt) {
   /* The smaller input keeps more of itself: its surface area, from the
      inputs' own triangles. A face away from the cut has corners of one input
      only, so its side is a plain vote. */
-  let minor = -1;
-  if (surf && surf.length >= 2) {
-    const areas = surf.map(sf => { let a = 0; const T = sf.tri, SP = sf.P;
-      for (let k = 0; k + 2 < T.length; k += 3) {
-        const i = T[k] * 3, j = T[k + 1] * 3, l = T[k + 2] * 3;
-        const ux = SP[j] - SP[i], uy = SP[j + 1] - SP[i + 1], uz = SP[j + 2] - SP[i + 2];
-        const vx = SP[l] - SP[i], vy = SP[l + 1] - SP[i + 1], vz = SP[l + 2] - SP[i + 2];
-        a += Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) / 2;
-      }
-      return a; });
-    minor = areas.indexOf(Math.min.apply(null, areas));
-  }
+  const minor = topoMinorInput(surf);
   const voteSide = gi => {
     const votes = new Map();
     groups[gi].triangles.forEach(t => t.forEach(v => { const o = owner[v]; if (o >= 0) votes.set(o, (votes.get(o) || 0) + 1); }));
