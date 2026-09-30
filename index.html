@@ -33590,7 +33590,7 @@ const TOPO_Q_ISLAND = 6;                  // faces: an enclosed patch this small
 const TOPO_Q_GRAZE = 0.35;                // a boundary point this close to the cut (per its edge) joins the band
 
 let TOPO_X_STRIP = true, TOPO_SMOOTH = 10, TOPO_ROW_GRADE = true, TOPO_MVC = true, TOPO_MVC_MAXANG = 150 * Math.PI / 180, TOPO_MVC_FLOOR = 0.25;   // v2.81a switches (let: the fixtures A/B them)
-let TOPO_Q_THIN = false, TOPO_Q_THIN_TOL = 0.03, TOPO_Q_THIN_MIN = 8;   // v2.94: thin the cut loop (default off until the fixture passes)
+let TOPO_Q_THIN = false, TOPO_Q_THIN_TOL = 0.03, TOPO_Q_THIN_MIN = 8, TOPO_Q_THIN_N = 0, TOPO_Q_SLIDE = false;   // v2.94: thin the cut loop (default off until the fixture passes)
 
 /* LOOPS, EXACT (v2.81a, DECISION 29.09, Zeghreit: "the most exact shape -
    sharp corners stay sharp - but clean topology"). Rebuilding a band over a
@@ -34071,6 +34071,8 @@ function topoQuads(P0, groups, seam, owner, surf, opt) {
   const P = Array.from(P0);
   const nV0 = P0.length / 3;
   let snapped = 0;
+  let thinJobs = [];
+  let thinRep = new Map();
   /* CRACKS ALONG THE CUT CLOSED FIRST. The evaluator can leave two cut
      points a hair apart - 1.3e-4 measured, just past the 1e-4 weld grid - and
      the faces on either side end on different ones: an open seam, and no
@@ -34166,12 +34168,13 @@ function topoQuads(P0, groups, seam, owner, surf, opt) {
         pts.forEach(q => { R += Math.hypot(q[0] - cx, q[1] - cy, q[2] - cz); });
         R /= m;
         if (!(R > 0)) return;
-        const tol = TOPO_Q_THIN_TOL * R, tolOn = 1e-4 * R;
+        const tol = TOPO_Q_THIN_N > 0 ? Infinity : TOPO_Q_THIN_TOL * R, tolOn = 1e-4 * R;
+        thinJobs.push({ lp: lp.slice(), pts: pts.map(q => q.slice()) });
         const tier = pts.map(q => onEdges(opt.segs[cutter], q, tolOn) ? 2 : onEdges(opt.segs[host], q, tolOn) ? 1 : 0);
         const prev = pts.map((_, i) => (i + m - 1) % m), next = pts.map((_, i) => (i + 1) % m);
         const alive = new Uint8Array(m).fill(1);
         let left = m;
-        while (left > TOPO_Q_THIN_MIN) {
+        while (left > Math.max(TOPO_Q_THIN_MIN, TOPO_Q_THIN_N)) {
           let bk = -1, bt = 9, bd = Infinity;
           for (let k = 0; k < m; k++) {
             if (!alive[k] || tier[k] > bt) continue;
@@ -34244,7 +34247,7 @@ function topoQuads(P0, groups, seam, owner, surf, opt) {
       });
       if (!undo) break;
     }
-    snapped = rep.size;
+    snapped = rep.size; thinRep = rep;
     if (rep.size) {
       groups = groups.map(g => {
         let ch = false;
@@ -34255,6 +34258,61 @@ function topoQuads(P0, groups, seam, owner, surf, opt) {
         });
         return ch ? { triangles: T, mat: g.mat } : g;
       });                    // an emptied face keeps its place, so indices still name the same faces
+    }
+  }
+  /* THE SURVIVORS, EVENLY SPACED (v2.94). What is left of a thinned cut slides
+     along the cut to equal steps of arc length and is pulled onto BOTH input
+     surfaces (alternating closest points), so the ring is even and still on
+     the true cut. A slide that flips a triangle is taken back. */
+  if (TOPO_Q_THIN && TOPO_Q_SLIDE && thinJobs.length && surf && surf.length >= 2) {
+    const o3 = [0, 0, 0];
+    const closestOn = (sf, q) => {
+      let bd = Infinity, best = q;
+      const T = sf.tri, SP = sf.P;
+      for (let k = 0; k + 2 < T.length; k += 3) {
+        const i = T[k] * 3, j = T[k + 1] * 3, l = T[k + 2] * 3;
+        topoClosestOnTri(q, [SP[i], SP[i + 1], SP[i + 2]], [SP[j], SP[j + 1], SP[j + 2]], [SP[l], SP[l + 1], SP[l + 2]], o3);
+        const d = (o3[0] - q[0]) ** 2 + (o3[1] - q[1]) ** 2 + (o3[2] - q[2]) ** 2;
+        if (d < bd) { bd = d; best = [o3[0], o3[1], o3[2]]; }
+      }
+      return best;
+    };
+    const from = new Map();
+    thinJobs.forEach(job => {
+      const alive = job.lp.filter(v => !thinRep.has(v)), n = alive.length, pts = job.pts, m = pts.length;
+      if (n < 4) return;
+      const cum = [0];
+      for (let i = 1; i <= m; i++) cum.push(cum[i - 1] + Math.hypot(pts[i % m][0] - pts[i - 1][0], pts[i % m][1] - pts[i - 1][1], pts[i % m][2] - pts[i - 1][2]));
+      const Ltot = cum[m], s0 = cum[job.lp.indexOf(alive[0])];
+      const at = sv => {
+        sv = ((sv % Ltot) + Ltot) % Ltot;
+        let i = 0;
+        while (i < m - 1 && cum[i + 1] < sv) i++;
+        const t = (sv - cum[i]) / ((cum[i + 1] - cum[i]) || 1), b = pts[(i + 1) % m];
+        return [pts[i][0] + t * (b[0] - pts[i][0]), pts[i][1] + t * (b[1] - pts[i][1]), pts[i][2] + t * (b[2] - pts[i][2])];
+      };
+      alive.forEach((v, i) => {
+        let q = at(s0 + Ltot * i / n);
+        for (let it = 0; it < 8; it++) { q = closestOn(surf[0], q); q = closestOn(surf[1], q); }
+        from.set(v, [P[v * 3], P[v * 3 + 1], P[v * 3 + 2]]);
+        P[v * 3] = q[0]; P[v * 3 + 1] = q[1]; P[v * 3 + 2] = q[2];
+      });
+    });
+    const nrm = (t, old) => {
+      const p = v => old && from.has(v) ? from.get(v) : [P[v * 3], P[v * 3 + 1], P[v * 3 + 2]];
+      const a = p(t[0]), b = p(t[1]), c = p(t[2]);
+      const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+      return [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
+    };
+    for (let round = 0; round < 6 && from.size; round++) {
+      const back = new Set();
+      groups.forEach(g => g.triangles.forEach(t => {
+        if (!t.some(v => from.has(v))) return;
+        const n0 = nrm(t, true), n1 = nrm(t, false);
+        if (n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2] <= 0) t.forEach(v => { if (from.has(v)) back.add(v); });
+      }));
+      if (!back.size) break;
+      back.forEach(v => { const f = from.get(v); P[v * 3] = f[0]; P[v * 3 + 1] = f[1]; P[v * 3 + 2] = f[2]; from.delete(v); });
     }
   }
   const pt = i => [P[i * 3], P[i * 3 + 1], P[i * 3 + 2]];

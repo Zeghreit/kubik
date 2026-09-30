@@ -14,7 +14,7 @@ const lib = new Function('THREE', 'const IMPORT_TRI_BUDGET = 40000; const IMPORT
   cut('const CSG_WELD_TOL =', 'const BOOL_OPS') +
   cut('function importWeldKey(', '/* A budget, refused out loud').replace('function mergeCoplanarTriangles(', 'function legacyMerge(') +
   'let captured = null; function mergeCoplanarTriangles(p, t, m) { captured = { positions: p, tris: t, matOf: m }; return legacyMerge(p, t, m); }' +
-  '; return { editableFromCSGResult, topoDivisions, importTriNormal, topoClosestOnTri, TOPO_Q_SPACE, TOPO_X_SPACE, topoQuadCounts, setThin(v, t) { TOPO_Q_THIN = v; if (t != null) TOPO_Q_THIN_TOL = t; }, get captured() { return captured; } };')(THREE);
+  '; return { editableFromCSGResult, topoDivisions, importTriNormal, topoClosestOnTri, TOPO_Q_SPACE, TOPO_X_SPACE, topoQuadCounts, setThin(v, t, n, sl) { TOPO_Q_THIN = v; if (t != null) TOPO_Q_THIN_TOL = t; if (n != null) TOPO_Q_THIN_N = n; if (sl != null) TOPO_Q_SLIDE = sl; }, get captured() { return captured; } };')(THREE);
 
 let fails = 0, n = 0;
 // v2.81 Loops: what each case must do beyond the invariant
@@ -163,7 +163,7 @@ function measure(name, a, b, op) {
   const V0 = volume(base.groups, base.positions);
   const rows = [];
   for (const type of ['quads', 'quads+thin', 'loops']) {
-    lib.setThin(type === 'quads+thin', process.env.TOL ? +process.env.TOL : null);
+    lib.setThin(type === 'quads+thin', process.env.TOL ? +process.env.TOL : null, process.env.NN ? +process.env.NN : 0, !!process.env.SLIDE);
     const ed = lib.editableFromCSGResult(res, topoIn, { type: type.split('+')[0], seed: +(process.env.SEED || 0) });
     const P = ed.positions, G = ed.groups;
     const nf = G.filter(g => !baseSig.has(faceSig(g)));
