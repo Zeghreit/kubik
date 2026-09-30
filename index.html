@@ -34051,6 +34051,26 @@ function topoQuadMatch(small, big, pos, lam, cost) {
   return out;
 }
 
+/* v2.94: the point of an input surface nearest q, and a point pulled onto
+   BOTH surfaces of a cut (alternating closest points, converging on the cut
+   curve itself). Points the ring stage adds on the cut go through it, so they
+   sit on the true curve instead of on a chord of it. */
+function topoClosestOnSurf(sf, q) {
+  let bd = Infinity, best = q;
+  const o3 = [0, 0, 0], T = sf.tri, SP = sf.P;
+  for (let k = 0; k + 2 < T.length; k += 3) {
+    const i = T[k] * 3, j = T[k + 1] * 3, l = T[k + 2] * 3;
+    topoClosestOnTri(q, [SP[i], SP[i + 1], SP[i + 2]], [SP[j], SP[j + 1], SP[j + 2]], [SP[l], SP[l + 1], SP[l + 2]], o3);
+    const d = (o3[0] - q[0]) ** 2 + (o3[1] - q[1]) ** 2 + (o3[2] - q[2]) ** 2;
+    if (d < bd) { bd = d; best = [o3[0], o3[1], o3[2]]; }
+  }
+  return best;
+}
+function topoSnapBoth(surf, P, v) {
+  let q = [P[v * 3], P[v * 3 + 1], P[v * 3 + 2]];
+  for (let it = 0; it < 8; it++) { q = topoClosestOnSurf(surf[0], q); q = topoClosestOnSurf(surf[1], q); }
+  P[v * 3] = q[0]; P[v * 3 + 1] = q[1]; P[v * 3 + 2] = q[2];
+}
 function topoMinorInput(surf) {
   if (!surf || surf.length < 2) return -1;
   const areas = surf.map(sf => { let a = 0; const T = sf.tri, SP = sf.P;
@@ -34649,6 +34669,7 @@ function topoQuads(P0, groups, seam, owner, surf, opt) {
       for (let i = 0; i < L.length; i++) { const d = dist(L[i], L[(i + 1) % L.length]); if (d > bl) { bl = d; bi = i; } }
       const a = L[bi], b = L[(bi + 1) % L.length];
       const id = addP([(P[a * 3] + P[b * 3]) / 2, (P[a * 3 + 1] + P[b * 3 + 1]) / 2, (P[a * 3 + 2] + P[b * 3 + 2]) / 2]);
+      if (TOPO_Q_THIN && TOPO_Q_SLIDE && surf && surf.length >= 2) topoSnapBoth(surf, P, id);
       L.splice(bi + 1, 0, id);
     }
     rec.full = L;
