@@ -18934,3 +18934,6 @@ Seat 7 of the 2D world ring ('Set size') opens a small panel in #uvViewCard: 1 t
 2.97: Texel view - 2D world ring seat 1, a switch (no history step). Islands tinted by density vs the weighted median (blue sparse, green equal, red dense, full colour at 4x) and labelled in px/m at uvSizeRes. 2D already had cut (Mark seam on edges), point Weld (uvWeldSelection) and Merge islands - the old 'cut/weld remain' note is obsolete.
 
 2.98: Smooth (smoothApply/smoothSelection/smoothVerts). Pending-op bar: strength slider 0..1, pass counter, Keep volume toggle (HC correction, off by default - it bulges sharp coarse meshes; Taubin was tried and grew a cube 12 %). Moves only picked points, open-border points pinned, uniform weights. Vertex ring seat 5 is now a Flow door (Set flow, Smooth); Face Surface door seat 3 = Smooth. Edge Flow door is full - not reachable from Edge mode yet. Check: _smooth298chk.
+
+## 2.99 Light set
+ENV_PRESETS replaced: product (default), gallery, clay, cinema, daylight, dusk. Old ids (studio, softbox, rim, overcast, sunset, neutral) map via ENV_ALIAS in envPreset, so old saves load. Values are first-pass, tuned by eye on _look.py renders. Materials rework (physical props) not started.

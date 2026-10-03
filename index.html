@@ -3174,7 +3174,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.98</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.99</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -3538,29 +3538,39 @@ const ENV_W = 512, ENV_H = 256;
    az/el in degrees, w/h the angular size in degrees, soft 0..1 how much of
    the panel is edge falloff, int the radiance MULTIPLIER - values well
    above 1 are the entire point of an HDR environment. */
+/* THE LOOK SET (v2.99). Replaces the six presets the app shipped with (Studio, Softbox, Rim,
+   Overcast, Sunset, Neutral). Each is a LOOK rather than a place: what it is for is in the name.
+   Old ids still resolve through ENV_ALIAS, so a saved scene keeps the nearest look. */
 const ENV_PRESETS = [
-  { id: 'studio', name: 'Studio', sky: '#8fa6c4', ground: '#2b2622', ambient: 0.35, lights: [
-      { az:  35, el: 28, w: 55, h: 70, soft: 0.35, color: '#fff4e6', int: 14 },
-      { az: -70, el: 10, w: 80, h: 55, soft: 0.60, color: '#dbe8ff', int: 3.2 },
-      { az: 170, el: 35, w: 40, h: 25, soft: 0.30, color: '#ffffff', int: 9 } ] },
-  { id: 'softbox', name: 'Softbox', sky: '#aab4c0', ground: '#3a3a3c', ambient: 0.5, lights: [
-      { az:  15, el: 22, w: 110, h: 95, soft: 0.75, color: '#fffaf2', int: 7 },
-      { az: -140, el: 15, w: 90, h: 70, soft: 0.80, color: '#eaf0ff', int: 2 } ] },
-  { id: 'rim', name: 'Rim', sky: '#20242c', ground: '#141416', ambient: 0.18, lights: [
-      { az: 145, el: 22, w: 30, h: 50, soft: 0.25, color: '#ffffff', int: 26 },
-      { az: -150, el: 30, w: 26, h: 40, soft: 0.25, color: '#cfe0ff', int: 16 },
-      { az:   0, el: 12, w: 70, h: 60, soft: 0.70, color: '#8090a8', int: 1.2 } ] },
-  { id: 'overcast', name: 'Overcast', sky: '#cdd6e0', ground: '#4c4a47', ambient: 1.15, lights: [
-      { az: 40, el: 65, w: 150, h: 120, soft: 0.95, color: '#ffffff', int: 1.6 } ] },
-  { id: 'sunset', name: 'Sunset', sky: '#3f5a86', ground: '#2a1c14', ambient: 0.4, lights: [
-      { az:  60, el:  6, w: 30, h: 22, soft: 0.30, color: '#ffb066', int: 30 },
-      { az:  60, el: 20, w: 120, h: 60, soft: 0.90, color: '#ff9a5a', int: 3 },
-      { az: -120, el: 40, w: 130, h: 90, soft: 0.90, color: '#7fa0d8', int: 2.2 } ] },
-  { id: 'neutral', name: 'Neutral', sky: '#9a9a9a', ground: '#6e6e6e', ambient: 1.0, lights: [
-      { az: 30, el: 40, w: 60, h: 60, soft: 0.85, color: '#ffffff', int: 2.2 } ] }
+  { id: 'product', name: 'Product', sky: '#dfe6ee', ground: '#7d8086', ambient: 0.5, lights: [
+      { az:   0, el: 72, w: 130, h: 70, soft: 0.55, color: '#ffffff', int: 6 },
+      { az: -62, el: 14, w: 16, h: 78, soft: 0.30, color: '#ffffff', int: 20 },
+      { az:  62, el: 14, w: 16, h: 78, soft: 0.30, color: '#fff8ee', int: 20 },
+      { az:   0, el:  4, w: 100, h: 30, soft: 0.80, color: '#eef3ff', int: 1.8 } ] },
+  { id: 'gallery', name: 'Gallery', sky: '#cfc9c4', ground: '#4a4440', ambient: 0.55, lights: [
+      { az:  10, el: 18, w: 130, h: 100, soft: 0.85, color: '#fff3e6', int: 6.5 },
+      { az: -30, el: 32, w: 12, h: 12, soft: 0.25, color: '#ffffff', int: 26 },
+      { az:  34, el: 30, w: 12, h: 12, soft: 0.25, color: '#fff0dd', int: 22 },
+      { az: 180, el: 35, w: 120, h: 60, soft: 0.80, color: '#dfe6f5', int: 1.4 } ] },
+  { id: 'clay', name: 'Clay', sky: '#7f8fa8', ground: '#3a312b', ambient: 0.4, lights: [
+      { az:  40, el: 35, w: 70, h: 70, soft: 0.50, color: '#ffe0c0', int: 9 },
+      { az: -80, el: 10, w: 90, h: 80, soft: 0.70, color: '#bcd3ff', int: 2.4 },
+      { az: 160, el: 40, w: 40, h: 20, soft: 0.30, color: '#ffffff', int: 10 } ] },
+  { id: 'cinema', name: 'Cinema', sky: '#0d1220', ground: '#07070a', ambient: 0.1, lights: [
+      { az: 120, el: 15, w: 18, h: 40, soft: 0.20, color: '#ff9a4d', int: 40 },
+      { az: -125, el: 25, w: 22, h: 50, soft: 0.25, color: '#4fd6ff', int: 24 },
+      { az:   0, el: 10, w: 80, h: 50, soft: 0.80, color: '#6a7a96', int: 0.9 } ] },
+  { id: 'daylight', name: 'Daylight', sky: '#a9c7ee', ground: '#6b6258', ambient: 0.9, lights: [
+      { az: 50, el: 48, w: 14, h: 14, soft: 0.15, color: '#fff1d6', int: 60 },
+      { az: -120, el: 40, w: 140, h: 90, soft: 0.90, color: '#cfe0ff', int: 1.6 } ] },
+  { id: 'dusk', name: 'Dusk', sky: '#4b5c8f', ground: '#2a1c14', ambient: 0.35, lights: [
+      { az:  70, el:  8, w: 26, h: 20, soft: 0.30, color: '#ffb072', int: 34 },
+      { az: -110, el: 30, w: 120, h: 80, soft: 0.90, color: '#8aa0d8', int: 2 } ] }
 ];
+const ENV_ALIAS = { studio: 'product', softbox: 'gallery', rim: 'cinema', overcast: 'daylight', sunset: 'dusk', neutral: 'product' };
+const ENV_DEFAULT = 'product';
 function envPreset(id) {
-  return ENV_PRESETS.find(p => p.id === id) || ENV_PRESETS[0];
+  return ENV_PRESETS.find(p => p.id === (ENV_ALIAS[id] || id)) || ENV_PRESETS[0];
 }
 
 /* One equirect radiance map, as FLOAT data. Float is not a nicety: the HDR
@@ -4924,7 +4934,7 @@ const App = {
      project file - not on a material, even though materials are what it
      most visibly affects. rotation is in DEGREES on purpose: the same
      lesson as autoSmoothAngleDeg, a bare number with no unit is a trap. */
-  env: { preset: 'studio', rotation: 0, intensity: 1 },
+  env: { preset: 'product', rotation: 0, intensity: 1 },
   shadeSmooth: false,  // simple on/off toggle, not a readout of mixed per-face state - matches applyFinishToSelection's cycling approach
   /* Snapping could be switched on but never adjusted: the amounts were
      module constants. Rotation is held in DEGREES because that is what the
@@ -36652,7 +36662,7 @@ function restoreDoc(doc, opts = {}) {
     /* A file written before a2.22 carries no lighting. Without this it
        inherits whatever the last project set, so the same file opens
        differently depending on what you looked at first. */
-    App.env.preset = 'studio';
+    App.env.preset = ENV_DEFAULT;
     App.env.rotation = 0;
     App.env.intensity = 1;
     applyEnvironment();
