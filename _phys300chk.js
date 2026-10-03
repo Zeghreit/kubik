@@ -35,7 +35,7 @@
     const ma = mat0(A1), mb = mat0(B1), mc = mat0(C1);
     ok('2.0 class is Physical', ma.isMeshPhysicalMaterial && mb.isMeshPhysicalMaterial && mc.isMeshPhysicalMaterial, ma.type + '/' + mb.type + '/' + mc.type);
     ok('2.1 lacquer coat', ma.clearcoat === 1 && Math.abs(ma.clearcoatRoughness - 0.04) < 1e-9, ma.clearcoat + ' ' + ma.clearcoatRoughness);
-    ok('2.2 velvet sheen', mb.sheen === 1 && mb.sheenColor.getHexString() === 'c98aa0' && Math.abs(mb.sheenRoughness - 0.55) < 1e-9 && Math.abs(mb.specularIntensity - 0.3) < 1e-9,
+    ok('2.2 velvet sheen', mb.sheen === 1 && mb.sheenColor.getHexString() === 'b48cff' && Math.abs(mb.sheenRoughness - 0.55) < 1e-9 && Math.abs(mb.specularIntensity - 0.3) < 1e-9,
       mb.sheen + ' ' + mb.sheenColor.getHexString() + ' ' + mb.sheenRoughness + ' ' + mb.specularIntensity);
     ok('2.3 gold is plain metal', mc.metalness === 1 && mc.clearcoat === 0 && mc.sheen === 0 && mc.specularIntensity === 1);
 
@@ -61,7 +61,7 @@
     if (A2 && B2) {
       const m1 = mat0(A2), m2 = mat0(B2);
       ok('4.3 coat survives', m1.isMeshPhysicalMaterial && m1.clearcoat === 1, m1.type + ' ' + m1.clearcoat);
-      ok('4.4 sheen survives', m2.isMeshPhysicalMaterial && m2.sheen === 1 && m2.sheenColor.getHexString() === 'c98aa0', m2.sheen + ' ' + m2.sheenColor.getHexString());
+      ok('4.4 sheen survives', m2.isMeshPhysicalMaterial && m2.sheen === 1 && m2.sheenColor.getHexString() === 'b48cff', m2.sheen + ' ' + m2.sheenColor.getHexString());
       ok('4.5 finishes ids intact', (A2.mesh.userData.finishes || {})[0] === 'lacquer' && (B2.mesh.userData.finishes || {})[0] === 'velvet', JSON.stringify(A2.mesh.userData.finishes));
     }
     ok('4.6 no duplicate library entries', K.MATERIALS.size === nBefore && importedNames().length === 0, K.MATERIALS.size + ' vs ' + nBefore + ' ' + importedNames().join(','));
@@ -140,7 +140,7 @@
     await wait(200);
     const dr = K.MATERIALS.get('lacquer');
     ok('8.5 Reset brings the coat back and clears the sheen', dr.clearcoat === 1 && !(dr.sheen > 0), JSON.stringify({ c: dr.clearcoat, s: dr.sheen, sc: dr.sheenColor }));
-    ok('8.6 and the signature is stock again', K.materialDefSig(dr) === K.materialDefSig(Object.assign({ id: 'lacquer', preset: true }, K.MATERIAL_DEFAULTS.lacquer)));
+    ok('8.6 and the signature is stock again', K.materialDefSig(dr) === K.materialDefSig(Object.assign({ id: 'lacquer', preset: true }, K.MATERIAL_DEFAULTS.lacquer, { masks: K.presetMasks ? K.presetMasks(K.MATERIAL_DEFAULTS.lacquer) : [] })));
 
     /* 9. glTF */
     mark('gltf');
@@ -170,11 +170,31 @@
       K.openMatEditor('steelworn'); await wait(150);
       document.getElementById('meReset').click(); await wait(300);
       const dr2 = K.MATERIALS.get('steelworn');
-      ok('11.4 Reset brings the preset masks back, not an empty list', dr2.masks.length === 3 && Math.abs(dr2.masks[0].amount - 0.6) < 1e-9, dr2.masks.length + ' ' + dr2.masks[0].amount);
-      ok('11.5 and the signature is stock again', K.materialDefSig(dr2) === stock);
+      ok('11.4 Reset brings the preset masks back, not an empty list', dr2.masks.length === 3 && Math.abs(dr2.masks[0].amount - 0.8) < 1e-9, dr2.masks.length + ' ' + dr2.masks[0].amount);
+      { const a1 = K.materialDefSig(dr2); let at = 0; while (at < a1.length && a1[at] === stock[at]) at++; ok('11.5 and the signature is stock again', a1 === stock, 'differs at ' + at + ': ' + stock.slice(Math.max(0, at - 40), at + 60) + ' <> ' + a1.slice(Math.max(0, at - 40), at + 60)); }
       const lib2 = JSON.parse(localStorage.getItem(K.MATLIB_KEY));
       ok('11.6 an untouched preset with masks writes no override', !(lib2.presetOverrides && lib2.presetOverrides.steelworn));
     } catch (e) { ok('11.x preset masks', false, String(e && e.stack || e)); }
+
+    /* 11b. every preset mask sits inside the editor's slider ranges (else opening the editor rewrites it) */
+    try {
+      const bad = [];
+      Object.keys(K.MATERIAL_DEFAULTS).forEach(id => {
+        (K.MATERIALS.get(id).masks || []).forEach((m, i) => {
+          const sp = K.maskTypeOf(m);
+          const rng = (v, lo, hi) => v >= lo - 1e-9 && v <= hi + 1e-9;
+          if (!rng(m.scale, sp.sMin !== undefined ? sp.sMin : 0.25, sp.sMax !== undefined ? sp.sMax : 20)) bad.push(id + '#' + i + ' scale ' + m.scale);
+          if (!rng(m.contrast, sp.cMin !== undefined ? sp.cMin : 0.5, sp.cMax !== undefined ? sp.cMax : 3)) bad.push(id + '#' + i + ' contrast ' + m.contrast);
+          if (sp.detail && !rng(m.detail, sp.dMin !== undefined ? sp.dMin : 1, sp.dMax !== undefined ? sp.dMax : 5)) bad.push(id + '#' + i + ' detail ' + m.detail);
+          if (sp.detail && (sp.dStep === undefined || sp.dStep >= 1) && m.detail !== Math.round(m.detail)) bad.push(id + '#' + i + ' detail not whole ' + m.detail);
+          if (!rng(m.amount, 0, 1) || !rng(m.rough, 0, 1)) bad.push(id + '#' + i + ' amount/rough');
+          if ((sp.curv ? 1 : 0) + 0 > 1) bad.push('x');
+        });
+        const curvs = (K.MATERIALS.get(id).masks || []).filter(m => K.maskTypeOf(m).curv).length;
+        if (curvs > 1) bad.push(id + ' has ' + curvs + ' curvature layers');
+      });
+      ok('11.7 preset masks inside editor ranges, at most one curvature layer each', bad.length === 0, bad.join('; '));
+    } catch (e) { ok('11.7 ranges', false, String(e && e.stack || e)); }
 
     /* 10. the coat over a rounded edge: program must link (v3.00 review: clearcoatNormal patch) */
     mark('coat-bevel');

@@ -5561,37 +5561,50 @@ function attachAllGizmos(pivot) {
    "Plastic (imported)". Fields beyond the first three are three's MeshPhysicalMaterial
    inputs; absent means three's default (see PHYS_DEFAULT), which is what keeps every
    signature written before v3.00 valid. */
+/* Colours are the INTERFACE's own, turned down to albedo values (nothing in a PBR albedo is neon):
+   accent #d5dce4 (object) -> Plastic and Steel; face violet #b48cff -> Velvet; edge cyan #46e1ff ->
+   Car paint, Ceramic and the patina; vertex lime #d9ff3d -> Chipped paint; text-dim #8b939c -> Concrete; the graphite
+   panels -> Rubber; signal #ff5230 -> Leather's hue, never a paint, because red is the selection colour.
+   MASKS ARE KEPT FEW: a roughness layer is a uniform and a noise tap, a curvature layer (Edges / Cavity)
+   needs the distance field, so no preset has more than one of those. `_rm` is the shared subtle roughness
+   variation - the layer that sells a surface more than any colour does. */
+const _rm = (rough, scale, seed, amount) => ({ type: 'fbm', colorOn: false, roughOn: true, rough: rough,
+  amount: amount === undefined ? 0.3 : amount, scale: scale, detail: 4, contrast: 1.0, seed: seed });
 const MATERIAL_DEFAULTS = {
   standard: { name: 'Clay',          color: null,      roughness: 0.82, metalness: 0.0, specularIntensity: 0.6 },
-  plastic:  { name: 'Plastic',       color: '#b9bcc0', roughness: 0.38, metalness: 0.0 },
-  lacquer:  { name: 'Car paint',     color: '#1f2a38', roughness: 0.3,  metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.04 },
-  ceramic:  { name: 'Ceramic',       color: '#ddd9d1', roughness: 0.2,  metalness: 0.0, clearcoat: 0.6, clearcoatRoughness: 0.12 },
-  rubber:   { name: 'Rubber',        color: '#27292c', roughness: 0.88, metalness: 0.0, specularIntensity: 0.5 },
-  velvet:   { name: 'Velvet',        color: '#4a1a2a', roughness: 0.9,  metalness: 0.0, specularIntensity: 0.3,
-              sheen: 1.0, sheenColor: '#c98aa0', sheenRoughness: 0.55 },
-  leather:  { name: 'Leather',       color: '#5a3a28', roughness: 0.52, metalness: 0.0, specularIntensity: 0.8,
+  plastic:  { name: 'Plastic',       color: '#b4bcc6', roughness: 0.38, metalness: 0.0, masks: [_rm(0.55, 3, 11)] },
+  lacquer:  { name: 'Car paint',     color: '#1d86a6', roughness: 0.3,  metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.04,
+              masks: [_rm(0.42, 4, 12, 0.25)] },
+  ceramic:  { name: 'Ceramic',       color: '#c9dde2', roughness: 0.2,  metalness: 0.0, clearcoat: 0.6, clearcoatRoughness: 0.12,
+              masks: [_rm(0.3, 3, 13, 0.25)] },
+  rubber:   { name: 'Rubber',        color: '#26292e', roughness: 0.88, metalness: 0.0, specularIntensity: 0.5,
+              masks: [_rm(0.74, 3, 14)] },
+  velvet:   { name: 'Velvet',        color: '#3c2a6e', roughness: 0.9,  metalness: 0.0, specularIntensity: 0.3,
+              sheen: 1.0, sheenColor: '#b48cff', sheenRoughness: 0.55 },
+  leather:  { name: 'Leather',       color: '#6b3b2a', roughness: 0.52, metalness: 0.0, specularIntensity: 0.8,
               sheen: 0.25, sheenColor: '#b08a70', sheenRoughness: 0.6,
-              masks: [{ type: 'voronoi', colorOn: true, color: '#2b1a10', blend: 'multiply', amount: 0.6, scale: 4, detail: 10, contrast: 1.3, roughOn: true, rough: 0.7 }] },
+              masks: [{ type: 'voronoi', colorOn: true, color: '#2b1a10', blend: 'multiply', amount: 0.6, scale: 4, detail: 5, contrast: 1.3, roughOn: true, rough: 0.68 },
+                      _rm(0.4, 2, 15)] },
   wood:     { name: 'Wood',          color: '#976840', roughness: 0.6,  metalness: 0.0, specularIntensity: 0.7,
-              masks: [{ type: 'stripes', colorOn: true, color: '#5a3820', blend: 'multiply', amount: 0.7, scale: 1.5, detail: 6, contrast: 1.3, nscale: 2 },
+              masks: [{ type: 'stripes', colorOn: true, color: '#5a3820', blend: 'multiply', amount: 0.7, scale: 1.5, detail: 5, contrast: 1.3, nscale: 2, roughOn: true, rough: 0.76 },
                       { type: 'fbm', colorOn: true, color: '#d2a574', blend: 'overlay', amount: 0.35, scale: 2, detail: 4, contrast: 1.2, seed: 3 }] },
-  concrete: { name: 'Concrete',      color: '#7d7b76', roughness: 0.92, metalness: 0.0, specularIntensity: 0.5,
-              masks: [{ type: 'fbm', colorOn: true, color: '#5f5e5a', blend: 'multiply', amount: 0.5, scale: 3, detail: 5, contrast: 1.6 },
-                      { type: 'dots', colorOn: true, color: '#3c3b38', blend: 'normal', amount: 0.45, scale: 6, detail: 0.35, contrast: 1.4, seed: 5 }] },
-  steel:    { name: 'Brushed steel', color: '#c4c7cb', roughness: 0.42, metalness: 1.0 },
-  steelworn:{ name: 'Worn metal',    color: '#aeb1b5', roughness: 0.45, metalness: 1.0,
-              masks: [{ type: 'cavity', colorOn: true, color: '#2c2d30', blend: 'normal', amount: 0.6, scale: 0.3, detail: 0.5, contrast: 0.5, roughOn: true, rough: 0.85 },
-                      { type: 'scratches', colorOn: true, color: '#7d8084', blend: 'normal', amount: 0.8, scale: 3, detail: 10, contrast: 2.0, roughOn: true, rough: 0.7, seed: 2 },
-                      { type: 'edges', colorOn: true, color: '#eceef0', blend: 'normal', amount: 0.85, scale: 0.28, detail: 0.6, contrast: 0.3, roughOn: true, rough: 0.18 }] },
-  paintchip:{ name: 'Chipped paint', color: '#aaaea8', roughness: 0.5,  metalness: 0.0, specularIntensity: 0.8,
+  concrete: { name: 'Concrete',      color: '#868c94', roughness: 0.92, metalness: 0.0, specularIntensity: 0.5,
+              masks: [{ type: 'fbm', colorOn: true, color: '#555a61', blend: 'multiply', amount: 0.5, scale: 3, detail: 5, contrast: 1.6, roughOn: true, rough: 0.98 },
+                      { type: 'dots', colorOn: true, color: '#3a3d42', blend: 'normal', amount: 0.45, scale: 6, detail: 2, contrast: 1.4, seed: 5 }] },
+  steel:    { name: 'Brushed steel', color: '#c6ccd4', roughness: 0.4,  metalness: 1.0,
+              masks: [{ type: 'stripes', colorOn: false, roughOn: true, rough: 0.62, blend: 'normal', amount: 0.35, scale: 14, detail: 5, contrast: 1.0, nscale: 1, seed: 6 }] },
+  steelworn:{ name: 'Worn metal',    color: '#a9b1ba', roughness: 0.45, metalness: 1.0,
+              masks: [{ type: 'scratches', colorOn: true, color: '#7a8088', blend: 'normal', amount: 0.8, scale: 3, detail: 5, contrast: 2.0, roughOn: true, rough: 0.7, seed: 2 },
+                      { type: 'edges', colorOn: true, color: '#eef1f5', blend: 'normal', amount: 0.85, scale: 0.28, detail: 0.6, contrast: 0.3, roughOn: true, rough: 0.18 },
+                      _rm(0.62, 2.5, 16)] },
+  paintchip:{ name: 'Chipped paint', color: '#8ea03a', roughness: 0.5,  metalness: 0.0, specularIntensity: 0.8,
               masks: [{ type: 'edges', colorOn: true, color: '#6d4a36', blend: 'normal', amount: 1, scale: 0.25, detail: 0.85, contrast: 0.25, roughOn: true, rough: 0.75 },
-                      { type: 'fbm', colorOn: true, color: '#5a4334', blend: 'normal', amount: 0.4, scale: 4, detail: 5, contrast: 2.4, roughOn: true, rough: 0.8, seed: 4 },
-                      { type: 'cavity', colorOn: true, color: '#3a3832', blend: 'multiply', amount: 0.5, scale: 0.3, detail: 0.3, contrast: 0.5 }] },
-  gold:     { name: 'Gold',          color: '#e8b64a', roughness: 0.24, metalness: 1.0 },
-  copper:   { name: 'Copper',        color: '#d58b6a', roughness: 0.3,  metalness: 1.0 },
+                      { type: 'fbm', colorOn: true, color: '#55482c', blend: 'normal', amount: 0.4, scale: 4, detail: 5, contrast: 2.4, roughOn: true, rough: 0.8, seed: 4 }] },
+  gold:     { name: 'Gold',          color: '#e8b64a', roughness: 0.24, metalness: 1.0, masks: [_rm(0.38, 3, 17)] },
+  copper:   { name: 'Copper',        color: '#d98a6c', roughness: 0.3,  metalness: 1.0, masks: [_rm(0.44, 3, 18)] },
   bronze:   { name: 'Aged bronze',   color: '#b0774f', roughness: 0.4,  metalness: 1.0,
-              masks: [{ type: 'cavity', colorOn: true, color: '#4f8a78', blend: 'normal', amount: 0.9, scale: 0.5, detail: 0.7, contrast: 0.35, roughOn: true, rough: 0.85 },
-                      { type: 'fbm', colorOn: true, color: '#4a8774', blend: 'normal', amount: 0.7, scale: 2, detail: 5, contrast: 3.2, roughOn: true, rough: 0.8, seed: 7 }] }
+              masks: [{ type: 'cavity', colorOn: true, color: '#4fa59a', blend: 'normal', amount: 0.9, scale: 0.5, detail: 0.7, contrast: 0.35, roughOn: true, rough: 0.85 },
+                      { type: 'fbm', colorOn: true, color: '#43877d', blend: 'normal', amount: 0.7, scale: 2, detail: 5, contrast: 3, roughOn: true, rough: 0.8, seed: 7 }] }
 };
 /* A mask written in a preset is a PARTIAL one: these are the blanks. Kept beside the presets because
    loadMaterialLibrary runs before the mask section is reached (MASK_DEFAULT is a const down there),
@@ -53652,7 +53665,7 @@ if (PICK_DEBUG) {
     showPreHi, clearPreHi, preHiKey: () => (preHi ? preHi.key : null),
     // v2.7: the signed depth, and the one predicate that reads it.
     maskBumped, defWantsBump,
-    restoreDoc, serializeDoc, refuseOp, pushHistory, toast, foreignDocMaterials, materialsChoice,
+    restoreDoc, serializeDoc, refuseOp, pushHistory, toast, foreignDocMaterials, materialsChoice, presetMasks, maskTypeOf, MASK_TYPES,
     showMirrorChooser, hideOpBar, arraySelection, arrayOp,
     solidifySelection, solidifyOp, solidifySurvey, createObjectFromEditable,
     slideSelection, slideApply, orientedSlideItems, flowSelectionItems,

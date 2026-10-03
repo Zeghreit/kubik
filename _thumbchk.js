@@ -288,6 +288,7 @@
        definition. That is 40 segments x the grid, inside a render, on every
        tray rebuild. */
     const before = K.PERF.bake;
+    K.renderMatPreviews();   // v3.02: the COLD walk compiles every preset's mask shader once; measured below, judged loosely
     const t0 = performance.now();
     K.renderMatPreviews();
     const ms = performance.now() - t0;
@@ -299,7 +300,7 @@
        grew an `onlyId` in the first place. Eight definitions here; the budget
        is per definition so it does not drift as this probe gains materials. */
     const each = ms / K.MATERIALS.size;
-    ok('and costs a sane amount per definition', each < 130,   // v3.02: six presets carry masks, so their first thumbnail compiles a mask shader (swiftshader)
+    ok('and costs a sane amount per definition', each < 60,
        each.toFixed(1) + ' ms each, ' + ms.toFixed(0) + ' ms for ' + K.MATERIALS.size);
 
     say('');

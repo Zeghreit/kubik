@@ -703,7 +703,7 @@
        and went on failing to match stock in every file opened afterwards. */
     mark('section12f');
     var stockSig = k.materialDefSig(Object.assign({ id: 'steel', preset: true },
-      k.MATERIAL_DEFAULTS.steel));
+      k.MATERIAL_DEFAULTS.steel, { masks: k.presetMasks(k.MATERIAL_DEFAULTS.steel) }));
     document.getElementById('meReset').click();
     var metal2 = k.getMaterialDef('steel');
     var prevEl = document.getElementById('mpPrev');
