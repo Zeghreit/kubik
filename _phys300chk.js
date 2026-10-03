@@ -24,9 +24,9 @@
     mark('start');
     /* 1. the set itself */
     const ids = Object.keys(K.MATERIAL_DEFAULTS);
-    ok('1.0 preset ids', ids.join(',') === 'standard,lacquer,ceramic,steel,gold,rubber,velvet', ids.join(','));
-    ok('1.1 plastic/metal are not presets any more', !K.MATERIAL_DEFAULTS.plastic && !K.MATERIAL_DEFAULTS.metal);
-    ok('1.2 getMaterialDef alias net', K.getMaterialDef('plastic').id === 'lacquer' && K.getMaterialDef('metal').id === 'steel',
+    ok('1.0 preset ids', ids.join(',') === 'standard,plastic,lacquer,ceramic,rubber,velvet,leather,wood,concrete,steel,steelworn,paintchip,gold,copper,bronze', ids.join(','));
+    ok('1.1 metal is not a preset any more, plastic is one again', !K.MATERIAL_DEFAULTS.metal && !!K.MATERIAL_DEFAULTS.plastic);
+    ok('1.2 getMaterialDef alias net', K.getMaterialDef('plastic').id === 'plastic' && K.getMaterialDef('metal').id === 'steel',
       K.getMaterialDef('plastic').id + ' ' + K.getMaterialDef('metal').id);
     ok('1.3 unknown id still falls back to standard', K.getMaterialDef('nope-zzz').id === 'standard');
 
@@ -35,7 +35,7 @@
     const ma = mat0(A1), mb = mat0(B1), mc = mat0(C1);
     ok('2.0 class is Physical', ma.isMeshPhysicalMaterial && mb.isMeshPhysicalMaterial && mc.isMeshPhysicalMaterial, ma.type + '/' + mb.type + '/' + mc.type);
     ok('2.1 lacquer coat', ma.clearcoat === 1 && Math.abs(ma.clearcoatRoughness - 0.04) < 1e-9, ma.clearcoat + ' ' + ma.clearcoatRoughness);
-    ok('2.2 velvet sheen', mb.sheen === 1 && mb.sheenColor.getHexString() === 'e6adcf' && Math.abs(mb.sheenRoughness - 0.55) < 1e-9 && Math.abs(mb.specularIntensity - 0.3) < 1e-9,
+    ok('2.2 velvet sheen', mb.sheen === 1 && mb.sheenColor.getHexString() === 'c98aa0' && Math.abs(mb.sheenRoughness - 0.55) < 1e-9 && Math.abs(mb.specularIntensity - 0.3) < 1e-9,
       mb.sheen + ' ' + mb.sheenColor.getHexString() + ' ' + mb.sheenRoughness + ' ' + mb.specularIntensity);
     ok('2.3 gold is plain metal', mc.metalness === 1 && mc.clearcoat === 0 && mc.sheen === 0 && mc.specularIntensity === 1);
 
@@ -61,7 +61,7 @@
     if (A2 && B2) {
       const m1 = mat0(A2), m2 = mat0(B2);
       ok('4.3 coat survives', m1.isMeshPhysicalMaterial && m1.clearcoat === 1, m1.type + ' ' + m1.clearcoat);
-      ok('4.4 sheen survives', m2.isMeshPhysicalMaterial && m2.sheen === 1 && m2.sheenColor.getHexString() === 'e6adcf', m2.sheen + ' ' + m2.sheenColor.getHexString());
+      ok('4.4 sheen survives', m2.isMeshPhysicalMaterial && m2.sheen === 1 && m2.sheenColor.getHexString() === 'c98aa0', m2.sheen + ' ' + m2.sheenColor.getHexString());
       ok('4.5 finishes ids intact', (A2.mesh.userData.finishes || {})[0] === 'lacquer' && (B2.mesh.userData.finishes || {})[0] === 'velvet', JSON.stringify(A2.mesh.userData.finishes));
     }
     ok('4.6 no duplicate library entries', K.MATERIALS.size === nBefore && importedNames().length === 0, K.MATERIALS.size + ' vs ' + nBefore + ' ' + importedNames().join(','));
@@ -87,10 +87,10 @@
     ok('5.0 objects back', !!OA && !!OB && !!OC);
     ok('5.1 no (imported) copies minted', importedNames().length === 0, importedNames().join(','));
     ok('5.2 library did not grow', K.MATERIALS.size === sizeBefore, K.MATERIALS.size + ' vs ' + sizeBefore);
-    ok('5.3 plastic -> lacquer, metal -> steel, standard stays',
-      OA && (OA.mesh.userData.finishes || {})[0] === 'lacquer' && OB && (OB.mesh.userData.finishes || {})[0] === 'steel' && OC && (OC.mesh.userData.finishes || {})[0] === 'standard',
+    ok('5.3 plastic stays plastic, metal -> steel, standard stays',
+      OA && (OA.mesh.userData.finishes || {})[0] === 'plastic' && OB && (OB.mesh.userData.finishes || {})[0] === 'steel' && OC && (OC.mesh.userData.finishes || {})[0] === 'standard',
       JSON.stringify([OA && OA.mesh.userData.finishes, OB && OB.mesh.userData.finishes, OC && OC.mesh.userData.finishes]));
-    ok('5.4 no stray plastic/metal ids in the library', !K.MATERIALS.has('plastic') && !K.MATERIALS.has('metal'));
+    ok('5.4 no stray metal id in the library', !K.MATERIALS.has('metal'));
     if (OA) { const m = mat0(OA); ok('5.5 the surface is a Physical material of the library', m.isMeshPhysicalMaterial, m.type + ' r=' + m.roughness + ' cc=' + m.clearcoat); }
 
     /* 6. an old Plastic somebody CHANGED is kept, not discarded */
@@ -112,12 +112,12 @@
     mark('override');
     try {
       localStorage.setItem(K.MATLIB_KEY, JSON.stringify({ customs: [], presetOverrides: { standard: { name: 'Solid', color: null, roughness: 1, metalness: 0, masks: [], bevel: 0 },
-        plastic: { name: 'Plastic', color: null, roughness: 0.4, metalness: 0, masks: [], bevel: 0 } }, nextNum: 1 }));
+        metal: { name: 'Metal', color: null, roughness: 0.25, metalness: 1, masks: [], bevel: 0 } }, nextNum: 1 }));
       K.loadMaterialLibrary();
     } catch (e) { say('override threw ' + e); }
     const st = K.MATERIALS.get('standard');
     ok('7.0 an old Solid override does not overwrite Clay', st && st.name === 'Clay' && Math.abs(st.roughness - 0.82) < 1e-9, JSON.stringify(st && { n: st.name, r: st.roughness }));
-    ok('7.1 an override for a removed preset is never a preset', !(K.MATERIALS.get('plastic') && K.MATERIALS.get('plastic').preset));
+    ok('7.1 an override for a removed preset is never a preset', !(K.MATERIALS.get('metal') && K.MATERIALS.get('metal').preset));
 
     /* 8. the editor */
     mark('editor');
@@ -154,6 +154,27 @@
       ok('9.1 sheen exported', ms.some(m => m.extensions && m.extensions.KHR_materials_sheen), exts.join(' | '));
       ok('9.2 extensions declared', (res.extensionsUsed || []).indexOf('KHR_materials_clearcoat') >= 0 && (res.extensionsUsed || []).indexOf('KHR_materials_sheen') >= 0, (res.extensionsUsed || []).join(','));
     } catch (e) { ok('9.x glTF export', false, String(e && e.stack || e)); }
+
+    /* 11. presets that carry masks (v3.02) */
+    mark('preset-masks');
+    try {
+      const dw = K.MATERIALS.get('steelworn');
+      ok('11.0 Worn metal has its three masks, filled in', dw.masks.length === 3 && dw.masks.every(m => m.blend && m.seed !== undefined), String(dw.masks.length));
+      ok('11.1 they are its own copies', dw.masks[0] !== K.MATERIAL_DEFAULTS.steelworn.masks[0]);
+      const stock = K.materialDefSig(dw);
+      dw.masks[0].amount = 0.1;
+      ok('11.2 an edit moves the signature', K.materialDefSig(dw) !== stock);
+      K.saveMaterialLibrary();
+      const lib = JSON.parse(localStorage.getItem(K.MATLIB_KEY));
+      ok('11.3 the edited masks are written as an override', !!(lib.presetOverrides && lib.presetOverrides.steelworn && lib.presetOverrides.steelworn.masks.length === 3));
+      K.openMatEditor('steelworn'); await wait(150);
+      document.getElementById('meReset').click(); await wait(300);
+      const dr2 = K.MATERIALS.get('steelworn');
+      ok('11.4 Reset brings the preset masks back, not an empty list', dr2.masks.length === 3 && Math.abs(dr2.masks[0].amount - 0.6) < 1e-9, dr2.masks.length + ' ' + dr2.masks[0].amount);
+      ok('11.5 and the signature is stock again', K.materialDefSig(dr2) === stock);
+      const lib2 = JSON.parse(localStorage.getItem(K.MATLIB_KEY));
+      ok('11.6 an untouched preset with masks writes no override', !(lib2.presetOverrides && lib2.presetOverrides.steelworn));
+    } catch (e) { ok('11.x preset masks', false, String(e && e.stack || e)); }
 
     /* 10. the coat over a rounded edge: program must link (v3.00 review: clearcoatNormal patch) */
     mark('coat-bevel');

@@ -5563,15 +5563,46 @@ function attachAllGizmos(pivot) {
    signature written before v3.00 valid. */
 const MATERIAL_DEFAULTS = {
   standard: { name: 'Clay',          color: null,      roughness: 0.82, metalness: 0.0, specularIntensity: 0.6 },
-  lacquer:  { name: 'Lacquer',       color: '#a10b2b', roughness: 0.28, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.04 },
-  ceramic:  { name: 'Ceramic',       color: '#65a98f', roughness: 0.2,  metalness: 0.0, clearcoat: 0.6, clearcoatRoughness: 0.12 },
-  steel:    { name: 'Brushed steel', color: '#b5d1cc', roughness: 0.42, metalness: 1.0 },
-  gold:     { name: 'Gold',          color: '#e0b81f', roughness: 0.24, metalness: 1.0 },
-  rubber:   { name: 'Rubber',        color: '#172713', roughness: 0.88, metalness: 0.0, specularIntensity: 0.5 },
-  velvet:   { name: 'Velvet',        color: '#6f0043', roughness: 0.9,  metalness: 0.0, specularIntensity: 0.3,
-              sheen: 1.0, sheenColor: '#e6adcf', sheenRoughness: 0.55 }
+  plastic:  { name: 'Plastic',       color: '#b9bcc0', roughness: 0.38, metalness: 0.0 },
+  lacquer:  { name: 'Car paint',     color: '#1f2a38', roughness: 0.3,  metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.04 },
+  ceramic:  { name: 'Ceramic',       color: '#ddd9d1', roughness: 0.2,  metalness: 0.0, clearcoat: 0.6, clearcoatRoughness: 0.12 },
+  rubber:   { name: 'Rubber',        color: '#27292c', roughness: 0.88, metalness: 0.0, specularIntensity: 0.5 },
+  velvet:   { name: 'Velvet',        color: '#4a1a2a', roughness: 0.9,  metalness: 0.0, specularIntensity: 0.3,
+              sheen: 1.0, sheenColor: '#c98aa0', sheenRoughness: 0.55 },
+  leather:  { name: 'Leather',       color: '#5a3a28', roughness: 0.52, metalness: 0.0, specularIntensity: 0.8,
+              sheen: 0.25, sheenColor: '#b08a70', sheenRoughness: 0.6,
+              masks: [{ type: 'voronoi', colorOn: true, color: '#2b1a10', blend: 'multiply', amount: 0.6, scale: 4, detail: 10, contrast: 1.3, roughOn: true, rough: 0.7 }] },
+  wood:     { name: 'Wood',          color: '#976840', roughness: 0.6,  metalness: 0.0, specularIntensity: 0.7,
+              masks: [{ type: 'stripes', colorOn: true, color: '#5a3820', blend: 'multiply', amount: 0.7, scale: 1.5, detail: 6, contrast: 1.3, nscale: 2 },
+                      { type: 'fbm', colorOn: true, color: '#d2a574', blend: 'overlay', amount: 0.35, scale: 2, detail: 4, contrast: 1.2, seed: 3 }] },
+  concrete: { name: 'Concrete',      color: '#7d7b76', roughness: 0.92, metalness: 0.0, specularIntensity: 0.5,
+              masks: [{ type: 'fbm', colorOn: true, color: '#5f5e5a', blend: 'multiply', amount: 0.5, scale: 3, detail: 5, contrast: 1.6 },
+                      { type: 'dots', colorOn: true, color: '#3c3b38', blend: 'normal', amount: 0.45, scale: 6, detail: 0.35, contrast: 1.4, seed: 5 }] },
+  steel:    { name: 'Brushed steel', color: '#c4c7cb', roughness: 0.42, metalness: 1.0 },
+  steelworn:{ name: 'Worn metal',    color: '#aeb1b5', roughness: 0.45, metalness: 1.0,
+              masks: [{ type: 'cavity', colorOn: true, color: '#2c2d30', blend: 'normal', amount: 0.6, scale: 0.3, detail: 0.5, contrast: 0.5, roughOn: true, rough: 0.85 },
+                      { type: 'scratches', colorOn: true, color: '#7d8084', blend: 'normal', amount: 0.8, scale: 3, detail: 10, contrast: 2.0, roughOn: true, rough: 0.7, seed: 2 },
+                      { type: 'edges', colorOn: true, color: '#eceef0', blend: 'normal', amount: 0.85, scale: 0.28, detail: 0.6, contrast: 0.3, roughOn: true, rough: 0.18 }] },
+  paintchip:{ name: 'Chipped paint', color: '#aaaea8', roughness: 0.5,  metalness: 0.0, specularIntensity: 0.8,
+              masks: [{ type: 'edges', colorOn: true, color: '#6d4a36', blend: 'normal', amount: 1, scale: 0.25, detail: 0.85, contrast: 0.25, roughOn: true, rough: 0.75 },
+                      { type: 'fbm', colorOn: true, color: '#5a4334', blend: 'normal', amount: 0.4, scale: 4, detail: 5, contrast: 2.4, roughOn: true, rough: 0.8, seed: 4 },
+                      { type: 'cavity', colorOn: true, color: '#3a3832', blend: 'multiply', amount: 0.5, scale: 0.3, detail: 0.3, contrast: 0.5 }] },
+  gold:     { name: 'Gold',          color: '#e8b64a', roughness: 0.24, metalness: 1.0 },
+  copper:   { name: 'Copper',        color: '#d58b6a', roughness: 0.3,  metalness: 1.0 },
+  bronze:   { name: 'Aged bronze',   color: '#b0774f', roughness: 0.4,  metalness: 1.0,
+              masks: [{ type: 'cavity', colorOn: true, color: '#4f8a78', blend: 'normal', amount: 0.9, scale: 0.5, detail: 0.7, contrast: 0.35, roughOn: true, rough: 0.85 },
+                      { type: 'fbm', colorOn: true, color: '#4a8774', blend: 'normal', amount: 0.7, scale: 2, detail: 5, contrast: 3.2, roughOn: true, rough: 0.8, seed: 7 }] }
 };
-const MATERIAL_ALIAS = { plastic: 'lacquer', metal: 'steel' };
+/* A mask written in a preset is a PARTIAL one: these are the blanks. Kept beside the presets because
+   loadMaterialLibrary runs before the mask section is reached (MASK_DEFAULT is a const down there),
+   and a copy of it must stay in step with MASK_DEFAULT. */
+const PRESET_MASK_BASE = { on: true, type: 'fbm', blend: 'normal', colorOn: true, color: '#7a4a20',
+  roughOn: false, rough: 0.25, amount: 0.7, scale: 2, detail: 3, contrast: 1.4, nscale: 1, seed: 1 };
+/* Fresh objects every call: the editor mutates a definition's masks in place. */
+function presetMasks(d) {
+  return (d && Array.isArray(d.masks)) ? d.masks.map(m => Object.assign({}, PRESET_MASK_BASE, m)) : [];
+}
+const MATERIAL_ALIAS = { metal: 'steel' };
 const LEGACY_PRESETS = {
   standard: { name: 'Solid',   roughness: 1.0,  metalness: 0.0 },
   plastic:  { name: 'Plastic', roughness: 0.4,  metalness: 0.0 },
@@ -6252,7 +6283,7 @@ function materialColorHex(def) {
 
 function loadMaterialLibrary() {
   Object.entries(MATERIAL_DEFAULTS).forEach(([id, d]) =>
-    MATERIALS.set(id, Object.assign({ id: id, preset: true }, d)));
+    MATERIALS.set(id, Object.assign({ id: id, preset: true }, d, d.masks ? { masks: presetMasks(d) } : {})));
   try {
     const raw = JSON.parse(localStorage.getItem(MATLIB_KEY) || '{}');
     /* The library outlives the release that wrote it, so both of these
@@ -6313,7 +6344,7 @@ function saveMaterialLibrary() {
     if (d.color !== base.color || d.roughness !== base.roughness ||
         d.metalness !== base.metalness ||
         stableStringify(physList(d)) !== stableStringify(physList(base)) ||
-        d.name !== base.name || (d.masks && d.masks.length) || d.bevel ||
+        d.name !== base.name || stableStringify(maskList(d)) !== stableStringify(presetMasks(base)) || d.bevel ||
         hasMaps(d)) {
       presetOverrides[d.id] = { name: d.name, color: d.color, roughness: d.roughness,
         metalness: d.metalness, masks: d.masks, bevel: d.bevel || 0,
@@ -51157,7 +51188,7 @@ document.getElementById('meReset').addEventListener('click', () => {
   // Object.assign cannot clear a key the defaults do not have - the same
   // reason d.masks is emptied by hand a line or two below.
   d.bevel = 0;
-  d.masks = [];     // Object.assign can't clear it (QA finding 5)
+  d.masks = presetMasks(presetDefaults(d.id));   // Object.assign can't clear it (QA finding 5); v3.02: back to the preset's OWN masks
   /* And neither can it clear the pictures (v2.35). MATERIAL_DEFAULTS has no
      `maps` key, so a preset that had one kept it through a Reset that said
      "Reset to default" - and went on failing to match stock Solid in every

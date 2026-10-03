@@ -48,6 +48,15 @@ than none. Prefer rewriting a section over appending to it.
 - First view: exposure 1.2, `THEME.material` 0x50545b, a contact shadow (`contactShadow`, one canvas-gradient plane under the union of object boxes, rides the floor-grid toggle, not pickable, hidden in Picture because it is a scene child).
 - Probe: `_phys300chk` (30 checks). `_gpuchk` gave NO REPORT in the v3.00 batch (421 s, swiftshader) - not triaged against HEAD.
 
+## The preset set, by what people actually use (v3.02) - supersedes the v3.00/v3.01 preset lists and colours
+
+- 15 presets in `MATERIAL_DEFAULTS`: Clay (`standard`), Plastic, Car paint (`lacquer`), Ceramic, Rubber, Velvet, Leather, Wood, Concrete, Brushed steel, Worn metal (`steelworn`), Chipped paint (`paintchip`), Gold, Copper, Aged bronze (`bronze`). Natural, near-neutral albedos: the Wada colours were rejected by Zeghreit by eye (and a red Lacquer collides with the red selection colour). Chosen from the material categories of Poly Haven / ambientCG (wood, stone, concrete, brick, metal, textiles/leather, ceramic, plastic/rubber).
+- `plastic` is a real preset again; only `metal` is still an alias (-> steel). `LEGACY_PRESETS.plastic` stays for isUntouchedLegacy.
+- PRESETS CAN CARRY MASKS: write them as partial masks in `MATERIAL_DEFAULTS[id].masks`; `presetMasks(d)` fills them from `PRESET_MASK_BASE` (a COPY of `MASK_DEFAULT`, which is declared after `loadMaterialLibrary` runs - keep the two in step) into fresh objects. `loadMaterialLibrary` deep-copies, `saveMaterialLibrary` writes an override only when `maskList(d)` differs from `presetMasks(base)`, Reset restores `presetMasks(...)` (not `[]`).
+- Mask-bearing presets: leather (cells), wood (stripes+clouds), concrete (clouds+dots), steelworn (cavity+scratches+edges), paintchip (edges+clouds+cavity), bronze (cavity+clouds). Edges/Cavity need real corners - judge them on a cube, not a sphere (`_lookm` takes a leading `@` in the ids for cubes).
+- Cost: each masked preset compiles its own mask shader on first thumbnail; `_thumbchk` budget raised to 130 ms/definition (swiftshader). Not measured on a phone. 15 cards in the tray: layout not checked by eye.
+- Probes: `_phys300chk` 36 checks (section 11 = preset masks). `_matchk` fixture renamed Copper -> Verdigris (Copper is a preset now).
+
 ## Preset colours from Sanzo Wada; opening a model asks about its materials (v3.01)
 
 - Preset colours, from Wada's Dictionary of Color Combinations: Lacquer Carmine Red #a10b2b, Ceramic Artemesia Green #65a98f (celadon), Brushed steel Neutral Gray #b5d1cc, Gold Yellow Ocher #e0b81f, Rubber Deep Slate Olive #172713, Velvet Pansy Purple #6f0043 with sheen Cameo Pink #e6adcf. Clay stays the theme grey (`color: null`). The env brightens colours a lot: pick darker than the swatch looks.

@@ -299,7 +299,7 @@
        grew an `onlyId` in the first place. Eight definitions here; the budget
        is per definition so it does not drift as this probe gains materials. */
     const each = ms / K.MATERIALS.size;
-    ok('and costs a sane amount per definition', each < 60,
+    ok('and costs a sane amount per definition', each < 130,   // v3.02: six presets carry masks, so their first thumbnail compiles a mask shader (swiftshader)
        each.toFixed(1) + ' ms each, ' + ms.toFixed(0) + ' ms for ' + K.MATERIALS.size);
 
     say('');

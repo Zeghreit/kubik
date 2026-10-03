@@ -122,11 +122,11 @@
     addCustom('mat_skin', 'Skin', '#aa8866', 0.5, 0);
     n0 = K.MATERIALS.size;
     ctx = K.importMaterialContext();
-    got = ctx.idFor(src('Copper', '#ffcc33', 0.3, 1));
+    got = ctx.idFor(src('Verdigris', '#ffcc33', 0.3, 1));
     ok('1.5 незнакомое имя - одна новая запись',
        K.MATERIALS.size === n0 + 1, n0 + ' -> ' + K.MATERIALS.size);
     ok('1.5 и она названа своим именем, без "(imported)"',
-       got && K.MATERIALS.get(got) && K.MATERIALS.get(got).name === 'Copper',
+       got && K.MATERIALS.get(got) && K.MATERIALS.get(got).name === 'Verdigris',
        got + ' -> ' + (K.MATERIALS.get(got) || {}).name);
 
     /* ЛОВУШКА, и она важнее всего остального в этой группе. Безымянные
