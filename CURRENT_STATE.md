@@ -37,6 +37,17 @@ rewritten at v1.93 because it had accumulated per-version sediment and had
 begun contradicting itself — a handoff that argues with itself is worse
 than none. Prefer rewriting a section over appending to it.
 
+## Materials are physical (v3.00)
+
+- Presets: `standard` (= Clay, the structural default id), `lacquer`, `ceramic`, `steel`, `gold`, `rubber`, `velvet`. Solid/Plastic/Metal are gone as presets: `MATERIAL_ALIAS` (plastic->lacquer, metal->steel), `LEGACY_PRESETS` (what an old file's copy looked like).
+- Every material is `MeshPhysicalMaterial`. Extra fields clearcoat, clearcoatRoughness, sheen, sheenColor, sheenRoughness, specularIntensity: `PHYS_KEYS/PHYS_DEFAULT`, `physOf` (all six), `physList` (only non-default - this is what goes into `materialDefSig` as `sig.phys`, so old signatures are unchanged), `setPhys` (applyFinish), `physSnap` (history/save snapshots, key `phys`).
+- Old files: an untouched legacy preset is dropped on restore (`isUntouchedLegacy`) and remapped via `matIdRemap`; `remapFinishes` also resolves an alias id with no library entry. A customised legacy copy stays as before. localStorage: an old Solid override on `standard` loses its name/1-0 numbers; an edited old Plastic/Metal override becomes a custom def under its own id.
+- Known: faces that stored surface numbers keep them until the next applyFinish, then take the new preset's (old Plastic faces become red Lacquer on re-dress). glTF import does not read clearcoat/sheen. A glTF material named Gold/Brushed steel now collides with a preset name and imports as '(imported)'.
+- Mask patch: clearcoat takes the perturbed `normal` (`clearcoat_normal_fragment_begin` replaced) so Bump/Round edges bend the coat.
+- Editor: sliders Clearcoat, Coat roughness, Sheen, Sheen colour, Sheen roughness, Specular. Reset clears phys keys not in the preset.
+- First view: exposure 1.2, `THEME.material` 0x50545b, a contact shadow (`contactShadow`, one canvas-gradient plane under the union of object boxes, rides the floor-grid toggle, not pickable, hidden in Picture because it is a scene child).
+- Probe: `_phys300chk` (30 checks). `_gpuchk` gave NO REPORT in the v3.00 batch (421 s, swiftshader) - not triaged against HEAD.
+
 ## Shipping
 
 **Push without asking.** When a version is verified - `_verify.py` passes,

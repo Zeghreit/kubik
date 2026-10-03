@@ -476,11 +476,11 @@
     k.MATERIALS.forEach(function (d, id) { if (!texDefId && k.hasMaps(d)) texDefId = id; });
     var texMaps = texDefId ? k.mapList(k.getMaterialDef(texDefId)) : {};
     // A PRESET carrying a map is the list that was actually wrong.
-    var preset = k.getMaterialDef('metal');
+    var preset = k.getMaterialDef('steel');
     preset.maps = { base: texMaps.base };
     k.saveMaterialLibrary();
     var rawLib = JSON.parse(localStorage.getItem('kubik.materials.v1') || '{}');
-    var ovr = (rawLib.presetOverrides || {}).metal;
+    var ovr = (rawLib.presetOverrides || {}).steel;
     var cust = (rawLib.customs || []).filter(function (d) { return d.id === texDefId; })[0];
     delete preset.maps;
     k.saveMaterialLibrary();
@@ -657,7 +657,7 @@
        predated every change made here - which on reload does not lose a
        tweak, it mints "Solid (imported)" and repoints every face. */
     mark('section12e');
-    k.openMatEditor('metal');
+    k.openMatEditor('steel');
     var row2 = document.getElementById('mpChips');
     var baseChip = Array.prototype.slice.call(row2.querySelectorAll('button'))
       .filter(function (b) { return b.dataset.slot === 'base'; })[0];
@@ -679,7 +679,7 @@
     handTo(input2, slowPick);
     handTo(input2, fastPick);
     await sleep(1400);                 // both decodes, and the 900ms autosave
-    var metal = k.getMaterialDef('metal');
+    var metal = k.getMaterialDef('steel');
     var mEntry = metal.maps && metal.maps.base ? k.TEX_STORE.get(metal.maps.base) : null;
     var mPix = mEntry ? await pixelAt(mEntry.url, 0.05, 0.05) : null;
     var GREEN = !!mPix && mPix.g > 150 && mPix.r < 90;
@@ -702,10 +702,10 @@
        a preset kept its picture through a Reset that said "Reset to default",
        and went on failing to match stock in every file opened afterwards. */
     mark('section12f');
-    var stockSig = k.materialDefSig(Object.assign({ id: 'metal', preset: true },
-      k.MATERIAL_DEFAULTS.metal));
+    var stockSig = k.materialDefSig(Object.assign({ id: 'steel', preset: true },
+      k.MATERIAL_DEFAULTS.steel));
     document.getElementById('meReset').click();
-    var metal2 = k.getMaterialDef('metal');
+    var metal2 = k.getMaterialDef('steel');
     var prevEl = document.getElementById('mpPrev');
     log('');
     log('=== 12f. Reset takes the picture off too ===');

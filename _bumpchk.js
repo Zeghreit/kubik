@@ -61,6 +61,7 @@
     for (let i = 0; i < px.length; i += 4) {
       if (Math.abs(px[i] - r0) + Math.abs(px[i + 1] - g0) + Math.abs(px[i + 2] - b0) <= 12) continue;
       const L = 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2];
+      if (L < 50) continue;   // v3.00: the backdrop vignette is not the model
       n++; s += L; s2 += L * L;
     }
     const m = n ? s / n : 0;

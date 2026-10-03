@@ -235,7 +235,7 @@
       });
     });
     if (defBig) {
-      ['rough', 'metal', 'ao', 'emissive'].forEach(function (slot) {
+      ['rough', 'steel', 'ao', 'emissive'].forEach(function (slot) {
         var url = k.encodePicture(noisySheet(1024), 1024, 1024, slot, false);
         if (!url) return;
         var key = k.registerTexture(url, {});

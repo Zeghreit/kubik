@@ -3037,6 +3037,18 @@
         <input type="range" id="meMetal" min="0" max="1" step="0.01">
         <label>Roughness <span id="meRoughV"></span></label>
         <input type="range" id="meRough" min="0" max="1" step="0.01">
+        <label>Clearcoat <span id="meCoatV"></span></label>
+        <input type="range" id="meCoat" min="0" max="1" step="0.01">
+        <label>Coat roughness <span id="meCoatRV"></span></label>
+        <input type="range" id="meCoatR" min="0" max="1" step="0.01">
+        <label>Sheen <span id="meSheenV"></span></label>
+        <input type="range" id="meSheen" min="0" max="1" step="0.01">
+        <label>Sheen colour</label>
+        <input type="color" id="meSheenCol">
+        <label>Sheen roughness <span id="meSheenRV"></span></label>
+        <input type="range" id="meSheenR" min="0" max="1" step="0.01">
+        <label>Specular <span id="meSpecV"></span></label>
+        <input type="range" id="meSpec" min="0" max="1" step="0.01">
         <!-- Shading only: no geometry is added and Rounded edges is
              untouched. Blender, Marmoset and Redshift all ship this and all
              pay for ray probes; here the distance field already knows where
@@ -3869,6 +3881,71 @@ shadowCatcher.position.y = -0.002;
 shadowCatcher.receiveShadow = true;
 shadowCatcher.visible = SHOW_FLOOR_SHADOW;
 scene.add(shadowCatcher);
+
+/* CONTACT SHADOW (v3.00). The shadow-map catcher above stays off (v1.88: a second pass over every
+   mesh, and on a phone that is the budget). This is the cheap version of the same depth cue: ONE
+   soft blob on the floor under whatever is in the scene, sized from the union of the objects'
+   world boxes, faded as the set rises off the floor. No shadow map, no extra geometry pass.
+   Rides the floor grid's toggle, like the catcher did. */
+const SHOW_CONTACT_SHADOW = true;
+const CONTACT_SHADOW_OPACITY = 0.95;
+const contactShadow = (() => {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  const gr = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  gr.addColorStop(0.00, 'rgba(0,0,0,1)');
+  gr.addColorStop(0.35, 'rgba(0,0,0,0.88)');
+  gr.addColorStop(0.65, 'rgba(0,0,0,0.42)');
+  gr.addColorStop(0.88, 'rgba(0,0,0,0.08)');
+  gr.addColorStop(1.00, 'rgba(0,0,0,0)');
+  g.fillStyle = gr;
+  g.fillRect(0, 0, 128, 128);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const m = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, fog: false, toneMapped: false,
+      opacity: CONTACT_SHADOW_OPACITY, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
+  );
+  m.rotation.x = -Math.PI / 2;
+  m.position.y = 0.004;
+  m.renderOrder = -1;
+  m.visible = false;
+  m.frustumCulled = false;
+  m.raycast = function () {};   // never picked, never a hit for anything that raycasts the scene
+  scene.add(m);
+  return m;
+})();
+const _csBox = new THREE.Box3(), _csTmp = new THREE.Box3();
+/* Called once per DRAWN frame. A bounding box per object is a matrix on eight corners; the
+   geometry's own box is cached by three and only recomputed when an op installs a new geometry. */
+function updateContactShadow() {
+  if (!SHOW_CONTACT_SHADOW || !grid || !grid.visible) { contactShadow.visible = false; return; }
+  _csBox.makeEmpty();
+  let n = 0;
+  for (const o of App.objects) {
+    const m = o.mesh;
+    if (!m || !m.visible || !m.geometry || !m.geometry.attributes || !m.geometry.attributes.position) continue;
+    if (!m.isMesh || isCurve(o)) continue;
+    if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+    m.updateWorldMatrix(true, false);
+    _csTmp.copy(m.geometry.boundingBox).applyMatrix4(m.matrixWorld);
+    _csBox.union(_csTmp);
+    if (++n >= 256) break;
+  }
+  if (!n || _csBox.isEmpty()) { contactShadow.visible = false; return; }
+  const w = _csBox.max.x - _csBox.min.x, d = _csBox.max.z - _csBox.min.z, h = _csBox.max.y - _csBox.min.y;
+  const span = Math.max(w, d, 0.5);
+  const lift = Math.max(0, _csBox.min.y);                 // how far the set hovers above the floor
+  const fade = Math.max(0, 1 - lift / Math.max(1, span * 1.2));
+  if (fade <= 0.01) { contactShadow.visible = false; return; }
+  contactShadow.visible = true;
+  contactShadow.position.x = (_csBox.min.x + _csBox.max.x) / 2;
+  contactShadow.position.z = (_csBox.min.z + _csBox.max.z) / 2;
+  contactShadow.scale.set(w * 1.3 + span * 0.5, d * 1.3 + span * 0.5, 1);
+  contactShadow.material.opacity = CONTACT_SHADOW_OPACITY * fade * (h < 0.05 ? 0.4 : 1);
+}
 
 /* THE STUDIO FLOOR (v2.89, Zeghreit: studio + a quiet horizon, "the grid
    not dimmed that much"). Chosen from pictures on his model. Three parts:
@@ -5024,7 +5101,7 @@ const THEME = {
   rim: { color: 0x9FB4FF, intensity: 0.75 },
   fog: { near: 15, far: 42 },
   shadow: 0.42,
-  exposure: 1.1,
+  exposure: 1.2,
   vignette: '0 0 0',
   /* Selection is RED, deliberately the one colour the interface never
      uses. Matching it to the accent (v1.91) made "chosen" agree with the
@@ -5037,7 +5114,7 @@ const THEME = {
      not a state of the app, and it has to stay separable from select. */
   select: 0xff5230, vert: 0x8b939c, edge: 0x5a626b, crease: 0xff7a45,
   seam: 0xff3bd0,
-  material: 0x303338
+  material: 0x50545b
 };
 
 /* THE SELECTION FOLLOWS THE MODE (a2.59).
@@ -5476,11 +5553,72 @@ function attachAllGizmos(pivot) {
    0.05 with mat.envMap bound crushes it to black. If per-material
    environment strength is ever wanted it comes back as a control someone
    designed, not as a field that was quietly doing nothing. */
+/* THE PHYSICAL SET (v3.00). Replaces Solid / Plastic / Metal. The id 'standard' is
+   STRUCTURAL (an absent finishes entry means standard, ~21 uses), so it stays and its
+   content becomes Clay. 'plastic' and 'metal' no longer exist as presets: MATERIAL_ALIAS
+   sends them to the nearest new one, and LEGACY_PRESETS is what an old file's copy of
+   them looked like, so a file that never touched them resolves instead of minting
+   "Plastic (imported)". Fields beyond the first three are three's MeshPhysicalMaterial
+   inputs; absent means three's default (see PHYS_DEFAULT), which is what keeps every
+   signature written before v3.00 valid. */
 const MATERIAL_DEFAULTS = {
-  standard: { name: 'Solid',   color: null, roughness: 1.0,  metalness: 0.0 },
-  plastic:  { name: 'Plastic', color: null, roughness: 0.4,  metalness: 0.0 },
-  metal:    { name: 'Metal',   color: null, roughness: 0.25, metalness: 1.0 }
+  standard: { name: 'Clay',          color: null,      roughness: 0.82, metalness: 0.0, specularIntensity: 0.6 },
+  lacquer:  { name: 'Lacquer',       color: '#a3141f', roughness: 0.28, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.04 },
+  ceramic:  { name: 'Ceramic',       color: '#ebe7df', roughness: 0.2,  metalness: 0.0, clearcoat: 0.6, clearcoatRoughness: 0.12 },
+  steel:    { name: 'Brushed steel', color: '#c4c8ce', roughness: 0.42, metalness: 1.0 },
+  gold:     { name: 'Gold',          color: '#e3b04b', roughness: 0.24, metalness: 1.0 },
+  rubber:   { name: 'Rubber',        color: '#2f3237', roughness: 0.88, metalness: 0.0, specularIntensity: 0.5 },
+  velvet:   { name: 'Velvet',        color: '#5b1a3a', roughness: 0.9,  metalness: 0.0, specularIntensity: 0.3,
+              sheen: 1.0, sheenColor: '#d9a0c0', sheenRoughness: 0.55 }
 };
+const MATERIAL_ALIAS = { plastic: 'lacquer', metal: 'steel' };
+const LEGACY_PRESETS = {
+  standard: { name: 'Solid',   roughness: 1.0,  metalness: 0.0 },
+  plastic:  { name: 'Plastic', roughness: 0.4,  metalness: 0.0 },
+  metal:    { name: 'Metal',   roughness: 0.25, metalness: 1.0 }
+};
+function aliasOf(id) {
+  return Object.prototype.hasOwnProperty.call(MATERIAL_ALIAS, id) ? MATERIAL_ALIAS[id] : undefined;
+}
+const PHYS_KEYS = ['clearcoat', 'clearcoatRoughness', 'sheen', 'sheenColor', 'sheenRoughness', 'specularIntensity'];
+const PHYS_DEFAULT = { clearcoat: 0, clearcoatRoughness: 0, sheen: 0, sheenColor: '#000000', sheenRoughness: 1, specularIntensity: 1 };
+/* All six, normalised and clamped; a definition (or a file) that lacks a key gets three's default. */
+function physOf(d) {
+  const o = {};
+  PHYS_KEYS.forEach(k => {
+    if (k === 'sheenColor') {
+      o[k] = (d && typeof d[k] === 'string' && /^#[0-9a-fA-F]{6}$/.test(d[k])) ? d[k].toLowerCase() : PHYS_DEFAULT[k];
+      return;
+    }
+    const v = d ? +d[k] : NaN;
+    o[k] = Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : PHYS_DEFAULT[k];
+  });
+  return o;
+}
+/* Only what differs from the default: this is what the signature and a saved scene carry,
+   so a material that has none of it looks exactly as it did before v3.00. */
+function physList(d) {
+  const p = physOf(d), o = {};
+  PHYS_KEYS.forEach(k => { if (p[k] !== PHYS_DEFAULT[k]) o[k] = p[k]; });
+  return o;
+}
+function setPhys(mat, src) {
+  if (!mat || !mat.isMeshPhysicalMaterial) return;
+  const p = physOf(src);
+  mat.clearcoat = p.clearcoat;
+  mat.clearcoatRoughness = p.clearcoatRoughness;
+  mat.sheen = p.sheen;
+  mat.sheenColor.set(p.sheenColor);
+  mat.sheenRoughness = p.sheenRoughness;
+  mat.specularIntensity = p.specularIntensity;
+}
+function physSnap(m) {
+  if (!m || !m.isMeshPhysicalMaterial) return undefined;
+  const o = physList({ clearcoat: m.clearcoat, clearcoatRoughness: m.clearcoatRoughness, sheen: m.sheen,
+    sheenColor: '#' + m.sheenColor.getHexString(), sheenRoughness: m.sheenRoughness,
+    specularIntensity: m.specularIntensity });
+  return Object.keys(o).length ? o : undefined;
+}
 const MATERIALS = new Map();
 let nextMaterialNum = 1;
 const MATLIB_KEY = 'kubik.materials.v1';
@@ -6007,6 +6145,10 @@ function materialDefSig(d) {
      open, and "Metal (imported) (imported)" on the one after. */
   const mm = mapList(n);
   if (Object.keys(mm).length) sig.maps = mm;
+  /* SAME RULE FOR THE PHYSICAL FIELDS (v3.00): present only when one differs from
+     three's default, so a material with none keeps the signature it always had. */
+  const pl = physList(n);
+  if (Object.keys(pl).length) sig.phys = pl;
   return stableStringify(sig);
 }
 
@@ -6045,7 +6187,7 @@ function freshMaterialId(base) {
 }
 
 function getMaterialDef(id) {
-  return normaliseDefMasks(MATERIALS.get(id) || MATERIALS.get('standard'));
+  return normaliseDefMasks(MATERIALS.get(id) || MATERIALS.get(aliasOf(id)) || MATERIALS.get('standard'));
 }
 
 /* THE FALLBACK ABOVE IS RIGHT EVERYWHERE EXCEPT THE EDITOR (v2.29).
@@ -6090,6 +6232,15 @@ function presetDefaults(id) {
    Derived rather than healed on load. A heal only covers the entries that
    happen to pass through the loader; asking the defaults covers the question
    wherever it is asked, and cannot go stale. */
+function isUntouchedLegacy(d0) {
+  const lg = LEGACY_PRESETS[d0 && d0.id];
+  if (!lg) return false;
+  const d = normaliseDefMasks(Object.assign({}, d0));
+  return d.name === lg.name &&
+    Math.abs((+d.roughness) - lg.roughness) < 1e-6 && Math.abs((+d.metalness) - lg.metalness) < 1e-6 &&
+    !(d.masks && d.masks.length) && !d.bevel && !hasMaps(d) && !Object.keys(physList(d)).length;
+}
+
 function isPresetDef(d) {
   return !!(d && d.preset && presetDefaults(d.id));
 }
@@ -6116,8 +6267,30 @@ function loadMaterialLibrary() {
       MATERIALS.set(d.id, c);
     });
     Object.entries(raw.presetOverrides || {}).forEach(([id, ov]) => {
+      if (!ov || typeof ov !== 'object' || Array.isArray(ov)) return;
       const p = MATERIALS.get(id);
+      if (!p && LEGACY_PRESETS[id] && aliasOf(id)) {
+        /* An edited Plastic / Metal from before v3.00: there is no such preset now, and
+           dropping it would lose the person's changes. Kept under its own id as a custom
+           copy; getMaterialDef finds it before the alias does. */
+        const lg = LEGACY_PRESETS[id];
+        const c = Object.assign({ id: id, name: lg.name, color: null, roughness: lg.roughness, metalness: lg.metalness },
+          ov, { id: id, preset: false });
+        delete c.envMapIntensity;
+        if (c.srcSig) c.srcSig = migrateSig(c.srcSig);
+        MATERIALS.set(id, c);
+        return;
+      }
       if (!p || !p.preset) return;
+      /* v3.00: 'standard' was Solid and is Clay now. An override written for Solid carries its
+         name and its roughness 1 / metalness 0 only because they were the defaults then, so
+         those three are dropped and Clay's own show; anything else the person set stays. */
+      if (id === 'standard') {
+        const o2 = Object.assign({}, ov);
+        if (o2.name === 'Solid') delete o2.name;
+        if (o2.roughness === 1 && o2.metalness === 0) { delete o2.roughness; delete o2.metalness; }
+        ov = o2;
+      }
       Object.assign(p, ov, { id: id, preset: true });
       delete p.envMapIntensity;
       if (p.srcSig) p.srcSig = migrateSig(p.srcSig);
@@ -6139,6 +6312,7 @@ function saveMaterialLibrary() {
     if (!base) { customs.push(d); return; }   // flagged preset, no default (v2.29)
     if (d.color !== base.color || d.roughness !== base.roughness ||
         d.metalness !== base.metalness ||
+        stableStringify(physList(d)) !== stableStringify(physList(base)) ||
         d.name !== base.name || (d.masks && d.masks.length) || d.bevel ||
         hasMaps(d)) {
       presetOverrides[d.id] = { name: d.name, color: d.color, roughness: d.roughness,
@@ -6149,6 +6323,9 @@ function saveMaterialLibrary() {
            Omitted entirely when empty, for the same reason the signature
            omits it. */
         maps: hasMaps(d) ? mapList(d) : undefined };
+      /* All six, flat, so Object.assign on load puts back even a field set to its default
+         over a preset that has it on (a Lacquer with its coat turned off). v3.00. */
+      Object.assign(presetOverrides[d.id], physOf(d));
     }
   });
   try {
@@ -6198,6 +6375,9 @@ function applyFinish(mat, id) {
   mat.userData.themedDefault = (d.color === null || d.color === undefined);
   mat.roughness = d.roughness;
   mat.metalness = d.metalness;
+  /* three raises the shader define itself when clearcoat or sheen crosses zero (the setter bumps
+     the material version), so no needsUpdate here and this stays cheap per slider tick. */
+  setPhys(mat, d);
   /* The flag is on the MATERIAL, not passed in, because applyFinish is
      reached from a dozen places (the editor's live update, the pool, an op
      re-dressing a clone) and only one of them knows what geometry the
@@ -7603,6 +7783,12 @@ function applyMaskPatch(mat, d) {
         '  }',
         '}',
         '#endif'].join('\n'))
+      /* v3.00: under MeshPhysicalMaterial the clearcoat layer takes the UNPERTURBED normal
+         (nonPerturbedNormal, saved before normal_fragment_maps) - so without this a coat over a
+         bumped or edge-rounded base stays razor flat. A no-op in a program with no clearcoat. */
+      .replace('#include <clearcoat_normal_fragment_begin>', ['#ifdef USE_CLEARCOAT',
+        '  vec3 clearcoatNormal = normal;',
+        '#endif'].join('\n'))
       .replace('#include <color_fragment>', ['#include <color_fragment>',
         '{',
         '  vec3 kubikN = normalize(vKubikNrm);',
@@ -7772,7 +7958,7 @@ function ensureWearLists() {
 function makeMaterialSet(count, hex, finish) {
   const mats = [];
   for (let i = 0; i < count; i++) {
-    const m = applyFinish(new THREE.MeshStandardMaterial({ color: hex, side: THREE.DoubleSide }), finish);
+    const m = applyFinish(new THREE.MeshPhysicalMaterial({ color: hex, side: THREE.DoubleSide }), finish);
     // Anything still wearing the theme's default colour follows the theme.
     // The moment you pick a colour yourself the flag clears and it's yours.
     m.userData.themedDefault = (hex === DEFAULT_MATERIAL_COLOR);
@@ -7852,7 +8038,7 @@ function pooledMaterial(id, side, own, uvless) {
   const key = id + '|' + side + (uvless ? '|nouv' : '') + '|' + (own || '');
   let m = _matPool.get(key);
   if (!m) {
-    m = new THREE.MeshStandardMaterial({ side: side });
+    m = new THREE.MeshPhysicalMaterial({ side: side });
     _pooledMats.add(m);
     m.__dispose = m.dispose;
     m.dispose = function () {};
@@ -12068,9 +12254,13 @@ function captureSymmetryPlane(obj, axis) {
    under. Returns the map unchanged when nothing was remapped, which is the
    overwhelmingly common case. */
 function remapFinishes(fin, remap) {
-  if (!remap || !remap.size) return fin;
+  if (!remap) return fin;
   const out = {};
-  Object.keys(fin).forEach(k => { out[k] = remap.get(fin[k]) || fin[k]; });
+  Object.keys(fin).forEach(k => {
+    const v = fin[k];
+    // v3.00: 'plastic' / 'metal' with no library entry of their own still mean their alias
+    out[k] = remap.get(v) || ((!MATERIALS.has(v) && aliasOf(v)) || v);
+  });
   return out;
 }
 
@@ -13454,7 +13644,7 @@ function extrudeEdge(obj, edgeIndex, offset = EXTRUDE_OFFSET) {
   const nAi = ed.positions.length / 3; ed.positions.push(newA.x, newA.y, newA.z);
   const nBi = ed.positions.length / 3; ed.positions.push(newB.x, newB.y, newB.z);
 
-  mats.push((mats[0] || new THREE.MeshStandardMaterial({ side: THREE.DoubleSide })).clone());
+  mats.push((mats[0] || new THREE.MeshPhysicalMaterial({ side: THREE.DoubleSide })).clone());
   ed.groups.push({ triangles: [[ai, bi, nBi], [ai, nBi, nAi]] });
 
   rebuildFromEditable(obj, ed);
@@ -35776,7 +35966,7 @@ function booleanBuild(objs, kind, opt) {
 
   const outMats = ed.groups.map(g => {
     const src = mats[g.mat] || mats[0];
-    return src ? src.clone() : new THREE.MeshStandardMaterial();
+    return src ? src.clone() : new THREE.MeshPhysicalMaterial();
   });
   /* SAID OUT LOUD ON OK, not here. three-bvh-csg's own README warns the result
      may not come back perfectly two-manifold, so finishOpSetup measures what
@@ -36312,6 +36502,7 @@ function serializeDocBody() {
           color: '#' + m.color.getHexString(),
           roughness: m.roughness,
           metalness: m.metalness,
+          phys: physSnap(m),
           themed: !!m.userData.themedDefault
         })),
         /* COPIES. These four were live references, so every doc already in
@@ -36574,6 +36765,15 @@ function restoreDoc(doc, opts = {}) {
          does differ - someone's Metal with scratches on it - is the case the
          minting branch was built for, and the person deserves to know their
          own is being shown instead of a second card appearing for ever. */
+      /* v3.00: Solid / Plastic / Metal as the OLD build wrote them (its name, its numbers, nothing added)
+         are not documents' data. 'standard' is Clay now and stays itself; plastic and metal go to
+         their aliases and the faces that wore them are repointed. A copy someone really changed
+         (masks, bevel, pictures, a different number) falls through and is kept as before. */
+      if (LEGACY_PRESETS[d.id] && isUntouchedLegacy(d)) {
+        const to = aliasOf(d.id);
+        if (to && MATERIALS.has(to)) matIdRemap.set(d.id, to);
+        return;
+      }
       if (presetDefaults(d.id)) {
         const mine = MATERIALS.get(d.id);
         /* COLOUR IS THEME DATA ON A PRESET, NOT DOCUMENT DATA (v2.30, narrowed
@@ -36680,6 +36880,7 @@ function restoreDoc(doc, opts = {}) {
           color: '#' + m.color.getHexString(),
           roughness: m.roughness,
           metalness: m.metalness,
+          phys: physSnap(m),
           themed: !!m.userData.themedDefault
         })),
         finishes: { ...(o.mesh.userData.finishes || {}) }
@@ -36766,13 +36967,14 @@ function restoreDoc(doc, opts = {}) {
     if (!look && matIdRemap.size) od.finishes = finishes;
     const mats = od.materials.map((md, i) => {
       const src = (look && look.surfaces[i]) ? look.surfaces[i] : md;
-      const mat = new THREE.MeshStandardMaterial({ color: src.color, side: THREE.DoubleSide });
+      const mat = new THREE.MeshPhysicalMaterial({ color: src.color, side: THREE.DoubleSide });
       mat.userData.themedDefault = !!src.themed;
       if (Number.isFinite(src.roughness)) {
         // Stored surface values win - they're what the object actually looked
         // like, even if the preset name was lost along the way.
         mat.roughness = src.roughness;
         mat.metalness = src.metalness;
+        if (src.phys) setPhys(mat, src.phys);   // absent in a file older than v3.00: the defaults
         /* An old file's envMapIntensity is ignored rather than restored
            (a2.65a): three never used it here, so honouring it would only
            put a dead number back on the material. */
@@ -49470,7 +49672,7 @@ function matPreviewRig() {
   const key = new THREE.DirectionalLight(0xffffff, 0.9);   // aimed and tinted by applyEnvRig
   key.position.set(3, 4, 2);
   sc.add(key);
-  const mat = new THREE.MeshStandardMaterial({ color: 0x9AA0A8 });
+  const mat = new THREE.MeshPhysicalMaterial({ color: 0x9AA0A8 });
   const ballGeo = new THREE.SphereGeometry(0.8, 48, 32);
   /* Stamped on the GEOMETRY, which is where ensureEdgeField looks, and once
      for the life of the page: `gen` never moves again, so the field is baked
@@ -49502,7 +49704,7 @@ function renderMatPreviews(onlyId) {
   MATERIALS.forEach((_d, k) => {
     if (onlyId !== undefined && k !== onlyId) return;
     let m = rig.mats.get(k);
-    if (!m) { m = new THREE.MeshStandardMaterial({ color: 0x9AA0A8 }); rig.mats.set(k, m); }
+    if (!m) { m = new THREE.MeshPhysicalMaterial({ color: 0x9AA0A8 }); rig.mats.set(k, m); }
     rig.ball.material = applyFinish(m, k);
     rig.r.render(rig.sc, rig.cam);
     out[k] = rig.r.domElement.toDataURL();
@@ -49621,6 +49823,7 @@ function buildMatTray() {
     MATERIALS.set(id, { id: id, preset: false, name: 'Material ' + nextMaterialNum++,
       color: src.color, roughness: src.roughness, metalness: src.metalness,
       bevel: src.bevel || 0,
+      ...physOf(src),
       /* MASKS COME WITH IT (a2.64). Forking a material and losing the very
          thing that made it worth forking is the least useful copy there is
          - you would pick the material you liked, press +, and get a plain
@@ -50705,6 +50908,30 @@ const meMetalV = document.getElementById('meMetalV');
 const meRoughV = document.getElementById('meRoughV');
 const meBevel = document.getElementById('meBevel');
 const meBevelV = document.getElementById('meBevelV');
+/* v3.00: the six physical inputs. [definition key, slider id, readout id]. */
+const mePhysCtl = [
+  ['clearcoat', 'meCoat', 'meCoatV'], ['clearcoatRoughness', 'meCoatR', 'meCoatRV'],
+  ['sheen', 'meSheen', 'meSheenV'], ['sheenRoughness', 'meSheenR', 'meSheenRV'],
+  ['specularIntensity', 'meSpec', 'meSpecV']
+].map(a => ({ k: a[0], el: document.getElementById(a[1]), val: document.getElementById(a[2]) }));
+const meSheenCol = document.getElementById('meSheenCol');
+let meSheenTouched = false;
+function meLoadPhys(d) {
+  const p = physOf(d);
+  mePhysCtl.forEach(c => { c.el.value = p[c.k]; c.val.textContent = p[c.k].toFixed(2); });
+  meSheenCol.value = p.sheenColor;
+  meSheenTouched = false;
+}
+function meReadPhys(d) {
+  mePhysCtl.forEach(c => { const v = parseFloat(c.el.value); d[c.k] = v; c.val.textContent = v.toFixed(2); });
+  if (meSheenTouched) d.sheenColor = meSheenCol.value;
+  /* Sheen in black is no sheen at all: the first time it is raised on a material with the default
+     colour, give it a light one rather than a slider that appears to do nothing. */
+  else if (d.sheen > 0 && physOf(d).sheenColor === PHYS_DEFAULT.sheenColor) {
+    d.sheenColor = '#ffffff';
+    meSheenCol.value = '#ffffff';
+  }
+}
 
 function openMatEditor(id) {
   const d = liveMaterialDef(id);
@@ -50728,6 +50955,7 @@ function openMatEditor(id) {
   meMetalV.textContent = d.metalness.toFixed(2);
   meRoughV.textContent = d.roughness.toFixed(2);
   meBevelV.textContent = (d.bevel || 0).toFixed(2);
+  meLoadPhys(d);
   meImg.src = (_matPreviews && _matPreviews[id]) || '';
   document.getElementById('meReset').style.display = isPresetDef(d) ? '' : 'none';
   document.getElementById('meDelete').style.display = isPresetDef(d) ? 'none' : '';
@@ -50763,6 +50991,7 @@ function meApplyLive() {
   d.roughness = parseFloat(meRough.value);
   const hadBevel = !!d.bevel;
   d.bevel = parseFloat(meBevel.value);
+  meReadPhys(d);
   meMetalV.textContent = d.metalness.toFixed(2);
   meRoughV.textContent = d.roughness.toFixed(2);
   meBevelV.textContent = d.bevel.toFixed(2);
@@ -50837,7 +51066,8 @@ function meCommit() {
 
 // FIRST, so the flag is already set when meApplyLive reads it below.
 ['input', 'change'].forEach(ev => meColor.addEventListener(ev, () => { meColorTouched = true; }));
-[meColor, meMetal, meRough, meBevel].forEach(el => {
+['input', 'change'].forEach(ev => meSheenCol.addEventListener(ev, () => { meSheenTouched = true; }));
+[meColor, meMetal, meRough, meBevel, meSheenCol].concat(mePhysCtl.map(c => c.el)).forEach(el => {
   el.addEventListener('input', meApplyLive);
   el.addEventListener('change', () => { meApplyLive(); meCommit(); });
 });
@@ -50849,8 +51079,9 @@ document.getElementById('meReset').addEventListener('click', () => {
      out loud: a button that silently does nothing reads as a broken app, and
      Object.assign(d, undefined) did nothing while still toasting "Reset to
      default" (v2.29). */
-  if (!isPresetDef(d)) { toast('Only Solid, Plastic and Metal have a default'); return; }
+  if (!isPresetDef(d)) { toast('Only the built-in materials have a default'); return; }
   Object.assign(d, presetDefaults(d.id));
+  PHYS_KEYS.forEach(k => { if (!(k in presetDefaults(d.id))) delete d[k]; });   // v3.00
   // Object.assign cannot clear a key the defaults do not have - the same
   // reason d.masks is emptied by hand a line or two below.
   d.bevel = 0;
@@ -50879,7 +51110,7 @@ document.getElementById('meDelete').addEventListener('click', () => {
   const d = liveMaterialDef(matEditingId);
   if (!d) { closeMatEditor(true); return; }
   // Said out loud, for the same reason as Reset above (v2.29).
-  if (isPresetDef(d)) { toast('Solid, Plastic and Metal cannot be deleted \u2014 use Reset'); return; }
+  if (isPresetDef(d)) { toast('Built-in materials cannot be deleted \u2014 use Reset'); return; }
   App.objects.forEach(o => {
     const fin = o.mesh.userData.finishes || {};
     const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
@@ -51911,6 +52142,7 @@ function toggleFloorGrid() {
   // shadow is a floor-relative cue, so it reads as part of "the floor" and
   // should come and go with it instead of lingering once the grid is gone.
   shadowCatcher.visible = SHOW_FLOOR_SHADOW && grid.visible;
+  contactShadow.visible = SHOW_CONTACT_SHADOW && grid.visible;
   toast(grid.visible ? 'Floor grid on' : 'Floor grid off');
 }
 
@@ -53031,6 +53263,7 @@ function stepFrame(now) {
     const heartbeat = now - lastRenderAt >= RENDER_HEARTBEAT_MS;
     lastRenderAt = now;
     PERF.render++;
+    updateContactShadow();
     renderer.render(scene, camera);
     selMarks();
     /* Separate renderer - cannot affect the main viewport above. Its picture is

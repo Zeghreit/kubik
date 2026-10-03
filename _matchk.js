@@ -49,7 +49,7 @@
       if (!K.MATERIAL_DEFAULTS[id]) K.MATERIALS.delete(id);
     });
     Object.keys(K.MATERIAL_DEFAULTS).forEach(id => {
-      /* RE-CREATED, not just re-assigned. 3.7 deletes 'metal' on purpose, and
+      /* RE-CREATED, not just re-assigned. 3.7 deletes 'steel' on purpose, and
          a resetLib that only touched surviving entries left every later group
          running against two presets - which 4.5 then read as "the sweep took a
          preset". Found by 4.5 itself. */
@@ -122,11 +122,11 @@
     addCustom('mat_skin', 'Skin', '#aa8866', 0.5, 0);
     n0 = K.MATERIALS.size;
     ctx = K.importMaterialContext();
-    got = ctx.idFor(src('Gold', '#ffcc33', 0.3, 1));
+    got = ctx.idFor(src('Copper', '#ffcc33', 0.3, 1));
     ok('1.5 незнакомое имя - одна новая запись',
        K.MATERIALS.size === n0 + 1, n0 + ' -> ' + K.MATERIALS.size);
     ok('1.5 и она названа своим именем, без "(imported)"',
-       got && K.MATERIALS.get(got) && K.MATERIALS.get(got).name === 'Gold',
+       got && K.MATERIALS.get(got) && K.MATERIALS.get(got).name === 'Copper',
        got + ' -> ' + (K.MATERIALS.get(got) || {}).name);
 
     /* ЛОВУШКА, и она важнее всего остального в этой группе. Безымянные
@@ -171,15 +171,15 @@
     resetLib();
     n0 = K.MATERIALS.size;
     ctx = K.importMaterialContext();
-    got = ctx.idFor(src('Metal', '#ffcc33', 0.2, 1));
+    got = ctx.idFor(src('Brushed steel', '#ffcc33', 0.2, 1));
     ok('1.8 золотой "Metal" НЕ становится пресетом Metal',
-       got !== 'metal', 'idFor -> ' + got);
+       got !== 'steel', 'idFor -> ' + got);
     ok('1.8 он получает свою запись и своё золото',
        K.MATERIALS.size === n0 + 1 && (K.MATERIALS.get(got) || {}).color === '#ffcc33',
        (K.MATERIALS.get(got) || {}).name + ' ' + (K.MATERIALS.get(got) || {}).color);
-    const met = K.MATERIALS.get('metal');
+    const met = K.MATERIALS.get('steel');
     ok('1.8 и пресет Metal не тронут',
-       met.color === null && Math.abs(met.roughness - K.MATERIAL_DEFAULTS.metal.roughness) < 1e-9,
+       met.color === K.MATERIAL_DEFAULTS.steel.color && Math.abs(met.roughness - K.MATERIAL_DEFAULTS.steel.roughness) < 1e-9,
        met.color + ' rough=' + met.roughness);
 
     /* А дорога на пресет осталась ровно одна - та, что была: цвет, который
@@ -188,10 +188,10 @@
     resetLib();
     n0 = K.MATERIALS.size;
     ctx = K.importMaterialContext();
-    got = ctx.idFor(src('Whatever', K.themedGreyHex(), K.MATERIAL_DEFAULTS.metal.roughness,
-                        K.MATERIAL_DEFAULTS.metal.metalness));
+    got = ctx.idFor(src('Whatever', K.themedGreyHex(), K.MATERIAL_DEFAULTS.standard.roughness,
+                        K.MATERIAL_DEFAULTS.standard.metalness));
     ok('1.9 наш серый с roughness пресета по-прежнему ЕСТЬ пресет',
-       got === 'metal' && K.MATERIALS.size === n0, 'idFor -> ' + got);
+       got === 'standard' && K.MATERIALS.size === n0, 'idFor -> ' + got);
 
     /* ДВА ОДНОИМЁННЫХ МАТЕРИАЛА В ОДНОМ ФАЙЛЕ - это два материала. Схлопнуть
        их значит убить один из двух цветов: ровно то, от чего защищён
@@ -338,7 +338,7 @@
     ok('3.6 и карточек ровно столько, сколько записей',
        cards.length === K.MATERIALS.size, cards.length + ' / ' + K.MATERIALS.size);
     K.setMatTrayOpen(false);
-    K.MATERIALS.delete('metal');
+    K.MATERIALS.delete('steel');
     ok('3.7 на ЗАКРЫТОЙ полке устаревание не считается (иначе каждый тап по выделению платит за пересборку)',
        K.matTrayStale() === false);
     resetLib();
@@ -420,8 +420,8 @@
     ok('4.1 и ничего не названо "(imported)"', !anyImportedName(), names());
     ok('4.1 пресеты продолжают следовать теме',
        K.MATERIALS.get('standard').color === null &&
-       K.MATERIALS.get('plastic').color === null,
-       K.MATERIALS.get('standard').color + ' / ' + K.MATERIALS.get('plastic').color);
+       K.MATERIALS.get('lacquer').color === K.MATERIAL_DEFAULTS.lacquer.color,
+       K.MATERIALS.get('standard').color + ' / ' + K.MATERIALS.get('lacquer').color);
 
     /* Повторные открытия того же файла ничего не добавляют. */
     const afterNeo = K.MATERIALS.size;
@@ -437,7 +437,7 @@
     resetLib();
     n0 = K.MATERIALS.size;
     let docM = K.serializeDoc();
-    docM.materialLib = [{ id: 'metal', preset: true, name: 'Metal', color: null,
+    docM.materialLib = [{ id: 'steel', preset: true, name: 'Brushed steel', color: null,
       roughness: 0.25, metalness: 1, bevel: 0,
       masks: [{ on: true, type: 'edges', blend: 'normal', colorOn: true, color: '#ffffff',
                 roughOn: false, rough: 0, amount: 0.4, scale: 0.1, detail: 0,
@@ -450,8 +450,8 @@
        !!copy && Array.isArray(copy.masks) && copy.masks.length === 1,
        copy ? (copy.name + ' masks=' + (copy.masks || []).length) : 'нет копии');
     ok('4.2 а наш Metal не тронут',
-       K.MATERIALS.get('metal').color === null &&
-       !(K.MATERIALS.get('metal').masks || []).length);
+       K.MATERIALS.get('steel').color === K.MATERIAL_DEFAULTS.steel.color &&
+       !(K.MATERIALS.get('steel').masks || []).length);
 
     mark('4.neotank');
 
@@ -529,7 +529,7 @@
        names());
     ok('4.5 надетый уцелел', K.MATERIALS.has('mat_keep'), names());
     ok('4.5 пресеты уцелели',
-       K.MATERIALS.has('standard') && K.MATERIALS.has('plastic') && K.MATERIALS.has('metal'),
+       K.MATERIALS.has('standard') && K.MATERIALS.has('lacquer') && K.MATERIALS.has('steel'),
        names());
     ok('4.5 и сказано, сколько снесено', bodyHas('Removed 2 unused'));
     const before5 = K.MATERIALS.size;
@@ -549,8 +549,8 @@
        libIds.indexOf('mat_never') < 0, libIds.join(','));
     ok('4.6 надетый - попадает', libIds.indexOf('mat_keep') >= 0, libIds.join(','));
     ok('4.6 и три пресета едут всегда',
-       libIds.indexOf('standard') >= 0 && libIds.indexOf('plastic') >= 0 &&
-       libIds.indexOf('metal') >= 0, libIds.join(','));
+       libIds.indexOf('standard') >= 0 && libIds.indexOf('lacquer') >= 0 &&
+       libIds.indexOf('steel') >= 0, libIds.join(','));
 
     /* УБОРКА СМОТРИТ И В ИСТОРИЮ. Удалить единственный объект в материале,
        убраться, отменить - и объект возвращался в Solid, без масок и без
