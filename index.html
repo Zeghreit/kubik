@@ -3171,7 +3171,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.94</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.95</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -40094,6 +40094,7 @@ ICON.flipvert  = '<g transform="rotate(90 12 12)">' + ICON.flip + '</g>';
 ICON.density  = '<path d="M3 4h8v7H3z"/><path d="M3 7.5h8"/><path d="M7 4v7"/>' +
                 '<path d="M13 13h8v7h-8z"/><path d="M13 15h8"/><path d="M13 17h8"/>' +
                 '<path d="M13 19h8"/><path d="M15 13v7"/><path d="M17 13v7"/><path d="M19 13v7"/>';
+ICON.tilesize = '<path d="M4 4h10v10H4z"/><path d="M4 19h16"/><path d="M4 17v4"/><path d="M20 17v4"/>';
 ICON.tosquare = '<path d="M3 3h18v18H3z"/><path d="M7 9h10v6H7z"/>' +
                 '<path d="M12 9V5"/><path d="M12 15v4"/>' +
                 '<path d="M10 7l2-2 2 2"/><path d="M10 17l2 2 2-2"/>';
@@ -42238,7 +42239,9 @@ const HUB_TOOLS_UV2D_WORLD = [
      touch its outline, Unfold rewrites the outline and everything with it.
      Reaching for one and landing on the other is one Undo, and seeing them
      together is what says they are two halves of the same question. */
-  { key: 'uvunfold', icon: 'unfold', label: 'Unfold', seat: 5, run: uvUnfold }
+  { key: 'uvunfold', icon: 'unfold', label: 'Unfold', seat: 5, run: uvUnfold },
+  /* v2.95. Reads the selection like Relax and Unfold, so it lives here with them. */
+  { key: 'uvsize', icon: 'tilesize', label: 'Set size', seat: 7, run: uvOpenSizePanel }
 ];
 
 function currentHubTools() {
@@ -45258,6 +45261,133 @@ function uvEvenDensity() {
       (worst >= 1.995 ? Math.round(worst) + '× off' : worst.toFixed(2) + '× off')) + note);
   refreshUvView(obj);
   frameUvAll(true);
+  return true;
+}
+
+/* SET SIZE (v2.95) - exact scale, "size in the world".
+   One number N: the selected islands (all of them when none is selected) are
+   scaled so that ONE TEXTURE TILE (0..1) covers N scene units. Same number for
+   every island, so two islands end up with the same texel density by
+   construction.
+   Per island the linear factor is k = sqrt(world) / (N * sqrt(uv)), about the
+   centre of the island's own UV box (the pivot Even density uses). World area
+   comes from uvIslandAreas, so the object's own scale is counted.
+   NO PACK AFTER. Pack scales everything uniformly, which would throw the size
+   just set away; islands may overlap or leave 0..1, and the toast says when
+   they leave it. Islands with no measurable area are left alone and counted.
+   A factor outside 1e-3..1e3 refuses the island - an island whose UV is a line
+   has a float-noise area, and "exact" scaling by a million is not an answer. */
+const UV_SIZE_K_MIN = 1e-3, UV_SIZE_K_MAX = 1e3;
+let uvSizeLast = 1;
+function uvSetWorldSize(N) {
+  const obj = uvViewObj;
+  if (!obj || !obj.mesh || !obj.mesh.geometry) return false;
+  if (!Number.isFinite(N) || !(N > 0)) { toast('Enter a size above zero'); return false; }
+  let ed;
+  try { ed = toEditable(obj.mesh); }
+  catch (e) { console.warn('uvSetWorldSize: toEditable failed', e); return false; }
+  if (!ed.uvs || !ed.uvs.length) { toast('Unwrap first'); return false; }
+  const map = islandVertexMap(obj);
+  const areas = uvIslandAreas(obj, ed, map);
+  const { attrIsland, count } = map;
+  const want = (uvCompMode === 'island' && uvIslandSel.size) ? uvIslandSel : null;
+  const kOf = new Array(count).fill(0);
+  let skipped = 0, scaledIslands = 0, outOfRange = 0;
+  for (let i = 0; i < count; i++) {
+    if (want && !want.has(i)) continue;
+    const a = areas[i];
+    if (!(a.density > 0) || !(a.world > 0) || !(a.uv > 0) || a.broken) { skipped++; continue; }
+    const k = Math.sqrt(a.world) / (N * Math.sqrt(a.uv));
+    if (!Number.isFinite(k) || k < UV_SIZE_K_MIN || k > UV_SIZE_K_MAX) { skipped++; outOfRange++; continue; }
+    kOf[i] = k;
+    scaledIslands++;
+  }
+  if (!scaledIslands) { toast(outOfRange ? 'That size is out of range for this layout' : 'No island can be measured'); return false; }
+  /* Already that size: every factor is 1 to float32 noise. Without this the second press
+     of the same number flips a few vertices to the neighbouring float32 and records a step. */
+  if (kOf.every(k => !k || Math.abs(k - 1) < 1e-5)) { toast('Already this size'); return false; }
+  const boxes = new Map();
+  for (let ai = 0; ai < attrIsland.length; ai++) {
+    const isl = attrIsland[ai];
+    if (isl < 0 || isl >= count || !kOf[isl]) continue;
+    const u = ed.uvs[ai * 2], v = ed.uvs[ai * 2 + 1];
+    if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
+    const b = boxes.get(isl);
+    if (!b) { boxes.set(isl, { minU: u, maxU: u, minV: v, maxV: v }); continue; }
+    if (u < b.minU) b.minU = u;
+    if (u > b.maxU) b.maxU = u;
+    if (v < b.minV) b.minV = v;
+    if (v > b.maxV) b.maxV = v;
+  }
+  const wasUvs = Array.prototype.slice.call(ed.uvs);
+  for (let ai = 0; ai < attrIsland.length; ai++) {
+    const isl = attrIsland[ai];
+    const b = boxes.get(isl);
+    if (!b) continue;
+    const k = kOf[isl];
+    const pu = (b.minU + b.maxU) / 2, pv = (b.minV + b.maxV) / 2;
+    ed.uvs[ai * 2] = pu + (ed.uvs[ai * 2] - pu) * k;
+    ed.uvs[ai * 2 + 1] = pv + (ed.uvs[ai * 2 + 1] - pv) * k;
+  }
+  if (!uvsChangedAsStored(wasUvs, ed.uvs)) { toast('Already this size'); return false; }
+  let outside = false;
+  for (let ai = 0; ai < attrIsland.length && !outside; ai++) {
+    if (!boxes.has(attrIsland[ai])) continue;
+    for (let c = 0; c < 2; c++) {
+      const x = ed.uvs[ai * 2 + c];
+      if (Number.isFinite(x) && (x < -1e-6 || x > 1 + 1e-6)) { outside = true; break; }
+    }
+  }
+  rebuildFromEditable(obj, ed);
+  const nTxt = +N.toPrecision(4);
+  finishMeshEdit(obj, 'Set size - 1 tile = ' + nTxt +
+    (scaledIslands > 1 ? ' - ' + scaledIslands + ' islands' : '') +
+    (skipped ? ' - ' + skipped + ' skipped' : '') +
+    (outside ? ' - past the 0..1 tile' : ''));
+  refreshUvView(obj);
+  frameUvAll(true);
+  return true;
+}
+
+/* The number box for Set size. Built on first use inside #uvViewCard; presses on
+   it stop there so they never reach the card's empty-space hold. */
+function uvOpenSizePanel() {
+  const card = document.getElementById('uvViewCard');
+  if (!card) return false;
+  let panel = document.getElementById('uvSizePanel');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'uvSizePanel';
+    panel.style.cssText = 'position:absolute;left:50%;bottom:44px;transform:translateX(-50%);z-index:20;' +
+      'display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:12px;' +
+      'background:rgba(24,24,28,.95);color:#eee;font:14px system-ui,sans-serif;' +
+      'box-shadow:0 4px 18px rgba(0,0,0,.5);';
+    panel.innerHTML = '<span>1 tile =</span>' +
+      '<input id="uvSizeInput" type="number" inputmode="decimal" min="0.0001" step="any" ' +
+      'style="width:84px;height:34px;font-size:16px;padding:0 8px;border-radius:8px;border:1px solid #555;background:#111;color:#fff;">' +
+      '<span>units</span>' +
+      '<button id="uvSizeOk" style="height:34px;padding:0 14px;border-radius:8px;border:0;background:#4a8cff;color:#fff;font-size:14px;">Set</button>' +
+      '<button id="uvSizeX" style="height:34px;width:34px;border-radius:8px;border:0;background:#333;color:#ddd;font-size:16px;">\u00d7</button>';
+    ['pointerdown', 'mousedown', 'touchstart', 'click', 'wheel'].forEach(ev =>
+      panel.addEventListener(ev, e => e.stopPropagation(), { passive: true }));
+    card.appendChild(panel);
+    const inp = panel.querySelector('#uvSizeInput');
+    const apply = () => {
+      const n = parseFloat(inp.value);
+      if (uvSetWorldSize(n)) { uvSizeLast = n; panel.style.display = 'none'; }
+    };
+    panel.querySelector('#uvSizeOk').addEventListener('click', apply);
+    panel.querySelector('#uvSizeX').addEventListener('click', () => { panel.style.display = 'none'; });
+    inp.addEventListener('keydown', e => {
+      e.stopPropagation();
+      if (e.key === 'Enter') apply();
+      else if (e.key === 'Escape') panel.style.display = 'none';
+    });
+  }
+  panel.style.display = 'flex';
+  const inp = panel.querySelector('#uvSizeInput');
+  inp.value = String(uvSizeLast);
+  setTimeout(() => { try { inp.focus(); inp.select(); } catch (e) {} }, 0);
   return true;
 }
 
@@ -53243,7 +53373,7 @@ if (PICK_DEBUG) {
     uvSecondPointer, promoteUvViewPinch, uvOtherPointer, UV_VIEW_PINCH_MIN_PX,
     // v2.66: layout - align a group, pack the sheet.
     uvAlignIslands, UV_ALIGN, uvPackAll,
-    uvIslandAreas, uvEvenDensity, uvStretchToSquare,
+    uvIslandAreas, uvEvenDensity, uvSetWorldSize, uvOpenSizePanel, uvStretchToSquare,
     UV_DENSITY_MAX_LOSS,
     // v2.68: the pinch that sticks to exact values.
     snapUvScale, snapUvAngle, UV_SNAP_SCALES, UV_SNAP_SCALE_REL,
