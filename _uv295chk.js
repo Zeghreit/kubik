@@ -54,6 +54,17 @@
     d = dens().filter(x => x > 0);
     ok('5.OK applies 0.25 (density 4)', d.every(x => Math.abs(x - 4) < 4e-3), d.join(','));
     ok('5.panel closes', p.style.display === 'none');
+    // texel density px/m
+    K.uvOpenSizePanel();
+    const dn = document.getElementById('uvSizeDens'), rs = document.getElementById('uvSizeRes');
+    rs.value = '1024'; rs.dispatchEvent(new Event('change'));
+    dn.value = '2048'; dn.dispatchEvent(new Event('input'));
+    ok('6.density box -> N = res/D = 0.5', Math.abs(parseFloat(document.getElementById('uvSizeInput').value) - 0.5) < 1e-9, document.getElementById('uvSizeInput').value);
+    rs.value = '2048'; rs.dispatchEvent(new Event('change'));
+    ok('6.res change keeps N, D doubles', Math.abs(parseFloat(dn.value) - 4096) < 1e-6, dn.value);
+    document.getElementById('uvSizeOk').click(); await wait(250);
+    d = dens().filter(x => x > 0);
+    ok('6.applied: density = 1/N = 2', d.every(x => Math.abs(x - 2) < 2e-3), d.join(','));
     while (A.historyIndex > at) { K.undo(); await wait(160); }
     mark('5');
     finish();
