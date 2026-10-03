@@ -18930,3 +18930,5 @@ What is on by default (`let` switches next to the v2.81a ones): `TOPO_Q_THIN`,
 Seat 7 of the 2D world ring ('Set size') opens a small panel in #uvViewCard: 1 tile = N scene units. uvSetWorldSize(N) scales the selected islands (all when none selected) about each island's UV-box centre, k = sqrt(world)/(N*sqrt(uv)); density (linear) becomes 1/N. No pack afterwards - the size would be lost. Factors outside 1e-3..1e3 are refused per island. Check: _uv295chk.
 
 2.96: the Set size panel also takes texel density in px/m at a chosen texture size (256..8192): N = res / density; the two boxes edit the same N. Scene unit is taken as a metre.
+
+2.97: Texel view - 2D world ring seat 1, a switch (no history step). Islands tinted by density vs the weighted median (blue sparse, green equal, red dense, full colour at 4x) and labelled in px/m at uvSizeRes. 2D already had cut (Mark seam on edges), point Weld (uvWeldSelection) and Merge islands - the old 'cut/weld remain' note is obsolete.

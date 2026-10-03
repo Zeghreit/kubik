@@ -66,12 +66,22 @@
     d = dens().filter(x => x > 0);
     ok('6.applied: density = 1/N = 2', d.every(x => Math.abs(x - 2) < 2e-3), d.join(','));
     while (A.historyIndex > at) { K.undo(); await wait(160); }
+    // texel view
+    const tv = K.HUB_TOOLS_UV2D_WORLD.find(x => x.key === 'uvdview');
+    ok('7.texel seat 1 + on()', !!tv && tv.seat === 1 && tv.on() === false);
+    K.uvToggleDensityView(); await wait(200);
+    const labs = document.querySelectorAll('#uvViewSvg .uv-dens');
+    ok('7.labels on: one per island', labs.length === 6 && /px\/m$/.test(labs[0].textContent), labs.length + ' ' + (labs[0] && labs[0].textContent));
+    ok('7.on() true', tv.on() === true);
+    ok('7.no history step', A.historyIndex === at);
+    K.uvToggleDensityView(); await wait(200);
+    ok('7.labels off', document.querySelectorAll('#uvViewSvg .uv-dens').length === 0);
     mark('5');
     finish();
   }
   function boot() {
     K = window.__kubik;
-    if (!K || !K.App || !K.uvSetWorldSize || !K.uvOpenSizePanel || !K.uvIslandAreas) { setTimeout(boot, 120); return; }
+    if (!K || !K.App || !K.uvSetWorldSize || !K.uvOpenSizePanel || !K.uvToggleDensityView || !K.uvIslandAreas) { setTimeout(boot, 120); return; }
     setTimeout(() => run().catch(e => finish('THREW ' + (e && e.stack ? e.stack : e))), 500);
   }
   boot();

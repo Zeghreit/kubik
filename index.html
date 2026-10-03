@@ -2597,6 +2597,9 @@
      the thing actually read, not the tint - and it doubles as the pointer
      target for dragging, since an outline alone is hard to grab by touch. */
   #uvViewSvg .uv-fill { stroke: none; fill-opacity: 0.35; }
+  #uvViewSvg .uv-dens { fill: #fff; text-anchor: middle; dominant-baseline: central; pointer-events: none;
+                        font: calc(var(--uv-sw, 1) * 3px) system-ui, sans-serif; paint-order: stroke;
+                        stroke: #000; stroke-width: calc(var(--uv-sw, 1) * 0.6); stroke-linejoin: round; }
   #uvViewSvg .uv-island { cursor: grab; }
   #uvViewSvg .uv-island.dragging { cursor: grabbing; }
   /* SELECTED (v2.55). The island keeps its own colour - that colour is what
@@ -3171,7 +3174,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.96</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.97</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -40094,6 +40097,7 @@ ICON.flipvert  = '<g transform="rotate(90 12 12)">' + ICON.flip + '</g>';
 ICON.density  = '<path d="M3 4h8v7H3z"/><path d="M3 7.5h8"/><path d="M7 4v7"/>' +
                 '<path d="M13 13h8v7h-8z"/><path d="M13 15h8"/><path d="M13 17h8"/>' +
                 '<path d="M13 19h8"/><path d="M15 13v7"/><path d="M17 13v7"/><path d="M19 13v7"/>';
+ICON.texview = '<path d="M3 3h18v18H3z"/><path d="M3 9h18M3 15h18"/><path d="M9 3v18"/>';
 ICON.tilesize = '<path d="M4 4h10v10H4z"/><path d="M4 19h16"/><path d="M4 17v4"/><path d="M20 17v4"/>';
 ICON.tosquare = '<path d="M3 3h18v18H3z"/><path d="M7 9h10v6H7z"/>' +
                 '<path d="M12 9V5"/><path d="M12 15v4"/>' +
@@ -42220,6 +42224,7 @@ const HUB_TOOLS_UV2D_WORLD = [
      not neighbours - "back to 3D" and "rewrite the whole layout" are the two
      things here you would least like to hit by accident on the way to the
      other. */
+  { key: 'uvdview', icon: 'texview', label: 'Texel view', seat: 1, on: () => uvDensityView, run: uvToggleDensityView },
   { key: 'uvpack', icon: 'grid', label: 'Pack all', seat: 2, run: uvPackAll },
   /* v2.67, beside Pack because all three are the same kind of thing: they lay
      out every island there is, and none of them looks at the selection. Even
@@ -43895,6 +43900,7 @@ function renderUvView(obj, ed) {
     uvWeldGroup.set(ai, [ai]);
   })));
 
+  const dvp = uvDensityView ? uvDensityPalette(obj, ed) : null;
   for (let i = 0; i < count; i++) {
     if (!fillsByIsland[i]) continue; // no finite-UV triangle landed in this island
     const g = document.createElementNS(NS, 'g');
@@ -43902,13 +43908,27 @@ function renderUvView(obj, ed) {
     g.dataset.island = String(i);
     const fill = document.createElementNS(NS, 'path');
     fill.setAttribute('class', 'uv-fill');
-    fill.setAttribute('fill', '#' + islandColorHex(i).toString(16).padStart(6, '0'));
+    const dvd = dvp && dvp.areas[i] && dvp.areas[i].density > 0 ? dvp.areas[i].density : 0;
+    fill.setAttribute('fill', dvd ? uvDensityColor(dvd, dvp.med) : '#' + islandColorHex(i).toString(16).padStart(6, '0'));
     fill.setAttribute('d', fillsByIsland[i]);
     g.appendChild(fill);
     const edges = document.createElementNS(NS, 'path');
     edges.setAttribute('class', 'uv-edges');
     edges.setAttribute('d', segsByIsland[i]);
     g.appendChild(edges);
+    if (dvd) {
+      const nn = fillsByIsland[i].match(/-?\d+(?:\.\d+)?/g) || [];
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for (let k = 0; k + 1 < nn.length; k += 2) { const x = +nn[k], y = +nn[k + 1]; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+      if (Number.isFinite(x0)) {
+        const tx = document.createElementNS(NS, 'text');
+        tx.setAttribute('class', 'uv-dens');
+        tx.setAttribute('x', ((x0 + x1) / 2).toFixed(2));
+        tx.setAttribute('y', ((y0 + y1) / 2).toFixed(2));
+        tx.textContent = Math.round(dvd * uvSizeRes) + ' px/m';
+        g.appendChild(tx);
+      }
+    }
     uvViewSvgEl.appendChild(g);
   }
 
@@ -45264,6 +45284,35 @@ function uvEvenDensity() {
   return true;
 }
 
+/* TEXEL VIEW (v2.97). A switch, not an op: while it is on, every island in the 2D view is
+   tinted by its texel density against the sheet's median (blue = sparser, green = about equal,
+   red = denser; full colour at 4x either way) and labelled with the number in px/m at the texture
+   size Set size last used. Density is tiles per metre, sqrt(uv/world), times that size. Islands
+   with no measurable area are left in their own colour and unlabelled. Nothing is written to the
+   mesh and there is no history step - it is a way of looking. */
+let uvDensityView = false;
+function uvToggleDensityView() {
+  uvDensityView = !uvDensityView;
+  if (uvViewObj) refreshUvView(uvViewObj);
+  toast(uvDensityView ? 'Texel view on - ' + uvSizeRes + ' px texture' : 'Texel view off');
+  return true;
+}
+function uvDensityPalette(obj, ed) {
+  const a = uvIslandAreas(obj, ed);
+  const rows = [];
+  let total = 0;
+  a.forEach(r => { if (r.density > 0) { rows.push(r); total += r.world; } });
+  if (!rows.length) return null;
+  const sorted = rows.slice().sort((x, y) => x.density - y.density);
+  let acc = 0, med = sorted[sorted.length - 1].density;
+  for (const r of sorted) { acc += r.world; if (acc * 2 >= total) { med = r.density; break; } }
+  return { areas: a, med };
+}
+function uvDensityColor(d, med) {
+  const t = Math.max(-1, Math.min(1, Math.log2(d / med) / 2));
+  const h = t >= 0 ? 120 - 120 * t : 120 + 100 * (-t);
+  return 'hsl(' + Math.round(h) + ',80%,50%)';
+}
 /* SET SIZE (v2.95) - exact scale, "size in the world".
    One number N: the selected islands (all of them when none is selected) are
    scaled so that ONE TEXTURE TILE (0..1) covers N scene units. Same number for
@@ -53393,7 +53442,7 @@ if (PICK_DEBUG) {
     uvSecondPointer, promoteUvViewPinch, uvOtherPointer, UV_VIEW_PINCH_MIN_PX,
     // v2.66: layout - align a group, pack the sheet.
     uvAlignIslands, UV_ALIGN, uvPackAll,
-    uvIslandAreas, uvEvenDensity, uvSetWorldSize, uvOpenSizePanel, uvStretchToSquare,
+    uvIslandAreas, uvEvenDensity, uvSetWorldSize, uvOpenSizePanel, uvToggleDensityView, uvStretchToSquare,
     UV_DENSITY_MAX_LOSS,
     // v2.68: the pinch that sticks to exact values.
     snapUvScale, snapUvAngle, UV_SNAP_SCALES, UV_SNAP_SCALE_REL,
