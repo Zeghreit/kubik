@@ -1,4 +1,4 @@
-(function () {
+﻿(function () {
   const OUT = []; let fails = 0;
   const say = s => OUT.push(s);
   const ok = (n, c, d) => { if (!c) fails++; say((c ? 'PASS ' : 'FAIL ') + n + (d === undefined ? '' : '  ' + d)); };
@@ -34,7 +34,7 @@
     const A1 = mk('sphere', 'PA', -2, 'lacquer'), B1 = mk('sphere', 'PB', 0, 'velvet'), C1 = mk('sphere', 'PC', 2, 'gold');
     const ma = mat0(A1), mb = mat0(B1), mc = mat0(C1);
     ok('2.0 class is Physical', ma.isMeshPhysicalMaterial && mb.isMeshPhysicalMaterial && mc.isMeshPhysicalMaterial, ma.type + '/' + mb.type + '/' + mc.type);
-    ok('2.1 lacquer coat', ma.clearcoat === 1 && Math.abs(ma.clearcoatRoughness - 0.04) < 1e-9, ma.clearcoat + ' ' + ma.clearcoatRoughness);
+    ok('2.1 lacquer coat', ma.clearcoat === 1 && Math.abs(ma.clearcoatRoughness - 0.03) < 1e-9, ma.clearcoat + ' ' + ma.clearcoatRoughness);
     ok('2.2 velvet sheen', mb.sheen === 1 && mb.sheenColor.getHexString() === 'b48cff' && Math.abs(mb.sheenRoughness - 0.55) < 1e-9 && Math.abs(mb.specularIntensity - 0.3) < 1e-9,
       mb.sheen + ' ' + mb.sheenColor.getHexString() + ' ' + mb.sheenRoughness + ' ' + mb.specularIntensity);
     ok('2.3 gold is plain metal', mc.metalness === 1 && mc.clearcoat === 0 && mc.sheen === 0 && mc.specularIntensity === 1);
@@ -123,7 +123,7 @@
     mark('editor');
     K.openMatEditor('lacquer');
     const q = id => document.getElementById(id);
-    ok('8.0 sliders show the preset', q('meCoat') && parseFloat(q('meCoat').value) === 1 && Math.abs(parseFloat(q('meCoatR').value) - 0.04) < 1e-9);
+    ok('8.0 sliders show the preset', q('meCoat') && parseFloat(q('meCoat').value) === 1 && Math.abs(parseFloat(q('meCoatR').value) - 0.03) < 1e-9);
     const fire = (el, v) => { el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
     A.selectedObjectIds = new Set([byName('PA').id]); A.activeObjectId = byName('PA').id;
     K.applyFinishToSelection('lacquer');
@@ -170,7 +170,7 @@
       K.openMatEditor('steelworn'); await wait(150);
       document.getElementById('meReset').click(); await wait(300);
       const dr2 = K.MATERIALS.get('steelworn');
-      ok('11.4 Reset brings the preset masks back, not an empty list', dr2.masks.length === 3 && Math.abs(dr2.masks[0].amount - 0.8) < 1e-9, dr2.masks.length + ' ' + dr2.masks[0].amount);
+      ok('11.4 Reset brings the preset masks back, not an empty list', dr2.masks.length === 3 && Math.abs(dr2.masks[0].amount - 0.5) < 1e-9, dr2.masks.length + ' ' + dr2.masks[0].amount);
       { const a1 = K.materialDefSig(dr2); let at = 0; while (at < a1.length && a1[at] === stock[at]) at++; ok('11.5 and the signature is stock again', a1 === stock, 'differs at ' + at + ': ' + stock.slice(Math.max(0, at - 40), at + 60) + ' <> ' + a1.slice(Math.max(0, at - 40), at + 60)); }
       const lib2 = JSON.parse(localStorage.getItem(K.MATLIB_KEY));
       ok('11.6 an untouched preset with masks writes no override', !(lib2.presetOverrides && lib2.presetOverrides.steelworn));
@@ -222,3 +222,5 @@
   boot();
   setTimeout(() => { if (OUT.length === 0 || OUT.join('').indexOf('VERDICT') < 0) finish('THREW timeout'); }, 120000);
 })();
+
+

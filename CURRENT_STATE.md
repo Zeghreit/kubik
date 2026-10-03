@@ -18965,3 +18965,10 @@ Seat 7 of the 2D world ring ('Set size') opens a small panel in #uvViewCard: 1 t
 
 ## 2.99 Light set
 ENV_PRESETS replaced: product (default), gallery, clay, cinema, daylight, dusk. Old ids (studio, softbox, rim, overcast, sunset, neutral) map via ENV_ALIAS in envPreset, so old saves load. Values are first-pass, tuned by eye on _look.py renders. Materials rework (physical props) not started.
+
+## Premium look: tuned on the user's Tank (v3.03)
+Research + Tank renders showed: the light presets clipped to white under the rig (albedo reads about 3x brighter than its value), edge/wear layers were too wide and too contrasty (speckle = cheap), and the user's own Material 4/5 (dark albedo, edges screen amount 0.03-0.38, scale 0.12-0.16) looked better.
+- Albedos lowered (Plastic #69707a, Ceramic #84969c, Car paint #14607a, Brushed steel #aab1ba, Worn metal #8f979f, Gold #d4a23f, Copper #c97b5c, Concrete #767c84, Rubber #202327, Chipped paint #6b7d30).
+- Helpers `_edge(color, amount, rough)` (screen, scale 0.14, detail 0.05, contrast 0.55, rough near 0.05-0.12) and `_cav(color, amount)` (multiply) beside `_rm`. Hard-surface presets get one soft `_edge`; Rubber one `_cav`. Still at most ONE curvature layer per preset. Detail 0.4+ on edges gives frosted speckle - keep it low.
+- Neutral tone mapping was tried and rejected (flat, saturated). ACES stays.
+- Harness for a real model: `_tankm.js/.py`, `_runtank.ps1`, `_sheet.py` (contact sheet); model at `_dev/tank.json`; ids list accepts `#int=1`, `#tm=neutral`, `#exp=..`.
