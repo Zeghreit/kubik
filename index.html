@@ -3174,7 +3174,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.97</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">2.98</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -16384,6 +16384,13 @@ const OP_SPECS = {
     label: 'Circularize', min: 0, max: 1, step: 0.01, start: 1,
     toggle: { key: 'even', label: 'Even', tip: 'Space the points equally around the circle' }
   },
+  /* SMOOTH (v2.98). The amount is the Taubin pass strength, 0..1 - a blend like Circularize's, so
+     one range means the same on any model. The stepper is the number of passes. */
+  smooth: {
+    label: 'Smooth', min: 0, max: 1, step: 0.01, start: 0.5,
+    segments: true, maxSegments: 20,
+    toggle: { key: 'keep', label: 'Keep volume', tip: 'Push back the shrinkage. Can bulge sharp corners on a coarse mesh' }
+  },
   inset: {
     label: 'Inset', min: 0.02, max: 0.9, step: 0.01, start: 0.25,
     options: [
@@ -16884,6 +16891,17 @@ function applyPendingOpInner() {
                           op.payload.keys, op.payload.scatterOk, why) && op.amount > 1e-6) {
       refuseOp(why.flat ? 'no circle fits that loop \u2014 it is a straight run or a spike'
                         : 'that is already as round as it gets');
+    }
+    ensureHelpers(obj);
+    // Vertices move, topology does not, so the selection survives untouched.
+    resultSelection = new Set(op.payload.selection);
+
+  } else if (op.kind === 'smooth') {
+    ensureHelpers(obj);
+    const why = {};
+    if (!smoothApply(obj, op.payload.verts, op.amount, op.segments || 1, why, !!op.keep) && op.amount > 1e-6) {
+      refuseOp(why.pinned ? 'those points are all on an open border - nothing to smooth'
+                          : 'that is already as smooth as it gets');
     }
     ensureHelpers(obj);
     // Vertices move, topology does not, so the selection survives untouched.
@@ -17819,6 +17837,9 @@ function confirmPendingOp() {
       toast('Paired ' + (op.cleaned || 0) + ' triangle pairs into quads below ' +
         Math.round(op.amount) + '\u00b0');
     }
+  } else if (op.kind === 'smooth') {
+    toast('Smoothed ' + op.payload.verts.length + (op.payload.verts.length === 1 ? ' point' : ' points') +
+      ' \u00d7' + (op.segments || 1) + ' at ' + Math.round(op.amount * 100) + '%');
   } else if (op.kind === 'slide') {
     // The SIGN matters and the slider is small on a phone, so say it.
     toast('Slid ' + (op.amount >= 0 ? '+' : '−') +
@@ -18520,6 +18541,134 @@ function circularizeSelection() {
 }
 
 
+
+/* SMOOTH (v2.98) - relax the picked points toward the average of their neighbours. Each pass is a
+   plain Laplacian blend: q = p + amount * (mean of neighbours - p). That is what Maya's Average
+   Vertices and Blender's Smooth Vertex do, and it shrinks a closed surface with repetition.
+   KEEP VOLUME switches on Vollmer's HC correction: the displacement b = q - p is measured and every
+   point is pushed back by half its own b plus half the average b of its neighbours. It holds the
+   size on organic meshes, and it is OFF by default because on a coarse mesh with sharp edges it
+   overshoots (a 4x4 cube bulged near its edges), where the plain pass only ever rounds them.
+   Taubin's lambda|mu was tried and overshoots worse (a cube grew 12 %).
+   Only the picked points move; unpicked neighbours are fixed anchors, so the result blends into the
+   rest of the mesh. Points on an OPEN border are pinned: a border has no neighbours on one side and
+   would be dragged inward. Uniform weights, so this evens spacing and noise rather than preserving
+   fine curvature - Set flow is the tool for that. */
+function smoothApply(obj, verts, amount, iters, why, keep) {
+  const topo = obj.mesh.userData.topo;
+  const lam = Math.max(0, Math.min(1, amount));
+  if (!(lam > 1e-6)) return false;
+  const sel = new Set(verts);
+  const nb = new Map();
+  const link = (a, b) => { let l = nb.get(a); if (!l) { l = []; nb.set(a, l); } l.push(b); };
+  topo.edges.forEach(e => {
+    if (sel.has(e[0])) link(e[0], e[1]);
+    if (sel.has(e[1])) link(e[1], e[0]);
+  });
+  const uses = new Map();
+  topo.faceGroups.forEach((_, gi) => {
+    const lp = groupLogicalLoop(obj, gi);
+    for (let i = 0; i < lp.length; i++) {
+      const k = edgeKey(lp[i], lp[(i + 1) % lp.length]);
+      uses.set(k, (uses.get(k) || 0) + 1);
+    }
+  });
+  const pinned = new Set();
+  topo.edges.forEach(e => {
+    if ((uses.get(edgeKey(e[0], e[1])) || 0) < 2) { pinned.add(e[0]); pinned.add(e[1]); }
+  });
+  const mov = [];
+  sel.forEach(l => { if (!pinned.has(l) && nb.has(l)) mov.push(l); });
+  if (!mov.length) { if (why) why.pinned = true; return false; }
+  const cur = new Map();
+  const read = l => { if (!cur.has(l)) { const q = logicalPos(obj, l); cur.set(l, [q.x, q.y, q.z]); } };
+  mov.forEach(l => { read(l); nb.get(l).forEach(read); });
+  const start = new Map();
+  mov.forEach(l => start.set(l, cur.get(l).slice()));
+  const BETA = keep ? 0.5 : 0;
+  const n = Math.max(1, iters | 0);
+  for (let it = 0; it < n; it++) {
+    const q = new Map(), b = new Map();
+    mov.forEach(l => {
+      const p = cur.get(l), ns = nb.get(l);
+      let sx = 0, sy = 0, sz = 0;
+      ns.forEach(j => { const r = cur.get(j); sx += r[0]; sy += r[1]; sz += r[2]; });
+      const m = ns.length;
+      const ql = [p[0] + lam * (sx / m - p[0]), p[1] + lam * (sy / m - p[1]), p[2] + lam * (sz / m - p[2])];
+      q.set(l, ql);
+      b.set(l, [ql[0] - p[0], ql[1] - p[1], ql[2] - p[2]]);
+    });
+    const nxt = [];
+    if (!keep) { q.forEach((v, l) => cur.set(l, v)); continue; }
+    mov.forEach(l => {
+      const ql = q.get(l), bl = b.get(l), ns = nb.get(l);
+      let sx = 0, sy = 0, sz = 0;
+      ns.forEach(j => { const bj = b.get(j); if (bj) { sx += bj[0]; sy += bj[1]; sz += bj[2]; } });
+      const m = ns.length;
+      nxt.push([l, [ql[0] - (BETA * bl[0] + (1 - BETA) * sx / m),
+                    ql[1] - (BETA * bl[1] + (1 - BETA) * sy / m),
+                    ql[2] - (BETA * bl[2] + (1 - BETA) * sz / m)]]);
+    });
+    nxt.forEach(([l, v]) => cur.set(l, v));
+  }
+  const moves = [];
+  mov.forEach(l => {
+    const a = start.get(l), b = cur.get(l);
+    const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
+    if (dx * dx + dy * dy + dz * dz < 1e-16) return;
+    moves.push({ l, p: b });
+  });
+  if (!moves.length) return false;
+  const lcBefore = topo.logicalCount;
+  const marks = snapshotEdgeMarks(obj);
+  const ed = toEditable(obj.mesh);
+  moves.forEach(m => {
+    (topo.logicalGroups[m.l] || []).forEach(ai => {
+      ed.positions[ai * 3] = m.p[0];
+      ed.positions[ai * 3 + 1] = m.p[1];
+      ed.positions[ai * 3 + 2] = m.p[2];
+    });
+  });
+  rebuildFromEditable(obj, ed);
+  if (marks) {
+    ensureHelpers(obj);
+    if (obj.mesh.userData.topo.logicalCount === lcBefore) rewriteEdgeMarks(obj, marks);
+  }
+  return true;
+}
+
+/* The points Smooth will move, from whichever component type you are in. A face patch smooths
+   everything it covers, rim included (unlike Circularize, which wants only the rim). */
+function smoothVerts(obj) {
+  const topo = obj.mesh.userData.topo;
+  const verts = new Set();
+  if (App.mode === 'vertex') {
+    App.selectedElements.forEach(l => { if (l < topo.logicalCount) verts.add(l); });
+  } else if (App.mode === 'edge') {
+    App.selectedElements.forEach(ei => { const e = topo.edges[ei]; if (e) { verts.add(e[0]); verts.add(e[1]); } });
+  } else if (App.mode === 'face') {
+    App.selectedElements.forEach(gi => groupLogicalLoop(obj, gi).forEach(l => verts.add(l)));
+  }
+  return verts;
+}
+
+function smoothSelection() {
+  if (App.knife) { toast('Finish the cut first'); return; }
+  if (App.pendingOp) {
+    toast('Finish the ' + ((OP_SPECS[App.pendingOp.kind] || {}).label || 'operation') + ' first');
+    return;
+  }
+  if (App.mode === 'object') { toast('Smooth works on vertices, edges or faces'); return; }
+  const obj = findObject(App.activeObjectId);
+  if (!obj || !App.selectedElements.size) { toast('Select the points to smooth'); return; }
+  ensureHelpers(obj);
+  symExpand(obj);
+  const verts = smoothVerts(obj);
+  if (!verts.size) { toast('Select the points to smooth'); return; }
+  beginPendingOp('smooth', obj, {
+    verts: Array.from(verts), selection: Array.from(App.selectedElements)
+  });
+}
 
 /* ---------------- Clean up (a2.81) --------------------------------------
 
@@ -40098,6 +40247,7 @@ ICON.density  = '<path d="M3 4h8v7H3z"/><path d="M3 7.5h8"/><path d="M7 4v7"/>' 
                 '<path d="M13 13h8v7h-8z"/><path d="M13 15h8"/><path d="M13 17h8"/>' +
                 '<path d="M13 19h8"/><path d="M15 13v7"/><path d="M17 13v7"/><path d="M19 13v7"/>';
 ICON.texview = '<path d="M3 3h18v18H3z"/><path d="M3 9h18M3 15h18"/><path d="M9 3v18"/>';
+ICON.smoothv = '<path d="M3 15c3-8 6-8 9 0s6 8 9 0"/><path d="M3 10c3-5 6-5 9 0s6 5 9 0" opacity=".45"/>';
 ICON.tilesize = '<path d="M4 4h10v10H4z"/><path d="M4 19h16"/><path d="M4 17v4"/><path d="M20 17v4"/>';
 ICON.tosquare = '<path d="M3 3h18v18H3z"/><path d="M7 9h10v6H7z"/>' +
                 '<path d="M12 9V5"/><path d="M12 15v4"/>' +
@@ -40134,7 +40284,10 @@ const HUB_TOOLS_VERTEX = [
   { key: 'connect', icon: 'connect', label: 'Connect', seat: 2, run: connectSelection },
   { key: 'slide', icon: 'slide', label: 'Slide', seat: 3, run: slideSelection },
   { key: 'delete', icon: 'del', label: 'Delete', seat: 4, run: deleteSelection },
-  { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 5, run: setFlowSelection },
+  { key: 'flow', label: 'Flow', seat: 5, door: [
+    { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 0, run: setFlowSelection },
+    { key: 'smooth', icon: 'smoothv', label: 'Smooth', seat: 1, run: smoothSelection }
+  ] },
   { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 6, run: circularizeSelection },
   /* THE LAST EMPTY BEARING (a2.113). Bevel takes 7 rather than Edge's 1
      because the four bearings before it are already spoken for in this ring,
@@ -40222,8 +40375,9 @@ const HUB_TOOLS_FACE = [
       on: () => App.shadeSmooth, run: toggleShading },
     { key: 'flipnorm', icon: 'flipnorm', label: 'Flip normals', seat: 1, run: flipNormalsSelection },
     { key: 'setflow', icon: 'flow', label: 'Set flow', seat: 7, run: setFlowSelection },
-    { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 2, run: circularizeSelection }
-    /* Seat 3 is deliberately EMPTY (v2.51). Show islands lived here
+    { key: 'circularize', icon: 'circ', label: 'Circularize', seat: 2, run: circularizeSelection },
+    { key: 'smooth', icon: 'smoothv', label: 'Smooth', seat: 3, run: smoothSelection }
+    /* Seat 3 held Show islands until v2.51 and Smooth since v2.98. It was EMPTY (v2.51). Show islands lived here
        (uv-commands-maps-plan.md stage 5, slice 2) as a manual, whole-session
        toggle; islands are now shown automatically whenever App.mode is
        'uv' (syncIslandOverlay's own guard) and nowhere else, so there is no
@@ -51423,14 +51577,16 @@ const HELP_SECTIONS = [
 HELP_SECTIONS.push(
   {
     title: 'Vertex tools',
-    lead: 'Vertex mode, from the ring on your selection. Eight seats, no doors. Several open a bar with a slider — set it, then confirm.',
+    lead: 'Vertex mode, from the ring on your selection. Seven seats and one door (Flow). Several open a bar with a slider — set it, then confirm.',
     rows: [
       ['merge', 'Merge', 'Points sitting on almost the same spot become one.'],
       ['weld', 'Weld', 'The selected vertices become one, in the middle. To send one vertex ONTO another instead, tap the first and double-tap the second within a second and a half.'],
       ['connect', 'Connect', 'A new edge between selected vertices. Vertex mode only.'],
       ['slide', 'Slide', 'Runs what you picked along the mesh, toward one neighbour or the other. It stops just short of arriving — landing exactly on a neighbour is a weld you did not ask for, and Merge and Collapse are the tools that do that on purpose.'],
       ['del', 'Delete', 'Dissolves: the faces close over the gap instead of going with it.'],
+      [null, 'FLOW — a door', 'Set flow, Smooth.'],
       ['flow', 'Set flow', 'Settles a loop onto the curve the mesh around it implies. 0 is flat, 1 matches it, past that over-bends.'],
+      ['smoothv', 'Smooth', 'Relaxes the selected points toward the average of their neighbours, so spacing and bumps even out. The slider is the strength, the counter the number of passes. It shrinks a closed shape a little each pass; Keep volume pushes that back but can bulge sharp edges. Points on an open border stay put.'],
       ['circ', 'Circularize', 'Pulls a loop onto a true circle. Even spaces the points equally round it. Several loops at once are rounded one by one.'],
       ['bevel', 'Bevel', 'Cuts the corner off: every edge meeting the point stops short of it and the hole is capped. Round is the default and is the reason to reach for it — the cut comes out a true circle rather than the diamond the edges alone would give. Even spaces the new points equally round it.']
     ]
@@ -51470,9 +51626,10 @@ HELP_SECTIONS.push(
       ['del', 'Delete', 'Cuts the faces away and leaves a hole. This is how you make one — every other mode’s Delete closes the gap instead.'],
       ['bridge', 'Bridge', 'Joins two selections with new faces.'],
       ['detach', 'Detach', 'The selected faces leave as their own object.'],
-      [null, 'SURFACE — a door', 'Shade, Flip normals, Set flow, Circularize.'],
+      [null, 'SURFACE — a door', 'Shade, Flip normals, Set flow, Circularize, Smooth.'],
       ['smooth', 'Shade', 'Flat or smooth, on the selected faces. In Edge mode use Mark Sharp instead — it is the same idea, said once.'],
-      ['flipnorm', 'Flip normals', 'Turns the selected faces inside out.']
+      ['flipnorm', 'Flip normals', 'Turns the selected faces inside out.'],
+      ['smoothv', 'Smooth', 'Relaxes every point of the selected faces toward the average of its neighbours. Same bar as in Vertex mode.']
     ]
   },
   {
@@ -53442,7 +53599,7 @@ if (PICK_DEBUG) {
     uvSecondPointer, promoteUvViewPinch, uvOtherPointer, UV_VIEW_PINCH_MIN_PX,
     // v2.66: layout - align a group, pack the sheet.
     uvAlignIslands, UV_ALIGN, uvPackAll,
-    uvIslandAreas, uvEvenDensity, uvSetWorldSize, uvOpenSizePanel, uvToggleDensityView, uvStretchToSquare,
+    uvIslandAreas, uvEvenDensity, uvSetWorldSize, uvOpenSizePanel, uvToggleDensityView, smoothApply, smoothSelection, smoothVerts, uvStretchToSquare,
     UV_DENSITY_MAX_LOSS,
     // v2.68: the pinch that sticks to exact values.
     snapUvScale, snapUvAngle, UV_SNAP_SCALES, UV_SNAP_SCALE_REL,
