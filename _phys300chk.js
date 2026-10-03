@@ -35,7 +35,7 @@
     const ma = mat0(A1), mb = mat0(B1), mc = mat0(C1);
     ok('2.0 class is Physical', ma.isMeshPhysicalMaterial && mb.isMeshPhysicalMaterial && mc.isMeshPhysicalMaterial, ma.type + '/' + mb.type + '/' + mc.type);
     ok('2.1 lacquer coat', ma.clearcoat === 1 && Math.abs(ma.clearcoatRoughness - 0.04) < 1e-9, ma.clearcoat + ' ' + ma.clearcoatRoughness);
-    ok('2.2 velvet sheen', mb.sheen === 1 && mb.sheenColor.getHexString() === 'd9a0c0' && Math.abs(mb.sheenRoughness - 0.55) < 1e-9 && Math.abs(mb.specularIntensity - 0.3) < 1e-9,
+    ok('2.2 velvet sheen', mb.sheen === 1 && mb.sheenColor.getHexString() === 'e6adcf' && Math.abs(mb.sheenRoughness - 0.55) < 1e-9 && Math.abs(mb.specularIntensity - 0.3) < 1e-9,
       mb.sheen + ' ' + mb.sheenColor.getHexString() + ' ' + mb.sheenRoughness + ' ' + mb.specularIntensity);
     ok('2.3 gold is plain metal', mc.metalness === 1 && mc.clearcoat === 0 && mc.sheen === 0 && mc.specularIntensity === 1);
 
@@ -61,7 +61,7 @@
     if (A2 && B2) {
       const m1 = mat0(A2), m2 = mat0(B2);
       ok('4.3 coat survives', m1.isMeshPhysicalMaterial && m1.clearcoat === 1, m1.type + ' ' + m1.clearcoat);
-      ok('4.4 sheen survives', m2.isMeshPhysicalMaterial && m2.sheen === 1 && m2.sheenColor.getHexString() === 'd9a0c0', m2.sheen + ' ' + m2.sheenColor.getHexString());
+      ok('4.4 sheen survives', m2.isMeshPhysicalMaterial && m2.sheen === 1 && m2.sheenColor.getHexString() === 'e6adcf', m2.sheen + ' ' + m2.sheenColor.getHexString());
       ok('4.5 finishes ids intact', (A2.mesh.userData.finishes || {})[0] === 'lacquer' && (B2.mesh.userData.finishes || {})[0] === 'velvet', JSON.stringify(A2.mesh.userData.finishes));
     }
     ok('4.6 no duplicate library entries', K.MATERIALS.size === nBefore && importedNames().length === 0, K.MATERIALS.size + ' vs ' + nBefore + ' ' + importedNames().join(','));

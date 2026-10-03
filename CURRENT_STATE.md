@@ -48,6 +48,12 @@ than none. Prefer rewriting a section over appending to it.
 - First view: exposure 1.2, `THEME.material` 0x50545b, a contact shadow (`contactShadow`, one canvas-gradient plane under the union of object boxes, rides the floor-grid toggle, not pickable, hidden in Picture because it is a scene child).
 - Probe: `_phys300chk` (30 checks). `_gpuchk` gave NO REPORT in the v3.00 batch (421 s, swiftshader) - not triaged against HEAD.
 
+## Preset colours from Sanzo Wada; opening a model asks about its materials (v3.01)
+
+- Preset colours, from Wada's Dictionary of Color Combinations: Lacquer Carmine Red #a10b2b, Ceramic Artemesia Green #65a98f (celadon), Brushed steel Neutral Gray #b5d1cc, Gold Yellow Ocher #e0b81f, Rubber Deep Slate Olive #172713, Velvet Pansy Purple #6f0043 with sheen Cameo Pink #e6adcf. Clay stays the theme grey (`color: null`). The env brightens colours a lot: pick darker than the swatch looks.
+- Open a saved model or a project file: `materialsChoice(doc)` asks only when a face wears a material the library does not have (`foreignDocMaterials`: untouched legacy presets, own presets and known signatures do not count). Add materials = old behaviour; Model only = `restoreDoc(doc, { materials: 'skip' })`: those defs are not added, their faces are dressed as Clay (stored surface values ignored), history step 0 is rewritten to `standard`; Cancel / Escape / backdrop = do not open. Autosave restore, undo and New scene never ask. glTF/OBJ/FBX import has its own merge and does NOT ask yet.
+- Probe: `_mat301chk` (14 checks). `_projchk` fails 'FIXTURE IS ONLY 4494kb' on HEAD a979494 too - environment, not this change.
+
 ## Shipping
 
 **Push without asking.** When a version is verified - `_verify.py` passes,

@@ -5563,13 +5563,13 @@ function attachAllGizmos(pivot) {
    signature written before v3.00 valid. */
 const MATERIAL_DEFAULTS = {
   standard: { name: 'Clay',          color: null,      roughness: 0.82, metalness: 0.0, specularIntensity: 0.6 },
-  lacquer:  { name: 'Lacquer',       color: '#a3141f', roughness: 0.28, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.04 },
-  ceramic:  { name: 'Ceramic',       color: '#ebe7df', roughness: 0.2,  metalness: 0.0, clearcoat: 0.6, clearcoatRoughness: 0.12 },
-  steel:    { name: 'Brushed steel', color: '#c4c8ce', roughness: 0.42, metalness: 1.0 },
-  gold:     { name: 'Gold',          color: '#e3b04b', roughness: 0.24, metalness: 1.0 },
-  rubber:   { name: 'Rubber',        color: '#2f3237', roughness: 0.88, metalness: 0.0, specularIntensity: 0.5 },
-  velvet:   { name: 'Velvet',        color: '#5b1a3a', roughness: 0.9,  metalness: 0.0, specularIntensity: 0.3,
-              sheen: 1.0, sheenColor: '#d9a0c0', sheenRoughness: 0.55 }
+  lacquer:  { name: 'Lacquer',       color: '#a10b2b', roughness: 0.28, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.04 },
+  ceramic:  { name: 'Ceramic',       color: '#65a98f', roughness: 0.2,  metalness: 0.0, clearcoat: 0.6, clearcoatRoughness: 0.12 },
+  steel:    { name: 'Brushed steel', color: '#b5d1cc', roughness: 0.42, metalness: 1.0 },
+  gold:     { name: 'Gold',          color: '#e0b81f', roughness: 0.24, metalness: 1.0 },
+  rubber:   { name: 'Rubber',        color: '#172713', roughness: 0.88, metalness: 0.0, specularIntensity: 0.5 },
+  velvet:   { name: 'Velvet',        color: '#6f0043', roughness: 0.9,  metalness: 0.0, specularIntensity: 0.3,
+              sheen: 1.0, sheenColor: '#e6adcf', sheenRoughness: 0.55 }
 };
 const MATERIAL_ALIAS = { plastic: 'lacquer', metal: 'steel' };
 const LEGACY_PRESETS = {
@@ -36706,6 +36706,10 @@ function restoreDoc(doc, opts = {}) {
     }
   }
   const matIdRemap = new Map();
+  /* v3.01: opts.materials === 'skip' opens the MODEL without the file's own materials. Every
+     definition the library does not already hold (the case that would add or mint one) is
+     pointed at Clay instead, and the faces that wore it are dressed as Clay too. */
+  const skipIds = new Set();
   if (doc.materialLib && !opts.keepAppearance) {
     /* Indexed by what a definition IS, not by what it is called. This is what
        makes a re-open idempotent: after the first load the library holds the
@@ -36824,6 +36828,7 @@ function restoreDoc(doc, opts = {}) {
         if (known !== d.id) matIdRemap.set(d.id, known);
         return;
       }
+      if (opts.materials === 'skip') { matIdRemap.set(d.id, 'standard'); skipIds.add(d.id); return; }
       if (!MATERIALS.has(d.id)) {
         MATERIALS.set(d.id, Object.assign({}, d, { preset: !!presetDefaults(d.id) }));
         bySig.set(sig, d.id);
@@ -36963,13 +36968,16 @@ function restoreDoc(doc, opts = {}) {
        becomes history step 0 after a load, and a later restore that takes the
        `keepAppearance` path (where the remap is deliberately empty) would
        otherwise put the file's original ids back and lose the import. */
+    const origFin = od.finishes || {};   // before the remap below overwrites it (v3.01)
     let finishes = look ? look.finishes : remapFinishes(od.finishes || {}, matIdRemap);
     if (!look && matIdRemap.size) od.finishes = finishes;
     const mats = od.materials.map((md, i) => {
       const src = (look && look.surfaces[i]) ? look.surfaces[i] : md;
       const mat = new THREE.MeshPhysicalMaterial({ color: src.color, side: THREE.DoubleSide });
       mat.userData.themedDefault = !!src.themed;
-      if (Number.isFinite(src.roughness)) {
+      if (!look && skipIds.size && skipIds.has(origFin[i])) {
+        applyFinish(mat, 'standard');   // the model without its material (v3.01)
+      } else if (Number.isFinite(src.roughness)) {
         // Stored surface values win - they're what the object actually looked
         // like, even if the preset name was lost along the way.
         mat.roughness = src.roughness;
@@ -37783,11 +37791,73 @@ async function readProject(name) {
   return null;
 }
 
+/* v3.01: WHICH OF A FILE'S MATERIALS ARE NEW HERE, AND WILL YOU HAVE THEM? Same classification
+   restoreDoc applies (untouched legacy preset, our own preset, a signature the library already
+   holds all count as "not new"), minus the mutation, and only for definitions a face really wears. */
+function foreignDocMaterials(doc) {
+  if (!doc || !Array.isArray(doc.materialLib)) return [];
+  const used = new Set();
+  (doc.objects || []).forEach(od => Object.values((od && od.finishes) || {}).forEach(v => used.add(v)));
+  const have = new Set();
+  MATERIALS.forEach(v => { have.add(materialDefSig(v)); if (v.srcSig) have.add(migrateSig(v.srcSig)); });
+  const out = [];
+  doc.materialLib.forEach(d0 => {
+    if (!d0 || !d0.id || !used.has(d0.id)) return;
+    const d = Object.assign({}, d0);
+    delete d.envMapIntensity;
+    if (d.srcSig) d.srcSig = migrateSig(d.srcSig);
+    if (LEGACY_PRESETS[d.id] && isUntouchedLegacy(d)) return;
+    const mine = presetDefaults(d.id) && MATERIALS.get(d.id);
+    if (mine && materialDefSig(Object.assign({}, d, { color: mine.color })) === materialDefSig(mine)) return;
+    if (have.has(materialDefSig(d))) return;
+    out.push(d.name || d.id);
+  });
+  return out;
+}
+/* Resolves 'bring' | 'skip' | null (cancel) - or undefined when there is nothing to ask. */
+function materialsChoice(doc) {
+  const names = foreignDocMaterials(doc);
+  if (!names.length) return Promise.resolve(undefined);
+  return new Promise(res => {
+    const back = document.createElement('div');
+    back.style.cssText = 'position:fixed;inset:0;z-index:400;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:var(--panel);color:var(--text);border:var(--rule) solid var(--line);border-radius:10px;max-width:360px;width:100%;padding:16px;display:flex;flex-direction:column;gap:12px;font:14px/1.4 inherit';
+    const shown = names.slice(0, 4).join(', ') + (names.length > 4 ? ' +' + (names.length - 4) : '');
+    const msg = document.createElement('div');
+    msg.textContent = 'This model has ' + (names.length === 1 ? 'a material' : names.length + ' materials') +
+      ' you do not have yet: ' + shown + '. Add ' + (names.length === 1 ? 'it' : 'them') + ' to your materials?';
+    box.appendChild(msg);
+    const done = (v) => { document.removeEventListener('keydown', onKey, true); back.remove(); res(v); };
+    const onKey = (ev) => { if (ev.key === 'Escape') { ev.stopPropagation(); done(null); } };
+    const mk = (label, sub, v) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.style.cssText = 'min-height:48px;text-align:left;padding:8px 12px;background:var(--panel2);color:var(--text);border:var(--rule) solid var(--line);border-radius:8px;font:inherit;cursor:pointer';
+      b.innerHTML = '<b></b><div style="opacity:.7;font-size:12px"></div>';
+      b.firstChild.textContent = label; b.lastChild.textContent = sub;
+      b.addEventListener('click', () => done(v));
+      box.appendChild(b);
+      return b;
+    };
+    const first = mk('Add materials', 'The model with its own look', 'bring');
+    mk('Model only', 'Faces get Clay, your library stays as it is', 'skip');
+    mk('Cancel', 'Do not open it', null);
+    document.addEventListener('keydown', onKey, true);
+    back.addEventListener('click', (ev) => { if (ev.target === back) done(null); });
+    back.appendChild(box);
+    document.body.appendChild(back);
+    first.focus();
+  });
+}
+
 async function loadProject(name) {
   try {
     const rec = await readProject(name);
     if (!rec) { toast('That model could not be read'); return; }
-    restoreDoc(rec.doc);
+    const mchoice = await materialsChoice(rec.doc);
+    if (mchoice === null) return;
+    restoreDoc(rec.doc, mchoice === 'skip' ? { materials: 'skip' } : {});
     App.history = [stripDocTextures(rec.doc)];
     App.historyIndex = 0;
     setDrawerOpen(false);
@@ -38070,10 +38140,12 @@ document.getElementById('fileLoad').addEventListener('change', (ev) => {
   const file = ev.target.files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = () => {
+  reader.onload = async () => {
     try {
       const doc = JSON.parse(reader.result);
-      restoreDoc(doc);
+      const mchoice = await materialsChoice(doc);
+      if (mchoice === null) { ev.target.value = ''; return; }
+      restoreDoc(doc, mchoice === 'skip' ? { materials: 'skip' } : {});
       App.history = [stripDocTextures(doc)];
       App.historyIndex = 0;
       setCurrentProject('');   // a file is not one of the saved models
@@ -53549,7 +53621,7 @@ if (PICK_DEBUG) {
     showPreHi, clearPreHi, preHiKey: () => (preHi ? preHi.key : null),
     // v2.7: the signed depth, and the one predicate that reads it.
     maskBumped, defWantsBump,
-    restoreDoc, serializeDoc, refuseOp, pushHistory, toast,
+    restoreDoc, serializeDoc, refuseOp, pushHistory, toast, foreignDocMaterials, materialsChoice,
     showMirrorChooser, hideOpBar, arraySelection, arrayOp,
     solidifySelection, solidifyOp, solidifySurvey, createObjectFromEditable,
     slideSelection, slideApply, orientedSlideItems, flowSelectionItems,
