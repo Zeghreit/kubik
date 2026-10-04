@@ -3055,6 +3055,13 @@
              the edges are, so it is a gradient and three extra taps. -->
         <label>Round edges <span id="meBevelV"></span></label>
         <input type="range" id="meBevel" min="0" max="1" step="0.02">
+        <!-- v3.05: no real surface is one colour. -->
+        <label>Colour variation <span id="meVaryV"></span></label>
+        <input type="range" id="meVary" min="0" max="1" step="0.02">
+        <label>Hue variation <span id="meVaryHV"></span></label>
+        <input type="range" id="meVaryH" min="0" max="1" step="0.02">
+        <label>Variation size <span id="meVarySV"></span></label>
+        <input type="range" id="meVaryS" min="0.25" max="8" step="0.25">
         <!-- PICTURES (v2.35). Six channels, one chip each, and the same
              "a chip picks what you are editing" shape the masks next door
              use: a second interaction vocabulary inside a 198px column would
@@ -3193,7 +3200,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.04</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.05</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -5575,70 +5582,80 @@ function attachAllGizmos(pivot) {
    MASKS ARE KEPT FEW: a roughness layer is a uniform and a noise tap, a curvature layer (Edges / Cavity)
    needs the distance field, so no preset has more than one of those. `_rm` is the shared subtle roughness
    variation - the layer that sells a surface more than any colour does. */
-/* THE SET IS BUILT THE WAY A SUBSTANCE MATERIAL IS (v3.04): a real albedo, then a grunge that breaks up
-   roughness and colour, dirt that settles in the cavities, and wear on the edges - each of the last two
-   bitten into patches by its own Breakup, so nothing reads as a clean drawn line. Metals keep their
-   grime NON-metal (Metal 0 on the cavity layer); painted metal wears through to steel (Metal 1 on the
-   edges). Albedos are physical ones now that the exposure no longer washes them out (v3.04, 1.2 -> 0.3).
-   Every number sits inside its editor slider's range, or opening the editor would move it. */
+/* THE SET IS BUILT THE WAY A SUBSTANCE MATERIAL IS (v3.04, v3.05): a real albedo that is never one
+   colour (vary / varyHue - value, hue and roughness drifting in blotches, each part of a model its own),
+   a grunge that breaks up roughness, dirt that settles in the cavities, wear on the edges - each bitten
+   into patches by its own Breakup - and, where an object would have lived outdoors, dust on what faces
+   up and dirt thrown up from the ground. Relief is kept SHALLOW: a carve that reads at arm's length is
+   a carve that shouts close up. Metals keep their grime non-metal; painted metal wears through to
+   steel. Every number sits inside its editor slider's range, or opening the editor would move it. */
 const _gr = (rough, scale, seed, amount, color, blend) => ({ type: 'grunge', colorOn: !!color, color: color || '#808080',
   blend: blend || 'multiply', roughOn: true, rough: rough, amount: amount, scale: scale, detail: 0.45, contrast: 1.6, seed: seed });
-const _edge = (color, amount, rough, brk) => ({ type: 'edges', blend: 'screen', colorOn: true, color: color, amount: amount,
+const _edge = (color, amount, rough, brk, blend) => ({ type: 'edges', blend: blend || 'screen', colorOn: true, color: color, amount: amount,
   scale: 0.1, detail: 0.35, contrast: 0.3, nscale: 1.5, roughOn: true, rough: rough, brk: brk === undefined ? 0.35 : brk, bscale: 5 });
 const _cav = (color, amount, rough, extra) => Object.assign({ type: 'cavity', blend: 'multiply', colorOn: true, color: color, amount: amount,
   scale: 0.3, detail: 0.25, contrast: 0.7, nscale: 1, roughOn: true, rough: rough === undefined ? 0.9 : rough, brk: 0.3, bscale: 4 }, extra || {});
+const _dust = (color, amount, cover) => ({ type: 'dust', blend: 'normal', colorOn: true, color: color, amount: amount,
+  scale: 4, detail: cover, contrast: 1.2, roughOn: true, rough: 0.92, seed: 31 });
+const _mud = (color, amount, height) => ({ type: 'grime', blend: 'normal', colorOn: true, color: color, amount: amount,
+  scale: height, detail: 0.6, contrast: 1, roughOn: true, rough: 0.95, seed: 41 });
 const MATERIAL_DEFAULTS = {
   standard: { name: 'Clay',          color: null,      roughness: 0.82, metalness: 0.0, specularIntensity: 0.6 },
-  plastic:  { name: 'Plastic',       color: '#4a5058', roughness: 0.38, metalness: 0.0,
-              masks: [_gr(0.55, 3, 11, 0.35), _cav('#3a3c40', 0.4, 0.7), _edge('#3a3f46', 0.4, 0.25, 0.3)] },
+  plastic:  { name: 'Plastic',       color: '#4a5058', roughness: 0.38, metalness: 0.0, vary: 0.15, varyHue: 0.1, varyScale: 1.5,
+              masks: [_gr(0.55, 3, 11, 0.35), _cav('#3a3c40', 0.4, 0.7), _edge('#3a3f46', 0.4, 0.25, 0.3), _dust('#8a8478', 0.3, 0.45)] },
   lacquer:  { name: 'Car paint',     color: '#124a60', roughness: 0.3,  metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.03,
-              masks: [_gr(0.45, 4, 12, 0.2), _cav('#0e2a36', 0.35, 0.6), _edge('#2a6a80', 0.35, 0.15, 0.4)] },
+              vary: 0.1, varyHue: 0.06, varyScale: 1.5,
+              masks: [_gr(0.45, 4, 12, 0.2), _cav('#0e2a36', 0.35, 0.6), _edge('#2a6a80', 0.35, 0.15, 0.4), _dust('#8a8478', 0.22, 0.4)] },
   ceramic:  { name: 'Ceramic',       color: '#7a908a', roughness: 0.15, metalness: 0.0, clearcoat: 0.6, clearcoatRoughness: 0.1,
+              vary: 0.15, varyHue: 0.18, varyScale: 2,
               masks: [_gr(0.25, 2.5, 13, 0.25, '#8aa09a'), _cav('#4a5450', 0.35, 0.3), _edge('#5a6a66', 0.3, 0.1, 0.2)] },
-  rubber:   { name: 'Rubber',        color: '#232528', roughness: 0.85, metalness: 0.0, specularIntensity: 0.5,
-              masks: [_gr(0.95, 4, 14, 0.5), _gr(0.95, 2, 24, 0.3, '#3a3a38', 'screen'), _cav('#0b0c0e', 0.4), _edge('#2e3034', 0.4, 0.55, 0.4)] },
+  rubber:   { name: 'Rubber',        color: '#232528', roughness: 0.85, metalness: 0.0, specularIntensity: 0.5, vary: 0.2, varyScale: 2,
+              masks: [_gr(0.95, 4, 14, 0.5), _dust('#5a564e', 0.45, 0.55), _cav('#0b0c0e', 0.4), _mud('#3a3024', 0.7, 0.5)] },
   velvet:   { name: 'Velvet',        color: '#2a1c50', roughness: 0.9,  metalness: 0.0, specularIntensity: 0.3,
-              sheen: 0.8, sheenColor: '#8a6ac0', sheenRoughness: 0.5,
+              sheen: 0.8, sheenColor: '#8a6ac0', sheenRoughness: 0.5, vary: 0.25, varyHue: 0.15, varyScale: 2.5,
               masks: [_gr(0.95, 3, 19, 0.3, '#2a1c50'), _cav('#140c26', 0.45)] },
-  leather:  { name: 'Leather',       color: '#3a2216', roughness: 0.5, metalness: 0.0, specularIntensity: 0.7,
-              sheen: 0.2, sheenColor: '#8a6a58', sheenRoughness: 0.5,
-              masks: [{ type: 'leather', colorOn: true, color: '#140a05', blend: 'normal', amount: 0.28, scale: 30, detail: 0.25, contrast: 1.0, roughOn: true, rough: 0.66, bump: -0.15, seed: 2 },
-                      _gr(0.35, 2, 4, 0.35, '#5a3626', 'normal'),
-                      _edge('#3a2a20', 0.5, 0.3, 0.4),
+  leather:  { name: 'Leather',       color: '#36241a', roughness: 0.5, metalness: 0.0, specularIntensity: 0.7,
+              sheen: 0.15, sheenColor: '#7a6050', sheenRoughness: 0.5, vary: 0.45, varyHue: 0.3, varyScale: 2,
+              masks: [{ type: 'leather', colorOn: true, color: '#140a05', blend: 'normal', amount: 0.22, scale: 30, detail: 0.25, contrast: 1.0, roughOn: true, rough: 0.64, bump: -0.05, seed: 2 },
+                      _gr(0.35, 2, 4, 0.35, '#4e3424', 'normal'),
+                      _edge('#5a4438', 0.55, 0.25, 0.35, 'multiply'),
                       _cav('#1a100a', 0.55, 0.8)] },
   wood:     { name: 'Wood',          color: '#4a3220', roughness: 0.58, metalness: 0.0, specularIntensity: 0.55,
-              masks: [{ type: 'wood', colorOn: true, color: '#1a0d05', blend: 'normal', amount: 0.75, scale: 6, detail: 0.6, contrast: 1.3, roughOn: true, rough: 0.74, bump: -0.12, seed: 3 },
+              vary: 0.4, varyHue: 0.3, varyScale: 1.2,
+              masks: [{ type: 'wood', colorOn: true, color: '#1a0d05', blend: 'normal', amount: 0.75, scale: 6, detail: 0.6, contrast: 1.3, roughOn: true, rough: 0.74, bump: -0.06, seed: 3 },
                       _gr(0.48, 1.5, 5, 0.3, '#6a4a30', 'normal'),
                       _cav('#2a1c12', 0.35, 0.72),
                       _edge('#4a3420', 0.45, 0.35, 0.35)] },
   concrete: { name: 'Concrete',      color: '#55585a', roughness: 0.92, metalness: 0.0, specularIntensity: 0.5,
+              vary: 0.3, varyHue: 0.08, varyScale: 1,
               masks: [_gr(0.98, 3, 21, 0.5, '#4e5052'),
-                      { type: 'dots', colorOn: true, color: '#4a4c4e', blend: 'normal', amount: 0.35, scale: 8, detail: 3, contrast: 1.4, bump: -0.3, seed: 5 },
+                      { type: 'dots', colorOn: true, color: '#4a4c4e', blend: 'normal', amount: 0.35, scale: 8, detail: 3, contrast: 1.4, bump: -0.15, seed: 5 },
                       _cav('#3a3a38', 0.5),
-                      _edge('#4a4a48', 0.35, 0.95, 0.5)] },
-  steel:    { name: 'Brushed steel', color: '#b4b9bf', roughness: 0.32, metalness: 1.0,
+                      _mud('#4a4036', 0.5, 0.6)] },
+  steel:    { name: 'Brushed steel', color: '#b4b9bf', roughness: 0.32, metalness: 1.0, vary: 0.12, varyScale: 1.5,
               masks: [{ type: 'stripes', colorOn: false, roughOn: true, rough: 0.55, blend: 'normal', amount: 0.3, scale: 14, detail: 5, contrast: 1.0, nscale: 1, seed: 6 },
                       _gr(0.5, 3, 22, 0.25),
                       _cav('#3a3c40', 0.35, 0.7, { metal: 0 }),
                       _edge('#5a5f66', 0.3, 0.15, 0.3)] },
-  steelworn:{ name: 'Worn metal',    color: '#5e646a', roughness: 0.55, metalness: 1.0,
+  steelworn:{ name: 'Worn metal',    color: '#5e646a', roughness: 0.55, metalness: 1.0, vary: 0.3, varyHue: 0.1, varyScale: 1.5,
               masks: [{ type: 'scratches', colorOn: true, color: '#3a3e42', blend: 'screen', amount: 0.25, scale: 4, detail: 5, contrast: 1.4, roughOn: true, rough: 0.25, seed: 2 },
                       _gr(0.75, 2.5, 16, 0.6, '#3e4246'),
                       _cav('#3a2a1e', 0.65, 0.9, { metal: 0 }),
                       _edge('#4a5056', 0.5, 0.15, 0.3)] },
   paintchip:{ name: 'Chipped paint', color: '#3e4822', roughness: 0.55, metalness: 0.0, specularIntensity: 0.6,
+              vary: 0.38, varyHue: 0.22, varyScale: 1.5,
               masks: [{ type: 'edges', colorOn: true, color: '#9aa0a6', blend: 'normal', amount: 0.9, scale: 0.08, detail: 0.5, contrast: 0.15, nscale: 2,
-                        roughOn: true, rough: 0.3, metal: 1, bump: -0.15, brk: 0.45, bscale: 6 },
-                      _gr(0.65, 2, 4, 0.3, '#3a4220'),
+                        roughOn: true, rough: 0.3, metal: 1, bump: -0.08, brk: 0.45, bscale: 6 },
                       _cav('#2a2418', 0.55),
-                      _gr(0.72, 5, 9, 0.4)] },
-  gold:     { name: 'Gold',          color: '#e0b450', roughness: 0.22, metalness: 1.0,
+                      _dust('#8a7e66', 0.45, 0.55),
+                      _mud('#3a2e20', 0.75, 0.5)] },
+  gold:     { name: 'Gold',          color: '#e0b450', roughness: 0.22, metalness: 1.0, vary: 0.1, varyHue: 0.05, varyScale: 1.5,
               masks: [_gr(0.34, 3, 17, 0.3), _cav('#5a4020', 0.45, 0.6), _edge('#5a4a20', 0.3, 0.08, 0.3)] },
-  copper:   { name: 'Copper',        color: '#d98a6a', roughness: 0.28, metalness: 1.0,
+  copper:   { name: 'Copper',        color: '#d98a6a', roughness: 0.28, metalness: 1.0, vary: 0.25, varyHue: 0.15, varyScale: 1.5,
               masks: [_gr(0.45, 2, 18, 0.35, '#8a5040'),
                       _cav('#4fa59a', 0.5, 0.85, { blend: 'normal', metal: 0, brk: 0.35 }),
                       _edge('#5a3020', 0.35, 0.1, 0.3)] },
-  bronze:   { name: 'Aged bronze',   color: '#8a5a38', roughness: 0.42, metalness: 1.0,
+  bronze:   { name: 'Aged bronze',   color: '#8a5a38', roughness: 0.42, metalness: 1.0, vary: 0.25, varyHue: 0.1, varyScale: 1.5,
               masks: [_cav('#43877d', 0.7, 0.85, { blend: 'normal', metal: 0, scale: 0.5, detail: 0.7, contrast: 0.35, brk: 0.2 }),
                       Object.assign(_gr(0.8, 2, 7, 0.35, '#3f8579', 'normal'), { contrast: 2.2, metal: 0 }),
                       _edge('#6a4a30', 0.4, 0.15, 0.3)] }
@@ -6230,6 +6247,8 @@ function materialDefSig(d) {
      three's default, so a material with none keeps the signature it always had. */
   const pl = physList(n);
   if (Object.keys(pl).length) sig.phys = pl;
+  // v3.05, same rule: present only when on.
+  if (varyOn(n)) sig.vary = varyVals(n);
   return stableStringify(sig);
 }
 
@@ -6319,7 +6338,7 @@ function isUntouchedLegacy(d0) {
   const d = normaliseDefMasks(Object.assign({}, d0));
   return d.name === lg.name &&
     Math.abs((+d.roughness) - lg.roughness) < 1e-6 && Math.abs((+d.metalness) - lg.metalness) < 1e-6 &&
-    !(d.masks && d.masks.length) && !d.bevel && !hasMaps(d) && !Object.keys(physList(d)).length;
+    !(d.masks && d.masks.length) && !d.bevel && !varyOn(d) && !hasMaps(d) && !Object.keys(physList(d)).length;
 }
 
 function isPresetDef(d) {
@@ -6395,9 +6414,11 @@ function saveMaterialLibrary() {
         d.metalness !== base.metalness ||
         stableStringify(physList(d)) !== stableStringify(physList(base)) ||
         d.name !== base.name || stableStringify(maskList(d)) !== stableStringify(presetMasks(base)) || d.bevel ||
+        stableStringify(varyVals(d)) !== stableStringify(varyVals(base)) ||
         hasMaps(d)) {
       presetOverrides[d.id] = { name: d.name, color: d.color, roughness: d.roughness,
         metalness: d.metalness, masks: d.masks, bevel: d.bevel || 0,
+        vary: varyVals(d)[0], varyHue: varyVals(d)[1], varyScale: varyVals(d)[2],
         /* An EXPLICIT field list, so anything a definition grows has to be
            added here too or it is dropped on a preset override and kept on a
            custom - which is the sort of difference nobody finds for a year.
@@ -6629,7 +6650,13 @@ const MASK_TYPES = [
   { id: 'leather',   name: 'Leather grain', detail: 'Creases',  scale: 'Grain', contrast: 'Contrast', proc: 4,
     sMin: 2, sMax: 60, sStep: 0.5, sDef: 20, dMin: 0, dMax: 1, dStep: 0.05, dDef: 0.5, cMin: 0.5, cMax: 3, cStep: 0.1, cDef: 1.2 },
   { id: 'grunge',    name: 'Grunge',        detail: 'Detail',   scale: 'Scale', contrast: 'Contrast', proc: 5,
-    sMin: 0.25, sMax: 20, sStep: 0.25, sDef: 3, dMin: 0, dMax: 1, dStep: 0.05, dDef: 0.5, cMin: 0.5, cMax: 3, cStep: 0.1, cDef: 1.6 }
+    sMin: 0.25, sMax: 20, sStep: 0.25, sDef: 3, dMin: 0, dMax: 1, dStep: 0.05, dDef: 0.5, cMin: 0.5, cMax: 3, cStep: 0.1, cDef: 1.6 },
+  /* v3.05, from the WORLD rather than the object: Dust settles on faces that look up; Ground dirt
+     climbs from y = 0 to Height. */
+  { id: 'dust',      name: 'Dust',          detail: 'Coverage', scale: 'Grain',  contrast: 'Contrast', proc: 6,
+    sMin: 0.25, sMax: 20, sStep: 0.25, sDef: 4, dMin: 0, dMax: 1, dStep: 0.05, dDef: 0.5, cMin: 0.5, cMax: 3, cStep: 0.1, cDef: 1.2 },
+  { id: 'grime',     name: 'Ground dirt',   detail: 'Noise',    scale: 'Height', contrast: 'Contrast', proc: 7,
+    sMin: 0.05, sMax: 5, sStep: 0.05, sDef: 0.6, dMin: 0, dMax: 1, dStep: 0.05, dDef: 0.5, cMin: 0.5, cMax: 3, cStep: 0.1, cDef: 1 }
 ];
 function maskTypeOf(mk) {
   const t = mk && mk.type;
@@ -6641,6 +6668,16 @@ function maskProcMode(mk) { return maskTypeOf(mk).proc || 0; }
    nobody gave one serialises exactly as before and every stored signature still matches itself. */
 function maskMetal(mk) { return !!mk && typeof mk.metal === 'number'; }
 function maskBrk(mk) { return !!mk && typeof mk.brk === 'number'; }
+/* COLOUR VARIATION is the MATERIAL's (v3.05): vary = value, varyHue = hue + saturation, varyScale =
+   blotches per unit. On when either amount is above zero; absent keys are off, so every definition
+   written before it keeps its signature. */
+const VARY_SCALE_DEF = 1.5;
+function varyOn(d) { return !!d && ((+d.vary || 0) > 0 || (+d.varyHue || 0) > 0); }
+function varyVals(d) {
+  if (!varyOn(d)) return [0, 0, VARY_SCALE_DEF];
+  const c = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  return [c(+d.vary || 0, 0, 1), c(+d.varyHue || 0, 0, 1), c(+d.varyScale || VARY_SCALE_DEF, 0.1, 10)];
+}
 /* THE PROCEDURAL GENERATORS (v3.04), the way Substance builds a material: a field per layer, a grunge
    to break its mask up, and the curvature layers on top. Hoskins' hashes, not kubikHash3 - that one
    goes through fract(p * 0.318), which repeats every pi units and tiles a 3D fbm visibly. */
@@ -6652,8 +6689,13 @@ uniform float uKubikBrk[${MASK_SLOTS}];
 uniform float uKubikBScale[${MASK_SLOTS}];
 uniform vec3  uKubikAxis;
 uniform vec3  uKubikOScale;
+uniform vec3  uKubikVary;
+varying vec3 vKubikWPos;
+varying vec3 vKubikWNrm;
+varying vec3 vKubikOrg;
 float kubikPF;
 vec3 kubikKP;
+float kubikVaryR;
 float kubikHq(vec3 p) {
   p = fract(p * vec3(0.1031, 0.1030, 0.0973));
   p += dot(p, p.yxz + 33.33);
@@ -6732,6 +6774,49 @@ float kubikLeather(vec3 p, float scale, float det, float seed) {
   float crease = (1.0 - smoothstep(0.0, 0.035, abs(wr - 0.5))) * kubikAA(kubikPF * scale * 4.0);
   return clamp(cells + crease * det * 0.8, 0.0, 1.0);
 }
+/* DUST (v3.05): what settles on faces that look UP, in the world - patchy, thicker where the face is
+   flatter. Detail = coverage (how steep a face still catches it), Scale = the patches' grain. */
+float kubikDust(vec3 p, float scale, float det, float seed) {
+  float up = normalize(vKubikWNrm).y;
+  float lo = mix(0.9, 0.05, det);
+  float dir = smoothstep(lo, lo + 0.3, up);
+  vec3 so = vec3(seed * 7.13, seed * 3.71, seed * 5.29);
+  float patchy = kubikFbm3(p * scale + so, 0.55, kubikPF * scale);
+  float fine = (kubikVN3(p * (scale * 8.0) + so.zxy) - 0.5) * kubikAA(kubikPF * scale * 8.0);
+  return clamp(dir * (patchy * 1.2 - 0.1) + fine * 0.2 * dir, 0.0, 1.0);
+}
+/* GROUND DIRT (v3.05): mud thrown up from the floor - full at the world's y = 0, gone by Scale units
+   up, its top edge ragged by Detail. Reads the WORLD position, so a whole multi-part model shares one
+   mud line, as it would on a real one. */
+float kubikGrime(float height, float det, float seed) {
+  vec3 so = vec3(seed * 7.13, seed * 3.71, seed * 5.29);
+  float h = max(height, 1e-3);
+  float n = kubikFbm3(vKubikWPos * (3.0 / h) + so, 0.55, kubikPF * 3.0 / h) - 0.5;
+  return 1.0 - smoothstep(0.0, h, vKubikWPos.y + n * h * det * 1.6);
+}
+/* COLOUR VARIATION (v3.05), the thing that separates a material from a fill: no real surface is one
+   colour. A macro and a meso noise move VALUE and ROUGHNESS; a third turns the HUE round the grey axis
+   and breathes the saturation. Each object gets its own offset from where it stands (vKubikOrg), so
+   two planks of one Wood are two planks. x = value amount, y = hue amount, z = scale (per unit). */
+vec3 kubikVaryCol(vec3 c) {
+  float s = uKubikVary.z;
+  vec3 o = fract(vKubikOrg * vec3(0.731, 0.517, 0.389)) * 97.0;
+  vec3 q = kubikKP * s + o;
+  float n1 = kubikFbm3(q, 0.5, kubikPF * s);
+  float n2 = kubikFbm3(q * 4.7 + 23.1, 0.55, kubikPF * s * 4.7);
+  float v = (n1 - 0.5) * 1.6 + (n2 - 0.5) * 0.7;
+  kubikVaryR = v * uKubikVary.x * 0.3;
+  c *= clamp(1.0 + v * uKubikVary.x * 1.3, 0.25, 2.5);
+  if (uKubikVary.y > 0.0) {
+    float hn = kubikFbm3(q * 0.8 + 57.3, 0.5, kubikPF * s * 0.8) - 0.5;
+    float ang = hn * uKubikVary.y * 2.4;
+    vec3 k = vec3(0.5773503);
+    c = c * cos(ang) + cross(k, c) * sin(ang) + k * dot(k, c) * (1.0 - cos(ang));
+    float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    c = max(mix(vec3(lum), c, 1.0 + hn * uKubikVary.y * 1.4), 0.0);
+  }
+  return c;
+}
 // Domain-warped fbm: dirt, stains, patches.
 float kubikGrunge(vec3 p, float scale, float det, float seed) {
   vec3 q = p * scale + vec3(seed * 7.13, seed * 3.71, seed * 5.29);
@@ -6742,6 +6827,8 @@ float kubikProc(int src, vec3 p, float scale, float det, float con, float seed) 
   float v;
   if (src == 3) v = kubikWood(p, scale, det, seed);
   else if (src == 4) v = kubikLeather(p, scale, det, seed);
+  else if (src == 6) v = kubikDust(p, scale, det, seed);
+  else if (src == 7) v = kubikGrime(scale, det, seed);
   else v = kubikGrunge(p, scale, det, seed);
   return clamp((v - 0.5) * con + 0.5, 0.0, 1.0);
 }
@@ -7060,7 +7147,7 @@ function bakeNoiseField(mk, size) {
   const t = mk.type || 'fbm';
   /* A shape mask has no cloth to bake. Its channel stays flat and the
      shader reads the curvature attribute in its place. */
-  if (t === 'cavity' || t === 'edges' || t === 'wood' || t === 'leather' || t === 'grunge') return new Float32Array(size * size);
+  if (t === 'cavity' || t === 'edges' || t === 'wood' || t === 'leather' || t === 'grunge' || t === 'dust' || t === 'grime') return new Float32Array(size * size);
   let raw = null;
   if (t === 'voronoi') raw = maskVoronoiField(mk, size);
   else if (t === 'scratches') raw = maskScratchField(mk, size);
@@ -7281,6 +7368,7 @@ function bumpWord(v) { return v < 0 ? 'Carve' : 'Bump'; }
 // A procedural layer needs the per-mesh axis, which only onBeforeRender can set (v3.04).
 function defWantsProc(d) {
   if (!d) return false;
+  if (varyOn(d)) return true;
   const n = maskCount(d);
   for (let i = 0; i < n; i++) { const m = d.masks[i]; if (m && m.on && (maskProcMode(m) || maskBrk(m))) return true; }
   return false;
@@ -7318,7 +7406,7 @@ function defWantsBump(d) {
    Crossing still happens once, when the first mask is added and when the
    last is removed, which is correct and rare. */
 function maskWantsPatch(d) {
-  return maskCount(d) > 0 || (d && d.bevel > 0);
+  return maskCount(d) > 0 || (d && d.bevel > 0) || varyOn(d);
 }
 
 /* ONE SLOT'S NUMBERS, WRITTEN INTO A SCRATCH (v2.0b). packUniforms builds a
@@ -7449,6 +7537,7 @@ function applyMaskPatch(mat, d) {
       uKubikBrk: { value: [] }, uKubikBScale: { value: [] },
       uKubikAxis: { value: new THREE.Vector3(1, 0, 0) },
       uKubikOScale: { value: new THREE.Vector3(1, 1, 1) },
+      uKubikVary: { value: new THREE.Vector3().fromArray(varyVals(d)) },
       /* Shading-only rounded edges. Per MATERIAL, not per mask, because it
          is a property of the surface rather than of a layer on it. */
       // A shared file or a stale library can carry anything; without this a
@@ -7504,6 +7593,7 @@ function applyMaskPatch(mat, d) {
     // orphan the ones the compiled program is holding.
     u.uKubikMask.value = tex;
     if (u.uKubikBevel) u.uKubikBevel.value = Math.min(1, Math.max(0, d.bevel || 0));
+    if (u.uKubikVary) u.uKubikVary.value.fromArray(varyVals(d));
     let count = 0, anyBump = 0;
     for (let k = 0; k < MASK_SLOTS; k++) {
       const s = maskSlotValues(list, k);
@@ -7646,8 +7736,8 @@ function applyMaskPatch(mat, d) {
        no uv attribute feeds zeros, so a checker on an unwrapped-never mesh
        reads as one flat colour - the honest answer rather than a crash. */
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vKubikPos;\nvarying vec3 vKubikNrm;\nvarying vec2 vKubikUv;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvKubikPos = position;\nvKubikNrm = normal;\nvKubikUv = uv;');
+      .replace('#include <common>', '#include <common>\nvarying vec3 vKubikPos;\nvarying vec3 vKubikNrm;\nvarying vec2 vKubikUv;\nvarying vec3 vKubikWPos;\nvarying vec3 vKubikWNrm;\nvarying vec3 vKubikOrg;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvKubikPos = position;\nvKubikNrm = normal;\nvKubikUv = uv;\nvKubikWPos = (modelMatrix * vec4(position, 1.0)).xyz;\nvKubikWNrm = mat3(modelMatrix) * normal;\nvKubikOrg = modelMatrix[3].xyz;');
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', ['#include <common>',
         'varying vec3 vKubikPos;',
@@ -8114,6 +8204,8 @@ function applyMaskPatch(mat, d) {
         '      kubikHOn = 1.0;',
         '    }',
         '  }',
+        '  kubikVaryR = 0.0;',
+        '  if (uKubikVary.x + uKubikVary.y > 0.0) diffuseColor.rgb = kubikVaryCol(diffuseColor.rgb);',
         '}'].join('\n'))
       .replace('#include <roughnessmap_fragment>', ['#include <roughnessmap_fragment>',
         '{',
@@ -8123,7 +8215,7 @@ function applyMaskPatch(mat, d) {
         '    float mixed = kubikBlend1(roughnessFactor, uKubikRough[i], uKubikBlend[i]);',
         '    roughnessFactor = mix(roughnessFactor, mixed, kubikW[i] * uKubikAmount[i]);',
         '  }',
-        '  roughnessFactor = clamp(roughnessFactor, 0.0, 1.0);',
+        '  roughnessFactor = clamp(roughnessFactor + kubikVaryR, 0.0, 1.0);',
         '}'].join('\n'))
       /* METAL per layer (v3.04): paint worn through to steel on the edges is the single most telling
          thing a hard-surface material does. Same weights, read a chunk later. */
@@ -8284,7 +8376,8 @@ function makeMaterialSet(count, hex, finish) {
 
    The test is the same one applyMaskPatch uses to decide whether to hang the
    hook at all, so the two cannot drift apart. */
-function defNeedsOwn(d) { return defWantsField(d) || defWantsBump(d); }
+/* v3.05: and anything reading the per-mesh axis and scale - a procedural layer, a Breakup, a Variation. */
+function defNeedsOwn(d) { return defWantsField(d) || defWantsBump(d) || defWantsProc(d); }
 
 /* THE FOURTH LEG IS THE GEOMETRY'S, not the definition's (v2.33). One
    textured definition worn by an unwrapped cube and by an imported head is
@@ -39252,7 +39345,7 @@ function importMaterialContext() {
           if (v.color !== null && v.color !== undefined) return;
           if (Math.abs((+v.roughness || 0) - rough) > 2e-3) return;
           if (Math.abs((+v.metalness || 0) - metal) > 2e-3) return;
-          if (maskList(v).length || (+v.bevel || 0)) return;
+          if (maskList(v).length || (+v.bevel || 0) || varyOn(v)) return;
           hit = id;
         });
         if (hit) { cache.set(src, hit); return hit; }
@@ -50162,6 +50255,7 @@ function buildMatTray() {
       color: src.color, roughness: src.roughness, metalness: src.metalness,
       bevel: src.bevel || 0,
       ...physOf(src),
+      ...(varyOn(src) ? { vary: src.vary, varyHue: src.varyHue, varyScale: src.varyScale } : {}),
       /* MASKS COME WITH IT (a2.64). Forking a material and losing the very
          thing that made it worth forking is the least useful copy there is
          - you would pick the material you liked, press +, and get a plain
@@ -51246,6 +51340,9 @@ const meMetalV = document.getElementById('meMetalV');
 const meRoughV = document.getElementById('meRoughV');
 const meBevel = document.getElementById('meBevel');
 const meBevelV = document.getElementById('meBevelV');
+const meVary = ['meVary', 'meVaryH', 'meVaryS'].map(id => document.getElementById(id));
+const meVaryV = ['meVaryV', 'meVaryHV', 'meVarySV'].map(id => document.getElementById(id));
+function meShowVary(d) { varyVals(d).forEach((v, i) => { meVary[i].value = v; meVaryV[i].textContent = v.toFixed(2); }); }
 /* v3.00: the six physical inputs. [definition key, slider id, readout id]. */
 const mePhysCtl = [
   ['clearcoat', 'meCoat', 'meCoatV'], ['clearcoatRoughness', 'meCoatR', 'meCoatRV'],
@@ -51293,6 +51390,7 @@ function openMatEditor(id) {
   meMetalV.textContent = d.metalness.toFixed(2);
   meRoughV.textContent = d.roughness.toFixed(2);
   meBevelV.textContent = (d.bevel || 0).toFixed(2);
+  meShowVary(d);
   meLoadPhys(d);
   meImg.src = (_matPreviews && _matPreviews[id]) || '';
   document.getElementById('meReset').style.display = isPresetDef(d) ? '' : 'none';
@@ -51329,6 +51427,13 @@ function meApplyLive() {
   d.roughness = parseFloat(meRough.value);
   const hadBevel = !!d.bevel;
   d.bevel = parseFloat(meBevel.value);
+  /* Variation: keys written only while it is on, deleted at zero, so a material nobody varied keeps
+     the signature it always had (v3.05). */
+  const hadVary = varyOn(d);
+  const va = parseFloat(meVary[0].value), vh = parseFloat(meVary[1].value), vs = parseFloat(meVary[2].value);
+  if (va > 0 || vh > 0) { d.vary = va; d.varyHue = vh; d.varyScale = vs; }
+  else { delete d.vary; delete d.varyHue; delete d.varyScale; }
+  meVaryV.forEach((e, i) => { e.textContent = [va, vh, vs][i].toFixed(2); });
   meReadPhys(d);
   meMetalV.textContent = d.metalness.toFixed(2);
   meRoughV.textContent = d.roughness.toFixed(2);
@@ -51340,7 +51445,7 @@ function meApplyLive() {
      changes whether the material needs a distance field, so it is also the
      one place here that can leave an object needing a wear list it has
      not got. */
-  if (hadBevel !== !!d.bevel) { bumpMaskGen(d); ensureMaskPatches(); ensureWearLists(); }
+  if (hadBevel !== !!d.bevel || hadVary !== varyOn(d)) { bumpMaskGen(d); ensureMaskPatches(); ensureWearLists(); }
   updateMaterialEverywhere(matEditingId);
 }
 
@@ -51405,7 +51510,7 @@ function meCommit() {
 // FIRST, so the flag is already set when meApplyLive reads it below.
 ['input', 'change'].forEach(ev => meColor.addEventListener(ev, () => { meColorTouched = true; }));
 ['input', 'change'].forEach(ev => meSheenCol.addEventListener(ev, () => { meSheenTouched = true; }));
-[meColor, meMetal, meRough, meBevel, meSheenCol].concat(mePhysCtl.map(c => c.el)).forEach(el => {
+[meColor, meMetal, meRough, meBevel, meSheenCol].concat(mePhysCtl.map(c => c.el), meVary).forEach(el => {
   el.addEventListener('input', meApplyLive);
   el.addEventListener('change', () => { meApplyLive(); meCommit(); });
 });
@@ -51418,6 +51523,7 @@ document.getElementById('meReset').addEventListener('click', () => {
      Object.assign(d, undefined) did nothing while still toasting "Reset to
      default" (v2.29). */
   if (!isPresetDef(d)) { toast('Only the built-in materials have a default'); return; }
+  delete d.vary; delete d.varyHue; delete d.varyScale;   // v3.05: Object.assign cannot clear them
   Object.assign(d, presetDefaults(d.id));
   PHYS_KEYS.forEach(k => { if (!(k in presetDefaults(d.id))) delete d[k]; });   // v3.00
   // Object.assign cannot clear a key the defaults do not have - the same

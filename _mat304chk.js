@@ -75,6 +75,20 @@
     const LL = lum();
     ok('4.2 wood and leather paint something different', Math.abs(LW - LL) > 0.5 && Math.abs(LW - L0) > 0.5, [L0, LW, LL].map(v => v.toFixed(1)).join(' '));
     ok('4.3 leather took its own scale default', Math.abs(d.masks[0].scale - K.maskTypeOf(d.masks[0]).sDef) < 1e-9, String(d.masks[0].scale));
+    /* 4c. v3.05 colour variation: slider writes the three keys, zero deletes them */
+    const vEl = document.getElementById('meVary');
+    ok('4.4 variation controls exist', !!vEl && !!document.getElementById('meVaryH') && !!document.getElementById('meVaryS'));
+    const sigV0 = K.materialDefSig(d);
+    const snap = () => { K.renderer.render(K.scene, K.camera); const c = document.createElement('canvas'); c.width = c.height = 160;
+      const x = c.getContext('2d'); x.drawImage(K.renderer.domElement, 0, 0, 160, 160); return x.getImageData(0, 0, 160, 160).data; };
+    const S0 = snap();
+    vEl.value = '0.5'; vEl.dispatchEvent(new Event('input', { bubbles: true })); await wait(300);
+    ok('4.5 variation writes vary/varyHue/varyScale', d.vary === 0.5 && typeof d.varyHue === 'number' && typeof d.varyScale === 'number', JSON.stringify([d.vary, d.varyHue, d.varyScale]));
+    const S1 = snap(); let dsum = 0; for (let i = 0; i < S0.length; i += 4) dsum += Math.abs(S0[i] - S1[i]) + Math.abs(S0[i + 1] - S1[i + 1]);
+    ok('4.6 and changes the picture (mean abs pixel diff)', dsum / (S0.length / 4) > 1, (dsum / (S0.length / 4)).toFixed(2));
+    vEl.value = '0'; vEl.dispatchEvent(new Event('input', { bubbles: true })); await wait(200);
+    ok('4.7 zero deletes the keys, signature as before', !('vary' in d) && !('varyScale' in d) && K.materialDefSig(d) === sigV0);
+    ok('4.8 dust and ground dirt exist', K.MASK_TYPES.some(t => t.id === 'dust' && t.proc === 6) && K.MASK_TYPES.some(t => t.id === 'grime' && t.proc === 7));
     document.getElementById('meDone').click(); await wait(150);
     /* 5. round trip keeps the new keys and matches itself */
     mark('roundtrip');
