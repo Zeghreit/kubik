@@ -3095,6 +3095,8 @@
           <input type="color" id="mkColor">
           <label class="mk-check"><input type="checkbox" id="mkRoughOn"> Roughness <span id="mkRoughV"></span></label>
           <input type="range" id="mkRough" min="0" max="1" step="0.01">
+          <label class="mk-check"><input type="checkbox" id="mkMetalOn"> Metal <span id="mkMetalV"></span></label>
+          <input type="range" id="mkMetal" min="0" max="1" step="0.05">
           <!-- The third component. A mask is a greyscale field and a normal
                is its slope, so every noise type already built is a bump for
                the cost of two derivatives. -->
@@ -3117,6 +3119,11 @@
           </div>
           <label id="mkContrastLbl">Contrast <span id="mkContrastV"></span></label>
           <input type="range" id="mkContrast" min="0.5" max="3" step="0.1">
+          <!-- Breakup (v3.04): the layer bitten into patches by a grunge, as every Substance generator does. -->
+          <label class="mk-check"><input type="checkbox" id="mkBrkOn"> Breakup <span id="mkBrkV"></span></label>
+          <input type="range" id="mkBrk" min="0" max="1" step="0.05">
+          <label>Breakup size <span id="mkBScaleV"></span></label>
+          <input type="range" id="mkBScale" min="0.5" max="12" step="0.25">
           <div class="me-row"><button id="mkSeed" class="small">New pattern</button><button id="mkDelete" class="small danger">Remove</button></div>
         </div>
         <div class="me-row"><button id="meReset">Reset</button><button id="meDelete" class="danger">Delete</button></div>
@@ -3186,7 +3193,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.03</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.04</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -5568,52 +5575,73 @@ function attachAllGizmos(pivot) {
    MASKS ARE KEPT FEW: a roughness layer is a uniform and a noise tap, a curvature layer (Edges / Cavity)
    needs the distance field, so no preset has more than one of those. `_rm` is the shared subtle roughness
    variation - the layer that sells a surface more than any colour does. */
-const _rm = (rough, scale, seed, amount) => ({ type: 'fbm', colorOn: false, roughOn: true, rough: rough,
-  amount: amount === undefined ? 0.3 : amount, scale: scale, detail: 4, contrast: 1.0, seed: seed });
-/* The two curvature layers a premium look is made of (v3.03). Edge = a soft, wide catch-light that
-   lifts the colour a little and drops roughness to near gloss; cavity = a quiet darkening that
-   raises roughness. Scales are for a mesh a couple of units across; the ranges sit inside the editor's
-   sliders (curvature scale 0.02-1, detail/contrast 0-1) so a preset survives being opened. */
-const _edge = (color, amount, rough) => ({ type: 'edges', blend: 'screen', colorOn: true, color: color, amount: amount,
-  scale: 0.14, detail: 0.05, contrast: 0.55, roughOn: true, rough: rough });
-const _cav = (color, amount) => ({ type: 'cavity', blend: 'multiply', colorOn: true, color: color, amount: amount,
-  scale: 0.3, detail: 0.1, contrast: 0.65, nscale: 0.2, roughOn: true, rough: 1 });
+/* THE SET IS BUILT THE WAY A SUBSTANCE MATERIAL IS (v3.04): a real albedo, then a grunge that breaks up
+   roughness and colour, dirt that settles in the cavities, and wear on the edges - each of the last two
+   bitten into patches by its own Breakup, so nothing reads as a clean drawn line. Metals keep their
+   grime NON-metal (Metal 0 on the cavity layer); painted metal wears through to steel (Metal 1 on the
+   edges). Albedos are physical ones now that the exposure no longer washes them out (v3.04, 1.2 -> 0.3).
+   Every number sits inside its editor slider's range, or opening the editor would move it. */
+const _gr = (rough, scale, seed, amount, color, blend) => ({ type: 'grunge', colorOn: !!color, color: color || '#808080',
+  blend: blend || 'multiply', roughOn: true, rough: rough, amount: amount, scale: scale, detail: 0.45, contrast: 1.6, seed: seed });
+const _edge = (color, amount, rough, brk) => ({ type: 'edges', blend: 'screen', colorOn: true, color: color, amount: amount,
+  scale: 0.1, detail: 0.35, contrast: 0.3, nscale: 1.5, roughOn: true, rough: rough, brk: brk === undefined ? 0.35 : brk, bscale: 5 });
+const _cav = (color, amount, rough, extra) => Object.assign({ type: 'cavity', blend: 'multiply', colorOn: true, color: color, amount: amount,
+  scale: 0.3, detail: 0.25, contrast: 0.7, nscale: 1, roughOn: true, rough: rough === undefined ? 0.9 : rough, brk: 0.3, bscale: 4 }, extra || {});
 const MATERIAL_DEFAULTS = {
   standard: { name: 'Clay',          color: null,      roughness: 0.82, metalness: 0.0, specularIntensity: 0.6 },
-  plastic:  { name: 'Plastic',       color: '#69707a', roughness: 0.34, metalness: 0.0, masks: [_rm(0.5, 3, 11, 0.25), _edge('#8a9099', 0.35, 0.12)] },
-  lacquer:  { name: 'Car paint',     color: '#14607a', roughness: 0.28, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.03,
-              masks: [_rm(0.4, 4, 12, 0.2), _edge('#5aa8c0', 0.3, 0.08)] },
-  ceramic:  { name: 'Ceramic',       color: '#84969c', roughness: 0.2,  metalness: 0.0, clearcoat: 0.6, clearcoatRoughness: 0.12,
-              masks: [_rm(0.3, 3, 13, 0.2), _edge('#9aaab0', 0.25, 0.08)] },
-  rubber:   { name: 'Rubber',        color: '#202327', roughness: 0.88, metalness: 0.0, specularIntensity: 0.5,
-              masks: [_rm(0.74, 3, 14), _cav('#0b0c0e', 0.35)] },
-  velvet:   { name: 'Velvet',        color: '#3c2a6e', roughness: 0.9,  metalness: 0.0, specularIntensity: 0.3,
-              sheen: 1.0, sheenColor: '#b48cff', sheenRoughness: 0.55 },
-  leather:  { name: 'Leather',       color: '#6b3b2a', roughness: 0.52, metalness: 0.0, specularIntensity: 0.8,
-              sheen: 0.25, sheenColor: '#b08a70', sheenRoughness: 0.6,
-              masks: [{ type: 'voronoi', colorOn: true, color: '#2b1a10', blend: 'multiply', amount: 0.6, scale: 4, detail: 5, contrast: 1.3, roughOn: true, rough: 0.68 },
-                      _rm(0.4, 2, 15)] },
-  wood:     { name: 'Wood',          color: '#7a5233', roughness: 0.55,  metalness: 0.0, specularIntensity: 0.7,
-              masks: [{ type: 'stripes', colorOn: true, color: '#4a2e1a', blend: 'multiply', amount: 0.45, scale: 1.5, detail: 5, contrast: 1.1, nscale: 2, roughOn: true, rough: 0.76 },
-                      { type: 'fbm', colorOn: true, color: '#d2a574', blend: 'overlay', amount: 0.25, scale: 2, detail: 4, contrast: 1.2, seed: 3 }] },
-  concrete: { name: 'Concrete',      color: '#767c84', roughness: 0.92, metalness: 0.0, specularIntensity: 0.5,
-              masks: [{ type: 'fbm', colorOn: true, color: '#555a61', blend: 'multiply', amount: 0.5, scale: 3, detail: 5, contrast: 1.6, roughOn: true, rough: 0.98 },
-                      { type: 'dots', colorOn: true, color: '#3a3d42', blend: 'normal', amount: 0.45, scale: 6, detail: 2, contrast: 1.4, seed: 5 }] },
-  steel:    { name: 'Brushed steel', color: '#aab1ba', roughness: 0.36, metalness: 1.0,
-              masks: [{ type: 'stripes', colorOn: false, roughOn: true, rough: 0.6, blend: 'normal', amount: 0.3, scale: 14, detail: 5, contrast: 1.0, nscale: 1, seed: 6 },
-                      _edge('#8a9099', 0.3, 0.05)] },
-  steelworn:{ name: 'Worn metal',    color: '#8f979f', roughness: 0.42, metalness: 1.0,
-              masks: [{ type: 'scratches', colorOn: true, color: '#6a7076', blend: 'normal', amount: 0.5, scale: 3, detail: 5, contrast: 1.4, roughOn: true, rough: 0.62, seed: 2 },
-                      _edge('#8a9097', 0.5, 0.12),
-                      _rm(0.6, 2.5, 16)] },
-  paintchip:{ name: 'Chipped paint', color: '#6b7d30', roughness: 0.46, metalness: 0.0, specularIntensity: 0.8,
-              masks: [{ type: 'edges', colorOn: true, color: '#5a4030', blend: 'normal', amount: 0.7, scale: 0.14, detail: 0.6, contrast: 0.4, roughOn: true, rough: 0.7 },
-                      { type: 'fbm', colorOn: true, color: '#3f3826', blend: 'multiply', amount: 0.3, scale: 3, detail: 5, contrast: 1.5, roughOn: true, rough: 0.7, seed: 4 }] },
-  gold:     { name: 'Gold',          color: '#d4a23f', roughness: 0.22, metalness: 1.0, masks: [_rm(0.36, 3, 17, 0.25), _edge('#9a7a30', 0.3, 0.05)] },
-  copper:   { name: 'Copper',        color: '#c97b5c', roughness: 0.28, metalness: 1.0, masks: [_rm(0.42, 3, 18, 0.25), _edge('#8a5a45', 0.3, 0.05)] },
-  bronze:   { name: 'Aged bronze',   color: '#b0774f', roughness: 0.4,  metalness: 1.0,
-              masks: [{ type: 'cavity', colorOn: true, color: '#4fa59a', blend: 'normal', amount: 0.45, scale: 0.5, detail: 0.7, contrast: 0.35, roughOn: true, rough: 0.85 },
-                      { type: 'fbm', colorOn: true, color: '#43877d', blend: 'normal', amount: 0.45, scale: 2, detail: 5, contrast: 3, roughOn: true, rough: 0.8, seed: 7 }] }
+  plastic:  { name: 'Plastic',       color: '#4a5058', roughness: 0.38, metalness: 0.0,
+              masks: [_gr(0.55, 3, 11, 0.35), _cav('#3a3c40', 0.4, 0.7), _edge('#3a3f46', 0.4, 0.25, 0.3)] },
+  lacquer:  { name: 'Car paint',     color: '#124a60', roughness: 0.3,  metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.03,
+              masks: [_gr(0.45, 4, 12, 0.2), _cav('#0e2a36', 0.35, 0.6), _edge('#2a6a80', 0.35, 0.15, 0.4)] },
+  ceramic:  { name: 'Ceramic',       color: '#7a908a', roughness: 0.15, metalness: 0.0, clearcoat: 0.6, clearcoatRoughness: 0.1,
+              masks: [_gr(0.25, 2.5, 13, 0.25, '#8aa09a'), _cav('#4a5450', 0.35, 0.3), _edge('#5a6a66', 0.3, 0.1, 0.2)] },
+  rubber:   { name: 'Rubber',        color: '#232528', roughness: 0.85, metalness: 0.0, specularIntensity: 0.5,
+              masks: [_gr(0.95, 4, 14, 0.5), _gr(0.95, 2, 24, 0.3, '#3a3a38', 'screen'), _cav('#0b0c0e', 0.4), _edge('#2e3034', 0.4, 0.55, 0.4)] },
+  velvet:   { name: 'Velvet',        color: '#2a1c50', roughness: 0.9,  metalness: 0.0, specularIntensity: 0.3,
+              sheen: 0.8, sheenColor: '#8a6ac0', sheenRoughness: 0.5,
+              masks: [_gr(0.95, 3, 19, 0.3, '#2a1c50'), _cav('#140c26', 0.45)] },
+  leather:  { name: 'Leather',       color: '#3a2216', roughness: 0.5, metalness: 0.0, specularIntensity: 0.7,
+              sheen: 0.2, sheenColor: '#8a6a58', sheenRoughness: 0.5,
+              masks: [{ type: 'leather', colorOn: true, color: '#140a05', blend: 'normal', amount: 0.28, scale: 30, detail: 0.25, contrast: 1.0, roughOn: true, rough: 0.66, bump: -0.15, seed: 2 },
+                      _gr(0.35, 2, 4, 0.35, '#5a3626', 'normal'),
+                      _edge('#3a2a20', 0.5, 0.3, 0.4),
+                      _cav('#1a100a', 0.55, 0.8)] },
+  wood:     { name: 'Wood',          color: '#4a3220', roughness: 0.58, metalness: 0.0, specularIntensity: 0.55,
+              masks: [{ type: 'wood', colorOn: true, color: '#1a0d05', blend: 'normal', amount: 0.75, scale: 6, detail: 0.6, contrast: 1.3, roughOn: true, rough: 0.74, bump: -0.12, seed: 3 },
+                      _gr(0.48, 1.5, 5, 0.3, '#6a4a30', 'normal'),
+                      _cav('#2a1c12', 0.35, 0.72),
+                      _edge('#4a3420', 0.45, 0.35, 0.35)] },
+  concrete: { name: 'Concrete',      color: '#55585a', roughness: 0.92, metalness: 0.0, specularIntensity: 0.5,
+              masks: [_gr(0.98, 3, 21, 0.5, '#4e5052'),
+                      { type: 'dots', colorOn: true, color: '#4a4c4e', blend: 'normal', amount: 0.35, scale: 8, detail: 3, contrast: 1.4, bump: -0.3, seed: 5 },
+                      _cav('#3a3a38', 0.5),
+                      _edge('#4a4a48', 0.35, 0.95, 0.5)] },
+  steel:    { name: 'Brushed steel', color: '#b4b9bf', roughness: 0.32, metalness: 1.0,
+              masks: [{ type: 'stripes', colorOn: false, roughOn: true, rough: 0.55, blend: 'normal', amount: 0.3, scale: 14, detail: 5, contrast: 1.0, nscale: 1, seed: 6 },
+                      _gr(0.5, 3, 22, 0.25),
+                      _cav('#3a3c40', 0.35, 0.7, { metal: 0 }),
+                      _edge('#5a5f66', 0.3, 0.15, 0.3)] },
+  steelworn:{ name: 'Worn metal',    color: '#5e646a', roughness: 0.55, metalness: 1.0,
+              masks: [{ type: 'scratches', colorOn: true, color: '#3a3e42', blend: 'screen', amount: 0.25, scale: 4, detail: 5, contrast: 1.4, roughOn: true, rough: 0.25, seed: 2 },
+                      _gr(0.75, 2.5, 16, 0.6, '#3e4246'),
+                      _cav('#3a2a1e', 0.65, 0.9, { metal: 0 }),
+                      _edge('#4a5056', 0.5, 0.15, 0.3)] },
+  paintchip:{ name: 'Chipped paint', color: '#3e4822', roughness: 0.55, metalness: 0.0, specularIntensity: 0.6,
+              masks: [{ type: 'edges', colorOn: true, color: '#9aa0a6', blend: 'normal', amount: 0.9, scale: 0.08, detail: 0.5, contrast: 0.15, nscale: 2,
+                        roughOn: true, rough: 0.3, metal: 1, bump: -0.15, brk: 0.45, bscale: 6 },
+                      _gr(0.65, 2, 4, 0.3, '#3a4220'),
+                      _cav('#2a2418', 0.55),
+                      _gr(0.72, 5, 9, 0.4)] },
+  gold:     { name: 'Gold',          color: '#e0b450', roughness: 0.22, metalness: 1.0,
+              masks: [_gr(0.34, 3, 17, 0.3), _cav('#5a4020', 0.45, 0.6), _edge('#5a4a20', 0.3, 0.08, 0.3)] },
+  copper:   { name: 'Copper',        color: '#d98a6a', roughness: 0.28, metalness: 1.0,
+              masks: [_gr(0.45, 2, 18, 0.35, '#8a5040'),
+                      _cav('#4fa59a', 0.5, 0.85, { blend: 'normal', metal: 0, brk: 0.35 }),
+                      _edge('#5a3020', 0.35, 0.1, 0.3)] },
+  bronze:   { name: 'Aged bronze',   color: '#8a5a38', roughness: 0.42, metalness: 1.0,
+              masks: [_cav('#43877d', 0.7, 0.85, { blend: 'normal', metal: 0, scale: 0.5, detail: 0.7, contrast: 0.35, brk: 0.2 }),
+                      Object.assign(_gr(0.8, 2, 7, 0.35, '#3f8579', 'normal'), { contrast: 2.2, metal: 0 }),
+                      _edge('#6a4a30', 0.4, 0.15, 0.3)] }
 };
 /* A mask written in a preset is a PARTIAL one: these are the blanks. Kept beside the presets because
    loadMaterialLibrary runs before the mask section is reached (MASK_DEFAULT is a const down there),
@@ -6592,13 +6620,142 @@ const MASK_TYPES = [
   { id: 'edges',     name: 'Edges',     detail: 'Noise',   scale: 'Width', contrast: 'Blur', curv: 2,
     sMin: 0.02, sMax: 1, sStep: 0.02, sDef: 0.25,
     dMin: 0, dMax: 1, dStep: 0.05, dDef: 0,
-    cMin: 0, cMax: 1, cStep: 0.05, cDef: 0.5 }
+    cMin: 0, cMax: 1, cStep: 0.05, cDef: 0.5 },
+  /* PROCEDURAL masks (v3.04). Computed in the SHADER, in 3D object space: no baked tile, no triplanar
+     seam or ghosting, and detail at any distance. `proc` is the shader's source code (3 wood, 4 leather,
+     5 grunge). Wood's rings run round the object's LONGEST axis, picked per mesh at draw time. */
+  { id: 'wood',      name: 'Wood grain',    detail: 'Fibres',   scale: 'Rings', contrast: 'Contrast', proc: 3,
+    sMin: 0.5, sMax: 20, sStep: 0.25, sDef: 6, dMin: 0, dMax: 1, dStep: 0.05, dDef: 0.6, cMin: 0.5, cMax: 3, cStep: 0.1, cDef: 1.2 },
+  { id: 'leather',   name: 'Leather grain', detail: 'Creases',  scale: 'Grain', contrast: 'Contrast', proc: 4,
+    sMin: 2, sMax: 60, sStep: 0.5, sDef: 20, dMin: 0, dMax: 1, dStep: 0.05, dDef: 0.5, cMin: 0.5, cMax: 3, cStep: 0.1, cDef: 1.2 },
+  { id: 'grunge',    name: 'Grunge',        detail: 'Detail',   scale: 'Scale', contrast: 'Contrast', proc: 5,
+    sMin: 0.25, sMax: 20, sStep: 0.25, sDef: 3, dMin: 0, dMax: 1, dStep: 0.05, dDef: 0.5, cMin: 0.5, cMax: 3, cStep: 0.1, cDef: 1.6 }
 ];
 function maskTypeOf(mk) {
   const t = mk && mk.type;
   return MASK_TYPES.find(x => x.id === t) || MASK_TYPES[0];
 }
 function maskCurvMode(mk) { return maskTypeOf(mk).curv || 0; }
+function maskProcMode(mk) { return maskTypeOf(mk).proc || 0; }
+/* METAL and BREAKUP (v3.04) follow Bump's rule: the PRESENCE of the key is the switch, so a mask
+   nobody gave one serialises exactly as before and every stored signature still matches itself. */
+function maskMetal(mk) { return !!mk && typeof mk.metal === 'number'; }
+function maskBrk(mk) { return !!mk && typeof mk.brk === 'number'; }
+/* THE PROCEDURAL GENERATORS (v3.04), the way Substance builds a material: a field per layer, a grunge
+   to break its mask up, and the curvature layers on top. Hoskins' hashes, not kubikHash3 - that one
+   goes through fract(p * 0.318), which repeats every pi units and tiles a 3D fbm visibly. */
+const KUBIK_PROC_GLSL = `
+uniform float uKubikSeed[${MASK_SLOTS}];
+uniform float uKubikMetalOn[${MASK_SLOTS}];
+uniform float uKubikMetal[${MASK_SLOTS}];
+uniform float uKubikBrk[${MASK_SLOTS}];
+uniform float uKubikBScale[${MASK_SLOTS}];
+uniform vec3  uKubikAxis;
+uniform vec3  uKubikOScale;
+float kubikPF;
+vec3 kubikKP;
+float kubikHq(vec3 p) {
+  p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+  p += dot(p, p.yxz + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
+vec3 kubikH33(vec3 p) {
+  p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+  p += dot(p, p.yxz + 33.33);
+  return fract((p.xxy + p.yxx) * p.zyx);
+}
+float kubikVN3(vec3 x) {
+  vec3 i = floor(x), f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(kubikHq(i), kubikHq(i + vec3(1.0, 0.0, 0.0)), f.x),
+                 mix(kubikHq(i + vec3(0.0, 1.0, 0.0)), kubikHq(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),
+             mix(mix(kubikHq(i + vec3(0.0, 0.0, 1.0)), kubikHq(i + vec3(1.0, 0.0, 1.0)), f.x),
+                 mix(kubikHq(i + vec3(0.0, 1.0, 1.0)), kubikHq(i + vec3(1.0, 1.0, 1.0)), f.x), f.y), f.z);
+}
+/* How much of a feature survives at this pixel: 1 while it spans a few pixels, 0 once one pixel
+   covers a whole period. fq is the pixel footprint measured in the feature's own periods. */
+float kubikAA(float fq) { return clamp(1.25 - fq * 1.25, 0.0, 1.0); }
+// fbm whose octaves fade to their mean as they drop under a pixel - mipmapping, for maths.
+float kubikFbm3(vec3 p, float pers, float fq) {
+  float v = 0.0, a = 1.0, n = 0.0;
+  for (int o = 0; o < 5; o++) {
+    v += a * kubikAA(fq) * (kubikVN3(p) - 0.5);
+    n += a; a *= pers; fq *= 2.03;
+    p = p * 2.03 + vec3(17.1, 5.3, 9.7);
+  }
+  return 0.5 + v / n;
+}
+vec2 kubikCell(vec3 p) {
+  vec3 i = floor(p), f = fract(p);
+  float f1 = 8.0, f2 = 8.0;
+  for (int z = -1; z <= 1; z++) for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+    vec3 g = vec3(float(x), float(y), float(z));
+    vec3 r = g + kubikH33(i + g) - f;
+    float d = dot(r, r);
+    if (d < f1) { f2 = f1; f1 = d; } else if (d < f2) { f2 = d; }
+  }
+  return vec2(sqrt(f1), sqrt(f2));
+}
+/* Rings round an axis whose centre sits OFF the model, as in a plank sawn from a log: the faces show
+   long streaks and gentle arcs, not a bullseye. Latewood is the dark band; fibres ride along the axis,
+   fine across it and long along it. 1 = dark wood. */
+float kubikWood(vec3 p, float scale, float det, float seed) {
+  vec3 a = normalize(uKubikAxis);
+  vec3 so = vec3(seed * 7.13, seed * 3.71, seed * 5.29);
+  float al = dot(p, a);
+  vec3 c = (kubikH33(vec3(seed + 0.5, 1.7, 3.1)) - 0.5) * 5.0;
+  vec3 d = p - c;
+  d -= a * dot(d, a);
+  float wob = kubikFbm3(d * 1.3 + a * al * 0.35 + so, 0.5, kubikPF * 1.3) - 0.5;
+  float r = length(d) * scale + wob * 1.3;
+  float t = fract(r);
+  float ring = smoothstep(0.3, 0.88, t) * (1.0 - smoothstep(0.88, 1.0, t));
+  ring *= 0.55 + 0.45 * kubikHq(vec3(floor(r), seed, 2.0));
+  ring = mix(0.3, ring, kubikAA(kubikPF * scale * 2.0));
+  // Fibres: fine across the axis, twenty times longer along it, levelled into streaks.
+  float fib = kubikFbm3(d * (scale * 6.0) + a * al * (scale * 0.3) + so, 0.55, kubikPF * scale * 6.0);
+  float streak = (smoothstep(0.36, 0.72, fib) - 0.5) * kubikAA(kubikPF * scale * 10.0);
+  return clamp(ring * 0.8 + streak * det * 0.7 + 0.12, 0.0, 1.0);
+}
+/* Pebbled grain: warped cells, the GROOVES between them high, a little dome inside each, and long
+   ridged creases on top. 1 = groove. */
+float kubikLeather(vec3 p, float scale, float det, float seed) {
+  vec3 so = vec3(seed * 7.13, seed * 3.71, seed * 5.29);
+  vec3 q = p * scale + so;
+  q += (vec3(kubikVN3(q * 0.35), kubikVN3(q * 0.35 + 19.1), kubikVN3(q * 0.35 + 41.7)) - 0.5) * 0.9;
+  vec2 F = kubikCell(q);
+  // A soft, shallow groove and a rounder dome: pebble grain, not crackle.
+  float groove = 1.0 - smoothstep(0.0, 0.28, F.y - F.x);
+  // The groove is a quarter of a cell, so the cell must span ~20 pixels before it can be drawn cleanly.
+  float cells = mix(0.3, groove * 0.6 + F.x * F.x * 0.6, kubikAA(kubikPF * scale * 6.0));
+  float wr = kubikFbm3(p * (scale * 0.18) + so.zxy, 0.5, kubikPF * scale * 0.18);
+  float crease = (1.0 - smoothstep(0.0, 0.035, abs(wr - 0.5))) * kubikAA(kubikPF * scale * 4.0);
+  return clamp(cells + crease * det * 0.8, 0.0, 1.0);
+}
+// Domain-warped fbm: dirt, stains, patches.
+float kubikGrunge(vec3 p, float scale, float det, float seed) {
+  vec3 q = p * scale + vec3(seed * 7.13, seed * 3.71, seed * 5.29);
+  q += (vec3(kubikVN3(q * 0.5), kubikVN3(q * 0.5 + 13.7), kubikVN3(q * 0.5 + 29.3)) - 0.5) * 1.6;
+  return kubikFbm3(q, 0.35 + det * 0.3, kubikPF * scale);
+}
+float kubikProc(int src, vec3 p, float scale, float det, float con, float seed) {
+  float v;
+  if (src == 3) v = kubikWood(p, scale, det, seed);
+  else if (src == 4) v = kubikLeather(p, scale, det, seed);
+  else v = kubikGrunge(p, scale, det, seed);
+  return clamp((v - 0.5) * con + 0.5, 0.0, 1.0);
+}
+/* BREAKUP: the layer's mask times a levelled grunge. 0 leaves it whole, 1 removes it; in between it
+   bites holes - worn edges in patches, dirt in pockets, the way every Substance generator does it. */
+/* SOFT is the width of the bite's edge: a curvature layer takes it from its own Blur, so a crisp edge
+   chips and a soft cavity fades out like dirt; everything else gets a middling one. */
+float kubikBreak(vec3 p, float brk, float bs, float seed, float soft) {
+  float g = kubikFbm3(p * bs + vec3(seed * 1.37 + 11.0, 3.0, seed * 0.71), 0.55, kubikPF * bs);
+  g = clamp((g - 0.5) * 2.4 + 0.5, 0.0, 1.0);
+  float t = brk * 1.2 - 0.1;
+  return smoothstep(t - soft, t + soft, g);
+}
+`;
 // 1 = this mask is sampled in UV space rather than triplanar object space.
 function maskUvMode(mk) { return maskTypeOf(mk).uv ? 1 : 0; }
 // 3 reads as 3, 0.35 reads as 0.35 - the same slider carries both now.
@@ -6668,7 +6825,7 @@ function maskOf(d) {
   const n = maskCount(d);
   for (let i = 0; i < n; i++) {
     const mk = d.masks[i];
-    if (mk && mk.on && (mk.colorOn || mk.roughOn || maskBumped(mk))) return mk;
+    if (mk && mk.on && (mk.colorOn || mk.roughOn || maskBumped(mk) || maskMetal(mk))) return mk;
   }
   return null;
 }
@@ -6903,7 +7060,7 @@ function bakeNoiseField(mk, size) {
   const t = mk.type || 'fbm';
   /* A shape mask has no cloth to bake. Its channel stays flat and the
      shader reads the curvature attribute in its place. */
-  if (t === 'cavity' || t === 'edges') return new Float32Array(size * size);
+  if (t === 'cavity' || t === 'edges' || t === 'wood' || t === 'leather' || t === 'grunge') return new Float32Array(size * size);
   let raw = null;
   if (t === 'voronoi') raw = maskVoronoiField(mk, size);
   else if (t === 'scratches') raw = maskScratchField(mk, size);
@@ -7088,7 +7245,7 @@ function defWantsField(d) {
   const n = maskCount(d);
   for (let i = 0; i < n; i++) {
     const m = d.masks[i];
-    if (m && m.on && maskCurvMode(m) && (m.colorOn || m.roughOn || maskBumped(m))) return true;
+    if (m && m.on && maskCurvMode(m) && (m.colorOn || m.roughOn || maskBumped(m) || maskMetal(m))) return true;
   }
   return false;
 }
@@ -7121,6 +7278,13 @@ function maskBumped(mk) { return !!mk && typeof mk.bump === 'number'; }
    every mask, and another chance for absent-versus-false to make a material
    stop matching itself across a file. */
 function bumpWord(v) { return v < 0 ? 'Carve' : 'Bump'; }
+// A procedural layer needs the per-mesh axis, which only onBeforeRender can set (v3.04).
+function defWantsProc(d) {
+  if (!d) return false;
+  const n = maskCount(d);
+  for (let i = 0; i < n; i++) { const m = d.masks[i]; if (m && m.on && (maskProcMode(m) || maskBrk(m))) return true; }
+  return false;
+}
 
 function defWantsBump(d) {
   if (!d) return false;
@@ -7167,12 +7331,12 @@ function maskWantsPatch(d) {
 const _maskSlot = {
   live: false, color: '#ffffff', amount: 0, scale: 1, blend: 0,
   colorOn: 0, roughOn: 0, rough: 0.5, source: 0, blur: 0.5, noise: 0, nscale: 1,
-  bump: 0, uv: 0
+  bump: 0, uv: 0, seed: 1, metalOn: 0, metal: 0, brk: 0, bscale: 3
 };
 function maskSlotValues(list, k) {
   const mk = list[k];
   const s = _maskSlot;
-  s.live = !!(mk && mk.on && (mk.colorOn || mk.roughOn || maskBumped(mk)));
+  s.live = !!(mk && mk.on && (mk.colorOn || mk.roughOn || maskBumped(mk) || maskMetal(mk)));
   s.color = mk && mk.color ? mk.color : '#ffffff';
   s.amount = s.live ? mk.amount : 0;
   /* A shape mask's Width is a FRACTION of the field's reach, so it has to be
@@ -7192,15 +7356,21 @@ function maskSlotValues(list, k) {
   // depth of -40 would turn every face inside out.
   s.bump = s.live && maskBumped(mk) ? Math.max(-1, Math.min(1, mk.bump)) : 0;
   // 0 = read the baked cloth texture, 1 = concave edges, 2 = convex.
-  s.source = cm;
-  s.blur = cm && mk ? Math.min(1, Math.max(0, mk.contrast)) : 0.5;
-  s.noise = cm && mk ? Math.min(1, Math.max(0, mk.detail)) : 0;
+  const pm = mk ? maskProcMode(mk) : 0;
+  s.source = cm || pm;
+  s.blur = cm && mk ? Math.min(1, Math.max(0, mk.contrast)) : (pm && mk ? Math.min(4, Math.max(0.1, +mk.contrast || 1)) : 0.5);
+  s.noise = (cm || pm) && mk ? Math.min(1, Math.max(0, +mk.detail || 0)) : 0;
   s.nscale = cm && mk && mk.nscale > 0 ? Math.min(8, mk.nscale) : 1;
   // 1 = sample this slot in UV space (v2.54). Only the checker sets it, and
   // a shape mask never can: its weight comes from the distance field, not
   // from the baked texture at all, so `source` wins in the shader's own
   // branch order below.
   s.uv = mk ? maskUvMode(mk) : 0;
+  s.seed = mk && Number.isFinite(+mk.seed) ? (+mk.seed % 997) : 1;
+  s.metalOn = s.live && maskMetal(mk) ? 1 : 0;
+  s.metal = s.metalOn ? Math.min(1, Math.max(0, mk.metal)) : 0;
+  s.brk = s.live && maskBrk(mk) ? Math.min(1, Math.max(0, mk.brk)) : 0;
+  s.bscale = mk && mk.bscale > 0 ? Math.min(40, mk.bscale) : 3;
   return s;
 }
 
@@ -7275,6 +7445,10 @@ function applyMaskPatch(mat, d) {
       uKubikBlur: { value: [] },
       uKubikNoise: { value: [] },
       uKubikNScale: { value: [] },
+      uKubikSeed: { value: [] }, uKubikMetalOn: { value: [] }, uKubikMetal: { value: [] },
+      uKubikBrk: { value: [] }, uKubikBScale: { value: [] },
+      uKubikAxis: { value: new THREE.Vector3(1, 0, 0) },
+      uKubikOScale: { value: new THREE.Vector3(1, 1, 1) },
       /* Shading-only rounded edges. Per MATERIAL, not per mask, because it
          is a property of the surface rather than of a layer on it. */
       // A shared file or a stale library can carry anything; without this a
@@ -7308,6 +7482,8 @@ function applyMaskPatch(mat, d) {
       u.uKubikBlur.value.push(s.blur);
       u.uKubikNoise.value.push(s.noise);
       u.uKubikNScale.value.push(s.nscale);
+      u.uKubikSeed.value.push(s.seed); u.uKubikMetalOn.value.push(s.metalOn); u.uKubikMetal.value.push(s.metal);
+      u.uKubikBrk.value.push(s.brk); u.uKubikBScale.value.push(s.bscale);
       if (s.live) u.uKubikCount.value = k + 1;   // highest live slot, so the loop can stop
     }
     return u;
@@ -7346,6 +7522,10 @@ function applyMaskPatch(mat, d) {
       u.uKubikBlur.value[k] = s.blur;
       u.uKubikNoise.value[k] = s.noise;
       u.uKubikNScale.value[k] = s.nscale;
+      if (u.uKubikSeed) {
+        u.uKubikSeed.value[k] = s.seed; u.uKubikMetalOn.value[k] = s.metalOn; u.uKubikMetal.value[k] = s.metal;
+        u.uKubikBrk.value[k] = s.brk; u.uKubikBScale.value[k] = s.bscale;
+      }
       if (s.live) count = k + 1;
     }
     u.uKubikCount.value = count;
@@ -7399,7 +7579,7 @@ function applyMaskPatch(mat, d) {
      all, and the normal matrix that carries that bend into view space is
      maintained here. Hanging the hook on the field question alone left
      every cloth bump rendering through an identity matrix. */
-  const wantsNrm = wantsField || defWantsBump(d);
+  const wantsNrm = wantsField || defWantsBump(d) || defWantsProc(d);
   if (!wantsNrm) delete mat.onBeforeRender;
   else mat.onBeforeRender = function (renderer, scene, camera, geometry, object) {
     const f = wantsField ? ensureEdgeField(object) : null;
@@ -7424,6 +7604,21 @@ function applyMaskPatch(mat, d) {
        anyway. Two multiplies on a matrix three is about to compute again. */
     _kubikMV.multiplyMatrices(camera.matrixWorldInverse, object.matrixWorld);
     u.uKubikNrmMat.value.getNormalMatrix(_kubikMV);
+    /* Wood's rings run round the mesh's LONGEST axis (v3.04): a plank, a handle or a hull
+       gets its grain along its length without asking. */
+    if (u.uKubikOScale) {
+      const e = object.matrixWorld.elements;
+      u.uKubikOScale.value.set(Math.hypot(e[0], e[1], e[2]) || 1, Math.hypot(e[4], e[5], e[6]) || 1, Math.hypot(e[8], e[9], e[10]) || 1);
+    }
+    if (u.uKubikAxis && geometry) {
+      if (!geometry.boundingBox) geometry.computeBoundingBox();
+      const bb = geometry.boundingBox;
+      const os = u.uKubikOScale ? u.uKubikOScale.value : null;
+      const ex = (bb.max.x - bb.min.x) * (os ? os.x : 1), ey = (bb.max.y - bb.min.y) * (os ? os.y : 1), ez = (bb.max.z - bb.min.z) * (os ? os.z : 1);
+      if (ex >= ey && ex >= ez) u.uKubikAxis.value.set(1, 0, 0);
+      else if (ey >= ez) u.uKubikAxis.value.set(0, 1, 0);
+      else u.uKubikAxis.value.set(0, 0, 1);
+    }
     // The rest is the field's, and a bump-only material has none to carry.
     if (!wantsField) return;
     /* No field on this mesh - it has never been through applyShading. Put
@@ -7474,6 +7669,7 @@ function applyMaskPatch(mat, d) {
         'uniform float uKubikNoise[' + MASK_SLOTS + '];',
         'uniform float uKubikNScale[' + MASK_SLOTS + '];',
         'uniform float uKubikUv[' + MASK_SLOTS + '];',
+        KUBIK_PROC_GLSL,
         'uniform float uKubikBevel;',
         'uniform mat3  uKubikNrmMat;',
         'uniform sampler2D uKubikField;',
@@ -7850,12 +8046,17 @@ function applyMaskPatch(mat, d) {
         '  kubikH = 0.0;',
         '  kubikHOn = 0.0;',
         '  kubikFP = 0.0;',
+        /* Procedural layers and Breakup read the position at WORLD scale (v3.04): a model built from
+           parts scaled differently - the Tank's hull is one - gets one grain size on every part. */
+        '  kubikKP = vKubikPos * uKubikOScale;',
+        '  kubikPF = max(length(dFdx(kubikKP)), length(dFdy(kubikKP)));',
         '  if (uKubikBumpAny > 0.5) kubikFP = max(length(dFdx(vKubikPos)), length(dFdy(vKubikPos)));',
         '  for (int i = 0; i < ' + MASK_SLOTS + '; i++) {',
         '    kubikW[i] = 0.0;',
         '    if (i >= uKubikCount) continue;',
         '    if (uKubikAmount[i] <= 0.0) continue;',
-        '    if (uKubikSource[i] > 0) kubikW[i] = kubikEdgeW(uKubikSource[i], uKubikScale[i], uKubikBlur[i], uKubikNoise[i], uKubikNScale[i]);',
+        '    if (uKubikSource[i] >= 3) kubikW[i] = kubikProc(uKubikSource[i], kubikKP, uKubikScale[i], uKubikNoise[i], uKubikBlur[i], uKubikSeed[i]);',
+        '    else if (uKubikSource[i] > 0) kubikW[i] = kubikEdgeW(uKubikSource[i], uKubikScale[i], uKubikBlur[i], uKubikNoise[i], uKubikNScale[i]);',
         /* THE UV BRANCH (v2.54). Same baked texture, same channel, read
            through the mesh's own UV instead of three object-space planes -
            which is the whole point of a checker: it has to distort exactly
@@ -7865,6 +8066,7 @@ function applyMaskPatch(mat, d) {
            produce. */
         '    else if (uKubikUv[i] > 0.5) kubikW[i] = kubikPick(texture2D(uKubikMask, fract(vKubikUv * uKubikScale[i])), i);',
         '    else kubikW[i] = kubikTriplanar(vKubikPos, kubikN, uKubikScale[i], i);',
+        '    if (uKubikBrk[i] > 0.0) kubikW[i] *= kubikBreak(kubikKP, uKubikBrk[i], uKubikBScale[i], uKubikSeed[i], (uKubikSource[i] == 1 || uKubikSource[i] == 2) ? 0.04 + 0.3 * uKubikBlur[i] : 0.15);',
         '    if (uKubikColorOn[i] > 0.5) {',
         '      vec3 mixed = kubikBlend(diffuseColor.rgb, uKubikColor[i], uKubikBlend[i]);',
         '      diffuseColor.rgb = mix(diffuseColor.rgb, mixed, kubikW[i] * uKubikAmount[i]);',
@@ -7892,7 +8094,7 @@ function applyMaskPatch(mat, d) {
            surface keeps exactly the texture it had. It is stepping BACK that
            takes it away, which is the direction where there was nothing left
            to see anyway. */
-        '      float feat = (uKubikSource[i] > 0) ? uKubikScale[i] * uKubikFieldRange',
+        '      float feat = (uKubikSource[i] >= 3) ? 0.25 / max(uKubikScale[i], 1e-4) : (uKubikSource[i] > 0) ? uKubikScale[i] * uKubikFieldRange',
         '                                         : 0.015625 / max(uKubikScale[i], 1e-4);',
         /* SQUARED, and the exponent is the whole behaviour. Linear in the
            footprint leaves the SLOPE constant once a texel drops under a
@@ -7922,6 +8124,17 @@ function applyMaskPatch(mat, d) {
         '    roughnessFactor = mix(roughnessFactor, mixed, kubikW[i] * uKubikAmount[i]);',
         '  }',
         '  roughnessFactor = clamp(roughnessFactor, 0.0, 1.0);',
+        '}'].join('\n'))
+      /* METAL per layer (v3.04): paint worn through to steel on the edges is the single most telling
+         thing a hard-surface material does. Same weights, read a chunk later. */
+      .replace('#include <metalnessmap_fragment>', ['#include <metalnessmap_fragment>',
+        '{',
+        '  for (int i = 0; i < ' + MASK_SLOTS + '; i++) {',
+        '    if (i >= uKubikCount) continue;',
+        '    if (uKubikMetalOn[i] < 0.5) continue;',
+        '    metalnessFactor = mix(metalnessFactor, uKubikMetal[i], kubikW[i] * uKubikAmount[i]);',
+        '  }',
+        '  metalnessFactor = clamp(metalnessFactor, 0.0, 1.0);',
         '}'].join('\n'));
   };
   /* Cache-key discipline (QA finding 1/2, still LAW): three runs
@@ -51589,6 +51802,18 @@ function refreshMaskControls(d) {
   document.getElementById('mkRough').value = mk.rough;
   document.getElementById('mkRough').style.opacity = mk.roughOn ? '' : '.4';
   document.getElementById('mkRoughV').textContent = Number(mk.rough).toFixed(2);
+  const metaled = maskMetal(mk), broken = maskBrk(mk);
+  document.getElementById('mkMetalOn').checked = metaled;
+  document.getElementById('mkMetal').value = metaled ? mk.metal : 1;
+  document.getElementById('mkMetal').disabled = !metaled;
+  document.getElementById('mkMetal').style.opacity = metaled ? '' : '.4';
+  document.getElementById('mkMetalV').textContent = metaled ? Number(mk.metal).toFixed(2) : '';
+  document.getElementById('mkBrkOn').checked = broken;
+  document.getElementById('mkBrk').value = broken ? mk.brk : 0.4;
+  document.getElementById('mkBScale').value = broken && mk.bscale > 0 ? mk.bscale : 3;
+  ['mkBrk', 'mkBScale'].forEach(id => { const e = document.getElementById(id); e.disabled = !broken; e.style.opacity = broken ? '' : '.4'; });
+  document.getElementById('mkBrkV').textContent = broken ? Number(mk.brk).toFixed(2) : '';
+  document.getElementById('mkBScaleV').textContent = broken ? Number(mk.bscale || 3).toFixed(2) : '';
   /* The checkbox reads the DEPTH, because the depth is the only thing
      stored - a mask with no bump has no key at all. An unticked box leaves
      the slider parked at a sensible depth to turn on with. */
@@ -51634,6 +51859,11 @@ function mkLive(rebake) {
   // on a mask that has no bump, which is the one thing this must not do.
   if (maskBumped(mk)) mk.bump = parseFloat(document.getElementById('mkBump').value);
   if (maskCurvMode(mk)) mk.nscale = parseFloat(document.getElementById('mkNScale').value);
+  if (maskMetal(mk)) mk.metal = parseFloat(document.getElementById('mkMetal').value);
+  if (maskBrk(mk)) { mk.brk = parseFloat(document.getElementById('mkBrk').value); mk.bscale = parseFloat(document.getElementById('mkBScale').value); }
+  document.getElementById('mkMetalV').textContent = maskMetal(mk) ? mk.metal.toFixed(2) : '';
+  document.getElementById('mkBrkV').textContent = maskBrk(mk) ? mk.brk.toFixed(2) : '';
+  document.getElementById('mkBScaleV').textContent = maskBrk(mk) ? mk.bscale.toFixed(2) : '';
   document.getElementById('mkRoughV').textContent = mk.rough.toFixed(2);
   document.getElementById('mkBumpV').textContent = maskBumped(mk) ? mk.bump.toFixed(2) : '';
   document.getElementById('mkBumpLbl').textContent = bumpWord(maskBumped(mk) ? mk.bump : 1);
@@ -51647,7 +51877,7 @@ function mkLive(rebake) {
   updateMaterialEverywhere(d.id);
 }
 
-['mkColor', 'mkRough', 'mkBump', 'mkAmount', 'mkScale', 'mkNScale'].forEach(id => {
+['mkColor', 'mkRough', 'mkBump', 'mkAmount', 'mkScale', 'mkNScale', 'mkMetal', 'mkBrk', 'mkBScale'].forEach(id => {
   const el = document.getElementById(id);
   el.addEventListener('input', () => mkLive(false));
   el.addEventListener('change', () => { mkLive(false); meCommit(); });
@@ -51683,6 +51913,24 @@ function mkLive(rebake) {
     }
     // A component going on or off changes whether this mask paints at all,
     // which is structural.
+    mkStructural(getMaterialDef(matEditingId));
+  });
+});
+
+/* Metal and Breakup, by the presence of their keys - see the Bump box above for why. */
+['mkMetalOn', 'mkBrkOn'].forEach(id => {
+  document.getElementById(id).addEventListener('change', () => {
+    const mk = mkCurrent();
+    if (!mk) return;
+    if (document.getElementById('mkMetalOn').checked) {
+      if (!maskMetal(mk)) { const v = parseFloat(document.getElementById('mkMetal').value); mk.metal = Number.isFinite(v) ? v : 1; }
+    } else delete mk.metal;
+    if (document.getElementById('mkBrkOn').checked) {
+      if (!maskBrk(mk)) {
+        const v = parseFloat(document.getElementById('mkBrk').value), b = parseFloat(document.getElementById('mkBScale').value);
+        mk.brk = Number.isFinite(v) ? v : 0.4; mk.bscale = Number.isFinite(b) ? b : 3;
+      }
+    } else { delete mk.brk; delete mk.bscale; }
     mkStructural(getMaterialDef(matEditingId));
   });
 });

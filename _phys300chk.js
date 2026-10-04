@@ -1,4 +1,4 @@
-﻿(function () {
+(function () {
   const OUT = []; let fails = 0;
   const say = s => OUT.push(s);
   const ok = (n, c, d) => { if (!c) fails++; say((c ? 'PASS ' : 'FAIL ') + n + (d === undefined ? '' : '  ' + d)); };
@@ -35,7 +35,8 @@
     const ma = mat0(A1), mb = mat0(B1), mc = mat0(C1);
     ok('2.0 class is Physical', ma.isMeshPhysicalMaterial && mb.isMeshPhysicalMaterial && mc.isMeshPhysicalMaterial, ma.type + '/' + mb.type + '/' + mc.type);
     ok('2.1 lacquer coat', ma.clearcoat === 1 && Math.abs(ma.clearcoatRoughness - 0.03) < 1e-9, ma.clearcoat + ' ' + ma.clearcoatRoughness);
-    ok('2.2 velvet sheen', mb.sheen === 1 && mb.sheenColor.getHexString() === 'b48cff' && Math.abs(mb.sheenRoughness - 0.55) < 1e-9 && Math.abs(mb.specularIntensity - 0.3) < 1e-9,
+    const VD = K.MATERIAL_DEFAULTS.velvet;
+      ok('2.2 velvet sheen', mb.sheen === VD.sheen && '#' + mb.sheenColor.getHexString() === VD.sheenColor && Math.abs(mb.sheenRoughness - VD.sheenRoughness) < 1e-9 && Math.abs(mb.specularIntensity - VD.specularIntensity) < 1e-9,
       mb.sheen + ' ' + mb.sheenColor.getHexString() + ' ' + mb.sheenRoughness + ' ' + mb.specularIntensity);
     ok('2.3 gold is plain metal', mc.metalness === 1 && mc.clearcoat === 0 && mc.sheen === 0 && mc.specularIntensity === 1);
 
@@ -61,7 +62,7 @@
     if (A2 && B2) {
       const m1 = mat0(A2), m2 = mat0(B2);
       ok('4.3 coat survives', m1.isMeshPhysicalMaterial && m1.clearcoat === 1, m1.type + ' ' + m1.clearcoat);
-      ok('4.4 sheen survives', m2.isMeshPhysicalMaterial && m2.sheen === 1 && m2.sheenColor.getHexString() === 'b48cff', m2.sheen + ' ' + m2.sheenColor.getHexString());
+      ok('4.4 sheen survives', m2.isMeshPhysicalMaterial && m2.sheen === K.MATERIAL_DEFAULTS.velvet.sheen && '#' + m2.sheenColor.getHexString() === K.MATERIAL_DEFAULTS.velvet.sheenColor, m2.sheen + ' ' + m2.sheenColor.getHexString());
       ok('4.5 finishes ids intact', (A2.mesh.userData.finishes || {})[0] === 'lacquer' && (B2.mesh.userData.finishes || {})[0] === 'velvet', JSON.stringify(A2.mesh.userData.finishes));
     }
     ok('4.6 no duplicate library entries', K.MATERIALS.size === nBefore && importedNames().length === 0, K.MATERIALS.size + ' vs ' + nBefore + ' ' + importedNames().join(','));
@@ -159,18 +160,19 @@
     mark('preset-masks');
     try {
       const dw = K.MATERIALS.get('steelworn');
-      ok('11.0 Worn metal has its three masks, filled in', dw.masks.length === 3 && dw.masks.every(m => m.blend && m.seed !== undefined), String(dw.masks.length));
+      const NW = K.MATERIAL_DEFAULTS.steelworn.masks.length, AW = K.MATERIAL_DEFAULTS.steelworn.masks[0].amount;
+      ok('11.0 Worn metal has its preset masks, filled in', NW >= 3 && dw.masks.length === NW && dw.masks.every(m => m.blend && m.seed !== undefined), String(dw.masks.length));
       ok('11.1 they are its own copies', dw.masks[0] !== K.MATERIAL_DEFAULTS.steelworn.masks[0]);
       const stock = K.materialDefSig(dw);
       dw.masks[0].amount = 0.1;
       ok('11.2 an edit moves the signature', K.materialDefSig(dw) !== stock);
       K.saveMaterialLibrary();
       const lib = JSON.parse(localStorage.getItem(K.MATLIB_KEY));
-      ok('11.3 the edited masks are written as an override', !!(lib.presetOverrides && lib.presetOverrides.steelworn && lib.presetOverrides.steelworn.masks.length === 3));
+      ok('11.3 the edited masks are written as an override', !!(lib.presetOverrides && lib.presetOverrides.steelworn && lib.presetOverrides.steelworn.masks.length === NW));
       K.openMatEditor('steelworn'); await wait(150);
       document.getElementById('meReset').click(); await wait(300);
       const dr2 = K.MATERIALS.get('steelworn');
-      ok('11.4 Reset brings the preset masks back, not an empty list', dr2.masks.length === 3 && Math.abs(dr2.masks[0].amount - 0.5) < 1e-9, dr2.masks.length + ' ' + dr2.masks[0].amount);
+      ok('11.4 Reset brings the preset masks back, not an empty list', dr2.masks.length === NW && Math.abs(dr2.masks[0].amount - AW) < 1e-9, dr2.masks.length + ' ' + dr2.masks[0].amount);
       { const a1 = K.materialDefSig(dr2); let at = 0; while (at < a1.length && a1[at] === stock[at]) at++; ok('11.5 and the signature is stock again', a1 === stock, 'differs at ' + at + ': ' + stock.slice(Math.max(0, at - 40), at + 60) + ' <> ' + a1.slice(Math.max(0, at - 40), at + 60)); }
       const lib2 = JSON.parse(localStorage.getItem(K.MATLIB_KEY));
       ok('11.6 an untouched preset with masks writes no override', !(lib2.presetOverrides && lib2.presetOverrides.steelworn));
@@ -188,12 +190,16 @@
           if (sp.detail && !rng(m.detail, sp.dMin !== undefined ? sp.dMin : 1, sp.dMax !== undefined ? sp.dMax : 5)) bad.push(id + '#' + i + ' detail ' + m.detail);
           if (sp.detail && (sp.dStep === undefined || sp.dStep >= 1) && m.detail !== Math.round(m.detail)) bad.push(id + '#' + i + ' detail not whole ' + m.detail);
           if (!rng(m.amount, 0, 1) || !rng(m.rough, 0, 1)) bad.push(id + '#' + i + ' amount/rough');
-          if ((sp.curv ? 1 : 0) + 0 > 1) bad.push('x');
+          if (sp.curv && m.nscale !== undefined && !rng(m.nscale, 0.2, 6)) bad.push(id + '#' + i + ' nscale ' + m.nscale);
+          if (m.bump !== undefined && !rng(m.bump, -1, 1)) bad.push(id + '#' + i + ' bump ' + m.bump);
+          if (m.metal !== undefined && !rng(m.metal, 0, 1)) bad.push(id + '#' + i + ' metal ' + m.metal);
+          if (m.brk !== undefined && (!rng(m.brk, 0, 1) || !rng(m.bscale, 0.5, 12))) bad.push(id + '#' + i + ' breakup ' + m.brk + '/' + m.bscale);
         });
         const curvs = (K.MATERIALS.get(id).masks || []).filter(m => K.maskTypeOf(m).curv).length;
-        if (curvs > 1) bad.push(id + ' has ' + curvs + ' curvature layers');
+        // v3.04: dirt in the cavities AND wear on the edges is the recipe, so two is the cap now.
+        if (curvs > 2) bad.push(id + ' has ' + curvs + ' curvature layers');
       });
-      ok('11.7 preset masks inside editor ranges, at most one curvature layer each', bad.length === 0, bad.join('; '));
+      ok('11.7 preset masks inside editor ranges, at most two curvature layers each', bad.length === 0, bad.join('; '));
     } catch (e) { ok('11.7 ranges', false, String(e && e.stack || e)); }
 
     /* 10. the coat over a rounded edge: program must link (v3.00 review: clearcoatNormal patch) */
