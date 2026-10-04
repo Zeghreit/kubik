@@ -3095,6 +3095,10 @@
           <select id="mkProj" class="mk-sel" title="Projection"></select>
           <!-- v3.07: a layer can be limited to where an earlier one is - or kept out of it. -->
           <select id="mkMaskBy" class="mk-sel" title="Masked by"></select>
+          <div id="mkRotRow" style="display:none; flex-direction:column; gap:8px;">
+            <label>Rotate <span id="mkRotV"></span></label>
+            <input type="range" id="mkRot" min="0" max="360" step="5">
+          </div>
           <div id="mkDirRow" style="display:none; flex-direction:column; gap:8px;">
             <label>Direction <span id="mkDirV"></span></label>
             <input type="range" id="mkDir" min="0" max="180" step="5">
@@ -3208,7 +3212,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.07</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.08</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -6692,8 +6696,19 @@ function maskBrk(mk) { return !!mk && typeof mk.brk === 'number'; }
    type, and a box whose corners happen to lie on a circle must NOT pass - the vertex NORMALS have to
    point away from the axis (or the centre) as well, which a box's never do.
    `proj` on a mask follows Bump's rule: absent = triplanar, exactly as before. */
-const PROJ_MODES = ['tri', 'auto', 'plane', 'cyl', 'sphere'];
-const PROJ_NAMES = { tri: 'Triplanar', auto: 'Auto (fit the shape)', plane: 'Plane', cyl: 'Cylinder', sphere: 'Sphere' };
+const PROJ_MODES = ['tri', 'auto', 'plane', 'cyl', 'sphere', 'uv'];
+const PROJ_NAMES = { tri: 'Triplanar', auto: 'Auto (fit the shape)', plane: 'Plane', cyl: 'Cylinder', sphere: 'Sphere', uv: 'UV' };
+/* A procedural layer's projection is an AXIS (v3.08): 'auto' (absent) = the fitted shape's - a fitted
+   cylinder's axis, else the principal axis - and 'uv' lays the pattern in the unwrap. */
+const PROC_AXES = ['auto', 'x', 'y', 'z', 'uv'];
+const PROC_AXIS_NAMES = { auto: 'Auto (fit the shape)', x: 'Along X', y: 'Along Y', z: 'Along Z', uv: 'UV' };
+function maskProcAxis(mk) {
+  if (!mk || !maskProcMode(mk) || mk.type === 'grime' || typeof mk.proj !== 'string') return 0;
+  const i = PROC_AXES.indexOf(mk.proj);
+  return i > 0 ? i : 0;
+}
+// Which layers can be turned: everything that has a projection (not curvature, ground dirt or the checker).
+function maskTurnable(mk) { const t = maskTypeOf(mk); return !!mk && !t.curv && !t.uv && mk.type !== 'grime'; }
 function maskProj(mk) {
   if (!mk || typeof mk.proj !== 'string') return 0;
   if (maskCurvMode(mk) || maskProcMode(mk) || maskUvMode(mk)) return 0;   // only a baked tile has a projection
@@ -6791,7 +6806,7 @@ function meshShapeOf(geo) {
   P.forEach(p => { const d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
     for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) C[i][j] += d[i] * d[j] / n; });
   const E = _eig3(C);
-  const out = { t: 0, planeN: E.vecs[2], cylA: E.vecs[0], cylC: c.slice(),
+  const out = { t: 0, e1: E.vecs[0], planeN: E.vecs[2], cylA: E.vecs[0], cylC: c.slice(),
     cylR: Math.sqrt(Math.max(E.vals[1], 1e-12)) * 1.414, sphC: c.slice(), sphR: Math.sqrt(E.vals[0] + E.vals[1] + E.vals[2]) };
   let sphOk = false, best = null;
   if (n >= 8 && tris.length >= 8 && areaSum > 0) {
@@ -6882,21 +6897,40 @@ const KPACK_MAP = {
   RoughOn: 'uKP1[#].x', Rough: 'uKP1[#].y', Bump: 'uKP1[#].z', Source: 'int(uKP1[#].w + 0.5)',
   Blur: 'uKP2[#].x', Noise: 'uKP2[#].y', NScale: 'uKP2[#].z', Uv: 'uKP2[#].w',
   Seed: 'uKP3[#].x', MetalOn: 'uKP3[#].y', Metal: 'uKP3[#].z', Brk: 'uKP3[#].w',
-  BScale: 'uKP4[#].x', Proj: 'uKP4[#].y', MaskBy: 'uKP4[#].z', MaskOp: 'uKP4[#].w'
+  BScale: 'uKP4[#].x', Proj: 'uKP4[#].y', MaskBy: 'uKP4[#].z', MaskOp: 'uKP4[#].w',
+  Rot: 'uKP5[#].x', PAx: 'uKP5[#].y'
 };
+/* Which parts of the mask shader this definition needs (v3.08). A layer switched OFF is left out; it
+   comes back with a recompile when switched on, because the flags are in the program key. */
+function kubikShaderFlags(d) {
+  const f = new Set();
+  const n = maskCount(d);
+  const T = { wood: 'WOOD', leather: 'LEATHER', grunge: 'GRUNGE', dust: 'DUST', grime: 'MUD' };
+  for (let i = 0; i < n; i++) {
+    const m = d.masks[i];
+    if (!m || !m.on) continue;
+    if (T[m.type]) { f.add(T[m.type]); f.add('PROC'); }
+    if (maskCurvMode(m)) f.add('CURV');
+    if (maskProj(m) || (!maskProcMode(m) && maskTurnable(m) && typeof m.rot === 'number')) f.add('PROJ');
+    if (maskBrk(m)) f.add('BRK');
+  }
+  if (varyOn(d)) f.add('VARY');
+  return Array.from(f).sort();
+}
 function kubikPackSlot(u, k, s) {
   u.uKP0.value[k].set(s.amount, s.scale, s.blend, s.colorOn);
   u.uKP1.value[k].set(s.roughOn, s.rough, s.bump, s.source);
   u.uKP2.value[k].set(s.blur, s.noise, s.nscale, s.uv);
   u.uKP3.value[k].set(s.seed, s.metalOn, s.metal, s.brk);
   u.uKP4.value[k].set(s.bscale, s.proj, s.maskBy, s.maskOp);
+  if (u.uKP5) u.uKP5.value[k].set(s.rot, s.pax, 0, 0);
 }
 function kubikPackShader(src) {
   Object.keys(KPACK_MAP).forEach(n => {
     src = src.replace(new RegExp('uniform\\s+(?:float|int)\\s+uKubik' + n + '\\[\\d+\\];', 'g'), '');
     src = src.replace(new RegExp('\\buKubik' + n + '\\[([^\\]]+)\\]', 'g'), (m, idx) => KPACK_MAP[n].replace('#', idx));
   });
-  const decl = ['uKP0', 'uKP1', 'uKP2', 'uKP3', 'uKP4'].map(n => 'uniform vec4 ' + n + '[' + MASK_SLOTS + '];').join('\n');
+  const decl = ['uKP0', 'uKP1', 'uKP2', 'uKP3', 'uKP4', 'uKP5'].map(n => 'uniform vec4 ' + n + '[' + MASK_SLOTS + '];').join('\n');
   return src.replace(/uniform int\s+uKubikCount;/, m => m + '\n' + decl);
 }
 const VARY_SCALE_DEF = 1.5;
@@ -6930,6 +6964,10 @@ varying vec3 vKubikWNrm;
 varying vec3 vKubikOrg;
 float kubikPF;
 vec3 kubikKP;
+vec3 kubikAxisNow;
+// v3.08: turning a projection. Rodrigues about a unit axis, and the 2D turn of a uv.
+vec3 kubikRotAxis(vec3 p, vec3 k, float a) { float c = cos(a), s = sin(a); return p * c + cross(k, p) * s + k * dot(k, p) * (1.0 - c); }
+vec2 kubikRot2(vec2 v, float a) { float c = cos(a), s = sin(a); return vec2(c * v.x - s * v.y, s * v.x + c * v.y); }
 float kubikVaryR;
 float kubikHq(vec3 p) {
   p = fract(p * vec3(0.1031, 0.1030, 0.0973));
@@ -6977,7 +7015,7 @@ vec2 kubikCell(vec3 p) {
    long streaks and gentle arcs, not a bullseye. Latewood is the dark band; fibres ride along the axis,
    fine across it and long along it. 1 = dark wood. */
 float kubikWood(vec3 p, float scale, float det, float seed) {
-  vec3 a = normalize(uKubikAxis);
+  vec3 a = normalize(kubikAxisNow);
   vec3 so = vec3(seed * 7.13, seed * 3.71, seed * 5.29);
   float al = dot(p, a);
   vec3 c = (kubikH33(vec3(seed + 0.5, 1.7, 3.1)) - 0.5) * 5.0;
@@ -7059,12 +7097,22 @@ float kubikGrunge(vec3 p, float scale, float det, float seed) {
   return kubikFbm3(q, 0.35 + det * 0.3, kubikPF * scale);
 }
 float kubikProc(int src, vec3 p, float scale, float det, float con, float seed) {
-  float v;
+  float v = 0.5;
+#ifdef KUBIK_WOOD
   if (src == 3) v = kubikWood(p, scale, det, seed);
-  else if (src == 4) v = kubikLeather(p, scale, det, seed);
-  else if (src == 6) v = kubikDust(p, scale, det, seed);
-  else if (src == 7) v = kubikGrime(scale, det, seed);
-  else v = kubikGrunge(p, scale, det, seed);
+#endif
+#ifdef KUBIK_LEATHER
+  if (src == 4) v = kubikLeather(p, scale, det, seed);
+#endif
+#ifdef KUBIK_GRUNGE
+  if (src == 5) v = kubikGrunge(p, scale, det, seed);
+#endif
+#ifdef KUBIK_DUST
+  if (src == 6) v = kubikDust(p, scale, det, seed);
+#endif
+#ifdef KUBIK_MUD
+  if (src == 7) v = kubikGrime(scale, det, seed);
+#endif
   return clamp((v - 0.5) * con + 0.5, 0.0, 1.0);
 }
 /* BREAKUP: the layer's mask times a levelled grunge. 0 leaves it whole, 1 removes it; in between it
@@ -7695,7 +7743,7 @@ function maskWantsPatch(d) {
 const _maskSlot = {
   live: false, color: '#ffffff', amount: 0, scale: 1, blend: 0,
   colorOn: 0, roughOn: 0, rough: 0.5, source: 0, blur: 0.5, noise: 0, nscale: 1,
-  bump: 0, uv: 0, seed: 1, metalOn: 0, metal: 0, brk: 0, bscale: 3, proj: 0, maskBy: -1, maskOp: 0
+  bump: 0, uv: 0, seed: 1, metalOn: 0, metal: 0, brk: 0, bscale: 3, proj: 0, maskBy: -1, maskOp: 0, rot: 0, pax: 0
 };
 function maskSlotValues(list, k) {
   const mk = list[k];
@@ -7741,6 +7789,8 @@ function maskSlotValues(list, k) {
   s.proj = mk ? maskProj(mk) : 0;
   s.maskBy = (mk && Number.isInteger(mk.maskBy) && mk.maskBy >= 0 && mk.maskBy < k) ? mk.maskBy : -1;
   s.maskOp = s.maskBy >= 0 && mk.maskInv ? 1 : 0;
+  s.rot = (mk && maskTurnable(mk) && typeof mk.rot === 'number') ? mk.rot * Math.PI / 180 : 0;
+  s.pax = mk ? maskProcAxis(mk) : 0;
   return s;
 }
 
@@ -7802,7 +7852,7 @@ function applyMaskPatch(mat, d) {
       uKubikCount: { value: 0 },
       uKubikMask2: { value: tex2 },
       uKubikColor: { value: [] },
-      uKP0: { value: [] }, uKP1: { value: [] }, uKP2: { value: [] }, uKP3: { value: [] }, uKP4: { value: [] },
+      uKP0: { value: [] }, uKP1: { value: [] }, uKP2: { value: [] }, uKP3: { value: [] }, uKP4: { value: [] }, uKP5: { value: [] },
       // Whether ANY slot drives a bump, so the fragment shader can skip
       // measuring its own pixel footprint on every material that does not.
       uKubikBumpAny: { value: 0 },
@@ -7833,7 +7883,7 @@ function applyMaskPatch(mat, d) {
     for (let k = 0; k < MASK_SLOTS; k++) {
       const s = maskSlotValues(list, k);
       u.uKubikColor.value.push(new THREE.Color(s.color));
-      ['uKP0', 'uKP1', 'uKP2', 'uKP3', 'uKP4'].forEach(n => u[n].value.push(new THREE.Vector4()));
+      ['uKP0', 'uKP1', 'uKP2', 'uKP3', 'uKP4', 'uKP5'].forEach(n => u[n].value.push(new THREE.Vector4()));
       kubikPackSlot(u, k, s);
       if (s.bump !== 0) u.uKubikBumpAny.value = 1;
       if (s.live) u.uKubikCount.value = k + 1;   // highest live slot, so the loop can stop
@@ -7877,7 +7927,8 @@ function applyMaskPatch(mat, d) {
      four layers or fewer (every preset) compiles for four; a fifth layer changes the key and with it
      the program (v3.07). */
   const slotsN = maskCount(d) > 4 ? MASK_SLOTS : 4;
-  let key = 'kubik-colormask:' + d.id + ':' + d.maskGen + ':' + slotsN;
+  const kflags = kubikShaderFlags(d);
+  let key = 'kubik-colormask:' + d.id + ':' + d.maskGen + ':' + slotsN + ':' + kflags.join('.');
   const wasPatched = _maskedMats.has(mat);
   const keyChanged = _maskKey.get(mat) !== key;
   /* THE ONE THING THREE WILL NOT DO FOR US. It keeps a program per key per
@@ -7972,7 +8023,9 @@ function applyMaskPatch(mat, d) {
         u.uKubikPlaneN.value.fromArray(sh.planeN);
         u.uKubikCylA.value.fromArray(sh.cylA); u.uKubikCylC.value.fromArray(sh.cylC); u.uKubikCylR.value = sh.cylR;
         u.uKubikSphC.value.fromArray(sh.sphC);
-        if (sh.t === 2 && u.uKubikAxis) u.uKubikAxis.value.fromArray(sh.cylA);
+        /* Auto axis (v3.08): a fitted cylinder's, else the PRINCIPAL axis - which, unlike the longest
+           side of the box, follows a plank that was turned in its own space. */
+        if (u.uKubikAxis && sh.e1) u.uKubikAxis.value.fromArray(sh.t === 2 ? sh.cylA : sh.e1);
       }
     }
     // The rest is the field's, and a bump-only material has none to carry.
@@ -8013,6 +8066,8 @@ function applyMaskPatch(mat, d) {
         'uniform sampler2D uKubikMask2;',
         'uniform float uKubikMaskBy[' + MASK_SLOTS + '];',
         'uniform float uKubikMaskOp[' + MASK_SLOTS + '];',
+        'uniform float uKubikRot[' + MASK_SLOTS + '];',
+        'uniform float uKubikPAx[' + MASK_SLOTS + '];',
         'uniform int   uKubikCount;',
         'uniform vec3  uKubikColor[' + MASK_SLOTS + '];',
         'uniform float uKubikAmount[' + MASK_SLOTS + '];',
@@ -8089,13 +8144,19 @@ function applyMaskPatch(mat, d) {
         '  return kubikPick(kubikTapG(uv, gx, gy, ch), ch);',
         '}',
         // mode: 1 auto (the fitted shape, else triplanar), 2 plane, 3 cylinder, 4 sphere.
-        'float kubikProjW(vec3 p, vec3 n, float scale, int ch, float mode) {',
+        /* v3.08: rot turns the projection - about the vertical for triplanar and the sphere, in the plane
+           for a plane and a cylinder's caps, and ROUND THE AXIS for a cylinder's side, by whole tiles so the
+           wrap stays on an integer and seamless. mode 5 reads the mesh's own UV. */
+        'float kubikProjW(vec3 p, vec3 n, float scale, int ch, float mode, float rot) {',
         '  float m = mode;',
-        '  if (m < 1.5) m = (uKubikShapeT > 0.5) ? uKubikShapeT + 1.0 : 0.0;',
-        '  if (m < 0.5) return kubikTriplanar(p, n, scale, ch);',
+        '  if (m > 4.5) return kubikProjSample(kubikRot2(vKubikUv * scale, rot), ch);',
+        '  if (m > 0.5 && m < 1.5) m = (uKubikShapeT > 0.5) ? uKubikShapeT + 1.0 : 0.0;',
+        '  vec3 Y = vec3(0.0, 1.0, 0.0);',
+        '  if (m < 0.5) return kubikTriplanar(kubikRotAxis(p, Y, rot), kubikRotAxis(n, Y, rot), scale, ch);',
         '  if (m > 3.5) {',
-        '    vec3 q = p * scale * 0.5;',
-        '    vec3 w = pow(abs(normalize(p - uKubikSphC)), vec3(4.0));',
+        '    vec3 pc = uKubikSphC + kubikRotAxis(p - uKubikSphC, Y, rot);',
+        '    vec3 q = pc * scale * 0.5;',
+        '    vec3 w = pow(abs(normalize(pc - uKubikSphC)), vec3(4.0));',
         '    w /= (w.x + w.y + w.z + 1e-4);',
         '    vec4 s4 = kubikTap(q.yz, ch) * w.x + kubikTap(q.xz, ch) * w.y + kubikTap(q.xy, ch) * w.z;',
         '    return kubikPick(s4, ch);',
@@ -8107,16 +8168,39 @@ function applyMaskPatch(mat, d) {
         '  if (m < 2.5) {',
         // A face turned away from the sheet (a slab's rim) keeps triplanar.
         '    if (an < 0.5) return kubikTriplanar(p, n, scale, ch);',
-        '    return kubikProjSample(vec2(dot(p, T), dot(p, B)) * scale * 0.5, ch);',
+        '    return kubikProjSample(kubikRot2(vec2(dot(p, T), dot(p, B)) * scale * 0.5, rot), ch);',
         '  }',
         '  vec3 d = p - uKubikCylC;',
         // A whole number of tiles round the circumference, or the tile would meet itself mid-pattern.
         '  float N = max(1.0, floor(6.2831853 * uKubikCylR * scale * 0.5 + 0.5));',
-        '  vec2 cap = vec2(dot(d, T), dot(d, B)) * scale * 0.5;',
-        // + 0.5 puts the wrap at u = 0 / N, a WHOLE number, where fract(uv + 0.5) is continuous - with
-        // the seam at a half-integer (odd N) both derivative sources jumped there and it drew a dotted line.
-        '  vec2 wrap = vec2((atan(dot(d, B), dot(d, T)) / 6.2831853 + 0.5) * N, dot(d, A) * scale * 0.5);',
+        '  vec2 cap = kubikRot2(vec2(dot(d, T), dot(d, B)) * scale * 0.5, rot);',
+        // + 0.5 puts the wrap at u = 0 / N, a WHOLE number, where fract(uv + 0.5) is continuous; the turn
+        // is rounded to whole tiles for the same reason.
+        '  float turn = floor(rot / 6.2831853 * N + 0.5);',
+        '  vec2 wrap = vec2((atan(dot(d, B), dot(d, T)) / 6.2831853 + 0.5) * N + turn, dot(d, A) * scale * 0.5);',
         '  return kubikProjSample(an > 0.7 ? cap : wrap, ch);',
+        '}',
+        /* A PROCEDURAL layer's projection (v3.08): which way its pattern runs - the fitted shape's axis
+           (Auto), a fixed X / Y / Z, or the mesh's UV (the pattern laid in the unwrap, wood along u) - and
+           a turn about that axis, which for wood moves where the rings cross the faces. */
+        'float kubikProcAt(int i) {',
+        '  float rot = uKubikRot[i];',
+        '  float pm = uKubikPAx[i];',
+        '  vec3 ax = normalize(uKubikAxis);',
+        '  if (pm > 0.5 && pm < 1.5) ax = vec3(1.0, 0.0, 0.0);',
+        '  else if (pm > 1.5 && pm < 2.5) ax = vec3(0.0, 1.0, 0.0);',
+        '  else if (pm > 2.5 && pm < 3.5) ax = vec3(0.0, 0.0, 1.0);',
+        '  vec3 p = kubikKP;',
+        '  float pf = kubikPF;',
+        // Taken unconditionally: a derivative inside the UV branch would be undefined at its edges.
+        '  vec2 uvp = kubikRot2(vKubikUv * 2.0, rot);',
+        '  float uvpf = max(length(dFdx(uvp)), length(dFdy(uvp)));',
+        '  if (pm > 3.5) { p = vec3(uvp, 0.0); ax = vec3(1.0, 0.0, 0.0); kubikPF = uvpf; }',
+        '  else if (rot != 0.0) p = kubikRotAxis(p, ax, rot);',
+        '  kubikAxisNow = ax;',
+        '  float w = kubikProc(uKubikSource[i], p, uKubikScale[i], uKubikNoise[i], uKubikBlur[i], uKubikSeed[i]);',
+        '  kubikPF = pf;',
+        '  return w;',
         '}',
         /* One z-slice of the field. The half-texel inset keeps a bilinear
            tap inside its own tile: without it the filter reaches into the
@@ -8457,8 +8541,19 @@ function applyMaskPatch(mat, d) {
         '    kubikW[i] = 0.0;',
         '    if (i >= uKubikCount) continue;',
         '    if (uKubikAmount[i] <= 0.0) continue;',
-        '    if (uKubikSource[i] >= 3) kubikW[i] = kubikProc(uKubikSource[i], kubikKP, uKubikScale[i], uKubikNoise[i], uKubikBlur[i], uKubikSeed[i]);',
-        '    else if (uKubikSource[i] > 0) kubikW[i] = kubikEdgeW(uKubikSource[i], uKubikScale[i], uKubikBlur[i], uKubikNoise[i], uKubikNScale[i]);',
+        /* ONLY WHAT THIS DEFINITION USES IS COMPILED (v3.08): the loop is unrolled per slot, so every
+           generator and projection left in it costs compile time on every program - the tray measured
+           65 ms a definition with all of them in. kubikShaderFlags decides; the flags are in the key. */
+        '    if (uKubikSource[i] >= 3) {',
+        '#ifdef KUBIK_PROC',
+        '      kubikW[i] = kubikProcAt(i);',
+        '#endif',
+        '    }',
+        '    else if (uKubikSource[i] > 0) {',
+        '#ifdef KUBIK_CURV',
+        '      kubikW[i] = kubikEdgeW(uKubikSource[i], uKubikScale[i], uKubikBlur[i], uKubikNoise[i], uKubikNScale[i]);',
+        '#endif',
+        '    }',
         /* THE UV BRANCH (v2.54). Same baked texture, same channel, read
            through the mesh's own UV instead of three object-space planes -
            which is the whole point of a checker: it has to distort exactly
@@ -8467,9 +8562,13 @@ function applyMaskPatch(mat, d) {
            negative UV, which an unwrap or a hand-dragged island can easily
            produce. */
         '    else if (uKubikUv[i] > 0.5) kubikW[i] = kubikPick(kubikTap(fract(vKubikUv * uKubikScale[i]), i), i);',
-        '    else if (uKubikProj[i] > 0.5) kubikW[i] = kubikProjW(vKubikPos, kubikN, uKubikScale[i], i, uKubikProj[i]);',
+        '#ifdef KUBIK_PROJ',
+        '    else if (uKubikProj[i] > 0.5 || uKubikRot[i] != 0.0) kubikW[i] = kubikProjW(vKubikPos, kubikN, uKubikScale[i], i, uKubikProj[i], uKubikRot[i]);',
+        '#endif',
         '    else kubikW[i] = kubikTriplanar(vKubikPos, kubikN, uKubikScale[i], i);',
+        '#ifdef KUBIK_BRK',
         '    if (uKubikBrk[i] > 0.0) kubikW[i] *= kubikBreak(kubikKP, uKubikBrk[i], uKubikBScale[i], uKubikSeed[i], (uKubikSource[i] == 1 || uKubikSource[i] == 2) ? 0.04 + 0.3 * uKubikBlur[i] : 0.15);',
+        '#endif',
         /* MASK BY LAYER (v3.07): only where an EARLIER layer is (op 0), or everywhere but (op 1). Its
            weight times its Amount, so that layer's Amount slider is the mask's strength. */
         '    if (uKubikMaskBy[i] > -0.5) {',
@@ -8524,7 +8623,9 @@ function applyMaskPatch(mat, d) {
         '    }',
         '  }',
         '  kubikVaryR = 0.0;',
+        '#ifdef KUBIK_VARY',
         '  if (uKubikVary.x + uKubikVary.y > 0.0) diffuseColor.rgb = kubikVaryCol(diffuseColor.rgb);',
+        '#endif',
         '}'].join('\n'))
       .replace('#include <roughnessmap_fragment>', ['#include <roughnessmap_fragment>',
         '{',
@@ -8547,7 +8648,7 @@ function applyMaskPatch(mat, d) {
         '  }',
         '  metalnessFactor = clamp(metalnessFactor, 0.0, 1.0);',
         '}'].join('\n'));
-    shader.fragmentShader = kubikPackShader(shader.fragmentShader)   // v3.07
+    shader.fragmentShader = kflags.map(f => '#define KUBIK_' + f).join('\n') + '\n' + kubikPackShader(shader.fragmentShader)   // v3.07, v3.08
       .split('for (int i = 0; i < ' + MASK_SLOTS + '; i++)').join('for (int i = 0; i < ' + slotsN + '; i++)');
   };
   /* Cache-key discipline (QA finding 1/2, still LAW): three runs
@@ -52176,9 +52277,16 @@ function refreshMaskControls(d) {
   sel.value = spec.id;   // an unknown type renders as clouds, so say clouds
   const isImg = spec.id === 'image';
   const projSel = document.getElementById('mkProj');
-  if (!projSel.options.length) PROJ_MODES.forEach(k => { const o = document.createElement('option'); o.value = k; o.textContent = 'Projection: ' + PROJ_NAMES[k]; projSel.appendChild(o); });
-  projSel.style.display = (spec.curv || spec.proc || spec.uv) ? 'none' : '';
-  projSel.value = (typeof mk.proj === 'string' && PROJ_MODES.indexOf(mk.proj) > 0) ? mk.proj : 'tri';
+  /* v3.08: a baked tile picks a projection, a procedural pattern picks an axis; the list follows the type. */
+  const isProc = !!spec.proc;
+  const modes = isProc ? PROC_AXES : PROJ_MODES, names = isProc ? PROC_AXIS_NAMES : PROJ_NAMES;
+  projSel.innerHTML = '';
+  modes.forEach(k => { const o = document.createElement('option'); o.value = k; o.textContent = 'Projection: ' + names[k]; projSel.appendChild(o); });
+  projSel.style.display = (spec.curv || spec.uv || spec.id === 'grime') ? 'none' : '';
+  projSel.value = (typeof mk.proj === 'string' && modes.indexOf(mk.proj) > 0) ? mk.proj : modes[0];
+  document.getElementById('mkRotRow').style.display = maskTurnable(mk) ? 'flex' : 'none';
+  document.getElementById('mkRot').value = typeof mk.rot === 'number' ? mk.rot : 0;
+  document.getElementById('mkRotV').textContent = (typeof mk.rot === 'number' ? mk.rot : 0) + '\u00b0';
   const mbSel = document.getElementById('mkMaskBy');
   mbSel.innerHTML = '';
   const addOpt = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; mbSel.appendChild(o); };
@@ -52390,6 +52498,16 @@ document.getElementById('mkMaskBy').addEventListener('change', () => {
   else { const p = v.split(':'); mk.maskBy = +p[1]; if (p[0] === 'out') mk.maskInv = true; else delete mk.maskInv; }
   mkStructural(getMaterialDef(matEditingId));
 });
+/* Rotate is a uniform, not a bake (v3.08); zero deletes the key. */
+['input', 'change'].forEach(ev => document.getElementById('mkRot').addEventListener(ev, () => {
+  const mk = mkCurrent();
+  if (!mk) return;
+  const v = parseFloat(document.getElementById('mkRot').value);
+  if (v > 0 && v < 360) mk.rot = v; else delete mk.rot;
+  document.getElementById('mkRotV').textContent = (mk.rot || 0) + '\u00b0';
+  updateMaterialEverywhere(matEditingId);
+  if (ev === 'change') { saveMaterialLibrary(); meCommit(); }
+}));
 /* Direction is a CLOTH change - it re-bakes the tile. The first touch writes the key; until then
    the stripes keep their seeded angle. */
 ['input', 'change'].forEach(ev => document.getElementById('mkDir').addEventListener(ev, () => {
@@ -52407,7 +52525,9 @@ document.getElementById('mkProj').addEventListener('change', () => {
   const mk = mkCurrent();
   if (!mk) return;
   const v = document.getElementById('mkProj').value;
-  if (v === 'tri') delete mk.proj; else mk.proj = v;   // absent = triplanar, as before v3.06
+  // absent = the first of the list: triplanar for a tile (as before v3.06), Auto for a procedural layer
+  if (v === 'tri' || (maskProcMode(mk) && v === 'auto')) delete mk.proj; else mk.proj = v;
+  if (v === 'uv' && defHasUnwrappedWearer(matEditingId)) toast('Some objects wearing this have no UVs yet - unwrap them for the UV projection');
   mkStructural(getMaterialDef(matEditingId));
 });
 
