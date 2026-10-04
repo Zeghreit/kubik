@@ -3091,6 +3091,8 @@
                rows of buttons in a 176px column, and on a phone the native
                picker is a bigger target than anything we could draw. -->
           <select id="mkType" class="mk-sel"></select>
+          <!-- v3.06: how a baked tile is laid on the shape. Hidden for the types that have none. -->
+          <select id="mkProj" class="mk-sel" title="Projection"></select>
           <div id="mkImgRow" style="display:none; flex-direction:column; gap:6px;">
             <button id="mkImage" class="small">Choose picture</button>
             <img id="mkImgPrev" alt="" class="mk-imgprev">
@@ -3200,7 +3202,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.05</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.06</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -5629,16 +5631,16 @@ const MATERIAL_DEFAULTS = {
   concrete: { name: 'Concrete',      color: '#55585a', roughness: 0.92, metalness: 0.0, specularIntensity: 0.5,
               vary: 0.3, varyHue: 0.08, varyScale: 1,
               masks: [_gr(0.98, 3, 21, 0.5, '#4e5052'),
-                      { type: 'dots', colorOn: true, color: '#4a4c4e', blend: 'normal', amount: 0.35, scale: 8, detail: 3, contrast: 1.4, bump: -0.15, seed: 5 },
+                      { type: 'dots', colorOn: true, color: '#4a4c4e', blend: 'normal', amount: 0.35, scale: 8, detail: 3, contrast: 1.4, bump: -0.15, seed: 5, proj: 'auto' },
                       _cav('#3a3a38', 0.5),
                       _mud('#4a4036', 0.5, 0.6)] },
   steel:    { name: 'Brushed steel', color: '#b4b9bf', roughness: 0.32, metalness: 1.0, vary: 0.12, varyScale: 1.5,
-              masks: [{ type: 'stripes', colorOn: false, roughOn: true, rough: 0.55, blend: 'normal', amount: 0.3, scale: 14, detail: 5, contrast: 1.0, nscale: 1, seed: 6 },
+              masks: [{ type: 'stripes', colorOn: false, roughOn: true, rough: 0.55, blend: 'normal', amount: 0.3, scale: 14, detail: 5, contrast: 1.0, nscale: 1, seed: 6, proj: 'auto' },
                       _gr(0.5, 3, 22, 0.25),
                       _cav('#3a3c40', 0.35, 0.7, { metal: 0 }),
                       _edge('#5a5f66', 0.3, 0.15, 0.3)] },
   steelworn:{ name: 'Worn metal',    color: '#5e646a', roughness: 0.55, metalness: 1.0, vary: 0.3, varyHue: 0.1, varyScale: 1.5,
-              masks: [{ type: 'scratches', colorOn: true, color: '#3a3e42', blend: 'screen', amount: 0.25, scale: 4, detail: 5, contrast: 1.4, roughOn: true, rough: 0.25, seed: 2 },
+              masks: [{ type: 'scratches', colorOn: true, color: '#3a3e42', blend: 'screen', amount: 0.25, scale: 4, detail: 5, contrast: 1.4, roughOn: true, rough: 0.25, seed: 2, proj: 'auto' },
                       _gr(0.75, 2.5, 16, 0.6, '#3e4246'),
                       _cav('#3a2a1e', 0.65, 0.9, { metal: 0 }),
                       _edge('#4a5056', 0.5, 0.15, 0.3)] },
@@ -6671,6 +6673,196 @@ function maskBrk(mk) { return !!mk && typeof mk.brk === 'number'; }
 /* COLOUR VARIATION is the MATERIAL's (v3.05): vary = value, varyHue = hue + saturation, varyScale =
    blotches per unit. On when either amount is above zero; absent keys are off, so every definition
    written before it keeps its signature. */
+/* SMART PROJECTION (v3.06). A baked mask is a flat tile, and triplanar - three planar projections
+   blended by the normal - lays it on anything, but on a cylinder or a ball it smears where the planes
+   meet. So the mesh's own SHAPE is fitted, and a cylinder gets its tile wrapped round its axis (caps
+   flat along it), a sheet gets one plane, a ball gets triplanar about its centre with a tight blend.
+   Fitted, not read from the primitive type: an edited cylinder is still a cylinder, an import has no
+   type, and a box whose corners happen to lie on a circle must NOT pass - the vertex NORMALS have to
+   point away from the axis (or the centre) as well, which a box's never do.
+   `proj` on a mask follows Bump's rule: absent = triplanar, exactly as before. */
+const PROJ_MODES = ['tri', 'auto', 'plane', 'cyl', 'sphere'];
+const PROJ_NAMES = { tri: 'Triplanar', auto: 'Auto (fit the shape)', plane: 'Plane', cyl: 'Cylinder', sphere: 'Sphere' };
+function maskProj(mk) {
+  if (!mk || typeof mk.proj !== 'string') return 0;
+  if (maskCurvMode(mk) || maskProcMode(mk) || maskUvMode(mk)) return 0;   // only a baked tile has a projection
+  const i = PROJ_MODES.indexOf(mk.proj);
+  return i > 0 ? i : 0;
+}
+function _eig3(a) {   // Jacobi, symmetric 3x3 -> { vals desc, vecs[i] }
+  const m = [a[0].slice(), a[1].slice(), a[2].slice()];
+  const v = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  for (let sweep = 0; sweep < 24; sweep++) {
+    let off = 0;
+    for (let p = 0; p < 2; p++) for (let q = p + 1; q < 3; q++) off += m[p][q] * m[p][q];
+    if (off < 1e-18) break;
+    for (let p = 0; p < 2; p++) for (let q = p + 1; q < 3; q++) {
+      if (Math.abs(m[p][q]) < 1e-15) continue;
+      const th = (m[q][q] - m[p][p]) / (2 * m[p][q]);
+      const t = Math.sign(th || 1) / (Math.abs(th) + Math.sqrt(th * th + 1));
+      const c = 1 / Math.sqrt(t * t + 1), sn = t * c;
+      for (let k = 0; k < 3; k++) {
+        const mkp = m[k][p], mkq = m[k][q];
+        m[k][p] = c * mkp - sn * mkq; m[k][q] = sn * mkp + c * mkq;
+      }
+      for (let k = 0; k < 3; k++) {
+        const mpk = m[p][k], mqk = m[q][k];
+        m[p][k] = c * mpk - sn * mqk; m[q][k] = sn * mpk + c * mqk;
+      }
+      for (let k = 0; k < 3; k++) {
+        const vkp = v[k][p], vkq = v[k][q];
+        v[k][p] = c * vkp - sn * vkq; v[k][q] = sn * vkp + c * vkq;
+      }
+    }
+  }
+  const idx = [0, 1, 2].sort((i, j) => m[j][j] - m[i][i]);
+  return { vals: idx.map(i => m[i][i]), vecs: idx.map(i => [v[0][i], v[1][i], v[2][i]]) };
+}
+function _solve4(A, b) {   // Gaussian elimination with partial pivoting
+  const M = A.map((r, i) => r.concat([b[i]]));
+  for (let c = 0; c < 4; c++) {
+    let p = c;
+    for (let r = c + 1; r < 4; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    if (Math.abs(M[p][c]) < 1e-14) return null;
+    [M[c], M[p]] = [M[p], M[c]];
+    for (let r = 0; r < 4; r++) {
+      if (r === c) continue;
+      const f = M[r][c] / M[c][c];
+      for (let k = c; k < 5; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  return M.map((r, i) => r[4] / r[i]);
+}
+const _shapeCache = new WeakMap();
+/* t: 0 nothing fits, 1 plane, 2 cylinder, 3 sphere. Every candidate's parameters are returned whatever
+   wins, so a mask FORCED to Cylinder on a box still gets the best cylinder there is. Cached on the
+   geometry by the position attribute's version. */
+function meshShapeOf(geo) {
+  const pa = geo && geo.getAttribute('position');
+  if (!pa) return null;
+  const hit = _shapeCache.get(geo);
+  if (hit && hit.ver === pa.version && hit.n === pa.count) return hit.s;
+  /* JUDGED ON TRIANGLES, NOT VERTEX NORMALS. A Kubik mesh shares a corner between its faces, so a
+     vertex normal on a cylinder's rim leans half up and half out and no radial test can pass. A
+     triangle's own normal, centroid and area say it plainly - and the centroid is also what keeps a
+     box from passing as a ball: its corners do lie on a sphere, but its face centres sit well inside
+     it (0.58 R), while a sphere's sit close to the shell. */
+  const N = pa.count;
+  const V = new Array(N);
+  for (let i = 0; i < N; i++) V[i] = [pa.getX(i), pa.getY(i), pa.getZ(i)];
+  const idx = geo.index ? geo.index.array : null;
+  const triCount = idx ? Math.floor(idx.length / 3) : Math.floor(N / 3);
+  const tstep = Math.max(1, Math.floor(triCount / 6000));
+  const tris = [];
+  let areaSum = 0;
+  for (let t = 0; t < triCount; t += tstep) {
+    const i0 = idx ? idx[3 * t] : 3 * t, i1 = idx ? idx[3 * t + 1] : 3 * t + 1, i2 = idx ? idx[3 * t + 2] : 3 * t + 2;
+    const p0 = V[i0], p1 = V[i1], p2 = V[i2];
+    const e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]], e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+    const cr = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+    const l = Math.hypot(cr[0], cr[1], cr[2]);
+    if (l < 1e-14) continue;
+    tris.push({ a: l / 2, n: [cr[0] / l, cr[1] / l, cr[2] / l], c: [(p0[0] + p1[0] + p2[0]) / 3, (p0[1] + p1[1] + p2[1]) / 3, (p0[2] + p1[2] + p2[2]) / 3], v: [i0, i1, i2] });
+    areaSum += l / 2;
+  }
+  const dot = (x, y) => x[0] * y[0] + x[1] * y[1] + x[2] * y[2];
+  // Points for the fits: the vertices, de-duplicated by position so a split seam does not count twice.
+  const seen = new Map(), P = [];
+  const vstep = Math.max(1, Math.floor(N / 4000));
+  for (let i = 0; i < N; i += vstep) {
+    const k = V[i][0].toFixed(5) + ',' + V[i][1].toFixed(5) + ',' + V[i][2].toFixed(5);
+    if (!seen.has(k)) { seen.set(k, 1); P.push(V[i]); }
+  }
+  const n = P.length;
+  const c = [0, 0, 0];
+  P.forEach(p => { c[0] += p[0] / n; c[1] += p[1] / n; c[2] += p[2] / n; });
+  const C = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  P.forEach(p => { const d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) C[i][j] += d[i] * d[j] / n; });
+  const E = _eig3(C);
+  const out = { t: 0, planeN: E.vecs[2], cylA: E.vecs[0], cylC: c.slice(),
+    cylR: Math.sqrt(Math.max(E.vals[1], 1e-12)) * 1.414, sphC: c.slice(), sphR: Math.sqrt(E.vals[0] + E.vals[1] + E.vals[2]) };
+  let sphOk = false, best = null;
+  if (n >= 8 && tris.length >= 8 && areaSum > 0) {
+    /* Sphere: |p|^2 = 2 c.p + k, linear in (c, k). */
+    const A = [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], bb = [0, 0, 0, 0];
+    P.forEach(p => { const r = [2 * p[0], 2 * p[1], 2 * p[2], 1], y = dot(p, p);
+      for (let i = 0; i < 4; i++) { bb[i] += r[i] * y; for (let j = 0; j < 4; j++) A[i][j] += r[i] * r[j]; } });
+    const sol = _solve4(A, bb);
+    if (sol) {
+      const sc = [sol[0], sol[1], sol[2]], R = Math.sqrt(Math.max(sol[3] + dot(sc, sc), 0));
+      if (R > 1e-9) {
+        let res = 0;
+        P.forEach(p => { const l = Math.hypot(p[0] - sc[0], p[1] - sc[1], p[2] - sc[2]); res += (l - R) * (l - R); });
+        res = Math.sqrt(res / n) / R;
+        let shell = 0, rad = 0;
+        tris.forEach(t => { const d = [t.c[0] - sc[0], t.c[1] - sc[1], t.c[2] - sc[2]], l = Math.hypot(d[0], d[1], d[2]) || 1;
+          shell += t.a * l / R; rad += t.a * Math.abs(dot(t.n, d)) / l; });
+        shell /= areaSum; rad /= areaSum;
+        out.sphC = sc; out.sphR = R;
+        out._fit = { sres: +res.toFixed(4), shell: +shell.toFixed(3), rad: +rad.toFixed(3), cyl: [] };
+        sphOk = res < 0.03 && shell > 0.8 && rad > 0.9;
+      }
+    }
+    /* Cylinder: for each principal axis, the triangles whose normal lies across it are the SIDE. They
+       must carry a fair share of the area, their corners must fit one circle, and their centres must sit
+       near that circle and face out from the axis - a square prism's sides sit at 0.71 R and fail. */
+    [E.vecs[0], E.vecs[2], E.vecs[1]].forEach(ax => {
+      const u = Math.abs(ax[1]) < 0.9 ? [ax[2], 0, -ax[0]] : [0, -ax[2], ax[1]];
+      const ul = Math.hypot(u[0], u[1], u[2]); u[0] /= ul; u[1] /= ul; u[2] /= ul;
+      const w = [ax[1] * u[2] - ax[2] * u[1], ax[2] * u[0] - ax[0] * u[2], ax[0] * u[1] - ax[1] * u[0]];
+      const side = tris.filter(t => Math.abs(dot(t.n, ax)) < 0.3);
+      const sideA = side.reduce((q, t) => q + t.a, 0);
+      if (sideA < areaSum * 0.4) return;
+      const vs = new Map();
+      side.forEach(t => t.v.forEach(i => { const k = V[i][0].toFixed(5) + ',' + V[i][1].toFixed(5) + ',' + V[i][2].toFixed(5); vs.set(k, V[i]); }));
+      const pts = Array.from(vs.values());
+      if (pts.length < 6) return;
+      let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, sxz = 0, syz = 0, sz = 0;
+      pts.forEach(p => { const x = dot(p, u), y = dot(p, w), z = x * x + y * y;
+        sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y; sxz += x * z; syz += y * z; sz += z; });
+      const s3 = _solve4([[sxx, sxy, sx, 0], [sxy, syy, sy, 0], [sx, sy, pts.length, 0], [0, 0, 0, 1]], [sxz, syz, sz, 0]);
+      if (!s3) return;
+      const cx = s3[0] / 2, cy = s3[1] / 2, R = Math.sqrt(Math.max(s3[2] + cx * cx + cy * cy, 0));
+      if (!(R > 1e-9)) return;
+      let res = 0;
+      pts.forEach(p => { const l = Math.hypot(dot(p, u) - cx, dot(p, w) - cy); res += (l - R) * (l - R); });
+      res = Math.sqrt(res / pts.length) / R;
+      let shell = 0, rad = 0;
+      side.forEach(t => { const x = dot(t.c, u) - cx, y = dot(t.c, w) - cy, l = Math.hypot(x, y) || 1;
+        shell += t.a * l / R; rad += t.a * Math.abs(dot(t.n, u) * x + dot(t.n, w) * y) / l; });
+      shell /= sideA; rad /= sideA;
+      const h = dot(c, ax);
+      const C3 = [u[0] * cx + w[0] * cy + ax[0] * h, u[1] * cx + w[1] * cy + ax[1] * h, u[2] * cx + w[2] * cy + ax[2] * h];
+      const cand = { ax: ax, C: C3, R: R, area: sideA, ok: res < 0.04 && shell > 0.85 && rad > 0.9 };
+      if (out._fit) out._fit.cyl.push([ax.map(v => +v.toFixed(2)), +(sideA / areaSum).toFixed(2), +res.toFixed(4), +shell.toFixed(3), +rad.toFixed(3)]);
+      if (!best || (cand.ok && !best.ok) || (cand.ok === best.ok && cand.area > best.area)) best = cand;
+    });
+    if (best) { out.cylA = best.ax; out.cylC = best.C; out.cylR = best.R; }
+  }
+  if (sphOk) out.t = 3;
+  else if (best && best.ok) out.t = 2;
+  else if (n >= 3 && E.vals[2] < E.vals[0] * 0.004) out.t = 1;
+  _shapeCache.set(geo, { ver: pa.version, n: pa.count, s: out });
+  return out;
+}
+function defWantsProj(d) {
+  if (!d) return false;
+  const k = maskCount(d);
+  for (let i = 0; i < k; i++) { const m = d.masks[i]; if (m && m.on && maskProj(m)) return true; }
+  return false;
+}
+/* A definition whose per-mesh needs changed (Bump, Breakup, Variation, a projection switched on or
+   off) has to be re-dressed, or its wearers keep sharing one instance - and three uploads a material's
+   custom uniforms only when the material changes between draws, so every part would draw with the
+   first part's field, axis and shape (v3.06). */
+function redressWearers(id) {
+  App.objects.forEach(o => {
+    const fin = o.mesh.userData.finishes || {};
+    if (Object.keys(fin).some(g => fin[g] === id)) dressFromPool(o);
+  });
+  invalidate();
+}
 const VARY_SCALE_DEF = 1.5;
 function varyOn(d) { return !!d && ((+d.vary || 0) > 0 || (+d.varyHue || 0) > 0); }
 function varyVals(d) {
@@ -6690,6 +6882,13 @@ uniform float uKubikBScale[${MASK_SLOTS}];
 uniform vec3  uKubikAxis;
 uniform vec3  uKubikOScale;
 uniform vec3  uKubikVary;
+uniform float uKubikProj[${MASK_SLOTS}];
+uniform float uKubikShapeT;
+uniform vec3  uKubikPlaneN;
+uniform vec3  uKubikCylA;
+uniform vec3  uKubikCylC;
+uniform float uKubikCylR;
+uniform vec3  uKubikSphC;
 varying vec3 vKubikWPos;
 varying vec3 vKubikWNrm;
 varying vec3 vKubikOrg;
@@ -7368,7 +7567,7 @@ function bumpWord(v) { return v < 0 ? 'Carve' : 'Bump'; }
 // A procedural layer needs the per-mesh axis, which only onBeforeRender can set (v3.04).
 function defWantsProc(d) {
   if (!d) return false;
-  if (varyOn(d)) return true;
+  if (varyOn(d) || defWantsProj(d)) return true;
   const n = maskCount(d);
   for (let i = 0; i < n; i++) { const m = d.masks[i]; if (m && m.on && (maskProcMode(m) || maskBrk(m))) return true; }
   return false;
@@ -7419,7 +7618,7 @@ function maskWantsPatch(d) {
 const _maskSlot = {
   live: false, color: '#ffffff', amount: 0, scale: 1, blend: 0,
   colorOn: 0, roughOn: 0, rough: 0.5, source: 0, blur: 0.5, noise: 0, nscale: 1,
-  bump: 0, uv: 0, seed: 1, metalOn: 0, metal: 0, brk: 0, bscale: 3
+  bump: 0, uv: 0, seed: 1, metalOn: 0, metal: 0, brk: 0, bscale: 3, proj: 0
 };
 function maskSlotValues(list, k) {
   const mk = list[k];
@@ -7459,6 +7658,7 @@ function maskSlotValues(list, k) {
   s.metal = s.metalOn ? Math.min(1, Math.max(0, mk.metal)) : 0;
   s.brk = s.live && maskBrk(mk) ? Math.min(1, Math.max(0, mk.brk)) : 0;
   s.bscale = mk && mk.bscale > 0 ? Math.min(40, mk.bscale) : 3;
+  s.proj = mk ? maskProj(mk) : 0;
   return s;
 }
 
@@ -7534,7 +7734,10 @@ function applyMaskPatch(mat, d) {
       uKubikNoise: { value: [] },
       uKubikNScale: { value: [] },
       uKubikSeed: { value: [] }, uKubikMetalOn: { value: [] }, uKubikMetal: { value: [] },
-      uKubikBrk: { value: [] }, uKubikBScale: { value: [] },
+      uKubikBrk: { value: [] }, uKubikBScale: { value: [] }, uKubikProj: { value: [] },
+      uKubikShapeT: { value: 0 }, uKubikPlaneN: { value: new THREE.Vector3(0, 1, 0) },
+      uKubikCylA: { value: new THREE.Vector3(0, 1, 0) }, uKubikCylC: { value: new THREE.Vector3() },
+      uKubikCylR: { value: 1 }, uKubikSphC: { value: new THREE.Vector3() },
       uKubikAxis: { value: new THREE.Vector3(1, 0, 0) },
       uKubikOScale: { value: new THREE.Vector3(1, 1, 1) },
       uKubikVary: { value: new THREE.Vector3().fromArray(varyVals(d)) },
@@ -7572,7 +7775,7 @@ function applyMaskPatch(mat, d) {
       u.uKubikNoise.value.push(s.noise);
       u.uKubikNScale.value.push(s.nscale);
       u.uKubikSeed.value.push(s.seed); u.uKubikMetalOn.value.push(s.metalOn); u.uKubikMetal.value.push(s.metal);
-      u.uKubikBrk.value.push(s.brk); u.uKubikBScale.value.push(s.bscale);
+      u.uKubikBrk.value.push(s.brk); u.uKubikBScale.value.push(s.bscale); u.uKubikProj.value.push(s.proj);
       if (s.live) u.uKubikCount.value = k + 1;   // highest live slot, so the loop can stop
     }
     return u;
@@ -7615,6 +7818,7 @@ function applyMaskPatch(mat, d) {
       if (u.uKubikSeed) {
         u.uKubikSeed.value[k] = s.seed; u.uKubikMetalOn.value[k] = s.metalOn; u.uKubikMetal.value[k] = s.metal;
         u.uKubikBrk.value[k] = s.brk; u.uKubikBScale.value[k] = s.bscale;
+        if (u.uKubikProj) u.uKubikProj.value[k] = s.proj;
       }
       if (s.live) count = k + 1;
     }
@@ -7708,6 +7912,18 @@ function applyMaskPatch(mat, d) {
       if (ex >= ey && ex >= ez) u.uKubikAxis.value.set(1, 0, 0);
       else if (ey >= ez) u.uKubikAxis.value.set(0, 1, 0);
       else u.uKubikAxis.value.set(0, 0, 1);
+    }
+    /* The fitted shape (v3.06): the projection uniforms, and a cylinder's own axis for Wood's rings, so
+       a turned handle gets its rings round the handle. */
+    if (u.uKubikShapeT && geometry) {
+      const sh = meshShapeOf(geometry);
+      if (sh) {
+        u.uKubikShapeT.value = sh.t;
+        u.uKubikPlaneN.value.fromArray(sh.planeN);
+        u.uKubikCylA.value.fromArray(sh.cylA); u.uKubikCylC.value.fromArray(sh.cylC); u.uKubikCylR.value = sh.cylR;
+        u.uKubikSphC.value.fromArray(sh.sphC);
+        if (sh.t === 2 && u.uKubikAxis) u.uKubikAxis.value.fromArray(sh.cylA);
+      }
     }
     // The rest is the field's, and a bump-only material has none to carry.
     if (!wantsField) return;
@@ -7805,6 +8021,45 @@ function applyMaskPatch(mat, d) {
         '         + texture2D(uKubikMask, q.xz) * w.y',
         '         + texture2D(uKubikMask, q.xy) * w.z;',
         '  return kubikPick(s, ch);',
+        '}',
+        /* v3.06. Derivatives from whichever of uv and fract(uv + 0.5) is continuous here (Tarini), so the
+           cylinder's wrap - u jumps by a whole number of tiles - picks no wrong mip and draws no seam. */
+        'float kubikProjSample(vec2 uv, int ch) {',
+        '  vec2 uv2 = fract(uv + 0.5);',
+        '  vec2 ax = dFdx(uv), ay = dFdy(uv), bx = dFdx(uv2), by = dFdy(uv2);',
+        '  vec2 gx = vec2(abs(ax.x) < abs(bx.x) ? ax.x : bx.x, abs(ax.y) < abs(bx.y) ? ax.y : bx.y);',
+        '  vec2 gy = vec2(abs(ay.x) < abs(by.x) ? ay.x : by.x, abs(ay.y) < abs(by.y) ? ay.y : by.y);',
+        '  return kubikPick(textureGrad(uKubikMask, uv, gx, gy), ch);',
+        '}',
+        // mode: 1 auto (the fitted shape, else triplanar), 2 plane, 3 cylinder, 4 sphere.
+        'float kubikProjW(vec3 p, vec3 n, float scale, int ch, float mode) {',
+        '  float m = mode;',
+        '  if (m < 1.5) m = (uKubikShapeT > 0.5) ? uKubikShapeT + 1.0 : 0.0;',
+        '  if (m < 0.5) return kubikTriplanar(p, n, scale, ch);',
+        '  if (m > 3.5) {',
+        '    vec3 q = p * scale * 0.5;',
+        '    vec3 w = pow(abs(normalize(p - uKubikSphC)), vec3(4.0));',
+        '    w /= (w.x + w.y + w.z + 1e-4);',
+        '    vec4 s4 = texture2D(uKubikMask, q.yz) * w.x + texture2D(uKubikMask, q.xz) * w.y + texture2D(uKubikMask, q.xy) * w.z;',
+        '    return kubikPick(s4, ch);',
+        '  }',
+        '  vec3 A = normalize(m > 2.5 ? uKubikCylA : uKubikPlaneN);',
+        '  vec3 T = normalize(abs(A.y) < 0.9 ? cross(A, vec3(0.0, 1.0, 0.0)) : cross(A, vec3(1.0, 0.0, 0.0)));',
+        '  vec3 B = cross(A, T);',
+        '  float an = abs(dot(normalize(n), A));',
+        '  if (m < 2.5) {',
+        // A face turned away from the sheet (a slab's rim) keeps triplanar.
+        '    if (an < 0.5) return kubikTriplanar(p, n, scale, ch);',
+        '    return kubikProjSample(vec2(dot(p, T), dot(p, B)) * scale * 0.5, ch);',
+        '  }',
+        '  vec3 d = p - uKubikCylC;',
+        // A whole number of tiles round the circumference, or the tile would meet itself mid-pattern.
+        '  float N = max(1.0, floor(6.2831853 * uKubikCylR * scale * 0.5 + 0.5));',
+        '  vec2 cap = vec2(dot(d, T), dot(d, B)) * scale * 0.5;',
+        // + 0.5 puts the wrap at u = 0 / N, a WHOLE number, where fract(uv + 0.5) is continuous - with
+        // the seam at a half-integer (odd N) both derivative sources jumped there and it drew a dotted line.
+        '  vec2 wrap = vec2((atan(dot(d, B), dot(d, T)) / 6.2831853 + 0.5) * N, dot(d, A) * scale * 0.5);',
+        '  return kubikProjSample(an > 0.7 ? cap : wrap, ch);',
         '}',
         /* One z-slice of the field. The half-texel inset keeps a bilinear
            tap inside its own tile: without it the filter reaches into the
@@ -8155,6 +8410,7 @@ function applyMaskPatch(mat, d) {
            negative UV, which an unwrap or a hand-dragged island can easily
            produce. */
         '    else if (uKubikUv[i] > 0.5) kubikW[i] = kubikPick(texture2D(uKubikMask, fract(vKubikUv * uKubikScale[i])), i);',
+        '    else if (uKubikProj[i] > 0.5) kubikW[i] = kubikProjW(vKubikPos, kubikN, uKubikScale[i], i, uKubikProj[i]);',
         '    else kubikW[i] = kubikTriplanar(vKubikPos, kubikN, uKubikScale[i], i);',
         '    if (uKubikBrk[i] > 0.0) kubikW[i] *= kubikBreak(kubikKP, uKubikBrk[i], uKubikBScale[i], uKubikSeed[i], (uKubikSource[i] == 1 || uKubikSource[i] == 2) ? 0.04 + 0.3 * uKubikBlur[i] : 0.15);',
         '    if (uKubikColorOn[i] > 0.5) {',
@@ -51445,7 +51701,7 @@ function meApplyLive() {
      changes whether the material needs a distance field, so it is also the
      one place here that can leave an object needing a wear list it has
      not got. */
-  if (hadBevel !== !!d.bevel || hadVary !== varyOn(d)) { bumpMaskGen(d); ensureMaskPatches(); ensureWearLists(); }
+  if (hadBevel !== !!d.bevel || hadVary !== varyOn(d)) { bumpMaskGen(d); ensureMaskPatches(); ensureWearLists(); redressWearers(d.id); }
   updateMaterialEverywhere(matEditingId);
 }
 
@@ -51617,6 +51873,7 @@ function mkStructural(d) {
      which is why they do not pay for this. */
   ensureMaskPatches();
   ensureWearLists();
+  redressWearers(d.id);   // v3.06: per-mesh instances follow the new needs
   saveMaterialLibrary();
   refreshMaskControls(d);
   meCommit();
@@ -51810,6 +52067,7 @@ function refreshMaskControls(d) {
       if (def.masks.length >= MASK_SLOTS) return;
       def.masks.push(Object.assign({}, MASK_DEFAULT, {
         seed: 1 + Math.floor(Math.random() * 1e9),
+        proj: 'auto',   // v3.06: a NEW mask fits the shape; old ones stay triplanar
         scale: 2 + def.masks.length * 3   // so a new mask reads as its own layer
       }));
       mkEditing = def.masks.length - 1;
@@ -51852,6 +52110,10 @@ function refreshMaskControls(d) {
   const spec = maskTypeOf(mk);
   sel.value = spec.id;   // an unknown type renders as clouds, so say clouds
   const isImg = spec.id === 'image';
+  const projSel = document.getElementById('mkProj');
+  if (!projSel.options.length) PROJ_MODES.forEach(k => { const o = document.createElement('option'); o.value = k; o.textContent = 'Projection: ' + PROJ_NAMES[k]; projSel.appendChild(o); });
+  projSel.style.display = (spec.curv || spec.proc || spec.uv) ? 'none' : '';
+  projSel.value = (typeof mk.proj === 'string' && PROJ_MODES.indexOf(mk.proj) > 0) ? mk.proj : 'tri';
   document.getElementById('mkImgRow').style.display = isImg ? 'flex' : 'none';
   document.getElementById('mkDetailRow').style.display = spec.detail ? 'flex' : 'none';
   /* Noisiness and Noise Scale are separate sliders in every package that has
@@ -52039,6 +52301,14 @@ function mkLive(rebake) {
     } else { delete mk.brk; delete mk.bscale; }
     mkStructural(getMaterialDef(matEditingId));
   });
+});
+
+document.getElementById('mkProj').addEventListener('change', () => {
+  const mk = mkCurrent();
+  if (!mk) return;
+  const v = document.getElementById('mkProj').value;
+  if (v === 'tri') delete mk.proj; else mk.proj = v;   // absent = triplanar, as before v3.06
+  mkStructural(getMaterialDef(matEditingId));
 });
 
 /* Type is a CLOTH change: re-bake, no recompile. It also changes which
@@ -54028,7 +54298,7 @@ if (PICK_DEBUG) {
     showPreHi, clearPreHi, preHiKey: () => (preHi ? preHi.key : null),
     // v2.7: the signed depth, and the one predicate that reads it.
     maskBumped, defWantsBump,
-    restoreDoc, serializeDoc, refuseOp, pushHistory, toast, foreignDocMaterials, materialsChoice, presetMasks, maskTypeOf, MASK_TYPES,
+    restoreDoc, serializeDoc, refuseOp, pushHistory, toast, foreignDocMaterials, materialsChoice, presetMasks, maskTypeOf, MASK_TYPES, meshShapeOf, PROJ_MODES,
     showMirrorChooser, hideOpBar, arraySelection, arrayOp,
     solidifySelection, solidifyOp, solidifySurvey, createObjectFromEditable,
     slideSelection, slideApply, orientedSlideItems, flowSelectionItems,
