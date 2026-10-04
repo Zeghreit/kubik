@@ -3093,6 +3093,12 @@
           <select id="mkType" class="mk-sel"></select>
           <!-- v3.06: how a baked tile is laid on the shape. Hidden for the types that have none. -->
           <select id="mkProj" class="mk-sel" title="Projection"></select>
+          <!-- v3.07: a layer can be limited to where an earlier one is - or kept out of it. -->
+          <select id="mkMaskBy" class="mk-sel" title="Masked by"></select>
+          <div id="mkDirRow" style="display:none; flex-direction:column; gap:8px;">
+            <label>Direction <span id="mkDirV"></span></label>
+            <input type="range" id="mkDir" min="0" max="180" step="5">
+          </div>
           <div id="mkImgRow" style="display:none; flex-direction:column; gap:6px;">
             <button id="mkImage" class="small">Choose picture</button>
             <img id="mkImgPrev" alt="" class="mk-imgprev">
@@ -3202,7 +3208,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.06</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.07</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -5635,7 +5641,7 @@ const MATERIAL_DEFAULTS = {
                       _cav('#3a3a38', 0.5),
                       _mud('#4a4036', 0.5, 0.6)] },
   steel:    { name: 'Brushed steel', color: '#b4b9bf', roughness: 0.32, metalness: 1.0, vary: 0.12, varyScale: 1.5,
-              masks: [{ type: 'stripes', colorOn: false, roughOn: true, rough: 0.55, blend: 'normal', amount: 0.3, scale: 14, detail: 5, contrast: 1.0, nscale: 1, seed: 6, proj: 'auto' },
+              masks: [{ type: 'stripes', colorOn: false, roughOn: true, rough: 0.55, blend: 'normal', amount: 0.3, scale: 14, detail: 5, contrast: 1.0, nscale: 1, seed: 6, proj: 'auto', dir: 90 },
                       _gr(0.5, 3, 22, 0.25),
                       _cav('#3a3c40', 0.35, 0.7, { metal: 0 }),
                       _edge('#5a5f66', 0.3, 0.15, 0.3)] },
@@ -6599,7 +6605,12 @@ function updateMaterialEverywhere(id) {
    for a specific reason: a canvas is PREMULTIPLIED, so anything stored in
    its alpha channel corrupts the other three on read - which would have cost
    us the fourth slot. */
-const MASK_SLOTS = 4;
+/* EIGHT since v3.07. The baked tiles live in TWO RGBA textures, slots 0-3 and 4-7; procedural,
+   curvature, dust and ground-dirt layers bake nothing. The per-slot numbers reach the shader PACKED,
+   five vec4 per slot (KPACK_MAP): written one array per number, eight slots would have cost ~150
+   uniform vectors before three's own - and WebGL2 only promises 224 to a fragment shader, which a
+   low-end phone answers with a program that does not link. */
+const MASK_SLOTS = 8;
 const MASK_BLENDS = ['normal', 'multiply', 'screen', 'overlay'];
 /* The catalogue. `detail` is the LABEL the Detail slider wears for that
    type - the slider is one control doing five different jobs, and "Detail 3"
@@ -6862,6 +6873,31 @@ function redressWearers(id) {
     if (Object.keys(fin).some(g => fin[g] === id)) dressFromPool(o);
   });
   invalidate();
+}
+/* THE PACKING (v3.07). The shader is written with one name per number - uKubikAmount[i], uKubikSource[i] -
+   and kubikPackShader rewrites those into the five packed arrays at compile time, so the GLSL stays
+   readable and the uniform count stays small. kubikPackSlot is the one place the JS side fills them. */
+const KPACK_MAP = {
+  Amount: 'uKP0[#].x', Scale: 'uKP0[#].y', Blend: 'int(uKP0[#].z + 0.5)', ColorOn: 'uKP0[#].w',
+  RoughOn: 'uKP1[#].x', Rough: 'uKP1[#].y', Bump: 'uKP1[#].z', Source: 'int(uKP1[#].w + 0.5)',
+  Blur: 'uKP2[#].x', Noise: 'uKP2[#].y', NScale: 'uKP2[#].z', Uv: 'uKP2[#].w',
+  Seed: 'uKP3[#].x', MetalOn: 'uKP3[#].y', Metal: 'uKP3[#].z', Brk: 'uKP3[#].w',
+  BScale: 'uKP4[#].x', Proj: 'uKP4[#].y', MaskBy: 'uKP4[#].z', MaskOp: 'uKP4[#].w'
+};
+function kubikPackSlot(u, k, s) {
+  u.uKP0.value[k].set(s.amount, s.scale, s.blend, s.colorOn);
+  u.uKP1.value[k].set(s.roughOn, s.rough, s.bump, s.source);
+  u.uKP2.value[k].set(s.blur, s.noise, s.nscale, s.uv);
+  u.uKP3.value[k].set(s.seed, s.metalOn, s.metal, s.brk);
+  u.uKP4.value[k].set(s.bscale, s.proj, s.maskBy, s.maskOp);
+}
+function kubikPackShader(src) {
+  Object.keys(KPACK_MAP).forEach(n => {
+    src = src.replace(new RegExp('uniform\\s+(?:float|int)\\s+uKubik' + n + '\\[\\d+\\];', 'g'), '');
+    src = src.replace(new RegExp('\\buKubik' + n + '\\[([^\\]]+)\\]', 'g'), (m, idx) => KPACK_MAP[n].replace('#', idx));
+  });
+  const decl = ['uKP0', 'uKP1', 'uKP2', 'uKP3', 'uKP4'].map(n => 'uniform vec4 ' + n + '[' + MASK_SLOTS + '];').join('\n');
+  return src.replace(/uniform int\s+uKubikCount;/, m => m + '\n' + decl);
 }
 const VARY_SCALE_DEF = 1.5;
 function varyOn(d) { return !!d && ((+d.vary || 0) > 0 || (+d.varyHue || 0) > 0); }
@@ -7248,7 +7284,10 @@ function maskDotField(mk, size) {
 function maskStripeField(mk, size) {
   const rnd = mulberry32((mk.seed * 2654435761) | 0);
   const bands = Math.max(1, Math.round(mk.detail)) * 2;
-  const ang = rnd() * Math.PI * 2;
+  /* DIRECTION (v3.07): absent = the seeded angle it always had. 90 runs the bands along the tile's
+     u - round a cylinder under the cylinder projection, the lathe-turned look. */
+  const ang0 = rnd() * Math.PI * 2;
+  const ang = typeof mk.dir === 'number' ? mk.dir * Math.PI / 180 : ang0;
   let nx = Math.round(Math.cos(ang) * bands), ny = Math.round(Math.sin(ang) * bands);
   if (nx === 0 && ny === 0) nx = bands;
   const wob = maskFbmField({ seed: (mk.seed ^ 0x5bf03635) | 0, detail: 2 }, size);
@@ -7365,12 +7404,13 @@ function bakeNoiseField(mk, size) {
 }
 
 // The whole stack packed into one RGBA buffer, one mask per channel.
-function bakeMaskPacked(d) {
+function bakeMaskPacked(d, half) {
   const size = MASK_SIZE;
   const data = new Uint8Array(size * size * 4);
   const list = maskList(d);
-  for (let i = 0; i < MASK_SLOTS; i++) {
-    const mk = list[i];
+  const base = (half || 0) * 4;
+  for (let i = 0; i < 4; i++) {
+    const mk = list[base + i];
     if (!mk || !mk.on) continue;   // an off mask leaves its channel at zero
     const field = bakeNoiseField(mk, size);
     for (let p = 0; p < size * size; p++) data[p * 4 + i] = Math.round(field[p] * 255);
@@ -7378,10 +7418,31 @@ function bakeMaskPacked(d) {
   return data;
 }
 
+// Slots 4-7 (v3.07): the same kind of tile, kept beside the first - and only made once a fifth layer
+// exists; until then the sampler gets one black texel.
+const _maskTex2 = new Map();
+let _maskTexNone = null;
+function getMaskTexture2(d) {
+  let t = _maskTex2.get(d.id);
+  if (!t && maskCount(d) <= 4) {
+    if (!_maskTexNone) { _maskTexNone = new THREE.DataTexture(new Uint8Array(4), 1, 1, THREE.RGBAFormat); _maskTexNone.needsUpdate = true; }
+    return _maskTexNone;
+  }
+  if (!t) {
+    t = new THREE.DataTexture(bakeMaskPacked(d, 1), MASK_SIZE, MASK_SIZE, THREE.RGBAFormat);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.magFilter = THREE.LinearFilter;
+    t.minFilter = THREE.LinearMipmapLinearFilter;
+    t.generateMipmaps = true;
+    t.needsUpdate = true;
+    _maskTex2.set(d.id, t);
+  }
+  return t;
+}
 function getMaskTexture(d) {
   let t = _maskTex.get(d.id);
   if (!t) {
-    t = new THREE.DataTexture(bakeMaskPacked(d), MASK_SIZE, MASK_SIZE, THREE.RGBAFormat);
+    t = new THREE.DataTexture(bakeMaskPacked(d, 0), MASK_SIZE, MASK_SIZE, THREE.RGBAFormat);
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
     // DataTexture defaults to NearestFilter and no mipmaps, which on a
     // pattern this small reads as aliased confetti at any distance.
@@ -7401,6 +7462,8 @@ function getMaskTexture(d) {
    ten tried-and-dropped masks. */
 function dropMaskTexture(id) {
   _clothSig.delete(id);
+  const t2 = _maskTex2.get(id);
+  if (t2) { t2.dispose(); _maskTex2.delete(id); }
   const t = _maskTex.get(id);
   if (!t) return false;
   t.dispose();
@@ -7432,7 +7495,7 @@ function maskClothSig(d) {
   for (let i = 0; i < list.length; i++) {
     const m = list[i] || {};
     sig += '|' + (m.on ? 1 : 0) + ',' + (m.type || '') + ',' + (m.detail || 0) +
-           ',' + (m.contrast || 0) + ',' + (m.seed || 0);
+           ',' + (m.contrast || 0) + ',' + (m.seed || 0) + ',' + (typeof m.dir === 'number' ? m.dir : '-');
   }
   return sig;
 }
@@ -7449,20 +7512,27 @@ function rebakeMaskTexture(d, only) {
   if (d && !maskWantsPatch(d)) { dropMaskTexture(d.id); return; }
   const t = _maskTex.get(d.id);
   if (!t) return;
+  const t2 = _maskTex2.get(d.id);
   if (typeof only === 'number' && only >= 0 && only < MASK_SLOTS) {
     // One channel written by hand leaves the whole-buffer signature stale.
     _clothSig.delete(d.id);
+    const tt = only < 4 ? t : t2;
+    if (!tt) return;
+    const ch = only % 4;
     const mk = maskList(d)[only];
     const f = (mk && mk.on) ? bakeNoiseField(mk, MASK_SIZE) : null;
-    const data = t.image.data;
+    const data = tt.image.data;
     for (let p = 0; p < MASK_SIZE * MASK_SIZE; p++) {
-      data[p * 4 + only] = f ? Math.round(f[p] * 255) : 0;
+      data[p * 4 + ch] = f ? Math.round(f[p] * 255) : 0;
     }
+    tt.needsUpdate = true;
+    return;
   } else {
     const sig = maskClothSig(d);
     if (sig !== null && _clothSig.get(d.id) === sig) return;   // identical buffer
     PERF.clothBake++;
-    t.image.data.set(bakeMaskPacked(d));
+    t.image.data.set(bakeMaskPacked(d, 0));
+    if (t2) { t2.image.data.set(bakeMaskPacked(d, 1)); t2.needsUpdate = true; }
     if (sig !== null) _clothSig.set(d.id, sig); else _clothSig.delete(d.id);
   }
   t.needsUpdate = true;
@@ -7524,6 +7594,13 @@ function bumpMaskGen(d) {
    step earlier - whether to build the EDGE LIST the field is baked from at
    all - so it needs a name and exactly one definition. A material wearing
    nothing but Clouds has no use for either. */
+/* Is layer i the mask of a later one (v3.07)? Then it computes even with every channel off - and a
+   curvature layer used that way still needs its distance field. */
+function maskUsedAsMask(d, i) {
+  const n = maskCount(d);
+  for (let j = i + 1; j < n; j++) { const m = d.masks[j]; if (m && m.on && m.maskBy === i) return true; }
+  return false;
+}
 function defWantsField(d) {
   if (!d) return false;
   if (d.bevel > 0) return true;
@@ -7531,7 +7608,7 @@ function defWantsField(d) {
   const n = maskCount(d);
   for (let i = 0; i < n; i++) {
     const m = d.masks[i];
-    if (m && m.on && maskCurvMode(m) && (m.colorOn || m.roughOn || maskBumped(m) || maskMetal(m))) return true;
+    if (m && m.on && maskCurvMode(m) && (m.colorOn || m.roughOn || maskBumped(m) || maskMetal(m) || maskUsedAsMask(d, i))) return true;
   }
   return false;
 }
@@ -7618,12 +7695,15 @@ function maskWantsPatch(d) {
 const _maskSlot = {
   live: false, color: '#ffffff', amount: 0, scale: 1, blend: 0,
   colorOn: 0, roughOn: 0, rough: 0.5, source: 0, blur: 0.5, noise: 0, nscale: 1,
-  bump: 0, uv: 0, seed: 1, metalOn: 0, metal: 0, brk: 0, bscale: 3, proj: 0
+  bump: 0, uv: 0, seed: 1, metalOn: 0, metal: 0, brk: 0, bscale: 3, proj: 0, maskBy: -1, maskOp: 0
 };
 function maskSlotValues(list, k) {
   const mk = list[k];
   const s = _maskSlot;
-  s.live = !!(mk && mk.on && (mk.colorOn || mk.roughOn || maskBumped(mk) || maskMetal(mk)));
+  /* A layer another one is masked BY has to compute its weight even if it paints nothing itself
+     (v3.07): a pure mask layer - all channels off - is a legitimate thing to build. */
+  const usedAsMask = !!(mk && mk.on) && list.some((m, j) => j > k && m && m.on && m.maskBy === k);
+  s.live = !!(mk && mk.on && (mk.colorOn || mk.roughOn || maskBumped(mk) || maskMetal(mk) || usedAsMask));
   s.color = mk && mk.color ? mk.color : '#ffffff';
   s.amount = s.live ? mk.amount : 0;
   /* A shape mask's Width is a FRACTION of the field's reach, so it has to be
@@ -7659,6 +7739,8 @@ function maskSlotValues(list, k) {
   s.brk = s.live && maskBrk(mk) ? Math.min(1, Math.max(0, mk.brk)) : 0;
   s.bscale = mk && mk.bscale > 0 ? Math.min(40, mk.bscale) : 3;
   s.proj = mk ? maskProj(mk) : 0;
+  s.maskBy = (mk && Number.isInteger(mk.maskBy) && mk.maskBy >= 0 && mk.maskBy < k) ? mk.maskBy : -1;
+  s.maskOp = s.maskBy >= 0 && mk.maskInv ? 1 : 0;
   return s;
 }
 
@@ -7704,6 +7786,7 @@ function applyMaskPatch(mat, d) {
     return;
   }
   const tex = getMaskTexture(d);
+  const tex2 = getMaskTexture2(d);
 
   /* Everything about the stack rides UNIFORMS - how many masks, which
      components each drives, its blend mode, colour, roughness, amount and
@@ -7717,24 +7800,13 @@ function applyMaskPatch(mat, d) {
     const u = {
       uKubikMask: { value: tex },
       uKubikCount: { value: 0 },
+      uKubikMask2: { value: tex2 },
       uKubikColor: { value: [] },
-      uKubikAmount: { value: [] },
-      uKubikScale: { value: [] },
-      uKubikBlend: { value: [] },
-      uKubikColorOn: { value: [] },
-      uKubikRoughOn: { value: [] },
-      uKubikRough: { value: [] },
-      uKubikBump: { value: [] },
+      uKP0: { value: [] }, uKP1: { value: [] }, uKP2: { value: [] }, uKP3: { value: [] }, uKP4: { value: [] },
       // Whether ANY slot drives a bump, so the fragment shader can skip
       // measuring its own pixel footprint on every material that does not.
       uKubikBumpAny: { value: 0 },
-      uKubikSource: { value: [] },
-      uKubikUv: { value: [] },
-      uKubikBlur: { value: [] },
-      uKubikNoise: { value: [] },
-      uKubikNScale: { value: [] },
-      uKubikSeed: { value: [] }, uKubikMetalOn: { value: [] }, uKubikMetal: { value: [] },
-      uKubikBrk: { value: [] }, uKubikBScale: { value: [] }, uKubikProj: { value: [] },
+
       uKubikShapeT: { value: 0 }, uKubikPlaneN: { value: new THREE.Vector3(0, 1, 0) },
       uKubikCylA: { value: new THREE.Vector3(0, 1, 0) }, uKubikCylC: { value: new THREE.Vector3() },
       uKubikCylR: { value: 1 }, uKubikSphC: { value: new THREE.Vector3() },
@@ -7761,21 +7833,9 @@ function applyMaskPatch(mat, d) {
     for (let k = 0; k < MASK_SLOTS; k++) {
       const s = maskSlotValues(list, k);
       u.uKubikColor.value.push(new THREE.Color(s.color));
-      u.uKubikAmount.value.push(s.amount);
-      u.uKubikScale.value.push(s.scale);
-      u.uKubikBlend.value.push(s.blend);
-      u.uKubikColorOn.value.push(s.colorOn);
-      u.uKubikRoughOn.value.push(s.roughOn);
-      u.uKubikRough.value.push(s.rough);
-      u.uKubikBump.value.push(s.bump);
+      ['uKP0', 'uKP1', 'uKP2', 'uKP3', 'uKP4'].forEach(n => u[n].value.push(new THREE.Vector4()));
+      kubikPackSlot(u, k, s);
       if (s.bump !== 0) u.uKubikBumpAny.value = 1;
-      u.uKubikSource.value.push(s.source);
-      u.uKubikUv.value.push(s.uv);
-      u.uKubikBlur.value.push(s.blur);
-      u.uKubikNoise.value.push(s.noise);
-      u.uKubikNScale.value.push(s.nscale);
-      u.uKubikSeed.value.push(s.seed); u.uKubikMetalOn.value.push(s.metalOn); u.uKubikMetal.value.push(s.metal);
-      u.uKubikBrk.value.push(s.brk); u.uKubikBScale.value.push(s.bscale); u.uKubikProj.value.push(s.proj);
       if (s.live) u.uKubikCount.value = k + 1;   // highest live slot, so the loop can stop
     }
     return u;
@@ -7795,6 +7855,7 @@ function applyMaskPatch(mat, d) {
     // Written INTO the existing uniform objects - replacing them would
     // orphan the ones the compiled program is holding.
     u.uKubikMask.value = tex;
+    if (u.uKubikMask2) u.uKubikMask2.value = getMaskTexture2(d);
     if (u.uKubikBevel) u.uKubikBevel.value = Math.min(1, Math.max(0, d.bevel || 0));
     if (u.uKubikVary) u.uKubikVary.value.fromArray(varyVals(d));
     let count = 0, anyBump = 0;
@@ -7802,24 +7863,8 @@ function applyMaskPatch(mat, d) {
       const s = maskSlotValues(list, k);
       const c = maskColorLinear(s.color);
       u.uKubikColor.value[k].setRGB(c[0], c[1], c[2]);
-      u.uKubikAmount.value[k] = s.amount;
-      u.uKubikScale.value[k] = s.scale;
-      u.uKubikBlend.value[k] = s.blend;
-      u.uKubikColorOn.value[k] = s.colorOn;
-      u.uKubikRoughOn.value[k] = s.roughOn;
-      u.uKubikRough.value[k] = s.rough;
-      u.uKubikBump.value[k] = s.bump;
+      if (u.uKP0) kubikPackSlot(u, k, s);
       if (s.bump !== 0) anyBump = 1;
-      u.uKubikSource.value[k] = s.source;
-      u.uKubikUv.value[k] = s.uv;
-      u.uKubikBlur.value[k] = s.blur;
-      u.uKubikNoise.value[k] = s.noise;
-      u.uKubikNScale.value[k] = s.nscale;
-      if (u.uKubikSeed) {
-        u.uKubikSeed.value[k] = s.seed; u.uKubikMetalOn.value[k] = s.metalOn; u.uKubikMetal.value[k] = s.metal;
-        u.uKubikBrk.value[k] = s.brk; u.uKubikBScale.value[k] = s.bscale;
-        if (u.uKubikProj) u.uKubikProj.value[k] = s.proj;
-      }
       if (s.live) count = k + 1;
     }
     u.uKubikCount.value = count;
@@ -7827,7 +7872,12 @@ function applyMaskPatch(mat, d) {
   };
 
   if (!d.maskGen) bumpMaskGen(d);   // first wearer of a never-patched definition
-  let key = 'kubik-colormask:' + d.id + ':' + d.maskGen;
+  /* THE LOOP IS UNROLLED BY THE COMPILER, so a program built for eight slots costs about twice the
+     compile of one built for four - measured on the tray, 58 -> 94 ms a definition. A definition with
+     four layers or fewer (every preset) compiles for four; a fifth layer changes the key and with it
+     the program (v3.07). */
+  const slotsN = maskCount(d) > 4 ? MASK_SLOTS : 4;
+  let key = 'kubik-colormask:' + d.id + ':' + d.maskGen + ':' + slotsN;
   const wasPatched = _maskedMats.has(mat);
   const keyChanged = _maskKey.get(mat) !== key;
   /* THE ONE THING THREE WILL NOT DO FOR US. It keeps a program per key per
@@ -7960,6 +8010,9 @@ function applyMaskPatch(mat, d) {
         'varying vec3 vKubikNrm;',
         'varying vec2 vKubikUv;',
         'uniform sampler2D uKubikMask;',
+        'uniform sampler2D uKubikMask2;',
+        'uniform float uKubikMaskBy[' + MASK_SLOTS + '];',
+        'uniform float uKubikMaskOp[' + MASK_SLOTS + '];',
         'uniform int   uKubikCount;',
         'uniform vec3  uKubikColor[' + MASK_SLOTS + '];',
         'uniform float uKubikAmount[' + MASK_SLOTS + '];',
@@ -8009,17 +8062,21 @@ function applyMaskPatch(mat, d) {
         // a dot with a selector rather than s[i] so this stays legal if the
         // renderer ever falls back to WebGL1.
         'float kubikPick(vec4 s, int ch) {',
-        '  vec4 m = vec4(ch == 0 ? 1.0 : 0.0, ch == 1 ? 1.0 : 0.0,',
-        '                ch == 2 ? 1.0 : 0.0, ch == 3 ? 1.0 : 0.0);',
+        '  int c = ch % 4;',
+        '  vec4 m = vec4(c == 0 ? 1.0 : 0.0, c == 1 ? 1.0 : 0.0,',
+        '                c == 2 ? 1.0 : 0.0, c == 3 ? 1.0 : 0.0);',
         '  return dot(s, m);',
         '}',
+        // v3.07: slots 4-7 read the second tile. ch is a loop index, so the choice is uniform per draw.
+        'vec4 kubikTap(vec2 uv, int ch) { return ch < 4 ? texture2D(uKubikMask, uv) : texture2D(uKubikMask2, uv); }',
+        'vec4 kubikTapG(vec2 uv, vec2 gx, vec2 gy, int ch) { return ch < 4 ? textureGrad(uKubikMask, uv, gx, gy) : textureGrad(uKubikMask2, uv, gx, gy); }',
         'float kubikTriplanar(vec3 p, vec3 n, float scale, int ch) {',
         '  vec3 q = p * scale * 0.5;',
         '  vec3 w = abs(n);',
         '  w = w / (w.x + w.y + w.z + 0.0001);',
-        '  vec4 s = texture2D(uKubikMask, q.yz) * w.x',
-        '         + texture2D(uKubikMask, q.xz) * w.y',
-        '         + texture2D(uKubikMask, q.xy) * w.z;',
+        '  vec4 s = kubikTap(q.yz, ch) * w.x',
+        '         + kubikTap(q.xz, ch) * w.y',
+        '         + kubikTap(q.xy, ch) * w.z;',
         '  return kubikPick(s, ch);',
         '}',
         /* v3.06. Derivatives from whichever of uv and fract(uv + 0.5) is continuous here (Tarini), so the
@@ -8029,7 +8086,7 @@ function applyMaskPatch(mat, d) {
         '  vec2 ax = dFdx(uv), ay = dFdy(uv), bx = dFdx(uv2), by = dFdy(uv2);',
         '  vec2 gx = vec2(abs(ax.x) < abs(bx.x) ? ax.x : bx.x, abs(ax.y) < abs(bx.y) ? ax.y : bx.y);',
         '  vec2 gy = vec2(abs(ay.x) < abs(by.x) ? ay.x : by.x, abs(ay.y) < abs(by.y) ? ay.y : by.y);',
-        '  return kubikPick(textureGrad(uKubikMask, uv, gx, gy), ch);',
+        '  return kubikPick(kubikTapG(uv, gx, gy, ch), ch);',
         '}',
         // mode: 1 auto (the fitted shape, else triplanar), 2 plane, 3 cylinder, 4 sphere.
         'float kubikProjW(vec3 p, vec3 n, float scale, int ch, float mode) {',
@@ -8040,7 +8097,7 @@ function applyMaskPatch(mat, d) {
         '    vec3 q = p * scale * 0.5;',
         '    vec3 w = pow(abs(normalize(p - uKubikSphC)), vec3(4.0));',
         '    w /= (w.x + w.y + w.z + 1e-4);',
-        '    vec4 s4 = texture2D(uKubikMask, q.yz) * w.x + texture2D(uKubikMask, q.xz) * w.y + texture2D(uKubikMask, q.xy) * w.z;',
+        '    vec4 s4 = kubikTap(q.yz, ch) * w.x + kubikTap(q.xz, ch) * w.y + kubikTap(q.xy, ch) * w.z;',
         '    return kubikPick(s4, ch);',
         '  }',
         '  vec3 A = normalize(m > 2.5 ? uKubikCylA : uKubikPlaneN);',
@@ -8409,10 +8466,16 @@ function applyMaskPatch(mat, d) {
            texture's own RepeatWrapping cannot be trusted to cover a
            negative UV, which an unwrap or a hand-dragged island can easily
            produce. */
-        '    else if (uKubikUv[i] > 0.5) kubikW[i] = kubikPick(texture2D(uKubikMask, fract(vKubikUv * uKubikScale[i])), i);',
+        '    else if (uKubikUv[i] > 0.5) kubikW[i] = kubikPick(kubikTap(fract(vKubikUv * uKubikScale[i]), i), i);',
         '    else if (uKubikProj[i] > 0.5) kubikW[i] = kubikProjW(vKubikPos, kubikN, uKubikScale[i], i, uKubikProj[i]);',
         '    else kubikW[i] = kubikTriplanar(vKubikPos, kubikN, uKubikScale[i], i);',
         '    if (uKubikBrk[i] > 0.0) kubikW[i] *= kubikBreak(kubikKP, uKubikBrk[i], uKubikBScale[i], uKubikSeed[i], (uKubikSource[i] == 1 || uKubikSource[i] == 2) ? 0.04 + 0.3 * uKubikBlur[i] : 0.15);',
+        /* MASK BY LAYER (v3.07): only where an EARLIER layer is (op 0), or everywhere but (op 1). Its
+           weight times its Amount, so that layer's Amount slider is the mask's strength. */
+        '    if (uKubikMaskBy[i] > -0.5) {',
+        '      int mb = int(uKubikMaskBy[i] + 0.5);',
+        '      if (mb < i) { float mw = clamp(kubikW[mb] * uKubikAmount[mb], 0.0, 1.0); kubikW[i] *= uKubikMaskOp[i] > 0.5 ? 1.0 - mw : mw; }',
+        '    }',
         '    if (uKubikColorOn[i] > 0.5) {',
         '      vec3 mixed = kubikBlend(diffuseColor.rgb, uKubikColor[i], uKubikBlend[i]);',
         '      diffuseColor.rgb = mix(diffuseColor.rgb, mixed, kubikW[i] * uKubikAmount[i]);',
@@ -8484,6 +8547,8 @@ function applyMaskPatch(mat, d) {
         '  }',
         '  metalnessFactor = clamp(metalnessFactor, 0.0, 1.0);',
         '}'].join('\n'));
+    shader.fragmentShader = kubikPackShader(shader.fragmentShader)   // v3.07
+      .split('for (int i = 0; i < ' + MASK_SLOTS + '; i++)').join('for (int i = 0; i < ' + slotsN + '; i++)');
   };
   /* Cache-key discipline (QA finding 1/2, still LAW): three runs
      onBeforeCompile only when this MATERIAL holds no program under the key
@@ -52114,6 +52179,20 @@ function refreshMaskControls(d) {
   if (!projSel.options.length) PROJ_MODES.forEach(k => { const o = document.createElement('option'); o.value = k; o.textContent = 'Projection: ' + PROJ_NAMES[k]; projSel.appendChild(o); });
   projSel.style.display = (spec.curv || spec.proc || spec.uv) ? 'none' : '';
   projSel.value = (typeof mk.proj === 'string' && PROJ_MODES.indexOf(mk.proj) > 0) ? mk.proj : 'tri';
+  const mbSel = document.getElementById('mkMaskBy');
+  mbSel.innerHTML = '';
+  const addOpt = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; mbSel.appendChild(o); };
+  addOpt('none', 'Masked by: nothing');
+  for (let j = 0; j < mkEditing; j++) {
+    const nm = (j + 1) + ' ' + maskTypeOf(list[j]).name;
+    addOpt('in:' + j, 'Only where ' + nm);
+    addOpt('out:' + j, 'Except where ' + nm);
+  }
+  mbSel.style.display = mkEditing > 0 ? '' : 'none';
+  mbSel.value = (Number.isInteger(mk.maskBy) && mk.maskBy < mkEditing) ? (mk.maskInv ? 'out:' : 'in:') + mk.maskBy : 'none';
+  document.getElementById('mkDirRow').style.display = spec.id === 'stripes' ? 'flex' : 'none';
+  document.getElementById('mkDir').value = typeof mk.dir === 'number' ? mk.dir : 90;
+  document.getElementById('mkDirV').textContent = typeof mk.dir === 'number' ? mk.dir + '\u00b0' : 'random';
   document.getElementById('mkImgRow').style.display = isImg ? 'flex' : 'none';
   document.getElementById('mkDetailRow').style.display = spec.detail ? 'flex' : 'none';
   /* Noisiness and Noise Scale are separate sliders in every package that has
@@ -52303,6 +52382,27 @@ function mkLive(rebake) {
   });
 });
 
+document.getElementById('mkMaskBy').addEventListener('change', () => {
+  const mk = mkCurrent();
+  if (!mk) return;
+  const v = document.getElementById('mkMaskBy').value;
+  if (v === 'none') { delete mk.maskBy; delete mk.maskInv; }   // absent = unmasked, as before v3.07
+  else { const p = v.split(':'); mk.maskBy = +p[1]; if (p[0] === 'out') mk.maskInv = true; else delete mk.maskInv; }
+  mkStructural(getMaterialDef(matEditingId));
+});
+/* Direction is a CLOTH change - it re-bakes the tile. The first touch writes the key; until then
+   the stripes keep their seeded angle. */
+['input', 'change'].forEach(ev => document.getElementById('mkDir').addEventListener(ev, () => {
+  const mk = mkCurrent();
+  if (!mk) return;
+  const d = getMaterialDef(matEditingId);
+  mk.dir = parseFloat(document.getElementById('mkDir').value);
+  document.getElementById('mkDirV').textContent = mk.dir + '\u00b0';
+  rebakeMaskTexture(d, mkEditing);
+  updateMaterialEverywhere(d.id);
+  if (ev === 'change') { saveMaterialLibrary(); meCommit(); }
+}));
+
 document.getElementById('mkProj').addEventListener('change', () => {
   const mk = mkCurrent();
   if (!mk) return;
@@ -52434,7 +52534,14 @@ document.getElementById('mkDelete').addEventListener('click', () => {
   const d = getMaterialDef(matEditingId);
   const list = maskList(d);
   if (!list[mkEditing]) return;
-  d.masks.splice(mkEditing, 1);
+  const gone = mkEditing;
+  d.masks.splice(gone, 1);
+  // v3.07: references to the removed layer go; references past it shift down with it.
+  d.masks.forEach(m => {
+    if (!m || !Number.isInteger(m.maskBy)) return;
+    if (m.maskBy === gone) { delete m.maskBy; delete m.maskInv; }
+    else if (m.maskBy > gone) m.maskBy--;
+  });
   if (mkEditing > 0) mkEditing--;
   mkStructural(d);
 });
@@ -54298,7 +54405,7 @@ if (PICK_DEBUG) {
     showPreHi, clearPreHi, preHiKey: () => (preHi ? preHi.key : null),
     // v2.7: the signed depth, and the one predicate that reads it.
     maskBumped, defWantsBump,
-    restoreDoc, serializeDoc, refuseOp, pushHistory, toast, foreignDocMaterials, materialsChoice, presetMasks, maskTypeOf, MASK_TYPES, meshShapeOf, PROJ_MODES,
+    restoreDoc, serializeDoc, refuseOp, pushHistory, toast, foreignDocMaterials, materialsChoice, presetMasks, maskTypeOf, MASK_TYPES, meshShapeOf, PROJ_MODES, MASK_SLOTS,
     showMirrorChooser, hideOpBar, arraySelection, arrayOp,
     solidifySelection, solidifyOp, solidifySurvey, createObjectFromEditable,
     slideSelection, slideApply, orientedSlideItems, flowSelectionItems,
