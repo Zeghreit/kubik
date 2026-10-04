@@ -2822,6 +2822,20 @@
   .insp-row input::-webkit-outer-spin-button,
   .insp-row input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
   .insp-row input:focus { outline: none; border-color: var(--accent); }
+  /* EMBED (v3.10, ?embed=1). Nothing below matches unless the embed block has
+     put its classes on <body>. The node view is the canvas and nothing else:
+     a preview in a ~330x250 box on someone else's page. The shield takes the
+     pointer so no tap reaches the editor underneath. */
+  #kubikShield { display: none; }
+  body.kubik-embed #firstHint, body.kubik-embed #updateBanner { display: none !important; }
+  body.kubik-node > :not(#app),
+  body.kubik-node #app > :not(#viewport),
+  body.kubik-node #viewport > :not(canvas):not(#kubikShield) { display: none !important; }
+  body.kubik-node #kubikShield {
+    display: block; position: absolute; inset: 0; z-index: 50;
+    touch-action: none; cursor: grab; background: transparent;
+  }
+  body.kubik-node #kubikShield:active { cursor: grabbing; }
 </style>
 <!-- On-screen JavaScript console, loaded only when the URL ends in ?debug=1.
      On a phone there's otherwise no way to see an error without plugging into
@@ -3212,7 +3226,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.09</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.10</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -3325,6 +3339,12 @@ import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js
 const viewportEl = document.getElementById('viewport');
 const statusEl = document.getElementById('status');
 const toastEl = document.getElementById('toast');
+/* EMBED (v3.10). Read once, here at the top, because toast and the autosave
+   ask it and both can run before the bottom of the file. Everything the
+   mode does is at the end of the file under 'Embed mode'; see EMBED.md. */
+const EMBED_Q = new URLSearchParams(location.search);
+const EMBED = EMBED_Q.get('embed') === '1';
+let _embedHooks = null;   // filled in by the embed block, never without ?embed=1
 
 /* ---------------- Surfacing (a2.73) ----------------
 
@@ -3453,6 +3473,7 @@ function surfaceToggle(el, on) { if (on) surfaceIn(el); else submergeOut(el); }
 
 let toastTimer = null;
 function toast(msg) {
+  if (EMBED && _embedHooks) _embedHooks.toast(msg);
   toastEl.textContent = msg;
   toastEl.classList.add('show');
   clearTimeout(toastTimer);
@@ -38799,6 +38820,9 @@ async function migrateProjects() {
 let autosaveTimer = null;
 let _autosaveWarned = false;
 function scheduleAutosave() {
+  /* EMBEDDED, THE DOCUMENT IS THE HOST'S (v3.10). It lives in memory and
+     leaves by `export`; what an edit owes the host is a 'dirty' event. */
+  if (EMBED) { if (_embedHooks) _embedHooks.dirty(); return; }
   if (!storageAvailable()) return;
   clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(() => {
@@ -39315,7 +39339,12 @@ const IMPORT_TRI_BUDGET = 40000;
    What is left at this number is honest and measured: a 12000-entry material
    array that ensureMaskPatches walks on every refreshUI, and history
    snapshots that carry all of it. Both are per-commit, not per-frame. */
-const MESH_FACE_BUDGET = 12000;
+/* EMBEDDED, 25000 (v3.10). The hub's assets are generated at up to 25000
+   triangles (P2.0's Polycount ceiling) and a Tripo prop pairs to ~12-15k
+   faces, so 12000 refused the very models the mode exists to show. The
+   host is a desktop page, not a phone; the editing ops keep their own
+   OP_FACE_BUDGET either way. Without ?embed=1 nothing moves. */
+const MESH_FACE_BUDGET = EMBED ? 25000 : 12000;
 
 /* AND A SEPARATE, SMALLER ONE FOR THE OPS THAT GENERATE FACES (v2.24).
    Boolean and the curve sweeps borrowed the importer's budget because the
@@ -40519,12 +40548,37 @@ function fbxRefusal(buf) {
    let through untouched. Kubik has no texture channel yet either way
    (that is stage 1 of the maps plan), so what survives is the material's
    colour and its roughness/metalness, which is what the importer reads. */
-function fbxTextureManager(counter) {
+function fbxTextureManager(counter, base) {
   const mgr = new THREE.LoadingManager();
+  /* WITH A BASE (v3.10, embed `load` by url) there is somewhere to resolve
+     against: a texture is looked for BESIDE the file, by its leaf name -
+     an FBX routinely records the absolute path on the machine that wrote
+     it. Tracked so the importer can wait for the pictures before it reads
+     them; without a base nothing here changes. */
+  if (base) {
+    mgr.kubik = { started: false, done: false, wait: null };
+    mgr.onStart = () => { mgr.kubik.started = true; };
+    mgr.onLoad = () => { mgr.kubik.done = true; if (mgr.kubik.wait) mgr.kubik.wait(); };
+  }
   const BLANK = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8Xw8AAoMBgDTD2qgAAAAASUVORK5CYII=';
   mgr.setURLModifier((url) => {
     const u = String(url || '');
     if (u.slice(0, 5) === 'data:' || u.slice(0, 5) === 'blob:') return u;
+    if (base) {
+      /* A RELATIVE name arrives already resolved against this page, so the
+         page's own folder is taken off again; an ABSOLUTE one keeps its leaf,
+         and the folder above it when that is the FBX SDK's `<name>.fbm`
+         media folder, which sits beside the file. */
+      const here = location.href.split(/[?#]/)[0].replace(/[^/]*$/, '');
+      let rel = u.indexOf(here) === 0 ? u.slice(here.length) : '';
+      if (!rel || /^[a-z]+:/i.test(rel)) {
+        const seg = u.split(/[\\/]/).filter(Boolean);
+        const leaf = seg.pop() || '';
+        const dir = seg.pop() || '';
+        rel = /\.fbm$/i.test(dir) ? dir + '/' + leaf : leaf;
+      }
+      try { if (rel) return new URL(rel, base).href; } catch (e) { /* falls to the blank */ }
+    }
     counter.n++;
     return BLANK;
   });
@@ -40533,7 +40587,7 @@ function fbxTextureManager(counter) {
 
 let _fbxImportGen = 0;
 
-async function importFbxBuffer(buf, label) {
+async function importFbxBuffer(buf, label, opt) {
   const gen = ++_fbxImportGen;
   const why = fbxRefusal(buf);
   if (why) { toast(why); return; }
@@ -40552,12 +40606,13 @@ async function importFbxBuffer(buf, label) {
   }
 
   const missing = { n: 0 };
+  const texMgr = fbxTextureManager(missing, opt && opt.base);
   let root;
   try {
     /* parse(), not parseAsync(): FBXLoader has no async entry and its parse
        is synchronous. The path argument is what textures resolve against,
        and there is nothing to resolve against, so it is empty. */
-    root = new FBXLoader(fbxTextureManager(missing)).parse(buf, '');
+    root = new FBXLoader(texMgr).parse(buf, '');
   } catch (err) {
     const m = String((err && err.message) || '');
     if (/version not supported/i.test(m)) {
@@ -40569,6 +40624,10 @@ async function importFbxBuffer(buf, label) {
     return;
   }
   if (!root) { toast('Could not read that .fbx'); return; }
+  // The pictures beside the file load after parse returns (v3.10).
+  if (texMgr.kubik && texMgr.kubik.started && !texMgr.kubik.done) {
+    await new Promise(res => { texMgr.kubik.wait = res; setTimeout(res, 20000); });
+  }
 
   /* FBXLoader BUILDS PHONG MATERIALS, AND PHONG HAS NO ROUGHNESS.
      importMaterialContext reads src.roughness / src.metalness and falls back
@@ -40631,6 +40690,14 @@ async function importFbxBuffer(buf, label) {
      What cannot be freed from here is fbxTree's own inflated Video.Content
      arrays; they are overwritten by the next parse and unreachable from the
      app in the meantime. */
+  /* AND THE MAPS ARE READ BEFORE THAT, not after (v3.10). landImport reads
+     the FBX materials' pictures through matSrc - the ORIGINAL materials - and
+     the release below nulls every texture's image first, so not one FBX map
+     ever reached a material. Fixed here for a load with somewhere to fetch
+     pictures from (embed `load` by url); the file-picker path keeps its old
+     order until it gets its own version. */
+  const landFirst = !!(opt && opt.base);
+  if (landFirst) landImport(built, label);
   root.traverse(n => {
     if (!n.isMesh) return;
     if (n.geometry) n.geometry.dispose();
@@ -40649,7 +40716,7 @@ async function importFbxBuffer(buf, label) {
     });
   });
 
-  landImport(built, label);
+  if (!landFirst) landImport(built, label);
   /* After landImport, so its own toast is the one that stays up when both
      have something to say - the face count is what the person is waiting
      for, and this is a footnote.
@@ -40666,13 +40733,13 @@ async function importFbxBuffer(buf, label) {
   }
 }
 
-async function importGltfBuffer(buf, label) {
+async function importGltfBuffer(buf, label, opt) {
   const why = gltfRefusal(buf);
   if (why) { toast(why); return; }
   const loader = new GLTFLoader();
   let gltf;
   try {
-    gltf = await loader.parseAsync(buf, '');
+    gltf = await loader.parseAsync(buf, (opt && opt.base) ? opt.base.replace(/[^/]*$/, '') : '');
   } catch (err) {
     /* The loader names the extension it cannot handle in its message; a
        compressed .glb reaches here rather than the JSON check above. */
@@ -40961,7 +41028,7 @@ function wireImport() {
 
 /* ---------------- Export ---------------- */
 
-function buildExportGroup() {
+function buildExportGroup(only, named) {
   const group = new THREE.Group();
   App.objects.forEach(o => {
     /* A CURVE IS NOT GEOMETRY ANY FILE FORMAT HERE CARRIES (found in review).
@@ -40972,6 +41039,8 @@ function buildExportGroup() {
        did not match POSITION. Skipped, quietly: a curve is construction, and
        nobody expects their scaffolding in the .obj. */
     if (isCurve(o)) return;
+    // v3.10, embed `export`: some objects, and their names on the nodes.
+    if (only && !only.has(o.id)) return;
     const source = o.mesh;
     const mats = Array.isArray(source.material) ? source.material : [source.material];
     const eg = source.geometry.clone();
@@ -41002,6 +41071,7 @@ function buildExportGroup() {
     m.position.copy(o.mesh.position);
     m.quaternion.copy(o.mesh.quaternion);
     m.scale.copy(o.mesh.scale);
+    if (named && o.name) m.name = String(o.name);
     group.add(m);
   });
   return group;
@@ -53360,6 +53430,7 @@ function refreshUI() {
      attribute unless something is actually selected. */
   refreshCurvePreview();
   invalidate();   // see On-demand rendering
+  if (EMBED && _embedHooks) _embedHooks.sel();
   /* The mode, published to CSS (a2.58). Every accented control in the file
      reads --accent, and --accent is defined per [data-mode], so this one
      attribute is the whole of Mode Hue. Hooked here for the same reason
@@ -54461,7 +54532,7 @@ function showUpdateBanner(newVersion) {
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') checkForUpdate();
+  if (!EMBED && document.visibilityState === 'visible') checkForUpdate();
 });
 
 function init() {
@@ -54480,7 +54551,8 @@ function init() {
   wireImport();
   // Pick up where you left off. Only fall back to a fresh cube when there's
   // nothing to come back to.
-  if (!restoreAutosave()) {
+  if (EMBED) { /* v3.10: starts empty and waits for the host's `load` */ }
+  else if (!restoreAutosave()) {
     const obj = createCubeObject('Cube 1', new THREE.Vector3(0, 0.5, 0));
     App.selectedObjectIds = new Set([obj.id]);
   }
@@ -54497,10 +54569,595 @@ function init() {
      seconds and would never see it again, with nothing learned. The flag
      says what actually matters: has this browser been told. Someone who
      already knows the gesture spends one ring bloom putting it away. */
-  maybeShowFirstHint();
-  checkForUpdate();
+  // Neither belongs to a page someone else hosts (v3.10).
+  if (!EMBED) { maybeShowFirstHint(); checkForUpdate(); }
 }
 init();
+
+/* ---------------- Embed mode (v3.10) ----------------
+   ?embed=1 turns Kubik into something a host page can put in an <iframe>
+   and drive with postMessage. The protocol is written up for the people
+   building a host in EMBED.md at the root of the repo; this is the
+   implementation, and it is the ONLY place it lives. Every other line the
+   mode touches is a one-line `if (EMBED)` in code that already existed, so
+   without the parameter none of this is reachable - there is not even a
+   'message' listener.
+
+   It is a general door, not an integration: open a model, look at it, paint
+   maps on it, hand it back. Nothing here knows who the host is.
+
+   EVERY COMMAND REUSES THE PATH A PERSON TAKES. load ends in landImport, so
+   both budgets, the finite sweep, the quad pairing and the material merge are
+   the importer's own; export is buildExportGroup and GLTFExporter, exactly as
+   the Export button; setMaps goes through importMaterialContext, so a map's
+   colour space comes from MAP_SLOTS by construction and cannot be passed in
+   wrong. A second copy of any of that would be a second answer waiting to
+   disagree with the first. */
+if (EMBED) (function embedMain() {
+  const VERSION = ((document.querySelector('.brand span') || {}).textContent || '').trim();
+  const CAPS = ['load', 'load.url', 'load.buffer', 'load.glb', 'load.gltf', 'load.fbx', 'load.obj',
+    'export.glb', 'stats', 'snapshot.png', 'setMaps', 'setView', 'camera',
+    'event.ready', 'event.dirty', 'event.selection'];
+  const hostOrigin = (() => {
+    const h = EMBED_Q.get('host');
+    if (!h) return null;
+    try { return new URL(h).origin; } catch (e) { return null; }
+  })();
+  const parentWin = window.parent !== window ? window.parent : null;
+  const allowed = (o) => o === location.origin || (!!hostOrigin && o === hostOrigin);
+  let peer = null;            // origin of the last accepted message - where events go
+  let view = EMBED_Q.get('view') === 'full' ? 'full' : 'node';
+  let busy = 0;               // a host command is running: its own edits are not "dirty"
+  let toasts = null;          // what the app said while a command ran
+  let dirtyTimer = null;
+  let lastSel = '';
+  let chain = Promise.resolve();
+  const srcFormat = new Map();  // obj.id -> the format it was loaded from
+
+  function emit(event, data) {
+    if (!parentWin) return;
+    const to = peer ? [peer] : Array.from(new Set([hostOrigin, location.origin].filter(Boolean)));
+    to.forEach(o => {
+      try { parentWin.postMessage({ kubik: 1, event: event, data: data }, o); } catch (e) { /* closed */ }
+    });
+  }
+
+  function fail(code, message, extra) {
+    const e = new Error(message);
+    e.code = code; e.extra = extra || null;
+    throw e;
+  }
+
+  /* The importers report by toast, which is right for a person and useless
+     for a host. Rather than give every reader a second way to fail, the
+     command collects what was said and turns the LAST complaint into a code.
+     The numbers a host needs for a budget refusal are in the sentence. */
+  function refusal(said) {
+    const msgs = (said || []).filter(m => !/^Reading /.test(m));
+    const m = msgs.length ? msgs[msgs.length - 1] : 'Nothing was imported';
+    let r;
+    if ((r = m.match(/^(\d+) faces - too many to edit \(limit (\d+)\)/))) {
+      fail('budget', m, { unit: 'faces', count: +r[1], limit: +r[2] });
+    }
+    if ((r = m.match(/^(\d+)k triangles - too heavy to edit \(limit (\d+)k\)/))) {
+      fail('budget', m, { unit: 'triangles', count: +r[1] * 1000, limit: +r[2] * 1000, approx: true });
+    }
+    if (/Draco|meshopt|cannot read|too old|FBX reader|cannot handle|which Kubik/i.test(m)) fail('unsupported', m);
+    if (/No mesh|Nothing importable/i.test(m)) fail('nomesh', m);
+    if (/broken coordinates/i.test(m)) fail('corrupt', m);
+    fail('load', m);
+  }
+
+  _embedHooks = {
+    toast(msg) { if (toasts) toasts.push(String(msg)); },
+    dirty() {
+      if (busy) return;
+      clearTimeout(dirtyTimer);
+      dirtyTimer = setTimeout(() => emit('dirty', { dirty: true }), 300);
+    },
+    sel() {
+      const count = App.mode === 'object' ? App.selectedObjectIds.size : App.selectedElements.size;
+      const key = App.mode + ':' + count;
+      if (key === lastSel) return;
+      lastSel = key;
+      emit('selection', { mode: App.mode, count: count });
+    }
+  };
+
+  const meshObjects = () => App.objects.filter(o => !isCurve(o));
+
+  function pickObjects(ids) {
+    if (ids === undefined || ids === null || ids === 'all') return meshObjects();
+    const want = Array.isArray(ids) ? ids : [ids];
+    return want.map(x => meshObjects().find(o => o.id === x || o.name === x) ||
+      fail('noobject', 'No object ' + JSON.stringify(x)));
+  }
+
+  /* COUNTED OFF THE GEOMETRY THE EXPORT WILL CLONE. `verts` is distinct
+     positions, not attribute vertices: every face group carries private
+     copies (separateGroupVertices), so the attribute count is a property of
+     how Kubik draws and means nothing outside it. */
+  function objStats(o) {
+    const geo = o.mesh.geometry;
+    const pos = geo.attributes.position;
+    const tris = (geo.index ? geo.index.count : pos.count) / 3;
+    const f = geo.userData && geo.userData.kubikFaces;
+    let faces = f ? f.length - 1 : faceCount(geo), quads = 0;
+    if (f) for (let i = 0; i + 1 < f.length; i++) if (f[i + 1] - f[i] === 6) quads++;
+    const seen = new Set();
+    for (let i = 0; i < pos.count; i++) {
+      seen.add(pos.getX(i).toFixed(5) + ',' + pos.getY(i).toFixed(5) + ',' + pos.getZ(i).toFixed(5));
+    }
+    const fin = o.mesh.userData.finishes || {};
+    const mats = new Set(), textured = {};
+    Object.keys(fin).forEach(k => {
+      const d = MATERIALS.get(fin[k]);
+      if (!d || !d.name) return;
+      mats.add(d.name);
+      // Which pictures the material carries, in the protocol's own names.
+      const have = Object.keys(MAP_ARG).filter(a => d.maps && d.maps[MAP_ARG[a]]);
+      if (have.length) textured[d.name] = have;
+    });
+    return { id: o.id, name: o.name, faces: faces, tris: tris, quads: quads, verts: seen.size,
+      hasUV: !!geo.attributes.uv, materials: Array.from(mats), textured: textured };
+  }
+
+  function stats(args) {
+    const list = pickObjects(args && args.objects).map(objStats);
+    const sum = k => list.reduce((a, x) => a + x[k], 0);
+    const mats = new Set(), textured = {};
+    list.forEach(x => { x.materials.forEach(m => mats.add(m)); Object.assign(textured, x.textured); });
+    return { objects: list.length, faces: sum('faces'), tris: sum('tris'), quads: sum('quads'),
+      verts: sum('verts'), hasUV: list.length > 0 && list.every(x => x.hasUV),
+      materials: Array.from(mats), textured: textured, list: list };
+  }
+
+  /* THE STORE DECODES A PICTURE LATE. textureFor hands out a Texture whose
+     Image is still decoding its data: URL, and GLTFExporter writes what is
+     drawable at that instant - a model loaded and exported in one breath went
+     out with no textures (found by the probe). Awaited before `load` answers
+     and before `export` reads. */
+  async function picturesReady(objs) {
+    const waits = [];
+    objs.forEach(o => {
+      const mm = o.mesh.material;
+      (Array.isArray(mm) ? mm : [mm]).forEach(m => {
+        if (!m) return;
+        MAP_SLOTS.forEach(sl => {
+          const img = m[sl.prop] && m[sl.prop].image;
+          if (img && img.decode && !img.complete) waits.push(img.decode().catch(() => {}));
+        });
+      });
+    });
+    await Promise.all(waits);
+    if (waits.length) invalidate();
+  }
+
+  function settleCamera() {
+    if (!camAnim) return;
+    camera.position.copy(camAnim.toPos);
+    orbit.target.copy(camAnim.toTarget);
+    camAnim = null;
+    orbit.update();
+  }
+
+  function deselect() {
+    App.selectedObjectIds = new Set();
+    App.activeObjectId = null;
+    if (App.selectedElements) App.selectedElements.clear();
+  }
+
+  async function bytesOf(src, what) {
+    if (src instanceof ArrayBuffer) return { buf: src, url: null };
+    if (ArrayBuffer.isView(src)) return { buf: src.buffer.slice(src.byteOffset, src.byteOffset + src.byteLength), url: null };
+    if (typeof src !== 'string' || !src) fail('args', what + ' needs a url or an ArrayBuffer');
+    let abs;
+    try { abs = new URL(src, location.href).href; } catch (e) { fail('args', 'Bad url ' + src); }
+    let res;
+    try { res = await fetch(abs); } catch (e) { fail('fetch', 'Could not fetch ' + abs); }
+    if (!res.ok) fail('fetch', 'HTTP ' + res.status + ' for ' + abs, { status: res.status });
+    return { buf: await res.arrayBuffer(), url: abs };
+  }
+
+  const extOf = s => ((String(s || '').split(/[?#]/)[0].match(/\.([a-z0-9]+)$/i) || [, ''])[1]).toLowerCase();
+
+  async function load(args) {
+    const src = args.buffer !== undefined ? args.buffer : args.url;
+    const got = await bytesOf(src, 'load');
+    const format = String(args.format || extOf(args.name) || extOf(got.url) || 'glb').toLowerCase();
+    if (['glb', 'gltf', 'fbx', 'obj'].indexOf(format) < 0) fail('format', 'Cannot load format ' + format);
+    const stem = String(args.name || (got.url ? got.url.split(/[?#]/)[0].split('/').pop() : '') || 'Imported')
+      .replace(/\.[^.]+$/, '').slice(0, 32) || 'Imported';
+    /* THE OLD MODEL GOES ONLY ONCE THE NEW ONE HAS LANDED. Clearing first
+       meant a refused file (budget, Draco) left the host with an empty
+       viewport and nothing to export. */
+    const before = new Set(App.objects.map(o => o.id));
+    const opt = got.url ? { base: got.url } : null;
+    if (format === 'fbx') await importFbxBuffer(got.buf, stem, opt);
+    else if (format === 'obj') importObjText(new TextDecoder().decode(got.buf), '', stem);
+    else await importGltfBuffer(got.buf, stem, opt);
+    const made = App.objects.filter(o => !before.has(o.id));
+    if (!made.length) refusal(toasts);
+    if (args.replace !== false && before.size) {
+      App.objects.filter(o => before.has(o.id)).forEach(o => { srcFormat.delete(o.id); dropObject(o); });
+      App.selectedObjectIds = new Set(made.map(o => o.id));
+      App.activeObjectId = made[made.length - 1].id;
+      refreshUI();
+      pushHistory();
+      focusOnAll();
+    }
+    made.forEach(o => srcFormat.set(o.id, format));
+    await picturesReady(made);
+    if (view === 'node') { deselect(); setMode('object'); refreshUI(); }
+    const st = stats({ objects: made.map(o => o.id) });
+    const notes = (toasts || []).filter(m => !/^Reading |^Imported /.test(m));
+    if (notes.length) st.notes = notes;
+    return st;
+  }
+
+  async function exportCmd(args) {
+    const format = String(args.format || 'glb').toLowerCase();
+    if (format !== 'glb') fail('format', 'Only glb export is offered');
+    const objs = pickObjects(args.objects);
+    if (!objs.length) fail('empty', 'Nothing to export');
+    await picturesReady(objs);
+    const group = buildExportGroup(new Set(objs.map(o => o.id)), true);
+    group.children.forEach(compactForExport);
+    try {
+      const out = await new GLTFExporter().parseAsync(group, { binary: true });
+      return out;
+    } catch (e) {
+      fail('export', 'glTF export failed: ' + (e && e.message));
+    } finally {
+      group.traverse(n => {
+        if (!n.isMesh) return;
+        n.geometry.dispose();
+        (Array.isArray(n.material) ? n.material : [n.material]).forEach(m => m && m.dispose());
+      });
+    }
+  }
+
+  /* ONE PRIMITIVE PER MATERIAL, VERTICES WELDED (v3.10). buildExportGroup
+     hands GLTFExporter one group per FACE, which is what lets Kubik reopen its
+     own file with every face it had - and makes a 5000-face character into
+     5000 primitives, each of which three's GLTFLoader expands to the whole
+     vertex buffer: 100 million vertices on the way back in, and "Invalid array
+     length". A host wants the asset, not the editor's bookkeeping.
+
+     Faces are regrouped by the material they wear and every vertex that
+     agrees on position, normal and UV exactly is one vertex again, so the
+     file has the welding its source had. Not one triangle is made, lost or
+     moved; the triangles of one material are written in the order they had. */
+  function compactForExport(m) {
+    if (!m.isMesh) return;
+    const geo = m.geometry;
+    const mats = Array.isArray(m.material) ? m.material : [m.material];
+    const pos = geo.attributes.position;
+    const idx = geo.index ? geo.index.array : null;
+    const nIdx = idx ? idx.length : pos.count;
+    const keyOf = mm => (mm && mm.userData && mm.userData.kubikDef ? 'd:' + mm.userData.kubikDef : 'u:' + (mm ? mm.uuid : '')) +
+      '|' + (mm ? mm.side : 0) + '|' + (mm ? mm.name : '');
+    const runs = geo.groups.length ? geo.groups : [{ start: 0, count: nIdx, materialIndex: 0 }];
+    const order = [], byKey = new Map();
+    runs.forEach(g => {
+      const mm = mats[g.materialIndex] || mats[0];
+      const k = keyOf(mm);
+      let e = byKey.get(k);
+      if (!e) { e = { mat: mm, runs: [] }; byKey.set(k, e); order.push(e); }
+      e.runs.push(g);
+    });
+    const names = ['position', 'normal', 'uv'].filter(n => geo.attributes[n]);
+    const src = names.map(n => geo.attributes[n]);
+    const dst = names.map(() => []);
+    const seen = new Map();
+    const index = [];
+    const ng = new THREE.BufferGeometry();
+    order.forEach((e, mi) => {
+      const start = index.length;
+      e.runs.forEach(g => {
+        for (let k = g.start; k < g.start + g.count; k++) {
+          const vi = idx ? idx[k] : k;
+          let key = '';
+          for (let a = 0; a < src.length; a++) {
+            for (let c = 0; c < src[a].itemSize; c++) key += src[a].getComponent(vi, c) + ',';
+          }
+          let ni = seen.get(key);
+          if (ni === undefined) {
+            ni = dst[0].length / 3;
+            seen.set(key, ni);
+            for (let a = 0; a < src.length; a++) {
+              for (let c = 0; c < src[a].itemSize; c++) dst[a].push(src[a].getComponent(vi, c));
+            }
+          }
+          index.push(ni);
+        }
+      });
+      ng.addGroup(start, index.length - start, mi);
+    });
+    names.forEach((n, a) => ng.setAttribute(n, new THREE.Float32BufferAttribute(dst[a], src[a].itemSize)));
+    ng.setIndex(index);
+    geo.dispose();
+    const keep = new Set(order.map(e => e.mat));
+    mats.forEach(mm => { if (mm && !keep.has(mm)) mm.dispose(); });
+    m.geometry = ng;
+    m.material = order.length > 1 ? order.map(e => e.mat) : order[0].mat;
+  }
+
+  const PRESET_DIR = {
+    front: [0, 0, 1], back: [0, 0, -1], left: [-1, 0, 0], right: [1, 0, 0],
+    top: [0, 1, 0.0001], 'three-quarter': [1, 0.6, 1]
+  };
+
+  function sceneBox() {
+    const box = new THREE.Box3();
+    App.objects.filter(objectPickable).forEach(o => box.expandByObject(o.mesh));
+    return box;
+  }
+
+  // The distance that fits the box in a frame of this aspect, both ways.
+  function fitDistance(box, aspect) {
+    const size = box.getSize(new THREE.Vector3());
+    const r = Math.max(size.length() / 2, 0.3);
+    const vf = THREE.MathUtils.degToRad(perspCam.fov) / 2;
+    const hf = Math.atan(Math.tan(vf) * aspect);
+    return r / Math.sin(Math.min(vf, hf)) * 1.02;
+  }
+
+  function cameraCmd(args) {
+    const p = String((args && args.preset) || 'fit');
+    if (p === 'fit') { focusOnAll(); return null; }
+    const d = PRESET_DIR[p];
+    if (!d) fail('args', 'Unknown preset ' + p);
+    const box = sceneBox();
+    if (box.isEmpty()) fail('empty', 'Nothing to look at');
+    const c = box.getCenter(new THREE.Vector3());
+    const dir = new THREE.Vector3(d[0], d[1], d[2]).normalize();
+    animateCameraTo(c.clone().add(dir.multiplyScalar(fitDistance(box, perspCam.aspect))), c);
+    return null;
+  }
+
+  /* SAME TICK AS THE RENDER, for savePictureAction's reason: the viewport
+     buffer is not preserved, so the read goes on the line after the draw.
+     The renderer is resized to the picture and put back in a finally, and
+     onResize is told the size it remembers is stale so it really does put
+     it back. */
+  function snapshot(args) {
+    const w = Math.max(16, Math.min(2048, Math.round(+args.w || 330)));
+    const h = Math.max(16, Math.min(2048, Math.round(+args.h || 250)));
+    const v = String(args.view || 'three-quarter');
+    if (v !== 'current' && !PRESET_DIR[v]) fail('args', 'Unknown view ' + v);
+    settleCamera();
+    setRenderScale(false);
+    const pr = renderer.getPixelRatio();
+    const keepPos = perspCam.position.clone(), keepQuat = perspCam.quaternion.clone();
+    const keepAspect = perspCam.aspect;
+    const cam = v === 'current' ? camera : perspCam;
+    const hidden = [];
+    let url = '';
+    try {
+      renderer.setPixelRatio(1);
+      renderer.setSize(w, h, false);
+      perspCam.aspect = w / h;
+      perspCam.updateProjectionMatrix();
+      if (v !== 'current') {
+        const box = sceneBox();
+        if (!box.isEmpty()) {
+          const c = box.getCenter(new THREE.Vector3());
+          const d = PRESET_DIR[v];
+          const dir = new THREE.Vector3(d[0], d[1], d[2]).normalize();
+          perspCam.position.copy(c).add(dir.multiplyScalar(fitDistance(box, w / h)));
+          perspCam.lookAt(c);
+          perspCam.updateMatrixWorld();
+        }
+      }
+      pictureHiddenParts(hidden);
+      renderer.render(scene, cam);
+      url = renderer.domElement.toDataURL('image/png');
+    } finally {
+      hidden.forEach(o => { o.visible = true; });
+      perspCam.position.copy(keepPos);
+      perspCam.quaternion.copy(keepQuat);
+      perspCam.aspect = keepAspect;
+      perspCam.updateProjectionMatrix();
+      perspCam.updateMatrixWorld();
+      renderer.setPixelRatio(pr);
+      lastViewW = 0; lastViewH = 0;
+      onResize();
+      invalidate();
+    }
+    if (url.indexOf('data:image/png') !== 0 || url.length < 200) fail('snapshot', 'Picture failed');
+    return dataUrlBytes(url).buffer;
+  }
+
+  const MAP_ARG = { baseColor: 'base', normal: 'normal', roughness: 'rough', metallic: 'metal', ao: 'ao', emissive: 'emissive' };
+
+  async function setMaps(args) {
+    const maps = args.maps || {};
+    const keys = Object.keys(maps).filter(k => maps[k] !== undefined && maps[k] !== null);
+    if (!keys.length) fail('args', 'No maps given');
+    keys.forEach(k => { if (!MAP_ARG[k]) fail('args', 'Unknown map ' + k + ' (use ' + Object.keys(MAP_ARG).join(', ') + ')'); });
+    const targets = pickObjects(args.object === undefined ? 'all' : args.object);
+    if (!targets.length) fail('empty', 'No object to paint');
+    const bare = targets.filter(o => !o.mesh.geometry.attributes.uv);
+    if (bare.length) fail('nouv', bare.length + ' object(s) have no UV, so a map has nowhere to go', { objects: bare.map(o => o.id) });
+    /* WHICH WAY UP. Kubik keeps pictures the glTF way (first row at the top);
+       an FBX or OBJ mesh carries UVs that expect the other way, which is what
+       the FBX reader's own textures do with flipY. Defaulted from where the
+       first target came from, overridable. */
+    const flip = args.flipY !== undefined ? !!args.flipY
+      : ['fbx', 'obj'].indexOf(srcFormat.get(targets[0].id)) >= 0;
+    const fin0 = targets[0].mesh.userData.finishes || {};
+    const want = args.material ? String(args.material) : null;
+    const gi0 = Object.keys(fin0).find(k => !want || ((MATERIALS.get(fin0[k]) || {}).name === want));
+    const cur = getMaterialDef(gi0 !== undefined ? fin0[gi0] : 'standard') || {};
+    const bitmaps = [];
+    const src = {
+      name: String(args.name || want || cur.name || 'Material').slice(0, 64),
+      color: maps.baseColor ? new THREE.Color(1, 1, 1)
+        : new THREE.Color(cur.color || (typeof DEFAULT_MATERIAL_COLOR !== 'undefined' ? DEFAULT_MATERIAL_COLOR : 0xb0b0b0)),
+      roughness: maps.roughness ? 1 : (Number.isFinite(+cur.roughness) ? +cur.roughness : 1),
+      metalness: maps.metallic ? 1 : (Number.isFinite(+cur.metalness) ? +cur.metalness : 0)
+    };
+    try {
+      for (const k of keys) {
+        const got = await bytesOf(maps[k], 'setMaps.' + k);
+        let bmp;
+        try { bmp = await createImageBitmap(new Blob([got.buf])); }
+        catch (e) { fail('image', 'Could not decode the ' + k + ' picture'); }
+        bitmaps.push(bmp);
+        const slot = MAP_SLOTS.find(s => s.key === MAP_ARG[k]);
+        src[slot.prop] = { isTexture: true, image: bmp, channel: 0, flipY: flip,
+          wrapS: THREE.RepeatWrapping, wrapT: THREE.RepeatWrapping,
+          repeat: { x: 1, y: 1 }, offset: { x: 0, y: 0 }, rotation: 0, center: { x: 0, y: 0 } };
+      }
+      const ctx = importMaterialContext();
+      const id = ctx.idFor(src);
+      const tx = ctx.textures;
+      if (id === 'standard' || tx.failed || tx.budget) {
+        fail('maps', 'The maps did not take (' + tx.failed + ' failed, ' + tx.budget + ' over the limit)');
+      }
+      targets.forEach(o => {
+        const fin = o.mesh.userData.finishes || (o.mesh.userData.finishes = {});
+        const n = faceCount(o.mesh.geometry);
+        for (let gi = 0; gi < n; gi++) {
+          if (want && (MATERIALS.get(fin[gi]) || {}).name !== want) continue;
+          fin[gi] = id;
+        }
+        dressFromPool(o);
+      });
+      saveMaterialLibrary();
+      _matPreviews = null;
+      if (typeof refreshMatTrayIfOpen === 'function') refreshMatTrayIfOpen();
+      refreshUI();
+      scheduleAutosave();
+      /* MEASURED ON THE MATERIAL THAT DRAWS, not on the slot table: what the
+         host is told is what the renderer was handed. */
+      const mm = targets[0].mesh.material;
+      const m0 = (Array.isArray(mm) ? mm : [mm]).find(x => x && x.userData && x.userData.kubikDef === id) ||
+        (Array.isArray(mm) ? mm[0] : mm);
+      const waits = [];
+      const applied = keys.map(k => {
+        const slot = MAP_SLOTS.find(s => s.key === MAP_ARG[k]);
+        const t = m0 && m0[slot.prop];
+        if (t && t.image && t.image.decode && !t.image.complete) waits.push(t.image.decode().catch(() => {}));
+        return { map: k, prop: slot.prop, present: !!t,
+          colorSpace: t ? t.colorSpace : null, expected: slot.srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace };
+      });
+      await Promise.all(waits);
+      invalidate();
+      return { material: (MATERIALS.get(id) || {}).name || id, flipY: flip, applied: applied };
+    } finally {
+      bitmaps.forEach(b => { try { b.close(); } catch (e) { /* gone */ } });
+    }
+  }
+
+  /* ---- The node view: a picture you can turn, nothing else ----
+     Everything but the canvas is hidden by the stylesheet, and a shield over
+     the canvas takes the pointer so that no tap reaches the editor - a node
+     preview that could select, bloom the ring or drag a vertex would be an
+     editor in a 330px window. The turntable is OrbitControls' own
+     autoRotate, which the frame loop already advances. */
+  const shield = document.createElement('div');
+  shield.id = 'kubikShield';
+  viewportEl.appendChild(shield);
+  let drag = null, resumeTimer = null;
+  shield.addEventListener('pointerdown', (e) => {
+    drag = { x: e.clientX, y: e.clientY };
+    try { shield.setPointerCapture(e.pointerId); } catch (_) {}
+    orbit.autoRotate = false;
+    clearTimeout(resumeTimer);
+    settleCamera();
+  });
+  shield.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    drag.x = e.clientX; drag.y = e.clientY;
+    const off = camera.position.clone().sub(orbit.target);
+    const sph = new THREE.Spherical().setFromVector3(off);
+    sph.theta -= dx * 0.01;
+    sph.phi = Math.min(Math.PI - 0.12, Math.max(0.12, sph.phi - dy * 0.01));
+    off.setFromSpherical(sph);
+    camera.position.copy(orbit.target).add(off);
+    camera.lookAt(orbit.target);
+    orbit.update();
+    invalidate();
+  });
+  const endDrag = () => {
+    if (!drag) return;
+    drag = null;
+    resumeTimer = setTimeout(() => { if (view === 'node') orbit.autoRotate = true; }, 1500);
+  };
+  shield.addEventListener('pointerup', endDrag);
+  shield.addEventListener('pointercancel', endDrag);
+  shield.addEventListener('wheel', (e) => e.preventDefault(), { passive: false });
+  shield.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  function applyView(v) {
+    view = v === 'full' ? 'full' : 'node';
+    document.body.classList.add('kubik-embed');
+    document.body.classList.toggle('kubik-node', view === 'node');
+    orbit.autoRotateSpeed = 1.2;   // ~50 s a turn
+    orbit.autoRotate = view === 'node';
+    if (view === 'node') {
+      if (App.mode !== 'object') setMode('object');
+      deselect();
+      refreshUI();
+    }
+    lastViewW = 0; lastViewH = 0;
+    onResize();
+    invalidate();
+  }
+
+  const CMDS = {
+    hello: () => ({ version: VERSION, caps: CAPS, view: view }),
+    load: load,
+    export: exportCmd,
+    stats: stats,
+    snapshot: snapshot,
+    setMaps: setMaps,
+    setView: (a) => {
+      const v = String((a && a.view) || '');
+      if (v !== 'node' && v !== 'full') fail('args', 'view is node or full');
+      applyView(v);
+      return { view: view };
+    },
+    camera: cameraCmd
+  };
+
+  window.addEventListener('message', (ev) => {
+    if (!parentWin || ev.source !== parentWin) return;
+    if (!allowed(ev.origin)) return;
+    const d = ev.data;
+    if (!d || d.kubik !== 1 || typeof d.cmd !== 'string') return;
+    peer = ev.origin;
+    const reply = (m, tr) => {
+      m.kubik = 1; m.id = d.id;
+      try { parentWin.postMessage(m, ev.origin, tr || []); } catch (e) { console.error('[embed] reply', e); }
+    };
+    const fn = Object.prototype.hasOwnProperty.call(CMDS, d.cmd) ? CMDS[d.cmd] : null;
+    if (!fn) { reply({ ok: false, error: { code: 'unknown', message: 'Unknown command ' + d.cmd } }); return; }
+    // One at a time: a load and an export racing each other would export
+    // half a scene.
+    chain = chain.then(async () => {
+      busy++; toasts = [];
+      try {
+        const r = await fn(d.args || {});
+        if (r instanceof ArrayBuffer) reply({ ok: true, result: r }, [r]);
+        else reply({ ok: true, result: r === undefined ? null : r });
+      } catch (e) {
+        const err = Object.assign({ code: (e && e.code) || 'internal', message: String((e && e.message) || e) },
+          (e && e.extra) || {});
+        if (!e || !e.code) console.error('[embed]', e);
+        reply({ ok: false, error: err });
+      } finally {
+        busy--; toasts = null;
+      }
+    });
+  });
+
+  applyView(view);
+  emit('ready', { version: VERSION, caps: CAPS });
+})();
 
 /* ---------------- Debug handle ----------------
    Under ?debug=1 only, a window handle onto the live app. Everything in
