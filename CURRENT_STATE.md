@@ -19017,3 +19017,11 @@ Probes: `_mat304chk` (19: types, key presence, editor toggles, breakup pixels, w
 - Packing: `uKP5` = (rot, proc axis); 122 uniform vectors on an 8-slot program.
 - FEATURE-COMPILED SHADER: `kubikShaderFlags(d)` -> `#define KUBIK_WOOD/LEATHER/GRUNGE/DUST/MUD/PROC/CURV/PROJ/BRK/VARY`, prepended in onBeforeCompile and part of the program key, so a type switch or a layer switched on recompiles by itself. Every unused generator and projection is out of the unrolled loop: the tray went 65 -> 42 ms a definition (it was 58 before v3.04). A new layer type or feature must get its own flag and #ifdef, or it is compiled into everything again.
 - `_proj306chk` 4.0-4.6 cover rotate, axes, the fit's e1 (18 checks).
+
+## Region select on the fly; world ring seat 7 = Select all (v3.09)
+- Box and Lasso are GESTURES now, not modes. TAP, THEN DRAG: a press within 350 ms and 40 px of a tap's release that then travels draws a region (`quasiRegion` in pointerdown). The selection from BEFORE that tap is restored (`lastTap.snap` from `takeTapSnapshot`, put back by `restoreTapSnapshot` only if mode and active object are unchanged) - the tap is absorbed. Kept still it is still the double tap (frame). A plain drag still orbits.
+- THE STROKE DECIDES: `boxDrag.kind` 'auto' shows a box; `regionStrokeKind` turns it into a lasso (sticky) once the stroke is 40 px long and its length > 1.6 x chord or it strays > 0.35 x chord off the straight line.
+- MOUSE: Shift-drag adds, Ctrl/Cmd-drag REMOVES (`region.op` 'sub' in performRegionSelect), Alt-drag forces a lasso - anywhere, even on the selection (no direct move then). Regions already added (App.multiSelect is permanently on), so Shift is a synonym, kept for habit.
+- Sticky `App.selectDrag` 'box'/'lasso' code paths remain but nothing enters them: the world ring seat and the B key are gone, init forces 'off' (an old saved 'box' would otherwise have no way out). A second finger drops an auto region.
+- World ring seat 7: `selall` - Select all / Deselect (`selectAllToggle`, label from `selectionCount`). Object mode: every pickable object, groups whole; Vertex/Edge/Face/UV: every element of the active object. Key A.
+- Probe `_sel309chk` (20, real PointerEvents on the canvas; first in `_prall.ps1`).

@@ -3212,7 +3212,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.08</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.09</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -29881,8 +29881,36 @@ function pointInPolygon(pt, poly) {
    rectangle or a freehand lasso. Coordinates here are viewport-relative, the
    same space worldToScreen returns - mixing that up with page coordinates
    silently shifts the whole test region by the height of the toolbars. */
+function takeTapSnapshot() {
+  return { mode: App.mode, active: App.activeObjectId, uvk: App.uvSelKind,
+    objs: [...App.selectedObjectIds], els: [...App.selectedElements] };
+}
+/* Only when the tap left us where we were - a tap that changed mode or the
+   object being edited is not something a region could be added to. */
+function restoreTapSnapshot(sn) {
+  if (!sn || sn.mode !== App.mode || sn.active !== App.activeObjectId) return false;
+  App.selectedObjectIds.clear(); sn.objs.forEach(id => App.selectedObjectIds.add(id));
+  App.selectedElements.clear(); sn.els.forEach(i => App.selectedElements.add(i));
+  App.uvSelKind = sn.uvk;
+  return true;
+}
+/* Box or lasso, judged from the stroke so far. A box drag is a fairly straight
+   diagonal; a lasso bends. Decided once the stroke is long enough to judge,
+   and a lasso stays a lasso. */
+function regionStrokeKind(bd, x, y) {
+  if (bd.len < 40) return 'auto';
+  const c = Math.hypot(x - bd.x0, y - bd.y0);
+  if (bd.len > 1.6 * c) return 'lasso';
+  let dev = 0;
+  const ux = (x - bd.x0) / (c || 1), uy = (y - bd.y0) / (c || 1);
+  for (const p of bd.points) dev = Math.max(dev, Math.abs((p.x - bd.x0) * uy - (p.y - bd.y0) * ux));
+  return dev > 0.35 * c ? 'lasso' : 'auto';
+}
+
 function performRegionSelect(region) {
-  const additive = App.multiSelect;
+  // v3.09: region.op 'add' | 'sub' comes from tap-then-drag and the modifiers.
+  const op = region.op || null;
+  const additive = op === 'add' || (op !== 'sub' && App.multiSelect);
   const inside = (pt) => {
     if (!pt) return false;
     if (region.kind === 'box') {
@@ -29914,12 +29942,15 @@ function performRegionSelect(region) {
       }
       if (anyInside(pts)) hitIds.push(o.id);
     });
-    if (!additive) App.selectedObjectIds.clear();
-    // A group caught by the box comes in WHOLE - see expandIdsToGroups.
-    expandIdsToGroups(hitIds).forEach(id => App.selectedObjectIds.add(id));
+    if (op === 'sub') expandIdsToGroups(hitIds).forEach(id => App.selectedObjectIds.delete(id));
+    else {
+      if (!additive) App.selectedObjectIds.clear();
+      // A group caught by the box comes in WHOLE - see expandIdsToGroups.
+      expandIdsToGroups(hitIds).forEach(id => App.selectedObjectIds.add(id));
+    }
     refreshUI();
     refreshGizmoAttachment();
-    toast(hitIds.length ? hitIds.length + ' object(s) selected' : 'Nothing in that region');
+    toast(hitIds.length ? hitIds.length + ' object(s) ' + (op === 'sub' ? 'removed' : 'selected') : 'Nothing in that region');
     return;
   }
 
@@ -30020,8 +30051,11 @@ function performRegionSelect(region) {
     if (App.uvSelKind === 'face') App.selectedElements.clear();
     App.uvSelKind = 'edge';
   }
-  if (!additive) App.selectedElements.clear();
-  hit.forEach(i => App.selectedElements.add(i));
+  if (op === 'sub') hit.forEach(i => App.selectedElements.delete(i));
+  else {
+    if (!additive) App.selectedElements.clear();
+    hit.forEach(i => App.selectedElements.add(i));
+  }
   refreshElementColors(obj);
   refreshUI();
   refreshGizmoAttachment();
@@ -30030,7 +30064,7 @@ function performRegionSelect(region) {
      otherwise it reads as the box having missed. The message also names the
      way to get the others, which is the same escape hatch a tap offers. */
   toast(hit.length
-    ? hit.length + ' selected' +
+    ? hit.length + (op === 'sub' ? ' removed' : ' selected') +
       /* Short, because this is the routine message here and #toast is
          capped at half the viewport by its own centring - the long form
          wrapped to three lines on a 390px phone. */
@@ -30398,6 +30432,7 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     if (App.curveDraw) { App.curveDraw.live = null; App.curveDraw.pid = null; App.curveDraw.moved = false; refreshCurvePreview(); }
     if (App.curveEdit) { App.curveEdit.pid = null; App.curveEdit.drag = null; App.curveEdit.hdrag = null; App.curveEdit.moved = false; }
     directCandidate = null;
+    if (boxDrag && App.selectDrag === 'off') { boxDrag = null; selectBoxEl.style.display = 'none'; lassoSvgEl.style.display = 'none'; }
     endAmountDrag();   // a2.102: a second finger is the camera, not the amount
     orbit.enabled = true;
     return;
@@ -30466,7 +30501,24 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   // Landing on something already selected might be the start of a drag, but
   // it might equally be a tap - so only remember it here and decide once the
   // finger actually travels. Region-select drags take priority.
-  directCandidate = (App.selectDrag === 'off' && pointerOnSelection(ev))
+  /* ON-THE-FLY REGION SELECT (v3.09). Box and Lasso no longer need the
+     world ring. TAP, THEN DRAG: a press that lands right after a tap (the
+     first half of a double tap) and then travels draws a region that ADDS to
+     what was selected before that tap - the tap itself is absorbed. Kept
+     still, it is still a double tap. With a mouse: Shift-drag adds, Ctrl/Cmd-
+     drag removes, Alt-drag forces a lasso - anywhere, even on the selection.
+     The stroke decides the shape: straight is a box, curved becomes a lasso. */
+  const isMouseL = ev.pointerType === 'mouse' && ev.button === 0;
+  const modOp = isMouseL ? ((ev.ctrlKey || ev.metaKey) ? 'sub' : (ev.shiftKey ? 'add' : null)) : null;
+  const modLasso = isMouseL && ev.altKey;
+  const regionMod = !App.pendingOp && (modOp || modLasso);
+  const quasiRegion = !regionMod && App.selectDrag === 'off' && !App.pendingOp &&
+    !App.geoSetup && !App.pivotPlacing && ev.button === 0 &&
+    !!(lastTap && lastTap.snap) && (performance.now() - lastTap.time) < 350 &&
+    Math.hypot(ev.clientX - lastTap.x, ev.clientY - lastTap.y) < 40;
+  const regionNow = !!(regionMod || quasiRegion);
+
+  directCandidate = (App.selectDrag === 'off' && !regionNow && pointerOnSelection(ev))
     ? { x: ev.clientX, y: ev.clientY } : null;
 
   /* Extrude mode owns every press while it is open. On the section you just
@@ -30490,7 +30542,7 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
      press is a candidate for moving it, above - and only for an op that
      has an amount. Decided on travel like every other candidate, so a
      still tap is still a tap and a hold still blooms the world ring. */
-  amountCandidate = (!directCandidate && amountDragEligible() && ev.button === 0)
+  amountCandidate = (!directCandidate && !regionNow && amountDragEligible() && ev.button === 0)
     ? { x: ev.clientX, y: ev.clientY, start: App.pendingOp.amount } : null;
 
   /* Holding still blooms a ring at the finger. WHICH ring depends on what
@@ -30527,10 +30579,13 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     }, WORLD_RING_HOLD_MS);
   }
 
-  if (App.selectDrag !== 'off' && !pointerDown.overGizmo) {
+  if ((App.selectDrag !== 'off' || regionNow) && !pointerDown.overGizmo) {
     const rect = viewportEl.getBoundingClientRect();
     const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
-    boxDrag = { x0: x, y0: y, points: [{ x, y }] };
+    const kind = modLasso ? 'lasso' : (App.selectDrag !== 'off' ? App.selectDrag : 'auto');
+    boxDrag = { x0: x, y0: y, points: [{ x, y }], kind, len: 0,
+      op: modOp || (quasiRegion ? 'add' : null),
+      snap: quasiRegion ? lastTap.snap : null };
     orbit.enabled = false;
   }
 });
@@ -30605,10 +30660,17 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
   const rect = viewportEl.getBoundingClientRect();
   const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
 
-  if (App.selectDrag === 'lasso') {
+  {
     const last = boxDrag.points[boxDrag.points.length - 1];
     // Thin the trail out so the polygon test stays cheap on long strokes.
-    if (!last || Math.hypot(x - last.x, y - last.y) > 4) boxDrag.points.push({ x, y });
+    if (!last || Math.hypot(x - last.x, y - last.y) > 4) {
+      if (last) boxDrag.len += Math.hypot(x - last.x, y - last.y);
+      boxDrag.points.push({ x, y });
+    }
+  }
+  if (boxDrag.kind === 'auto') boxDrag.kind = regionStrokeKind(boxDrag, x, y);
+  if (boxDrag.kind === 'lasso') {
+    selectBoxEl.style.display = 'none';
     lassoPathEl.setAttribute('points', boxDrag.points.map(p => p.x + ',' + p.y).join(' '));
     lassoSvgEl.style.display = 'block';
   } else {
@@ -30742,12 +30804,13 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
   if (boxDrag) {
     const rect = viewportEl.getBoundingClientRect();
     const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
-    const isLasso = App.selectDrag === 'lasso';
+    const isLasso = boxDrag.kind === 'lasso';
     const moved = isLasso
       ? boxDrag.points.length
       : Math.hypot(x - boxDrag.x0, y - boxDrag.y0);
     const points = boxDrag.points;
     const x0 = boxDrag.x0, y0 = boxDrag.y0;
+    const op = boxDrag.op, snap = boxDrag.snap;
 
     boxDrag = null;
     selectBoxEl.style.display = 'none';
@@ -30759,9 +30822,11 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
 
     if (isLasso ? moved > 3 : moved > 6) {
       pointerDown = null;
+      // Tap-then-drag: the tap that armed it is absorbed, not kept.
+      if (snap) { restoreTapSnapshot(snap); lastTap = null; }
       performRegionSelect(isLasso
-        ? { kind: 'lasso', points }
-        : { kind: 'box', x0: Math.min(x0, x), y0: Math.min(y0, y), x1: Math.max(x0, x), y1: Math.max(y0, y) });
+        ? { kind: 'lasso', points, op }
+        : { kind: 'box', x0: Math.min(x0, x), y0: Math.min(y0, y), x1: Math.max(x0, x), y1: Math.max(y0, y), op });
       return;
     }
     // negligible movement - fall through and treat it as a normal tap
@@ -30777,7 +30842,8 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
   const now = performance.now();
   const isDoubleTap = lastTap && (now - lastTap.time) < 450 &&
     Math.hypot(ev.clientX - lastTap.x, ev.clientY - lastTap.y) < 40;
-  lastTap = { time: now, x: ev.clientX, y: ev.clientY };
+  lastTap = { time: now, x: ev.clientX, y: ev.clientY,
+    snap: (App.pivotPlacing || App.geoSetup || App.pendingOp) ? null : takeTapSnapshot() };
 
   if (isDoubleTap) {
     lastTap = null; // consume so a third quick tap doesn't chain oddly
@@ -41102,6 +41168,7 @@ document.getElementById('btnShot').addEventListener('click', savePictureAction);
    one stroke weight, so the toolset reads as a single family rather than a
    pile of borrowed glyphs. */
 const ICON = {
+  selall:  '<path d="M4 4h16v16H4z" stroke-dasharray="3 2.6"/><path d="M8 12.5l3 3 5-6.5"/>',
   move:    '<path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"/>',
   rotate:  '<path d="M20 12a8 8 0 1 1-2.5-5.8"/><path d="M20 4v4h-4"/>',
   scale:   '<path d="M4 4h7v7H4z"/><path d="M13 13h7v7h-7z"/><path d="M11 11l2 2"/>',
@@ -43388,11 +43455,43 @@ const HUB_TOOLS_WORLD = [
      never three buttons. The seat cycles Tap -> Box -> Lasso -> Tap, its word
      says where you landed, and `on` lights it whenever a DRAG gesture is
      armed. */
-  { key: 'selmode', seat: 7, icon: 'free',
-    label: () => SEL_GESTURE_WORD[App.selectDrag] || 'Tap select',
-    on: () => App.selectDrag !== 'off',
-    run: () => setSelectGesture(SEL_GESTURE_NEXT[App.selectDrag] || 'box') }
+  /* SELECT ALL / DESELECT (v3.09). The seat that cycled Tap/Box/Lasso: those
+     are gestures now (tap-then-drag, Shift/Ctrl/Alt-drag), not modes, so the
+     seat went to the thing every session reaches for and nothing offered. */
+  { key: 'selall', seat: 7, icon: 'selall',
+    label: () => (selectionCount() ? 'Deselect' : 'Select all'),
+    run: selectAllToggle }
 ];
+
+function selectionCount() {
+  return App.mode === 'object' ? App.selectedObjectIds.size : App.selectedElements.size;
+}
+function selectAllToggle() {
+  if (App.pendingOp) { toast('Finish the operation first'); return; }
+  const had = selectionCount() > 0;
+  if (App.mode === 'object') {
+    App.selectedObjectIds.clear();
+    if (!had) expandIdsToGroups(App.objects.filter(objectPickable).map(o => o.id))
+      .forEach(id => App.selectedObjectIds.add(id));
+    refreshUI(); refreshGizmoAttachment();
+    toast(had ? 'Deselected' : App.selectedObjectIds.size + ' object(s) selected');
+    return;
+  }
+  const obj = findObject(App.activeObjectId);
+  if (!obj) { toast('Tap an object first to edit it'); return; }
+  ensureHelpers(obj);
+  const topo = obj.mesh.userData.topo;
+  App.selectedElements.clear();
+  if (!had) {
+    if (App.mode === 'vertex') for (let l = 0; l < topo.logicalCount; l++) App.selectedElements.add(l);
+    else if (App.mode === 'edge' || App.mode === 'uv') {
+      if (App.mode === 'uv') App.uvSelKind = 'edge';
+      topo.edges.forEach((e, i) => App.selectedElements.add(i));
+    } else if (App.mode === 'face') topo.faceGroups.forEach(fg => App.selectedElements.add(fg.groupIndex));
+  }
+  refreshElementColors(obj); refreshUI(); refreshGizmoAttachment();
+  toast(had ? 'Deselected' : App.selectedElements.size + ' selected');
+}
 
 // The Material cycle op is gone (a2.9) - the materials tray on the right
 // border replaced it with a real picker; see the Materials fly-out below.
@@ -53465,11 +53564,8 @@ window.addEventListener('keydown', (ev) => {
   else if (ev.key.toLowerCase() === 'k') bevelSelection();
   else if (ev.key === ']') growSelection();
   else if (ev.key === '[') shrinkSelection();
-  else if (ev.key.toLowerCase() === 'b') {
-    // Cycles the same Free -> Box -> Lasso order the three buttons represent.
-    const order = ['off', 'box', 'lasso'];
-    setSelectGesture(order[(order.indexOf(App.selectDrag) + 1) % order.length]);
-  }
+  // v3.09: B no longer cycles sticky Box/Lasso (they are gestures now); A = select all / none.
+  else if (ev.key.toLowerCase() === 'a') selectAllToggle();
   else if (ev.key.toLowerCase() === 'n') toggleSnapping();
   else if (ev.key === 'Escape') {
     App.selectedObjectIds.clear(); App.selectedElements.clear();
@@ -54374,7 +54470,8 @@ function init() {
   paintStaticIcons();
   refreshToolIndicator();
   applyTheme();
-  setSelectGesture(App.selectDrag);
+  /* v3.09: sticky Box/Lasso has no way in or out any more - always start on tap. */
+  App.selectDrag = 'off';
   applySnapSettings();
   /* Before restoreAutosave, so a scene always has light even if the restore
      throws; the restore applies its own afterwards if it carries one. */
@@ -54630,7 +54727,7 @@ if (PICK_DEBUG) {
     raycaster,
     // v2.22: the camera keeps its gestures, and the slider follows the
     // selected point.
-    cameraButton, cameraPlanePoint,
+    cameraButton, cameraPlanePoint, selectAllToggle,
     curvePointerDown, curvePointerMove, curvePointerUp,
     opSliderPoint, opSliderRange, opSliderValue, syncOpSlider,
     showOpSetupBar, curveEditEndAim,
