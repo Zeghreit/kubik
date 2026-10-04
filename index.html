@@ -3226,7 +3226,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.10</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.11</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -54597,7 +54597,8 @@ if (EMBED) (function embedMain() {
   const VERSION = ((document.querySelector('.brand span') || {}).textContent || '').trim();
   const CAPS = ['load', 'load.url', 'load.buffer', 'load.glb', 'load.gltf', 'load.fbx', 'load.obj',
     'export.glb', 'stats', 'snapshot.png', 'setMaps', 'setView', 'camera',
-    'event.ready', 'event.dirty', 'event.selection'];
+    'event.ready', 'event.dirty', 'event.selection',
+    'op', 'ops', 'undo', 'redo', 'selection', 'rev'];
   const hostOrigin = (() => {
     const h = EMBED_Q.get('host');
     if (!h) return null;
@@ -54653,7 +54654,7 @@ if (EMBED) (function embedMain() {
     dirty() {
       if (busy) return;
       clearTimeout(dirtyTimer);
-      dirtyTimer = setTimeout(() => emit('dirty', { dirty: true }), 300);
+      dirtyTimer = setTimeout(() => emit('dirty', { dirty: true, rev: curRev() }), 300);
     },
     sel() {
       const count = App.mode === 'object' ? App.selectedObjectIds.size : App.selectedElements.size;
@@ -55108,6 +55109,207 @@ if (EMBED) (function embedMain() {
     invalidate();
   }
 
+  /* ---- Command layer (v3.11) ----
+     `op` runs a ring tool by its key through the tool's own entry point - the
+     function the ring seat calls - and when that opens an op bar, sets the bar
+     through the bar's own setters and confirms it. Nothing here touches
+     geometry: a host's op is a finger's op, with its refusals and ONE history
+     step. The catalogue is read off the ring tables, so a tool added to the
+     ring is an op the next day. See EMBED.md. */
+  let rev = 0, revDoc;
+  /* The document revision, read off the history cursor's IDENTITY: every
+     committed edit, undo, redo and load puts a different doc object there,
+     and an op preview or a selection does not. Element ids index the current
+     topology, so they are good only for the rev they were read at. */
+  function curRev() {
+    const d = App.history[App.historyIndex];
+    if (d !== revDoc) { revDoc = d; rev++; }
+    return rev;
+  }
+  const OP_TABLES = { vertex: HUB_TOOLS_VERTEX, edge: HUB_TOOLS_EDGE, face: HUB_TOOLS_FACE,
+    object: HUB_TOOLS_OBJECT_BASE };
+  // These need a finger: a drawn cut, a chooser, a preview setup.
+  const OP_GESTURE = new Set(['knife', 'mirror', 'boolean']);
+  const OP_MODES = ['vertex', 'edge', 'face', 'object'];
+  function opKind(mode, key) {
+    if (key === 'spin') return 'spinedge';
+    if (key === 'bevel' && mode === 'vertex') return 'vbevel';
+    return key;
+  }
+  // Doors flattened; a seat with `on` is a display switch, not an edit.
+  function opEntries(mode) {
+    const out = [];
+    const walk = (list) => (list || []).forEach(t => {
+      if (t.door) { walk(t.door); return; }
+      if (typeof t.run !== 'function' || t.on || OP_GESTURE.has(t.key)) return;
+      if (!out.some(x => x.key === t.key)) out.push(t);
+    });
+    walk(OP_TABLES[mode]);
+    return out;
+  }
+  function paramsOf(spec) {
+    if (!spec) return null;
+    const p = {};
+    if (!spec.noAmount) p.amount = { min: spec.min, max: spec.max, step: spec.step, start: spec.start };
+    if (spec.options) p.option = { choices: spec.options.map(o => {
+      const c = { key: o.key, label: o.label };
+      if (o.min !== undefined) c.amount = { min: o.min, max: o.max, step: o.step, start: o.start };
+      if (o.needsMultiple) c.needsMultiple = true;
+      if (o.minSegments) c.minSegments = o.minSegments;
+      return c;
+    }) };
+    if (spec.segments) p.segments = { min: 1, max: spec.maxSegments || 10 };
+    if (spec.toggle) p.toggle = { key: spec.toggle.key, label: spec.toggle.label };
+    return p;
+  }
+  function opsCmd() {
+    const list = [];
+    OP_MODES.forEach(mode => opEntries(mode).forEach(t => {
+      const spec = OP_SPECS[opKind(mode, t.key)];
+      list.push({ name: t.key, mode: mode, label: t.label,
+        kind: spec ? 'bar' : 'immediate', params: paramsOf(spec) });
+    }));
+    return { ops: list, gesture: Array.from(OP_GESTURE) };
+  }
+  function selNow() {
+    const comp = App.mode !== 'object';
+    return { mode: App.mode, object: App.activeObjectId == null ? null : App.activeObjectId,
+      objects: Array.from(App.selectedObjectIds),
+      ids: Array.from(comp ? App.selectedElements : App.selectedObjectIds),
+      count: comp ? App.selectedElements.size : App.selectedObjectIds.size };
+  }
+  function needIdle() {
+    if (App.pendingOp || App.opSetup || App.knife || App.curveDraw || App.curveEdit || App.geoSetup) {
+      fail('busy', 'An operation is open in the editor - finish it first');
+    }
+  }
+  /* No select = the selection as it stands (a person picked, the host acts).
+     Object ids are identities and need no rev; element ids are not. */
+  function applySelect(s) {
+    if (!s) {
+      if (OP_MODES.indexOf(App.mode) < 0) fail('args', 'The editor is in ' + App.mode + ' mode');
+      return;
+    }
+    const mode = s.mode || App.mode;
+    if (OP_MODES.indexOf(mode) < 0) fail('args', 'mode is vertex, edge, face or object');
+    const ids = s.ids === undefined ? 'all' : s.ids;
+    if (mode === 'object') {
+      const objs = pickObjects(ids);
+      if (App.mode !== 'object') setMode('object');
+      App.selectedObjectIds.clear();
+      objs.forEach(o => App.selectedObjectIds.add(o.id));
+      App.activeObjectId = objs.length ? objs[0].id : null;
+      refreshUI(); refreshGizmoAttachment();
+      return;
+    }
+    if (ids !== 'all') {
+      if (!Array.isArray(ids)) fail('args', 'ids is an array or "all"');
+      if (s.rev === undefined) fail('args', 'Element ids need the rev they were read at: select.rev');
+      if (s.rev !== curRev()) {
+        fail('stale', 'The ids are from rev ' + s.rev + '; the document is at rev ' + curRev(), { rev: curRev() });
+      }
+    }
+    const one = meshObjects().length === 1 ? meshObjects()[0] : null;
+    const obj = s.object !== undefined ? pickObjects(s.object)[0] : (findObject(App.activeObjectId) || one);
+    if (!obj || isCurve(obj)) fail('args', 'Say which object: select.object');
+    App.selectedObjectIds.clear(); App.selectedObjectIds.add(obj.id);
+    App.activeObjectId = obj.id;
+    if (App.mode !== mode) setMode(mode);
+    if (App.mode !== mode) fail('refused', 'Could not enter ' + mode + ' mode');
+    ensureHelpers(obj);
+    const topo = obj.mesh.userData.topo;
+    const n = mode === 'vertex' ? topo.logicalCount : mode === 'edge' ? topo.edges.length : 0;
+    const groups = mode === 'face' ? topo.faceGroups.map(fg => fg.groupIndex) : null;
+    const have = groups ? new Set(groups) : null;
+    // Checked whole before anything is selected: a bad id changes nothing.
+    const want = ids === 'all' ? (groups || Array.from({ length: n }, (_, i) => i)) : ids;
+    want.forEach(i => {
+      if (!Number.isInteger(i) || (have ? !have.has(i) : (i < 0 || i >= n))) {
+        fail('args', 'No ' + mode + ' ' + JSON.stringify(i) + ' on ' + obj.name);
+      }
+    });
+    App.selectedElements.clear();
+    want.forEach(i => App.selectedElements.add(i));
+    refreshElementColors(obj); refreshUI(); refreshGizmoAttachment();
+  }
+  /* The bar's own setters, in the bar's own order: the count first (Bridge's
+     Curved needs two sections), then the chip (an option can carry its own
+     range), then the amount against that range, then the switch. */
+  function driveBar(p) {
+    const spec = OP_SPECS[App.pendingOp.kind];
+    const open = () => App.pendingOp || fail('refused', spec.label + ' could not run on this selection');
+    if (p.segments !== undefined) {
+      if (!spec.segments) fail('args', spec.label + ' has no count');
+      const n = Math.round(+p.segments);
+      if (!(n >= 1)) fail('args', 'segments is 1 or more');
+      stepSegments(n - (open().segments || 1));
+    }
+    if (p.option !== undefined) {
+      const choices = availableOpOptions(open());
+      const o = choices.find(x => x.key === p.option);
+      if (!o) fail('args', 'No option ' + JSON.stringify(p.option) + ' for this selection', { choices: choices.map(x => x.key) });
+      App.pendingOp.groupMode = o.key;
+      refreshOpGrouping();
+      applyPendingOp();
+      if (App.pendingOp && App.pendingOp.live) measureExtrudeAxis();
+    }
+    if (p.amount !== undefined) {
+      if (spec.noAmount) fail('args', spec.label + ' has no amount');
+      const v = +p.amount;
+      if (!Number.isFinite(v)) fail('args', 'amount is a number');
+      open(); setPendingAmount(v, false);
+    }
+    if (p.toggle !== undefined) {
+      if (!spec.toggle) fail('args', spec.label + ' has no switch');
+      open()[spec.toggle.key] = !!p.toggle;
+      refreshOpToggle(); applyPendingOp();
+    }
+  }
+  function lastSaid(said, dflt) {
+    const m = said.filter(x => !/^Reading /.test(x));
+    return m.length ? m[m.length - 1] : dflt;
+  }
+  function opCmd(a) {
+    needIdle();
+    const name = String(a.name || '');
+    const params = a.params || {};
+    applySelect(a.select);
+    const mode = App.mode;
+    const t = opEntries(mode).find(x => x.key === name);
+    if (!t) fail('unknown', 'No op ' + JSON.stringify(name) + ' in ' + mode + ' mode', { ops: opEntries(mode).map(x => x.key) });
+    const spec = OP_SPECS[opKind(mode, name)];
+    if (!spec && Object.keys(params).length) fail('args', t.label + ' takes no params');
+    const now = selNow();
+    // What it was applied to, so the host sees what "the current selection" was.
+    const applied = { mode: now.mode, count: now.count, rev: curRev() };
+    if (!now.count) fail('refused', 'Nothing is selected', { selection: applied });
+    if (t.enabled && !t.enabled()) fail('refused', t.label + ' needs more selected', { selection: applied });
+    const d0 = App.history[App.historyIndex];
+    const from = toasts.length;
+    t.run();
+    if (App.pendingOp) {
+      try { driveBar(params); } catch (e) { if (App.pendingOp) cancelPendingOp(); throw e; }
+      if (App.pendingOp) confirmPendingOp();
+    }
+    if (App.pendingOp || App.opSetup || App.knife || App.curveDraw) {
+      if (App.pendingOp) cancelPendingOp();
+      fail('internal', t.label + ' left the editor open; it was cancelled', { selection: applied });
+    }
+    const said = toasts.slice(from);
+    if (App.history[App.historyIndex] === d0) {
+      fail('refused', lastSaid(said, t.label + ' changed nothing'), { selection: applied });
+    }
+    return { op: name, selection: applied, said: said, stats: stats({}) };
+  }
+  function histCmd(fn, word) {
+    needIdle();
+    const d0 = App.history[App.historyIndex];
+    fn();
+    if (App.history[App.historyIndex] === d0) fail('nothing', 'Nothing to ' + word);
+    return { stats: stats({}) };
+  }
+  /* ---- end of the command layer ---- */
+
   const CMDS = {
     hello: () => ({ version: VERSION, caps: CAPS, view: view }),
     load: load,
@@ -55121,7 +55323,12 @@ if (EMBED) (function embedMain() {
       applyView(v);
       return { view: view };
     },
-    camera: cameraCmd
+    camera: cameraCmd,
+    ops: opsCmd,
+    op: opCmd,
+    undo: () => histCmd(undo, 'undo'),
+    redo: () => histCmd(redo, 'redo'),
+    selection: () => Object.assign(selNow(), { rev: curRev() })
   };
 
   window.addEventListener('message', (ev) => {
@@ -55132,6 +55339,7 @@ if (EMBED) (function embedMain() {
     peer = ev.origin;
     const reply = (m, tr) => {
       m.kubik = 1; m.id = d.id;
+      try { m.rev = curRev(); } catch (e) { /* no history yet */ }
       try { parentWin.postMessage(m, ev.origin, tr || []); } catch (e) { console.error('[embed] reply', e); }
     };
     const fn = Object.prototype.hasOwnProperty.call(CMDS, d.cmd) ? CMDS[d.cmd] : null;
