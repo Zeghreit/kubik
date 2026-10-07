@@ -3226,7 +3226,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.11</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.12</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -30395,6 +30395,14 @@ function showPreHi(ev) {
   });
   renderer.domElement.addEventListener('pointerleave', clearPreHi);
   renderer.domElement.addEventListener('pointercancel', clearPreHi);
+  /* A cancelled press (the browser took the touch) is a drag that never
+     finished: the placement stays, the size goes back, the camera comes back. */
+  renderer.domElement.addEventListener('pointercancel', (ev) => {
+    if (!punchDrag) return;
+    trackPointerUp(ev);
+    cancelPunchDrag();
+    orbit.enabled = true;
+  });
 }
 
 renderer.domElement.addEventListener('pointerdown', (ev) => {
@@ -30450,6 +30458,7 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     closeToolRing(false);
     // The camera is taking over, so the half-placed point is not a point.
     if (App.knife) { App.knife.live = null; App.knife.pid = null; refreshKnifePreview(); }
+    cancelPunchDrag();
     if (App.curveDraw) { App.curveDraw.live = null; App.curveDraw.pid = null; App.curveDraw.moved = false; refreshCurvePreview(); }
     if (App.curveEdit) { App.curveEdit.pid = null; App.curveEdit.drag = null; App.curveEdit.hdrag = null; App.curveEdit.moved = false; }
     directCandidate = null;
@@ -30512,6 +30521,14 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
      thumb is exactly the kind of target this app does not ask people to hit;
      the bar says what the drag is for, so the whole viewport can be the
      handle. Two fingers still reach the camera, from the bail-out above. */
+  /* PUNCH (v3.12) claims a press only when it lands on the object: that press
+     moves the cutter there and a slide sizes it. Anywhere else is the camera. */
+  if (punchOpen() && !cameraButton(ev) && punchPointerDown(ev)) {
+    orbit.enabled = false;
+    pointerDown = null;
+    directCandidate = null;
+    return;
+  }
   if (App.pivotPlacing) {
     if (beginPivotDrag(ev)) { pointerDown = null; directCandidate = null; return; }
   }
@@ -30654,6 +30671,7 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
   if (App.curveEdit) { curveEditPointerMove(ev); return; }
   if (App.curveDraw) { curvePointerMove(ev); return; }
   if (App.knife) { knifePointerMove(ev); return; }
+  if (punchDrag) { punchPointerMove(ev); return; }
   if (toolRingActive) { updateToolRingHover(ev); return; }
   if (extrudeDrag) { updateExtrudeDrag(ev); return; }
   if (extrudeCandidate) {
@@ -30798,6 +30816,15 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
     return;
   }
 
+  if (punchDrag) {
+    const soloP = punchDrag.pid === ev.pointerId && activePointers.size === 1;
+    trackPointerUp(ev);
+    if (soloP) punchPointerUp(); else cancelPunchDrag();
+    orbit.enabled = true;
+    pointerDown = null;
+    directCandidate = null;
+    return;
+  }
   if (tubeRadiusDrag) {
     // trackPointerUp still has to run: it is what removes this pointer from
     // the tracker, and leaking one corrupts every tap gesture after it.
@@ -36853,6 +36880,387 @@ function booleanBuild(objs, kind, opt) {
   };
 }
 
+/* ---------------- PUNCH (v3.12) ----------------
+
+   A hole, a dent or a boss stamped onto ONE object where you tap it - the
+   idea from Boolean Master (Zeghreit, 07.10), built on the boolean that is
+   already here rather than on new geometry. The cutter is a cylinder or a box
+   the op makes for itself, stood on the surface along the face's normal, and
+   it never enters the scene: booleanBuild only asks an input for `id`, `name`
+   and a `mesh` with geometry, material and a world matrix.
+
+   So everything the Boolean bar has, Punch has too, for free: the four
+   topology types, Generate, Undo inside the bar, edge marks riding across,
+   one history step on OK, nothing at all on ✕.
+
+   What it is made of lives in s.p, so the bar's own step stack takes a
+   re-placement back the same way it takes back a chip:
+     kind  hole | dent | boss     size  across the cutter (world units)
+     depth tenths of the size (dent and boss)
+     sides around a round cutter  square  a box instead of a cylinder
+     px..pz the point on the surface, nx..nz its normal, ux..uz the cutter's
+     own across-direction (an axis of the object, so a square sits square
+     on a box), mi the material of the face that was tapped. */
+const PUNCH_SIDES = 12;
+let punchDrag = null;
+
+const punchLineMat = new THREE.LineBasicMaterial({
+  color: 0xffd23d, transparent: true, depthTest: false, depthWrite: false
+});
+const punchLine = new THREE.LineLoop(new THREE.BufferGeometry(), punchLineMat);
+punchLine.renderOrder = 999;
+punchLine.visible = false;
+punchLine.frustumCulled = false;
+scene.add(punchLine);
+
+function punchOpen() {
+  return App.opSetup && App.opSetup.kind === 'punch' ? App.opSetup : null;
+}
+
+function punchTarget(s) {
+  return s && s.inputIds ? findObject(s.inputIds[0]) : null;
+}
+
+/* The object's own size, in the world. Hidden or not, its matrix is current:
+   three updates every matrix in the scene regardless of visibility. */
+function punchBox(o) {
+  o.mesh.updateMatrixWorld(true);
+  return new THREE.Box3().setFromObject(o.mesh);
+}
+
+/* The cutter's frame: o on the surface, n out of it, u and w across it. u is
+   re-flattened against n here rather than trusted - a stored u from one face
+   carried onto another by a drag would otherwise tilt the cutter. */
+function punchFrame(p) {
+  const n = new THREE.Vector3(p.nx, p.ny, p.nz).normalize();
+  const o = new THREE.Vector3(p.px, p.py, p.pz);
+  const u = new THREE.Vector3(p.ux, p.uy, p.uz);
+  u.addScaledVector(n, -u.dot(n));
+  if (u.lengthSq() < 1e-12) {
+    u.set(Math.abs(n.x) < 0.9 ? 1 : 0, Math.abs(n.x) < 0.9 ? 0 : 1, 0);
+    u.addScaledVector(n, -u.dot(n));
+  }
+  u.normalize();
+  const w = new THREE.Vector3().crossVectors(u, n).normalize();
+  return { o: o, n: n, u: u, w: w };
+}
+
+/* Which of the object's three axes lies flattest across the surface: that is
+   the cutter's u. On a box it is an edge direction, so a square punch comes
+   out square to the face rather than at whatever angle the camera was. */
+function punchAcross(o, n) {
+  const e = o.mesh.matrixWorld.elements;
+  const ax = [new THREE.Vector3(e[0], e[1], e[2]), new THREE.Vector3(e[4], e[5], e[6]),
+              new THREE.Vector3(e[8], e[9], e[10])];
+  let best = null, bd = Infinity;
+  ax.forEach(a => {
+    if (a.lengthSq() < 1e-20) return;
+    a.normalize();
+    const d = Math.abs(a.dot(n));
+    if (d < bd - 1e-9) { bd = d; best = a; }
+  });
+  return best || new THREE.Vector3(1, 0, 0);
+}
+
+/* A ray against the TARGET, which is hidden while the preview stands - three
+   does not ask about visibility when it raycasts. The first hit facing the
+   ray, with its world normal and the material of the face it belongs to. */
+function punchHit(o, ray) {
+  raycaster.ray.copy(ray);
+  o.mesh.updateMatrixWorld(true);
+  const hits = raycaster.intersectObject(o.mesh, false);
+  const nm = new THREE.Matrix3().getNormalMatrix(o.mesh.matrixWorld);
+  for (let i = 0; i < hits.length; i++) {
+    const h = hits[i];
+    if (!h.face) continue;
+    const n = h.face.normal.clone().applyMatrix3(nm).normalize();
+    if (n.dot(ray.direction) >= 0) continue;
+    let mi = 0;
+    const tri = h.faceIndex * 3;
+    faceRanges(o.mesh.geometry).forEach(r => {
+      if (tri >= r.start && tri < r.start + r.count) mi = r.materialIndex | 0;
+    });
+    return { point: h.point.clone(), normal: n, mi: mi };
+  }
+  return null;
+}
+
+// Writes a hit into the settings. u is chosen once, here, per placement.
+function punchPlace(p, o, hit) {
+  const u = punchAcross(o, hit.normal);
+  p.px = hit.point.x; p.py = hit.point.y; p.pz = hit.point.z;
+  p.nx = hit.normal.x; p.ny = hit.normal.y; p.nz = hit.normal.z;
+  p.ux = u.x; p.uy = u.y; p.uz = u.z;
+  p.mi = hit.mi;
+}
+
+/* How far the object goes on behind the tapped point, straight back along
+   -n: a boss must not sink deeper than half of that, or on a thin wall it
+   would come out of the far side as a second bump. Measured from OUTSIDE,
+   from beyond the far side looking back, because a ray started inside a
+   closed mesh meets only back faces and three culls them. */
+function punchThickness(o, f) {
+  const box = punchBox(o);
+  const reach = box.getSize(new THREE.Vector3()).length() * 2 + 1;
+  const from = f.o.clone().addScaledVector(f.n, -reach);
+  /* THE LAST ONE BEFORE THE TAP, not the first (found by fable). On a
+     plate standing over the rest of the same object the first surface this
+     ray meets is the far side of the WHOLE object, and a boss sunk against
+     that came out of the underside of the plate - watertight, two shells,
+     nothing downstream complains. The wall that matters is the nearest
+     outward-facing one behind the tapped point. Distance is tested before
+     facing, so nothing at or past the tap is counted. */
+  raycaster.ray.set(from, f.n.clone());
+  o.mesh.updateMatrixWorld(true);
+  const hits = raycaster.intersectObject(o.mesh, false);
+  const nm = new THREE.Matrix3().getNormalMatrix(o.mesh.matrixWorld);
+  let best = null;
+  for (let i = 0; i < hits.length; i++) {
+    const h = hits[i];
+    if (!h.face) continue;
+    if (h.distance >= reach - 1e-6) break;
+    if (h.face.normal.clone().applyMatrix3(nm).normalize().dot(f.n) >= 0) continue;
+    best = h;
+  }
+  if (!best) return Infinity;
+  const t = f.o.distanceTo(best.point);
+  return t > 1e-6 ? t : Infinity;
+}
+
+/* Along n, where the cutter starts and ends, measured from the surface.
+   HOLE: right through and out of both sides - the whole object's diagonal
+   each way. DENT: down to its depth, and a quarter of its size up into the
+   air so a surface that curves away is still cut clean at the rim. BOSS: up
+   to its height, and sunk a quarter of its size (never more than half the
+   wall) so a surface that curves away still meets it all round. */
+function punchSpan(p, o, f) {
+  const d = p.size, dep = Math.max(1, p.depth | 0) * 0.1 * d;
+  if (p.kind === 'hole') {
+    const L = punchBox(o).getSize(new THREE.Vector3()).length() + d;
+    return [-L, L];
+  }
+  if (p.kind === 'dent') return [-dep, 0.25 * d];
+  const sink = Math.min(0.25 * d, 0.5 * punchThickness(o, f));
+  return [-sink, dep];
+}
+
+/* The cutter as an input booleanBuild can take. Its id names everything it
+   is made of, so the setup's CSG cache is reused for Generate and thrown
+   away the moment the cutter changes. */
+function punchCutter(s) {
+  const p = s.p, o = punchTarget(s);
+  if (!o) return null;
+  const f = punchFrame(p), span = punchSpan(p, o, f);
+  const h = Math.max(1e-3, span[1] - span[0]);
+  const ed = p.square
+    ? buildPrimitiveEditable('cube', { h: 1, v: 1, x: p.size, y: h, z: p.size })
+    : buildPrimitiveEditable('cylinder', { h: p.sides | 0, v: 1, x: p.size, y: h, z: p.size });
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(ed.positions, 3));
+  const idx = [];
+  ed.groups.forEach(g => {
+    const start = idx.length;
+    g.triangles.forEach(t => idx.push(t[0], t[1], t[2]));
+    geo.addGroup(start, idx.length - start, 0);
+  });
+  geo.setIndex(idx);
+  /* The walls wear what the tapped face wears - the SAME material object,
+     not a clone, so the evaluator folds it into the target's own and the
+     coplanar merge is not stopped at a boundary that is not really there. */
+  const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
+  const mesh = new THREE.Mesh(geo, [mats[p.mi | 0] || mats[0]]);
+  const m = new THREE.Matrix4().makeBasis(f.u, f.n, f.w);
+  m.setPosition(f.o.clone().addScaledVector(f.n, (span[0] + span[1]) / 2));
+  m.decompose(mesh.position, mesh.quaternion, mesh.scale);
+  mesh.updateMatrixWorld(true);
+  /* A round cutter's walls smooth into one another unless the sides are few
+     enough to read as facets - the same 33° rule every object here uses. */
+  const id = 'punch:' + [p.kind, p.size, p.depth, p.sides, p.square ? 1 : 0,
+                         p.px, p.py, p.pz, p.nx, p.ny, p.nz, p.ux, p.uy, p.uz, p.mi].join(',');
+  return { id: id, name: 'Punch', mesh: mesh };
+}
+
+// What the Boolean does with the cutter: a hole and a dent take it away,
+// a boss adds it.
+function punchBuild(s, seed) {
+  const o = punchTarget(s);
+  if (!o) return { ok: false, why: 'The object is gone - pick it again' };
+  const c = punchCutter(s);
+  return booleanBuild([o, c], s.p.kind === 'boss' ? 'union' : 'difference',
+                      { type: s.p.topo, seed: seed, cache: s.csgCache || (s.csgCache = {}) });
+}
+
+/* The outline of the cutter on the surface, drawn while the bar is up so you
+   can see where the next tap and the next drag will act - and drawn on top,
+   because a hole's rim is exactly where the preview's own walls would hide it. */
+function refreshPunchOutline(liveSize) {
+  const s = punchOpen();
+  if (!s) { if (punchLine.visible) { punchLine.visible = false; invalidate(); } return; }
+  const p = s.p, f = punchFrame(p), r = (liveSize != null ? liveSize : p.size) / 2;
+  const lift = f.o.clone().addScaledVector(f.n, r * 0.02 + 1e-4);
+  const pts = [];
+  const at = (a, b) => pts.push(lift.x + f.u.x * a + f.w.x * b, lift.y + f.u.y * a + f.w.y * b,
+                                lift.z + f.u.z * a + f.w.z * b);
+  if (p.square) { at(-r, -r); at(r, -r); at(r, r); at(-r, r); }
+  else {
+    const n = Math.max(3, p.sides | 0);
+    for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2; at(r * Math.cos(a), r * Math.sin(a)); }
+  }
+  punchLine.geometry.dispose();
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  punchLine.geometry = g;
+  punchLine.visible = true;
+  invalidate();
+}
+
+function punchSizeStep(s) {
+  return Math.max(1e-3, Number((punchSizeMax(s) / 400).toPrecision(1)));
+}
+
+/* THE SMALLEST CUTTER, measured (fable, v3.12): on a unit cube 0.02 and up
+   came back exact, 0.012 with open edges, 0.004 took six times its volume -
+   the welds round at 1e-4, so 200 of those. A whole number of steps, so the
+   values the slider stops on stay round. */
+const PUNCH_SIZE_FLOOR = 0.02;
+function punchSizeMin(s) {
+  const st = punchSizeStep(s);
+  return Number((Math.ceil(PUNCH_SIZE_FLOOR / st - 1e-9) * st).toPrecision(6));
+}
+
+function punchSizeMax(s) {
+  const o = punchTarget(s);
+  return o ? Math.max(0.02, punchBox(o).getSize(new THREE.Vector3()).length()) : 10;
+}
+
+/* PRESS ON THE OBJECT: the cutter moves there. SLIDE: its size follows the
+   finger, read on the plane it stands on. LIFT: the boolean runs once. A
+   press that lands off the object is not claimed - the camera has it, the
+   v2.22 rule for every tool with a bar open. */
+function punchPointerDown(ev) {
+  const s = punchOpen();
+  if (!s) return false;
+  const o = punchTarget(s);
+  if (!o) return false;
+  raycaster.setFromCamera(ndcFromEvent(ev), camera);
+  const hit = punchHit(o, raycaster.ray.clone());
+  if (!hit) return false;
+  opSetupMark();
+  punchPlace(s.p, o, hit);
+  punchDrag = { pid: ev.pointerId, x: ev.clientX, y: ev.clientY, moved: false, size: s.p.size };
+  /* CAPTURED, because orbit is off and takes none (found by fable): a lift
+     over the top bar never reached the canvas, orbit stayed off and the
+     pointer stayed in the tracker - every later press then read as two
+     fingers. The window backstop below is the second line. */
+  try { renderer.domElement.setPointerCapture(ev.pointerId); } catch (e) {}
+  refreshPunchOutline();
+  return true;
+}
+
+function punchPointerMove(ev) {
+  const s = punchOpen();
+  if (!s || !punchDrag || ev.pointerId !== punchDrag.pid) return;
+  if (!punchDrag.moved &&
+      Math.hypot(ev.clientX - punchDrag.x, ev.clientY - punchDrag.y) <= dragStartPx(ev)) return;
+  punchDrag.moved = true;
+  const f = punchFrame(s.p);
+  raycaster.setFromCamera(ndcFromEvent(ev), camera);
+  const q = new THREE.Vector3();
+  if (!raycaster.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(f.n, f.o), q)) return;
+  const d = q.sub(f.o);
+  const across = s.p.square ? 2 * Math.max(Math.abs(d.dot(f.u)), Math.abs(d.dot(f.w))) : 2 * d.length();
+  punchDrag.size = Math.max(punchSizeMin(s), Math.min(punchSizeMax(s), across));
+  refreshPunchOutline(punchDrag.size);
+}
+
+function punchPointerUp() {
+  const s = punchOpen(), dr = punchDrag;
+  punchDrag = null;
+  if (!s || !dr) { refreshPunchOutline(); return; }
+  /* On the slider's own steps, so the number the drag leaves is one the
+     slider can show - otherwise the two disagree by a rounding. */
+  if (dr.moved) {
+    const st = punchSizeStep(s);
+    s.p.size = Math.max(punchSizeMin(s), Number((Math.round(dr.size / st) * st).toPrecision(6)));
+  }
+  refreshOpSetupMesh();
+  syncOpSlider();
+  refreshPunchOutline();
+}
+
+// Dropped by a second finger: the placement stays, the size it was dragging
+// to does not.
+function cancelPunchDrag() {
+  if (!punchDrag) return;
+  punchDrag = null;
+  refreshOpSetupMesh();
+  refreshPunchOutline();
+}
+
+/* Where the cutter stands when the bar first opens: under the middle of the
+   screen if the object is there, else on the side of it facing the camera. */
+function punchFirstHit(o) {
+  raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+  let hit = punchHit(o, raycaster.ray.clone());
+  if (hit) return hit;
+  const c = punchBox(o).getCenter(new THREE.Vector3());
+  const from = camera.position.clone();
+  hit = punchHit(o, new THREE.Ray(from, c.clone().sub(from).normalize()));
+  if (hit) return hit;
+  /* Both rays went through a hole (a torus seen down its axis). The face
+     nearest the camera that faces it, at its middle - a real surface, never a
+     synthetic point in the air, or the cutter floats and a boss comes back as
+     a second shell. */
+  const geo = o.mesh.geometry, pa = geo.attributes.position, ix = geo.index;
+  const nm = new THREE.Matrix3().getNormalMatrix(o.mesh.matrixWorld);
+  const a = new THREE.Vector3(), b2 = new THREE.Vector3(), c2 = new THREE.Vector3();
+  const cam = camera.position;
+  let best = null, bd = Infinity;
+  faceRanges(geo).forEach(r => {
+    for (let i = r.start; i + 2 < r.start + r.count; i += 3) {
+      const i0 = ix ? ix.getX(i) : i, i1 = ix ? ix.getX(i + 1) : i + 1, i2 = ix ? ix.getX(i + 2) : i + 2;
+      a.fromBufferAttribute(pa, i0); b2.fromBufferAttribute(pa, i1); c2.fromBufferAttribute(pa, i2);
+      const n = new THREE.Vector3().subVectors(b2, a).cross(new THREE.Vector3().subVectors(c2, a));
+      if (n.lengthSq() < 1e-20) continue;
+      n.applyMatrix3(nm).normalize();
+      const m = a.clone().add(b2).add(c2).multiplyScalar(1 / 3).applyMatrix4(o.mesh.matrixWorld);
+      const toCam = cam.clone().sub(m);
+      if (n.dot(toCam) <= 0) continue;
+      const d = toCam.lengthSq();
+      if (d < bd) { bd = d; best = { point: m, normal: n, mi: r.materialIndex | 0 }; }
+    }
+  });
+  if (best) return best;
+  const b = punchBox(o);
+  return { point: new THREE.Vector3(c.x, b.max.y, c.z), normal: new THREE.Vector3(0, 1, 0), mi: 0 };
+}
+
+function punchSelection() {
+  if (App.mode !== 'object') { toast('Punch works in Object mode'); return; }
+  const ids = Array.from(App.selectedObjectIds);
+  if (ids.length !== 1) { toast('Select one object to punch'); return; }
+  const o = findObject(ids[0]);
+  if (!o) return;
+  const why = booleanSurvey([o]);
+  if (why) { toast(why); return; }
+  const go = () => {
+    if (findObject(o.id) !== o) { toast('The selection changed - pick it again'); return; }
+    if (App.mode !== 'object') { toast('Punch works in Object mode'); return; }
+    const again = booleanSurvey([o]);
+    if (again) { toast(again); return; }
+    startOpSetup('punch', { inputIds: [o.id] });
+  };
+  if (csgMod) { go(); return; }
+  toast('Loading the boolean engine');
+  loadCSG().then(go, (err) => {
+    console.warn('[punch] load failed', err);
+    toast('Punch needs the network the first time it runs');
+  }).catch(err => {
+    console.warn('[punch]', err);
+    toast('That punch failed - try Clean up on the object first');
+  });
+}
+
 /* A PREVIEW, NOT A COMMITTED OP (v2.17). Union, difference and intersect are
    three answers you cannot tell apart without looking at them, and this used
    to commit on the tap and delete both inputs on the way out. Now the result
@@ -41404,6 +41812,8 @@ const ICON = {
      circle rather than two squares so the two shapes stay tellable apart at
      20px, and nothing here is finer than the 1.8-unit floor. */
   boolop:  '<rect x="2.8" y="7.6" width="10.6" height="10.6" rx="1.2"/><circle cx="15.2" cy="10.4" r="5.6"/>',
+  // A block with a round hole through it (v3.12).
+  punch:   '<rect x="3" y="3" width="18" height="18" rx="1.6"/><circle cx="12" cy="12" r="4.6"/>',
   /* THE CURVE FAMILY (v2.14). One shape - an S running low-left to high-right
      with a dot at each end - so the four read as one set at a glance, and each
      one says which of the four it is by what is ADDED to that shape rather
@@ -41623,7 +42033,11 @@ const HUB_TOOLS_OBJECT_BASE = [
        for a selection of one, the a2.112 rule: a boolean you cannot make is
        visibly one you cannot make. */
     { key: 'boolean', icon: 'boolop', label: 'Boolean', seat: 6,
-      enabled: () => App.selectedObjectIds.size > 1, run: booleanSelection }
+      enabled: () => App.selectedObjectIds.size > 1, run: booleanSelection },
+    /* PUNCH (v3.12) beside Boolean: the same cut, made against one object
+       with a cutter the op brings. Worn disabled for anything but one. */
+    { key: 'punch', icon: 'punch', label: 'Punch', seat: 5,
+      enabled: () => App.selectedObjectIds.size === 1, run: punchSelection }
   ] },
   { key: 'finish', label: 'Finish', seat: 7, door: [
     { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 0,
@@ -42291,6 +42705,62 @@ const OP_SETUP = {
       applyShading(obj);
     },
     onToggle: (s) => { App.boolKeep = !!s.p.keep; }
+  },
+  /* PUNCH (v3.12). One object and a cutter the op makes itself - see
+     punchCutter. The Boolean's own topology row, Generate and readout,
+     because the cut is the Boolean's: only the cutter is new. */
+  punch: {
+    label: 'Punch',
+    chips: [['hole', 'Hole'], ['dent', 'Dent'], ['boss', 'Boss']],
+    chipKey: 'kind',
+    chipTip: (k) => (k === 'hole' ? 'Right through the object'
+                   : k === 'dent' ? 'Pressed in to the depth below (in a hollow it bites the walls around it too)'
+                   : 'Raised out to the height below'),
+    slider: { key: 'size', label: 'size',
+              // The floor IS one step, so every value the slider can stop
+              // on is a whole number of steps - 0.4 stays 0.4.
+              min: (p, s) => punchSizeMin(s), max: (p, s) => punchSizeMax(s),
+              step: (p, s) => punchSizeStep(s),
+              decimals: 3, unit: '' },
+    // Depth in tenths of the size: a dent half as deep as it is wide is 5.
+    stepper: { key: 'depth', max: () => 30, min: () => 1,
+               show: (n) => (n * 10) + '%', hidden: (p) => p.kind === 'hole' },
+    stepper2: { key: 'sides', max: () => 64, min: () => 3, hidden: (p) => !!p.square },
+    toggle: { key: 'square', label: 'Square', tip: 'A box instead of a cylinder' },
+    // The sides counter means nothing for a box: the bar is drawn again.
+    onToggle: () => showOpSetupBar(),
+    chips2: [['ngon', 'N-gon'], ['tris', 'Tris'], ['quads', 'Quads'], ['loops', 'Loops']],
+    chip2Key: 'topo',
+    chip2Tip: (k) => OP_SETUP.boolean.chip2Tip(k),
+    onChip2: () => { App.opSetup.p.seed = 0; },
+    onChip: () => { App.opSetup.p.seed = 0; },
+    defaults: (s) => {
+      const o = punchTarget(s);
+      const p = { kind: 'hole', topo: 'quads', seed: 0, depth: 3, sides: PUNCH_SIDES, square: false, size: 0.25 };
+      if (!o) return p;
+      const sz = punchBox(o).getSize(new THREE.Vector3());
+      const mid = [sz.x, sz.y, sz.z].sort((a, b) => a - b)[1];
+      p.size = Number(Math.max(PUNCH_SIZE_FLOOR, mid * 0.3).toPrecision(2));
+      punchPlace(p, o, punchFirstHit(o));
+      return p;
+    },
+    /* A new cutter is a new cut: the layouts Generate found for the last
+       one, and the seed it stopped on, mean nothing here - so "var 1" again. */
+    build: (s) => {
+      const c = punchCutter(s);
+      if (c && c.id !== s.punchCut) {
+        if (s.punchCut != null) { s.topoBooks = {}; s.p.seed = 0; }
+        s.punchCut = c.id;
+      }
+      return punchBuild(s, s.p.seed | 0);
+    },
+    buildAt: (s, seed) => punchBuild(s, seed),
+    extra: { label: 'Generate', tip: 'Another layout of the same type - Undo goes back',
+             run: (s) => generateBooleanLayout(s) },
+    readout: (s) => OP_SETUP.boolean.readout(s),
+    name: (s) => { const o = punchTarget(s); return (o ? o.name : 'Object') + ' punched'; },
+    doneLabel: (s) => ({ hole: 'Hole', dent: 'Dent', boss: 'Boss' }[s.p.kind] || 'Punch'),
+    after: (s, obj, r) => { OP_SETUP.boolean.after(s, obj, r); refreshPunchOutline(); }
   }
 };
 
@@ -42319,7 +42789,12 @@ function generateBooleanLayout(s) {
   if (!s || App.opSetup !== s) return;
   const objs = s.inputIds.map(id => findObject(id)).filter(Boolean);
   const info = s.topoInfo;
-  if (objs.length < 2 || !info) { toast('Nothing along this cut to lay out differently'); return; }
+  /* v3.12: Punch builds from one object and a cutter of its own, so it says
+     how to build at a seed; the Boolean still folds its inputs. */
+  const gspec = OP_SETUP[s.kind];
+  const buildAt = gspec && gspec.buildAt ? (seed) => gspec.buildAt(s, seed)
+    : (seed) => booleanBuild(objs, s.p.kind, { type: s.p.topo, seed: seed, cache: s.csgCache });
+  if ((!(gspec && gspec.buildAt) && objs.length < 2) || !info) { toast('Nothing along this cut to lay out differently'); return; }
   const bk = topoBook(s);
   const go = (seed) => { opSetupMark(); s.p.seed = seed; refreshOpSetupMesh(); showOpSetupBar(); };
   if (bk.round) {
@@ -42334,7 +42809,7 @@ function generateBooleanLayout(s) {
   const last = Math.min(space, from + TOPO_GEN_TRIES);
   let found = -1;
   for (let seed = from; seed < last; seed++) {
-    const r = booleanBuild(objs, s.p.kind, { type: s.p.topo, seed: seed, cache: s.csgCache });
+    const r = buildAt(seed);
     if (!r.ok || !r.topo || bk.seen.indexOf(r.topo.hash) >= 0) continue;
     found = seed;
     break;
@@ -42691,6 +43166,11 @@ function setOpSetupAmount(v) {
   refreshTubeRings();
 }
 
+// v3.12: a counter may say what its number means (Punch's depth is a percent).
+function opStepText(st, n) {
+  return st && st.show ? st.show(n) : n;
+}
+
 function stepOpSetup(delta) {
   const s = App.opSetup, spec = opSetupSpec();
   if (!s || !spec || !spec.stepper) return;
@@ -42699,7 +43179,7 @@ function stepOpSetup(delta) {
   const n = Math.max(st.min(s.p, s), Math.min(st.max(s.p, s), (s.p[st.key] | 0) + delta));
   if (n === s.p[st.key]) return;
   s.p[st.key] = n;
-  document.getElementById('opSegValue').textContent = n;
+  document.getElementById('opSegValue').textContent = opStepText(st, n);
   refreshOpSetupMesh();
 }
 
@@ -42714,7 +43194,7 @@ function stepOpSetup2(delta) {
   const n = Math.max(st.min(s.p, s), Math.min(st.max(s.p, s), (s.p[st.key] | 0) + delta));
   if (n === s.p[st.key]) return;
   s.p[st.key] = n;
-  document.getElementById('opSeg2Value').textContent = n;
+  document.getElementById('opSeg2Value').textContent = opStepText(st, n);
   refreshOpSetupMesh();
 }
 
@@ -42727,7 +43207,7 @@ function syncOpSetupStepper() {
   const st = spec.stepper;
   const n = Math.max(st.min(s.p, s), Math.min(st.max(s.p, s), s.p[st.key] | 0));
   if (n !== s.p[st.key]) s.p[st.key] = n;
-  document.getElementById('opSegValue').textContent = n;
+  document.getElementById('opSegValue').textContent = opStepText(st, n);
 }
 
 function toggleOpSetupSwitch() {
@@ -42813,11 +43293,11 @@ function showOpSetupBar() {
   const useStep = !!spec.stepper &&
                   !(spec.stepper.hidden && spec.stepper.hidden(s.p, s));
   document.getElementById('opSegments').style.display = useStep ? '' : 'none';
-  if (useStep) document.getElementById('opSegValue').textContent = s.p[spec.stepper.key];
+  if (useStep) document.getElementById('opSegValue').textContent = opStepText(spec.stepper, s.p[spec.stepper.key]);
   const useStep2 = !!spec.stepper2 &&
                    !(spec.stepper2.hidden && spec.stepper2.hidden(s.p, s));
   document.getElementById('opSegments2').style.display = useStep2 ? '' : 'none';
-  if (useStep2) document.getElementById('opSeg2Value').textContent = s.p[spec.stepper2.key];
+  if (useStep2) document.getElementById('opSeg2Value').textContent = opStepText(spec.stepper2, s.p[spec.stepper2.key]);
   const xWrap = document.getElementById('opExtraWrap');
   if (spec.extra && (!spec.extra.when || spec.extra.when(s))) {
     xWrap.style.display = 'inline-flex';
@@ -42842,10 +43322,11 @@ function showOpSetupBar() {
   document.getElementById('opLabel').textContent =
     spec.label + (!spec.slider ? ''
       : spi >= 0 ? ' · point ' + (spi + 1) + ' radius'
-      : ' · ' + (spec.slider.key === 'sweep' ? 'degrees' : 'radius'));
+      : ' · ' + (spec.slider.label || (spec.slider.key === 'sweep' ? 'degrees' : 'radius')));
   document.getElementById('opOk').style.display = '';
   document.getElementById('opCancel').style.display = '';
   surfaceIn(opBarEl);
+  refreshPunchOutline();
 }
 
 /* Dropped without touching the scene, for restoreDoc: undo and load rebuild
@@ -42861,6 +43342,8 @@ function abandonOpSetup() {
   if (tubeRadiusDrag) endTubeRadiusDrag();
   unhideOpSetupInputs(App.opSetup);
   App.opSetup = null;
+  punchDrag = null;
+  refreshPunchOutline();
   hideOpBar();
   document.getElementById('opToggleWrap').style.display = 'none';
 }
@@ -42894,6 +43377,8 @@ function finishOpSetup(keep) {
   clearTubeRings();
   unhideOpSetupInputs(s);
   App.opSetup = null;
+  punchDrag = null;
+  refreshPunchOutline();
   hideOpBar();
   document.getElementById('opToggleWrap').style.display = 'none';
   const o = findObject(s.objId);
@@ -53893,7 +54378,7 @@ window.addEventListener('pointerup', (ev) => {
      release the app will ever hear about (v2.22b). */
   const curveLive = (App.curveEdit && App.curveEdit.pid !== null) ||
                     (App.curveDraw && App.curveDraw.pid !== null);
-  if (!directDrag && !extrudeDrag && !softSlide && !curveLive) return;
+  if (!directDrag && !extrudeDrag && !softSlide && !curveLive && !punchDrag) return;
   /* ONLY for a pointer this app is tracking. A second finger tapping Undo
      while the first is still dragging lifts on the button, bubbles to here,
      and would have committed the drag mid-gesture. A pointer that pressed on
@@ -53917,6 +54402,7 @@ window.addEventListener('pointerup', (ev) => {
   // be the only one this app ever hears about.
   if (softSlide) endSoftSlide();
   if (curveLive) endCurveGesture();
+  if (punchDrag) { if (punchDrag.pid === ev.pointerId) punchPointerUp(); else cancelPunchDrag(); orbit.enabled = true; }
   directCandidate = null;
   maybeResumeOrbit();
 });
@@ -55129,7 +55615,7 @@ if (EMBED) (function embedMain() {
   const OP_TABLES = { vertex: HUB_TOOLS_VERTEX, edge: HUB_TOOLS_EDGE, face: HUB_TOOLS_FACE,
     object: HUB_TOOLS_OBJECT_BASE };
   // These need a finger: a drawn cut, a chooser, a preview setup.
-  const OP_GESTURE = new Set(['knife', 'mirror', 'boolean']);
+  const OP_GESTURE = new Set(['knife', 'mirror', 'boolean', 'punch']);
   const OP_MODES = ['vertex', 'edge', 'face', 'object'];
   function opKind(mode, key) {
     if (key === 'spin') return 'spinedge';
@@ -55509,6 +55995,7 @@ if (PICK_DEBUG) {
     /* v2.13, reshaped in v2.17: the ring seat, the build behind its
        preview, and the survey that refuses ahead of both. */
     booleanSelection, openBooleanSetup, booleanBuild, booleanSurvey,
+    punchSelection,
     editableFromCSGResult,
     /* THREE and the primitive builder, so a probe can put a real scene
        together rather than hand-rolling a cube and getting the winding
