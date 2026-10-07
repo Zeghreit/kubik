@@ -3226,7 +3226,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.12</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.13</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -55082,7 +55082,7 @@ init();
 if (EMBED) (function embedMain() {
   const VERSION = ((document.querySelector('.brand span') || {}).textContent || '').trim();
   const CAPS = ['load', 'load.url', 'load.buffer', 'load.glb', 'load.gltf', 'load.fbx', 'load.obj',
-    'export.glb', 'stats', 'snapshot.png', 'setMaps', 'setView', 'camera',
+    'export.glb', 'stats', 'measure', 'snapshot.png', 'setMaps', 'setView', 'camera',
     'event.ready', 'event.dirty', 'event.selection',
     'op', 'ops', 'undo', 'redo', 'selection', 'rev'];
   const hostOrigin = (() => {
@@ -55197,6 +55197,86 @@ if (EMBED) (function embedMain() {
     return { objects: list.length, faces: sum('faces'), tris: sum('tris'), quads: sum('quads'),
       verts: sum('verts'), hasUV: list.length > 0 && list.every(x => x.hasUV),
       materials: Array.from(mats), textured: textured, list: list };
+  }
+
+  /* MEASURE IS THE MESH GATE'S QUESTIONS, ANSWERED ON THE SAME GEOMETRY.
+     AssetForge judges every generated mesh by shells, open/torn edges, bbox
+     and volume; it asked Blender until now. The answers here are built to be
+     comparable with Blender's (assetforge blender/af_qa.py): positions are
+     welded first - Kubik draws every face group with private vertex copies,
+     an FBX splits at every seam, so raw connectivity measures the drawing,
+     not the model - with the same 1e-5 rounding; a shell is a set of welded
+     vertices joined by edges, sized in triangles; an edge is non-manifold
+     when it is not shared by exactly two triangles (boundary or torn);
+     volume is the absolute signed volume. World space, so object moves and
+     scales count, as in Blender's dimensions. Numbers only, no element dump. */
+  function objMeasure(o) {
+    const geo = o.mesh.geometry;
+    const pos = geo.attributes.position;
+    const idx = geo.index ? geo.index.array : null;
+    const nTri = (idx ? idx.length : pos.count) / 3;
+    o.mesh.updateMatrixWorld(true);
+    const m = o.mesh.matrixWorld, v = new THREE.Vector3();
+    const keyOf = new Map(), wpos = [], weld = new Int32Array(pos.count);
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(m);
+      const k = v.x.toFixed(5) + ',' + v.y.toFixed(5) + ',' + v.z.toFixed(5);
+      let w = keyOf.get(k);
+      if (w === undefined) {
+        w = wpos.length / 3; keyOf.set(k, w); wpos.push(v.x, v.y, v.z);
+        if (v.x < min[0]) min[0] = v.x; if (v.y < min[1]) min[1] = v.y; if (v.z < min[2]) min[2] = v.z;
+        if (v.x > max[0]) max[0] = v.x; if (v.y > max[1]) max[1] = v.y; if (v.z > max[2]) max[2] = v.z;
+      }
+      weld[i] = w;
+    }
+    const nv = wpos.length / 3;
+    const parent = new Int32Array(nv); for (let i = 0; i < nv; i++) parent[i] = i;
+    const find = a => { while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a]; } return a; };
+    const join = (a, b) => { a = find(a); b = find(b); if (a !== b) parent[a] = b; };
+    const edges = new Map();
+    let vol = 0, degenerate = 0;
+    const P = (w, c) => wpos[w * 3 + c];
+    for (let t = 0; t < nTri; t++) {
+      const a = weld[idx ? idx[t * 3] : t * 3], b = weld[idx ? idx[t * 3 + 1] : t * 3 + 1], c = weld[idx ? idx[t * 3 + 2] : t * 3 + 2];
+      join(a, b); join(b, c);
+      if (a === b || b === c || a === c) { degenerate++; continue; }
+      [[a, b], [b, c], [c, a]].forEach(([p, q]) => { const k = p < q ? p * nv + q : q * nv + p; edges.set(k, (edges.get(k) || 0) + 1); });
+      const ax = P(a, 0), ay = P(a, 1), az = P(a, 2), bx = P(b, 0), by = P(b, 1), bz = P(b, 2), cx = P(c, 0), cy = P(c, 1), cz = P(c, 2);
+      vol += (ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx)) / 6;
+    }
+    // Shell sizes in triangles: every triangle belongs to its first vertex's
+    // root. A triangle the weld collapsed is not counted - Blender's
+    // remove_doubles deletes it the same way.
+    const size = new Map();
+    for (let t = 0; t < nTri; t++) {
+      const a = weld[idx ? idx[t * 3] : t * 3], b = weld[idx ? idx[t * 3 + 1] : t * 3 + 1], c = weld[idx ? idx[t * 3 + 2] : t * 3 + 2];
+      if (a === b || b === c || a === c) continue;
+      const r = find(a);
+      size.set(r, (size.get(r) || 0) + 1);
+    }
+    let boundary = 0, torn = 0;
+    edges.forEach(n => { if (n === 1) boundary++; else if (n > 2) torn++; });
+    const shells = Array.from(size.values()).sort((x, y) => y - x);
+    const r4 = x => Math.round(x * 1e4) / 1e4;
+    return { id: o.id, name: o.name, tris: nTri, weldedVerts: nv, edges: edges.size,
+      boundaryEdges: boundary, tornEdges: torn, nonManifoldEdges: boundary + torn,
+      shellCount: shells.length, shells: shells.slice(0, 1000), degenerateTris: degenerate,
+      bbox: { min: min.map(r4), max: max.map(r4), size: [0, 1, 2].map(i => r4(max[i] - min[i])) },
+      volume: Math.round(Math.abs(vol) * 1e6) / 1e6 };
+  }
+
+  function measure(args) {
+    const list = pickObjects(args && args.objects).map(objMeasure);
+    const sum = k => list.reduce((a, x) => a + x[k], 0);
+    const min = [0, 1, 2].map(i => Math.min(...list.map(x => x.bbox.min[i])));
+    const max = [0, 1, 2].map(i => Math.max(...list.map(x => x.bbox.max[i])));
+    return { objects: list.length, tris: sum('tris'), shellCount: sum('shellCount'),
+      nonManifoldEdges: sum('nonManifoldEdges'), boundaryEdges: sum('boundaryEdges'),
+      tornEdges: sum('tornEdges'), edges: sum('edges'), degenerateTris: sum('degenerateTris'),
+      volume: Math.round(list.reduce((a, x) => a + x.volume, 0) * 1e6) / 1e6,
+      bbox: list.length ? { min: min, max: max, size: [0, 1, 2].map(i => Math.round((max[i] - min[i]) * 1e4) / 1e4) } : null,
+      list: list };
   }
 
   /* THE STORE DECODES A PICTURE LATE. textureFor hands out a Texture whose
@@ -55801,6 +55881,7 @@ if (EMBED) (function embedMain() {
     load: load,
     export: exportCmd,
     stats: stats,
+    measure: measure,
     snapshot: snapshot,
     setMaps: setMaps,
     setView: (a) => {

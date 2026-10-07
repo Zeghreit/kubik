@@ -1,4 +1,4 @@
-# Embedding Kubik — protocol reference (v3.11)
+# Embedding Kubik — protocol reference (v3.13)
 
 Kubik can live in an `<iframe>` on another page (a "host") and be driven over
 `postMessage`. Without `?embed=1` none of this exists — not even a `message`
@@ -58,6 +58,7 @@ answers `error.code = 'unknown'`.
 | `load` | `{ url \| buffer, format?, name?, replace? }` | `stats` of what was loaded (+ `notes` if Kubik had something to say) |
 | `export` | `{ format: 'glb', objects?: 'all' \| [id or name] }` | `ArrayBuffer` (GLB) |
 | `stats` | `{ objects?: 'all' \| [id or name] }` | see below |
+| `measure` | `{ objects?: 'all' \| [id or name] }` | shells, open/torn edges, bbox, volume - see below (v3.13) |
 | `snapshot` | `{ w?, h?, view? }` | `ArrayBuffer` (PNG, exactly w×h) |
 | `setMaps` | `{ object?, material?, name?, flipY?, maps: {...} }` | `{ material, flipY, applied: [...] }` |
 | `setView` | `{ view: 'node' \| 'full' }` | `{ view }` — no reload |
@@ -90,6 +91,30 @@ answers `error.code = 'unknown'`.
 ```
 `faces` are Kubik faces (a quad is one face of two triangles). `verts` counts
 distinct positions. `hasUV` is true only if every object has UVs.
+
+### measure (v3.13)
+```js
+{ objects, tris, shellCount, nonManifoldEdges, boundaryEdges, tornEdges, edges,
+  degenerateTris, volume, bbox: { min: [x,y,z], max, size },
+  list: [{ id, name, tris, weldedVerts, edges, boundaryEdges, tornEdges,
+           nonManifoldEdges, shellCount, shells: [tris, ...largest first, max 1000],
+           degenerateTris, bbox, volume }] }
+```
+The questions a mesh gate asks, on the geometry the export would clone, in
+world space (Y up). Positions are **welded first** (rounded to 1e-5): Kubik
+draws every face group with private vertex copies and an FBX splits at every
+seam, so unwelded connectivity would measure the drawing, not the model.
+- a **shell** is welded vertices joined by edges; its size is in triangles,
+  triangles the weld collapsed are not counted (`degenerateTris` counts them);
+- an edge is **non-manifold** when it is not shared by exactly two triangles:
+  `boundaryEdges` (one - open surface) + `tornEdges` (three or more);
+- `volume` is the absolute signed volume. On an open mesh it depends on where
+  the origin is and means little; zero on a closed one means flat or inverted.
+Checked against Blender (`bmesh` weld + `is_manifold` + `calc_volume`) on three
+production meshes: triangles, shell count and the largest shells identical,
+non-manifold equal or within the triangles Kubik's importer drops. `edges` is
+counted after the weld; Blender's share of non-manifold edges divides by the
+unwelded count, so the same mesh reads a few points lower here.
 
 ### export
 One glTF primitive per material, vertices welded on exact position + normal +
