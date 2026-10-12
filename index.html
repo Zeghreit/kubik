@@ -3240,7 +3240,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.14</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.14a</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -34936,6 +34936,7 @@ const TOPO_Q_SAG = 0.2;                   // a new face's middle, off the surfac
    the same input gives the same mesh on every device. */
 const TOPO_SMOOTH_WORK = 1500000;
 const TOPO_Q_ISLAND = 6;                  // faces: an enclosed patch this small joins the band
+const TOPO_Q_VOL_REL = 0.02;              // v3.14a: a rebuilt piece may move this share of the cut's own volume, no more
 const TOPO_Q_GRAZE = 0.35;                // a boundary point this close to the cut (per its edge) joins the band
 
 let TOPO_X_STRIP = true, TOPO_SMOOTH = 10, TOPO_ROW_GRADE = true, TOPO_MVC = true, TOPO_MVC_MAXANG = 150 * Math.PI / 180, TOPO_MVC_FLOOR = 0.25;   // v2.81a switches (let: the fixtures A/B them)
@@ -36055,11 +36056,36 @@ function topoQuads(P0, groups, seam, owner, surf, opt) {
     return out;
   };
 
+  /* A PIECE MAY NOT MOVE VOLUME (v3.14a). The band grows over folds under
+     TOPO_Q_CREASE_COS, and a row of quads laid across a 12-sided can's 30
+     degree fold is a chord: one boss there came back LOSING volume (-0.0029
+     against +0.0018; the rebuilt piece moved 0.006). The piece's old and new
+     faces share their boundary, so the difference of their divergence sums is
+     the volume it moved; over TOPO_Q_VOL_REL of the cut's own volume (the
+     result against the nearest input) the piece stays as cut. */
+  const sumVol = fs => { let v = 0, A = 0; fs.forEach(g => g.triangles.forEach(t => { const a = t[0] * 3, b = t[1] * 3, c = t[2] * 3;
+    v += (P[a] * (P[b + 1] * P[c + 2] - P[b + 2] * P[c + 1]) - P[a + 1] * (P[b] * P[c + 2] - P[b + 2] * P[c]) + P[a + 2] * (P[b] * P[c + 1] - P[b + 1] * P[c])) / 6;
+    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2], wx = P[c] - P[a], wy = P[c + 1] - P[a + 1], wz = P[c + 2] - P[a + 2];
+    A += Math.hypot(uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx) / 2; })); return [v, A]; };
+  let volTol = Infinity;
+  if (surf && surf.length >= 2) {
+    const whole = sumVol(groups)[0];
+    let cut = Infinity;
+    surf.forEach(sf => { let v = 0; const T = sf.tri, SP = sf.P;
+      for (let k = 0; k + 2 < T.length; k += 3) { const a = T[k] * 3, b = T[k + 1] * 3, c = T[k + 2] * 3;
+        v += (SP[a] * (SP[b + 1] * SP[c + 2] - SP[b + 2] * SP[c + 1]) - SP[a + 1] * (SP[b] * SP[c + 2] - SP[b + 2] * SP[c]) + SP[a + 2] * (SP[b] * SP[c + 1] - SP[b + 1] * SP[c])) / 6; }
+      cut = Math.min(cut, Math.abs(whole - v)); });
+    if (isFinite(cut)) volTol = TOPO_Q_VOL_REL * cut;
+  }
+  const movesVol = (c, res) => { const o = sumVol(c.faces.map(gi => groups[gi])), n = sumVol(res);
+    return Math.abs(n[0] - o[0]) > Math.max(volTol, 1e-5 * Math.pow(o[1], 1.5)); };
+
   // ---- Fill each annulus with rings and spokes.
   const newGroups = [];
   let rebuilt = 0;
   comps.forEach(c => {
     if (!c.ok) return;
+    const save0 = P.length;
     /* Tried in a fixed order, first clean one wins: laid out flat and evened
        out there, laid out flat as placed, then by
        straight blends between the loops, the same relaxed on the surface,
@@ -36067,7 +36093,8 @@ function topoQuads(P0, groups, seam, owner, surf, opt) {
        always names the same layout. */
     if (TOPO_Q_RING2) {
       const fl = c.loops.find(L => L.kind === 'frozen'), so = fl ? owner[fl.verts[0]] : -1; const rf = topoRingBuild(c, expand, P, addP, pt, so >= 0 && surf[so] ? (q => topoClosestOnSurf(surf[so], q)) : null);
-      if (rf) { c.how = 'ring'; c.tried = []; rebuilt++; rf.forEach(f => newGroups.push(f)); return; }
+      if (rf && movesVol(c, rf)) { P.length = save0; c.why = 'moves volume'; }   // the flat tries below may still hold it
+      else if (rf) { c.how = 'ring'; c.tried = []; rebuilt++; rf.forEach(f => newGroups.push(f)); return; }
       c.ringWhy = c.why;
     }
     const save = P.length;
@@ -36081,6 +36108,7 @@ function topoQuads(P0, groups, seam, owner, surf, opt) {
     for (let ti = 0; ti < tries.length; ti++) {
       c.why = '';
       res = topoQuadFill(c, expand, P, tries[ti], addP, pt);
+      if (res && movesVol(c, res)) { res = null; c.why = 'moves volume'; }
       if (res) { c.how = ti; break; }
       why.push(c.why);
       P.length = save;

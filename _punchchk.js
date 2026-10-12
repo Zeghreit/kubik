@@ -336,6 +336,22 @@
           volume(R).toFixed(6) + ' vs ' + (V0 - 6 * (V0 - V1)).toFixed(6) + ' (one dent ' + (V0 - V1).toFixed(6) + ')');
     K.undo(); await wait(80);
 
+    /* 18b. v3.14a: Quads on the faceted wall may not move volume. One boss on
+       the default 12-sided can used to come back LOSING volume (-0.0029 against
+       N-gon's +0.0018): the band's quads chorded the 30 degree fold. */
+    for (const kind of ['Boss', 'Dent']) {
+      const d = {};
+      for (const topo of ['N-gon', 'Quads']) {
+        await openOn(K.App.objects[0]); await tapAt(onWall[0], onWall[1], onWall[2]); setSize(0.2);
+        chip('opGrouping', kind).click(); chip('opGrouping2', topo).click();
+        ok(); await wait(80);
+        d[topo] = volume(result()) - V0;
+        K.undo(); await wait(80);
+      }
+      check('quads on a faceted wall: ' + kind.toLowerCase() + ' volume as N-gon', Math.abs(d.Quads - d['N-gon']) <= 0.03 * Math.abs(d['N-gon']),
+            d.Quads.toFixed(6) + ' vs ' + d['N-gon'].toFixed(6));
+    }
+
     /* 19. INFO, a known limit: 6 through-holes round the SOLID can cross
        inside it; the weld and heal after the CSG can open that. */
     await openOn(K.App.objects[0]); await tapAt(onWall[0], onWall[1], onWall[2]); setSize(0.2);

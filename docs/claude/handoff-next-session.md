@@ -1,4 +1,4 @@
-# Handoff — NEXT: Zeghreit's call between (a) v3.14a, the boolean pipeline limits patterns now reach in one tap, and (b) the Dynamic booleans design talk. Last shipped: v3.14 Punch patterns + rounded square.
+# Handoff — NEXT: v3.14a continues with (a) 1, 2, 4 (the CSG/weld family - fable review of CSG -> weld -> heal first), or (b) the Dynamic booleans design talk. Last shipped: v3.14a Quads may not move volume.
 
 Live: https://zeghreit.github.io/kubik/ · repo `C:\Users\a.bodrov\Projects\kubik` · the project now runs in Claude Code on the PC (rules: `CLAUDE.md`).
 Read `CURRENT_STATE.md` first — its last section (v3.14) is the truth for Punch now. Client reference: `EMBED.md` in the repo root.
@@ -13,7 +13,7 @@ Arrays (line / ring) + mirror + rounded-square cutter, a second "Pattern" page o
 ## (a) v3.14a candidates — measured, with repro probes
 1. **4+ holes through one flat face come back open in N-gon / Tris / Loops** — the plain Boolean too (`_holeschk.js`: bar with 4 cylinders 24 open edges, 8 → 86, 12 → 164; Quads closes to 8, 6 open at 12). Suspect `topoBridge` (or the fall-back merge after it gives up) on faces with several holes. A line of holes makes this the common case.
 2. **3+ through-bores crossing inside a solid** (ring of holes through a solid can) — raw three-bvh-csg output closed, the 1e-4 GRID weld + heal in `editableFromCSGResult` open it (`_crosschk.js`: 22 / 293 vertex pairs within 3.5e-4 left apart; a tolerance weld cut 66 open edges to 14, not to 0). Same family as the dense-sphere loose end below — a fable review of CSG → weld → heal is the right first step.
-3. Quads on a faceted wall moves volume (one dent on a 12-gon can 0.00426 vs 0.0018), and with 3+ cutters in the facet band opens the shell (default can, boss Ring ×6: 12 open edges, 2 shells; N-gon closed). This one hits the DEFAULTS (12-sided cylinder, Quads) — likely the first thing Zeghreit sees.
+3. ~~Quads on a faceted wall moves volume~~ — FIXED v3.14a (per-piece volume guard, `CURRENT_STATE.md` → "Quads may not move volume"). The "Ring ×6 opens the shell" half did not reproduce on the cloud bench. New sighting: a ring of bosses/dents tapped near the middle of a box's top face is open in EVERY topology (N-gon b18) — belongs to 1/4.
 4. Copies whose walls nearly touch (0.9–1.1 × size apart) open now and then; ragged band (numbers in CURRENT_STATE).
 
 ## (b) Dynamic booleans (design talk first, no code)
