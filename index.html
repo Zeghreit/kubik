@@ -3226,7 +3226,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.13</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.13a</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -18652,7 +18652,34 @@ function setPendingAmount(v, defer) {
   if (defer) schedulePendingApply(); else applyPendingOp();
 }
 
-opSliderEl.addEventListener('input', () => setPendingAmount(parseFloat(opSliderEl.value), true));
+opSliderEl.addEventListener('input', () => {
+  /* A SETUP WHOSE BUILD IS A BOOLEAN DOES NOT REBUILD PER PIXEL (v3.13a).
+     Punch's size slider has 400 stops and every 'input' ran the whole CSG
+     and topology - 300 ms each on a desktop, measured, so a phone queued
+     seconds of them per drag and hung. A spec that says it has a live
+     preview shows that while the finger moves, and builds once on release. */
+  const spec = App.opSetup && !App.pendingOp ? opSetupSpec() : null;
+  if (spec && spec.slider && spec.slider.live && opSliderPoint() < 0) {
+    const rng = opSliderRange(), v = parseFloat(opSliderEl.value);
+    if (!Number.isFinite(v)) return;
+    App.opSetup.sliderLive = Math.max(rng.lo, Math.min(rng.hi, v));
+    opValueEl.value = Number(App.opSetup.sliderLive.toFixed(spec.slider.decimals));
+    spec.slider.live(App.opSetup, App.opSetup.sliderLive);
+    return;
+  }
+  setPendingAmount(parseFloat(opSliderEl.value), true);
+});
+/* The release. 'change' is the browser's own, pointerup and pointercancel
+   the backstops for a lift the browser does not report as a change; the
+   first of them to arrive commits, the others find nothing to do. */
+function commitOpSliderLive() {
+  const s = App.opSetup;
+  if (!s || s.sliderLive == null) return;
+  const v = s.sliderLive;
+  s.sliderLive = null;
+  setOpSetupAmount(v);
+}
+['change', 'pointerup', 'pointercancel'].forEach(t => opSliderEl.addEventListener(t, commitOpSliderLive));
 /* ONE MARK PER GRAB (v2.21). 'input' fires all the way through a drag, so
    marking there would fill the stack with one step per pixel. Both openings
    are covered: a finger or mouse on the track, and the arrow keys, which
@@ -33611,9 +33638,19 @@ function healTJunctions(positions, trisIn, matOfTriIn) {
 
     const outT = [], outM = [];
     const workT = tris.slice(), workM = matOf.slice();
+    /* THE LINEAGE (v3.13a, measured). Every corner any ancestor of a piece
+       has had. Three seam vertices nearly in a line, each within the weld of
+       the next one's edge, made a cycle: A-B split at C, the child's C-D
+       split at A, which gave A-B back - and again, 133 000 splits on a 48x32
+       sphere punched at 0.636, two million iterations of a scan over every
+       candidate before the cap let go. Minutes of a frozen phone. A piece
+       lies inside its ancestor, so in exact arithmetic an ancestor's corner
+       can never sit strictly inside a piece's edge: the rule refuses only
+       what tolerance invented, never a real T. */
+    const workL = new Array(workT.length).fill(null);
     let guard = 0, split = 0;
     while (workT.length && guard++ < CSG_HEAL_SPLIT_CAP) {
-      const t = workT.pop(), mi = workM.pop();
+      const t = workT.pop(), mi = workM.pop(), lin = workL.pop();
       let cut = false;
       for (let e = 0; e < 3 && !cut; e++) {
         const a = t[e], b = t[(e + 1) % 3], c = t[(e + 2) % 3];
@@ -33629,6 +33666,7 @@ function healTJunctions(positions, trisIn, matOfTriIn) {
              exists to close, and inflating the neighbour's edge count so the
              real T became invisible to the next pass. */
           if (v === a || v === b || v === c) continue;
+          if (lin && lin.indexOf(v) >= 0) continue;
           const tt = csgPointOnSegment(positions, a, b, v);
           if (tt >= 0 && tt < bestT) { bestT = tt; best = v; }
         }
@@ -33642,6 +33680,8 @@ function healTJunctions(positions, trisIn, matOfTriIn) {
         open.add(ek(best, b));
         workT.push([a, best, c], [best, b, c]);
         workM.push(mi, mi);
+        const kid = lin ? lin.concat(t) : t.slice();
+        workL.push(kid, kid);
         cut = true;
         split++;
       }
@@ -33652,7 +33692,7 @@ function healTJunctions(positions, trisIn, matOfTriIn) {
        not copied into outT - so tripping it deleted triangles, silently, from
        a mesh that was then recentred, made into an object and pushed to
        history. Flushed instead, and the cap is reported. */
-    while (workT.length) { outT.push(workT.pop()); outM.push(workM.pop()); }
+    while (workT.length) { outT.push(workT.pop()); outM.push(workM.pop()); workL.pop(); }
     if (guard >= CSG_HEAL_SPLIT_CAP) capped = true;
     tris = outT; matOf = outM;
     if (!split || capped) break;
@@ -34862,6 +34902,14 @@ const TOPO_Q_MAX_LOOP = 2000;
 const TOPO_Q_CREASE_COS = Math.cos(40 * Math.PI / 180);
 const TOPO_Q_FOLD_COS = 0.5;             // a new triangle may lean 60 degrees off its surface, no more
 const TOPO_Q_SAG = 0.2;                   // a new face's middle, off the surface, per edge length
+/* THE SMOOTHING'S BUDGET, in point-to-triangle tests per annulus (v3.13a,
+   measured). An ordinary Punch spends about 20 000 here. One that takes most
+   of a 48x32 sphere spent 280 million - 18 seconds on a desktop, a minute or
+   more on a phone - polishing rows nobody would see move. The relax stops
+   where the budget does; every step it took was already checked, so what is
+   left is a valid, slightly less even fill. Counted work, not a clock, so
+   the same input gives the same mesh on every device. */
+const TOPO_SMOOTH_WORK = 1500000;
 const TOPO_Q_ISLAND = 6;                  // faces: an enclosed patch this small joins the band
 const TOPO_Q_GRAZE = 0.35;                // a boundary point this close to the cut (per its edge) joins the band
 
@@ -36273,6 +36321,7 @@ function topoQuadFill(c, expand, P, V, addP, pt) {
   // The nearest crossing of the line through q along dir, either way (Moller-Trumbore).
   const rayHit = (q, dir) => {
     let bt = Infinity, bp = null;
+    smoothWork += T.length;
     for (const t of T) {
       const e1 = [t.b[0] - t.a[0], t.b[1] - t.a[1], t.b[2] - t.a[2]], e2 = [t.c[0] - t.a[0], t.c[1] - t.a[1], t.c[2] - t.a[2]];
       const pv = [dir[1] * e2[2] - dir[2] * e2[1], dir[2] * e2[0] - dir[0] * e2[2], dir[0] * e2[1] - dir[1] * e2[0]];
@@ -36289,8 +36338,10 @@ function topoQuadFill(c, expand, P, V, addP, pt) {
     }
     return bp;
   };
+  let smoothWork = 0;   // what the relax below has spent, in triangle tests
   const project = q => {
     let bd = Infinity, bp = null, bn = null;
+    smoothWork += T.length;
     for (const t of T) {
       topoClosestOnTri(q, t.a, t.b, t.c, tmp);
       const d = (tmp[0] - q[0]) ** 2 + (tmp[1] - q[1]) ** 2 + (tmp[2] - q[2]) ** 2;
@@ -36732,8 +36783,11 @@ function topoQuadFill(c, expand, P, V, addP, pt) {
       if (Math.hypot(pj.p[0] - mid[0], pj.p[1] - mid[1], pj.p[2] - mid[2]) > TOPO_Q_SAG * L) return false;
       return (n[0] * src[0] + n[1] * src[1] + n[2] * src[2]) / ar >= TOPO_Q_FOLD_COS; };
     const faceOk = f => (f.length === 3 ? triOk(f) : triOk([f[0], f[1], f[2]]) && triOk([f[0], f[2], f[3]]) && triOk([f[0], f[1], f[3]]) && triOk([f[1], f[2], f[3]]));
+    const work0 = smoothWork;
+    smoothing:
     for (let it = 0; it < TOPO_SMOOTH; it++) {
       for (const v of mvs) {
+        if (smoothWork - work0 > TOPO_SMOOTH_WORK) break smoothing;
         let x = 0, y = 0, z = 0, w = 0;
         fOf.get(v).forEach(fi => { const f = faces[fi];
           let cx = 0, cy = 0, cz = 0; f.forEach(u => { cx += P[u * 3]; cy += P[u * 3 + 1]; cz += P[u * 3 + 2]; });
@@ -42721,6 +42775,8 @@ const OP_SETUP = {
               // on is a whole number of steps - 0.4 stays 0.4.
               min: (p, s) => punchSizeMin(s), max: (p, s) => punchSizeMax(s),
               step: (p, s) => punchSizeStep(s),
+              // v3.13a: while the finger is on the slider only the outline moves.
+              live: (s, v) => refreshPunchOutline(v),
               decimals: 3, unit: '' },
     // Depth in tenths of the size: a dent half as deep as it is wide is 5.
     stepper: { key: 'depth', max: () => 30, min: () => 1,
@@ -43142,6 +43198,7 @@ function opSliderValue() {
 function setOpSetupAmount(v) {
   const s = App.opSetup, spec = opSetupSpec();
   if (!s || !spec || !spec.slider || !Number.isFinite(v)) return;
+  s.sliderLive = null;
   const sl = spec.slider, rng = opSliderRange();
   const val = Math.max(rng.lo, Math.min(rng.hi, v));
   const i = opSliderPoint();
@@ -43351,6 +43408,8 @@ function abandonOpSetup() {
 function finishOpSetup(keep) {
   const s = App.opSetup;
   if (!s) return;
+  // A slider still moving when OK lands: its number is what OK means (v3.13a).
+  if (keep && s.sliderLive != null) commitOpSliderLive();
   if (keep && s.objId != null) { const _id = s.objId; setTimeout(() => feel.commit(_id), 0); }
   if (tubeRadiusDrag) endTubeRadiusDrag();
   /* The hosted point editor goes with the bar that opened it. Abandoned

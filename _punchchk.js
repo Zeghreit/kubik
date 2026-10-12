@@ -123,7 +123,7 @@
     check('slider shows the size', Math.abs(Number(document.getElementById('opSlider').value) - sz) < 1e-3, document.getElementById('opSlider').value);
     check('label says size', /size/.test(document.getElementById('opLabel').textContent), document.getElementById('opLabel').textContent);
     // pin a known size for the volume checks, through the slider's own path
-    const setSize = (v) => { const sl = document.getElementById('opSlider'); sl.value = v; sl.dispatchEvent(new Event('input', { bubbles: true })); };
+    const setSize = (v) => { const sl = document.getElementById('opSlider'); sl.value = v; sl.dispatchEvent(new Event('input', { bubbles: true })); sl.dispatchEvent(new Event('change', { bubbles: true })); };  // v3.13a: the build runs on release
     setSize(0.4);
     check('slider input sets size', near(S().p.size, 0.4, 1e-3), S().p.size);
     say('hole preview: ' + readout());
