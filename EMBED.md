@@ -1,4 +1,4 @@
-# Embedding Kubik — protocol reference (v3.13)
+# Embedding Kubik — protocol reference (v3.15)
 
 Kubik can live in an `<iframe>` on another page (a "host") and be driven over
 `postMessage`. Without `?embed=1` none of this exists — not even a `message`
@@ -56,7 +56,7 @@ answers `error.code = 'unknown'`.
 |---|---|---|
 | `hello` | — | `{ version, caps, view }` |
 | `load` | `{ url \| buffer, format?, name?, replace? }` | `stats` of what was loaded (+ `notes` if Kubik had something to say) |
-| `export` | `{ format: 'glb', objects?: 'all' \| [id or name] }` | `ArrayBuffer` (GLB) |
+| `export` | `{ format: 'glb' \| 'obj', objects?: 'all' \| [id or name] }` | `ArrayBuffer` (GLB, or OBJ text in UTF-8 - v3.15) |
 | `stats` | `{ objects?: 'all' \| [id or name] }` | see below |
 | `measure` | `{ objects?: 'all' \| [id or name] }` | shells, open/torn edges, bbox, volume - see below (v3.13) |
 | `snapshot` | `{ w?, h?, view? }` | `ArrayBuffer` (PNG, exactly w×h) |
@@ -127,6 +127,17 @@ Kubik drops **zero-area triangles** (collinear slivers) on import, so the
 triangle count can fall by exactly that many (Tripo stool: 29 of 24577), and
 a coplanar patch next to such a sliver may be re-cut along another diagonal
 (Tripo crate: 5 of 29680). The surface does not change.
+
+**`format: 'obj'` (v3.15)** - the same welded geometry as text: one `o` per
+object (its name), `v`/`vt`/`vn` in **world space** (the object's move, turn
+and scale applied), triangles, no materials. three's OBJExporter writes one
+`v` per welded vertex, so a UV seam is two `v` lines at one position; a host
+that wants the mesh connected shares identical lines (AF does). **V follows
+the file the mesh came from:** a mesh loaded from FBX or OBJ keeps its UVs as
+they were (both count V from the bottom, like .obj); anything else - glTF,
+made in Kubik - is written `1 - v`. So an .obj of an FBX fits that FBX's own
+pictures. Measured against Blender (AF, `af_to_obj`, five Tripo FBX): bbox,
+welded vertices, UVs and shells identical, triangles less the dropped slivers.
 
 ### snapshot
 `w`, `h` default 330×250 (16…2048). `view`: `three-quarter` (default),

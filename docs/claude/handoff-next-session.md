@@ -1,4 +1,4 @@
-# Handoff — NEXT (Zeghreit's order 12.10): ~~5 small bugs~~ done v3.14c -> 2 cutting with a curve -> 3 boolean residue -> 6 heavy-mesh plan. Last shipped: v3.14c FBX maps from the picker + Export compaction.
+# Handoff — NEXT (Zeghreit's order 12.10): ~~5 small bugs~~ done v3.14c -> 2 cutting with a curve -> 3 boolean residue -> 6 heavy-mesh plan. Last shipped: v3.15 embed `export obj` (for AF) + .obj/.stl buttons export objects where they stand.
 
 Live: https://zeghreit.github.io/kubik/ · repo `C:\Users\a.bodrov\Projects\kubik` · the project now runs in Claude Code on the PC (rules: `CLAUDE.md`).
 Read `CURRENT_STATE.md` first — its last section (v3.14) is the truth for Punch now. Client reference: `EMBED.md` in the repo root.
@@ -6,6 +6,9 @@ Standing constraint: **UV transform stays 2D-only.**
 
 **PC BENCH WORKS** (12.10): `py _clean_probe.py <probe>.js out.txt` runs the cloud probes too — headless Chrome, CDN live. `PROBE_TIMEOUT=<s>` (default 120), `PROBE_PORT=<n>` (own port and page, so two runs can share the PC). Only `/result`, `/report`, `/done` end a run; any other POST path is a progress line. Long runs with `run_in_background`.
 **`.gitignore` has `_*`** — a new probe needs `git add -f`.
+
+## v3.15 — shipped (13.10)
+Embed `export {format:'obj'}` for AF's `af_to_obj` (FBX -> OBJ for Mixamo; AF switched its preview, mesh gate, map wiring and OBJ steps to Kubik by default). One `objText` for the button and embed. Found on the way and fixed for the buttons too: OBJExporter/STLExporter read `matrixWorld`, which buildExportGroup's new meshes never had updated - a moved/turned/scaled object's .obj and .stl came out where it was made. V by source in embed: FBX/OBJ meshes keep their UVs, the rest get 1 - v. Verified: `_objchk.html` 11/11 (`py -3 _embedchk.py _objchk.html`), `_embedchk` regression, and AF against Blender on five Tripo FBX (vertices, UVs, shells, bbox identical). All in `CURRENT_STATE.md` -> "Export .obj for a host (v3.15)". Loose end there: the BUTTON still turns V over on FBX imports (needs the source format kept per object).
 
 ## v3.14 — shipped (12.10)
 Arrays (line / ring) + mirror + rounded-square cutter, a second "Pattern" page on the Punch bar; the op bar's readout made visible on a phone (it was 0 px wide beside Punch's slider since v3.12), and Punch's readout now says "N open edges" before OK. All in `CURRENT_STATE.md` → "Punch patterns and a rounded square (v3.14)". Verified: `_punchchk` 86/86, `_punchperf` ALL PASS, `_boolchk` PASS, `_opbarchk` no overlaps 320–430 px, fable review of the placement (3 fixed, 1 made visible, 4 limits written down), opus review of the bar and failure paths (1 bug fixed: a refused build wiped Generate's layout). Below 520 px Lathe and Tube now put their slider on its own line (it used to run off the screen) - 48 px taller bar, worth a look on the phone. Waiting for Zeghreit's feel on the phone: is the Pattern page findable, are the default count 6 / gap 50% right, does the outline on the far side of a ring (drawn on top, like v3.12's) read as help or clutter, and is the extra readout line under the slider worth its 13 px.
@@ -27,6 +30,7 @@ Idea from chat: the cutter stays a separate object linked to its target; grab it
 5. Cutting with a curve (planned after v3.14, its own version).
 6. Declarative select: `select: { mode, where: { normal, angle } | { box } | { side } }` + grow / shrink / loop; answer `{ count, ids, bounds }`.
 7. ~~Plain-editor FBX bug~~ — FIXED v3.14c.
+7a. Export button .obj of an FBX import is upside down against the FBX pictures (v3.15 loose end; embed is right - needs the source format kept per object).
 8. ~~Export button one primitive per face~~ — FIXED v3.14c (compacted + `_KUBIKFACE` face numbers keep the round trip).
 9. Heavy-mesh plan toward ~1M faces.
 10. Reviews not done: fable on `compactForExport` + `fitDistance`; opus on the v3.11 layer.

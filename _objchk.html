@@ -1,0 +1,103 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>v3.15 export obj probe</title></head>
+<body>
+<!-- py -3 _embedchk.py _objchk.html -> _objchk_out.txt
+     v3.15: embed `export {format:'obj'}` - world space after a move, and V
+     turned over only for meshes not loaded from FBX/OBJ, in a mixed scene. -->
+<iframe id="k" style="width:640px;height:480px;border:0"></iframe>
+<script>
+const out = [];
+let pass = 0, fail = 0;
+const ok = (c, msg) => { (c ? pass++ : fail++); out.push((c ? 'PASS ' : 'FAIL ') + msg); };
+const mark = m => fetch('/mark', { method: 'POST', body: m });
+const frame = document.getElementById('k');
+let seq = 0; const pend = new Map(); let readyRes; const ready = new Promise(r => readyRes = r);
+addEventListener('message', ev => {
+  if (ev.source !== frame.contentWindow || !ev.data || ev.data.kubik !== 1) return;
+  const d = ev.data;
+  if (d.event) { if (d.event === 'ready') readyRes(d.data); return; }
+  const p = pend.get(d.id); if (!p) return; pend.delete(d.id);
+  d.ok ? p.res(d.result) : p.rej(Object.assign(new Error(d.error.message), d.error));
+});
+frame.src = 'index.html?embed=1&view=node&debug=1';
+function call(cmd, args = {}) {
+  const id = 'q' + (++seq);
+  return new Promise((res, rej) => { pend.set(id, { res, rej }); frame.contentWindow.postMessage({ kubik: 1, id, cmd, args }, location.origin); });
+}
+// .obj text -> { name: { v: [[x,y,z]], vt: [[u,v]] } }, v/vt in file order per `o`.
+function parse(buf) {
+  const res = {}; let cur = null;
+  new TextDecoder().decode(buf).split('\n').forEach(l => {
+    const t = l.trim().split(/\s+/);
+    if (t[0] === 'o') { cur = res[t[1]] = { v: [], vt: [] }; }
+    else if (t[0] === 'v' && cur) cur.v.push(t.slice(1, 4).map(Number));
+    else if (t[0] === 'vt' && cur) cur.vt.push(t.slice(1, 3).map(Number));
+  });
+  return res;
+}
+const box = vs => [0, 1, 2].map(i => [Math.min(...vs.map(p => p[i])), Math.max(...vs.map(p => p[i]))]);
+const near = (a, b, e) => Math.abs(a - b) <= e;
+(async () => {
+  try {
+    const hello = await ready;
+    ok(hello.caps.indexOf('export.obj') >= 0, 'caps has export.obj (' + hello.version + ')');
+    await mark('fbx load');
+    await call('load', { url: '_dev/embed/crate_pbr/crate_r01_pbr.fbx', name: 'crate' });
+    const a = Object.values(parse(await call('export', { format: 'obj' })))[0];
+    const m0 = await call('measure', {});
+    const ba = box(a.v);
+    ok([0, 1, 2].every(i => near(ba[i][0], m0.bbox.min[i], 1e-4) && near(ba[i][1], m0.bbox.max[i], 1e-4)),
+      'obj bbox = measure bbox before the move ' + JSON.stringify(ba.map(r => r.map(x => +x.toFixed(4)))));
+    // Move, turn and scale the object the way a finger would leave it.
+    const o = frame.contentWindow.__kubik.App.objects[0];
+    o.mesh.position.set(2, 0.5, -1); o.mesh.rotation.set(0, Math.PI / 2, 0); o.mesh.scale.set(2, 2, 2);
+    o.mesh.updateMatrixWorld(true);
+    await mark('moved export');
+    const b = Object.values(parse(await call('export', { format: 'obj' })))[0];
+    const m1 = await call('measure', {});
+    const bb = box(b.v);
+    ok([0, 1, 2].every(i => near(bb[i][0], m1.bbox.min[i], 1e-3) && near(bb[i][1], m1.bbox.max[i], 1e-3)),
+      'obj bbox = measure bbox after move/turn/scale ' + JSON.stringify(bb.map(r => r.map(x => +x.toFixed(3)))) +
+      ' measure ' + JSON.stringify(m1.bbox.min.map(x => +x.toFixed(3))) + '..' + JSON.stringify(m1.bbox.max.map(x => +x.toFixed(3))));
+    ok(near(bb[0][1] - bb[0][0], 2 * (ba[2][1] - ba[2][0]), 1e-3), 'turned 90 deg and doubled: new X span = 2 x old Z span');
+    // Mixed scene: FBX keeps V, GLB gets 1 - V; same per-object UVs as alone.
+    await mark('mixed');
+    await call('load', { url: '_dev/embed/crate_pbr/crate_r01_pbr.fbx', name: 'crate' });
+    const fbxAlone = Object.values(parse(await call('export', { format: 'obj' })))[0];
+    await call('load', { url: '_dev/embed/boxerp_r01_game.glb', name: 'boxer' });
+    const glbAlone = Object.values(parse(await call('export', { format: 'obj' })))[0];
+    const gGlb = await call('export', { format: 'glb' });   // the glb's own UVs come back via a re-load below
+    await call('load', { url: '_dev/embed/crate_pbr/crate_r01_pbr.fbx', name: 'crate' });
+    await call('load', { url: '_dev/embed/boxerp_r01_game.glb', name: 'boxer', replace: false });
+    const mixed = Object.values(parse(await call('export', { format: 'obj' })));
+    ok(mixed.length === 2, 'mixed scene exports two objects');
+    const same = (x, y) => x.length === y.length && x.every((p, i) => near(p[0], y[i][0], 1e-6) && near(p[1], y[i][1], 1e-6));
+    const fbxIn = mixed.find(m => m.v.length === fbxAlone.v.length), glbIn = mixed.find(m => m.v.length === glbAlone.v.length);
+    ok(fbxIn && same(fbxIn.vt, fbxAlone.vt), 'FBX object keeps its V in a mixed scene');
+    ok(glbIn && same(glbIn.vt, glbAlone.vt), 'GLB object turned over in a mixed scene, as alone');
+    // Against Kubik's own UVs (export reorders vertices, so as sets, 4 decimals):
+    // the FBX object's .obj UVs are its UVs, the GLB object's are (u, 1 - v).
+    const key = (u, v) => u.toFixed(4) + ',' + v.toFixed(4);
+    const inner = (o, flip) => {
+      const uv = o.mesh.geometry.attributes.uv, s = new Set();
+      for (let i = 0; i < uv.count; i++) s.add(key(uv.getX(i), flip ? 1 - uv.getY(i) : uv.getY(i)));
+      return s;
+    };
+    const objs = frame.contentWindow.__kubik.App.objects;
+    const cover = (vt, s) => vt.filter(t => s.has(key(t[0], t[1]))).length / vt.length;
+    const fo = objs.find(x => x.name === 'crate' || /crate/i.test(x.name)) || objs[0];
+    const go = objs.find(x => x !== fo);
+    ok(cover(fbxIn.vt, inner(fo, false)) > 0.999, 'FBX .obj UVs = Kubik UVs unflipped (' + cover(fbxIn.vt, inner(fo, false)).toFixed(4) + ')');
+    ok(cover(glbIn.vt, inner(go, true)) > 0.999, 'GLB .obj UVs = Kubik UVs with 1 - v (' + cover(glbIn.vt, inner(go, true)).toFixed(4) +
+      ', unflipped ' + cover(glbIn.vt, inner(go, false)).toFixed(4) + ')');
+    const st = await call('stats', {});
+    ok(st.objects === 2, 'stats after mixed load: 2 objects');
+    ok(gGlb.byteLength > 1000, 'glb export still works next to obj (' + gGlb.byteLength + ' bytes)');
+  } catch (e) {
+    ok(false, 'threw: ' + (e.code || '') + ' ' + e.message);
+  }
+  out.push('TOTAL ' + pass + ' pass, ' + fail + ' fail');
+  fetch('/result', { method: 'POST', body: out.join('\n') });
+})();
+</script>
+</body></html>

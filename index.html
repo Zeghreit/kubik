@@ -3240,7 +3240,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.14c</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.15</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -41984,10 +41984,15 @@ async function exportGlbAction() {
 }
 document.getElementById('btnExportGlb').addEventListener('click', exportGlbAction);
 
-document.getElementById('btnExportObj').addEventListener('click', () => {
-  if (!App.objects.length) { toast('Nothing to export'); return; }
-  const group = buildExportGroup();
-  /* V IS FLIPPED FOR .obj AND ONLY FOR .obj (v2.28a, found in review).
+/* THE .obj TEXT, ONE COPY FOR THE BUTTON AND FOR EMBED `export` (v3.15).
+
+   WHERE THE OBJECT STANDS (v3.15). OBJExporter and STLExporter write every
+   vertex through matrixWorld (three 0.184, neither updates it), and the meshes
+   buildExportGroup makes are new: their matrices stay identity until someone
+   updates them, so a moved, turned or scaled object went out where it was
+   made. glTF was never hit - GLTFExporter writes the node's own TRS.
+
+   V IS FLIPPED FOR .obj AND ONLY FOR .obj (v2.28a, found in review).
 
      glTF puts the texture origin at the TOP-left and compensates with
      `flipY = false` on the texture; .obj puts it at the BOTTOM-left. three's
@@ -41998,16 +42003,29 @@ document.getElementById('btnExportObj').addEventListener('click', () => {
      same reason.
 
      Done on the export CLONE and nowhere else: the glTF and STL paths build
-     their own group from buildExportGroup, so neither sees this. */
-  group.traverse(n => {
-    if (!n.isMesh) return;
-    const uv = n.geometry.attributes.uv;
+     their own group from buildExportGroup, so neither sees this.
+
+     flipV(i) says which of the group's meshes. The button cannot tell where a
+     mesh came from and flips them all; embed keeps the UVs of a mesh loaded
+     from FBX or OBJ, which count V from the bottom already, as .obj does
+     (their pictures are the ones turned over on the way in -
+     encodeImportTexture). The button's .obj of an FBX import is therefore
+     upside down against the FBX's own pictures - a loose end. */
+function objText(group, flipV) {
+  group.updateMatrixWorld(true);
+  group.children.forEach((n, i) => {
+    const uv = n.isMesh && flipV(i) ? n.geometry.attributes.uv : null;
     if (!uv) return;
-    for (let i = 0; i < uv.count; i++) uv.setY(i, 1 - uv.getY(i));
+    for (let k = 0; k < uv.count; k++) uv.setY(k, 1 - uv.getY(k));
     uv.needsUpdate = true;
   });
-  const exporter = new OBJExporter();
-  const data = exporter.parse(group);
+  return new OBJExporter().parse(group);
+}
+
+document.getElementById('btnExportObj').addEventListener('click', () => {
+  if (!App.objects.length) { toast('Nothing to export'); return; }
+  const group = buildExportGroup();
+  const data = objText(group, () => true);
   const anyUV = (function () {
     let f = false;
     group.traverse(n => { if (n.isMesh && n.geometry.attributes.uv) f = true; });
@@ -42020,6 +42038,7 @@ document.getElementById('btnExportObj').addEventListener('click', () => {
 document.getElementById('btnExportStl').addEventListener('click', () => {
   if (!App.objects.length) { toast('Nothing to export'); return; }
   const group = buildExportGroup();
+  group.updateMatrixWorld(true);   // v3.15: STLExporter reads matrixWorld too - see objText
   const exporter = new STLExporter();
   const data = exporter.parse(group, { binary: true });
   const buf = data.buffer ? data.buffer : data;
@@ -55657,7 +55676,7 @@ init();
 if (EMBED) (function embedMain() {
   const VERSION = ((document.querySelector('.brand span') || {}).textContent || '').trim();
   const CAPS = ['load', 'load.url', 'load.buffer', 'load.glb', 'load.gltf', 'load.fbx', 'load.obj',
-    'export.glb', 'stats', 'measure', 'snapshot.png', 'setMaps', 'setView', 'camera',
+    'export.glb', 'export.obj', 'stats', 'measure', 'snapshot.png', 'setMaps', 'setView', 'camera',
     'event.ready', 'event.dirty', 'event.selection',
     'op', 'ops', 'undo', 'redo', 'selection', 'rev'];
   const hostOrigin = (() => {
@@ -55939,17 +55958,28 @@ if (EMBED) (function embedMain() {
 
   async function exportCmd(args) {
     const format = String(args.format || 'glb').toLowerCase();
-    if (format !== 'glb') fail('format', 'Only glb export is offered');
+    if (format !== 'glb' && format !== 'obj') fail('format', 'Export offers glb and obj');
     const objs = pickObjects(args.objects);
     if (!objs.length) fail('empty', 'Nothing to export');
     await picturesReady(objs);
-    const group = buildExportGroup(new Set(objs.map(o => o.id)), true);
+    const ids = new Set(objs.map(o => o.id));
+    const group = buildExportGroup(ids, true);
     group.children.forEach(m => compactForExport(m));
     try {
+      if (format === 'obj') {
+        /* v3.15: .obj for a host (AF sends it to Mixamo's auto-rigger, which
+           takes no FBX). World space, no materials, UTF-8 text in an
+           ArrayBuffer. V follows the file the mesh came from - see objText. */
+        const kept = App.objects.filter(o => !isCurve(o) && ids.has(o.id));
+        if (kept.length !== group.children.length) fail('internal', 'Export group and objects disagree');
+        const text = objText(group, i => ['fbx', 'obj'].indexOf(srcFormat.get(kept[i].id)) < 0);
+        return new TextEncoder().encode(text).buffer;
+      }
       const out = await new GLTFExporter().parseAsync(group, { binary: true });
       return out;
     } catch (e) {
-      fail('export', 'glTF export failed: ' + (e && e.message));
+      if (e && e.code) throw e;
+      fail('export', (format === 'obj' ? 'OBJ' : 'glTF') + ' export failed: ' + (e && e.message));
     } finally {
       group.traverse(n => {
         if (!n.isMesh) return;
