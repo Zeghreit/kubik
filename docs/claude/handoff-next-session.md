@@ -1,4 +1,4 @@
-# Handoff — NEXT (Zeghreit's order 12.10): ~~5 small bugs~~ done v3.14c -> 2 cutting with a curve -> 3 boolean residue -> 6 heavy-mesh plan. Last shipped: v3.15 embed `export obj` (for AF) + .obj/.stl buttons export objects where they stand.
+# Handoff — NEXT (Zeghreit's order 12.10): 5 done (v3.14c), 2 done (v3.16 Cut with curve: Knife / Split) -> 3 boolean residue -> 6 heavy-mesh plan. Then: Punch shapes from a curve (inside Punch), Punch multi-material crash. Last shipped: v3.16 Cut with curve; before it v3.15 embed `export obj` (for AF) + .obj/.stl buttons export objects where they stand.
 
 Live: https://zeghreit.github.io/kubik/ · repo `C:\Users\a.bodrov\Projects\kubik` · the project now runs in Claude Code on the PC (rules: `CLAUDE.md`).
 Read `CURRENT_STATE.md` first — its last section (v3.14) is the truth for Punch now. Client reference: `EMBED.md` in the repo root.
@@ -27,7 +27,7 @@ Idea from chat: the cutter stays a separate object linked to its target; grab it
 2. **Punch on a dense UV sphere gives an open / multi-shell result at 94 of 150 sizes** (already in N-gon → CSG + heal on curved high-density targets). See (a) 2.
 3. Remaining slow builds ~1.5–2 s desktop on huge holes — on a phone a few seconds. If it bites: a busy indicator or a smaller budget.
 4. Quads var 1 is not the best layout on a punched cube (40q/32t vs 64q via Generate).
-5. Cutting with a curve (planned after v3.14, its own version).
+5. ~~Cutting with a curve~~ — v3.16 Knife / Split shipped (CURRENT_STATE "Cut with a curve"). Still to do: a curve as a Punch shape (Zeghreit: inside Punch, later). NEW: Punch crashes on a multi-material target (three-bvh-csg groupIndices, cutter shares the target's material) - found by fable in the v3.15 review.
 6. Declarative select: `select: { mode, where: { normal, angle } | { box } | { side } }` + grow / shrink / loop; answer `{ count, ids, bounds }`.
 7. ~~Plain-editor FBX bug~~ — FIXED v3.14c.
 7a. Export button .obj of an FBX import is upside down against the FBX pictures (v3.15 loose end; embed is right - needs the source format kept per object).
