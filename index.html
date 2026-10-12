@@ -37662,6 +37662,268 @@ function punchSelection() {
   });
 }
 
+/* ---------------- CUT WITH A CURVE (v3.15) ----------------
+
+   One curve and one object. The curve becomes a cookie cutter: its samples
+   laid on their own best-fit plane, extruded along that plane's normal
+   right through the object (`curveCutCutter`). A CLOSED curve cuts out what
+   it encloses; an OPEN one is carried straight on past the object at both
+   ends and closed round one side, so it divides the object in two.
+
+   KNIFE: the object's own surface, cut along the cutter's wall and nothing
+   added - three-bvh-csg's two HOLLOW operations, run in ONE evaluate so both
+   halves share every cut point, then put back together. Same shape, same
+   volume, new edges where the curve crosses the surface.
+   SPLIT: the ordinary difference and intersection, again in one evaluate -
+   two closed pieces. The inside one stands off by `gap` so you can see it,
+   and OK makes them two objects.
+
+   The curve stays: it is the tool, not an input that gets used up. */
+function curveCutPick() {
+  const objs = Array.from(App.selectedObjectIds).map(id => findObject(id)).filter(Boolean);
+  if (objs.length !== 2) return null;
+  const c = objs.find(isCurve), o = objs.find(x => !isCurve(x));
+  return c && o ? { c: c, o: o } : null;
+}
+
+function curveCutSelection() {
+  if (App.mode !== 'object') { toast('Cut with a curve works in Object mode'); return; }
+  const pk = curveCutPick();
+  if (!pk) { toast('Select one curve and one object'); return; }
+  const why = booleanSurvey([pk.o]);
+  if (why) { toast(why); return; }
+  const go = () => {
+    const now = curveCutPick();
+    if (!now || now.o !== pk.o || now.c !== pk.c) { toast('The selection changed - pick them again'); return; }
+    startOpSetup('curvecut', { inputIds: [pk.o.id], curveId: pk.c.id });
+  };
+  if (csgMod) { go(); return; }
+  toast('Loading the boolean engine');
+  loadCSG().then(go, (err) => {
+    console.warn('[curvecut] load failed', err);
+    toast('Cutting needs the network the first time it runs');
+  }).catch(err => {
+    console.warn('[curvecut]', err);
+    toast('That cut failed - try Clean up on the object first');
+  });
+}
+
+// Two segments of a 2D polyline cross (shared ends do not count).
+function curveCutCrosses(pts, closed) {
+  const n = pts.length, m = closed ? n : n - 1;
+  const orient = (a, b, c) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+  for (let i = 0; i < m; i++) {
+    const a = pts[i], b = pts[(i + 1) % n];
+    for (let j = i + 2; j < m; j++) {
+      if (closed && i === 0 && j === m - 1) continue;
+      const c = pts[j], d = pts[(j + 1) % n];
+      const d1 = orient(a, b, c), d2 = orient(a, b, d), d3 = orient(c, d, a), d4 = orient(c, d, b);
+      if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) return true;
+    }
+  }
+  return false;
+}
+
+/* The cutter, in world space: { mesh, inward } or { why }. `inward` is the
+   way the enclosed piece stands off in Split - the plane's normal for a
+   closed curve, the closed-round side for an open one. */
+function curveCutCutter(c, o) {
+  const cv = curveDataOf(c);
+  if (!cv) return { why: 'That is not a curve' };
+  c.mesh.updateMatrixWorld(true);
+  let W = curveSamplePoints(cv).map(p => p.clone().applyMatrix4(c.mesh.matrixWorld));
+  const closed = !!cv.closed && (cv.pts || []).length > 2;
+  if (closed && W.length > 2) W = W.slice(0, -1);
+  // Drop repeats, so no segment has zero length.
+  W = W.filter((p, i) => i === 0 || p.distanceToSquared(W[i - 1]) > 1e-12);
+  if (W.length < 2) return { why: 'The curve needs two points at least' };
+  o.mesh.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(o.mesh);
+  const diag = Math.max(1e-6, box.getSize(new THREE.Vector3()).length());
+  // The plane: Newell's normal over the loop (an open curve closed by its chord).
+  const n = new THREE.Vector3(), m = W.length;
+  for (let i = 0; i < m; i++) {
+    const a = W[i], b = W[(i + 1) % m];
+    n.x += (a.y - b.y) * (a.z + b.z); n.y += (a.z - b.z) * (a.x + b.x); n.z += (a.x - b.x) * (a.y + b.y);
+  }
+  let len = 0;
+  for (let i = 1; i < m; i++) len += W[i].distanceTo(W[i - 1]);
+  const chord = W[m - 1].clone().sub(W[0]);
+  /* AN OPEN CURVE'S PLANE is the chord and the point farthest from it - the
+     loop's own area says nothing for an S, whose halves cancel. */
+  if (!closed) {
+    n.set(0, 0, 0);
+    if (chord.lengthSq() > 1e-12) {
+      const d = chord.clone().normalize();
+      let far = null, fd = 0;
+      W.forEach(p => { const q = p.clone().sub(W[0]); const x = q.addScaledVector(d, -q.dot(d)).length(); if (x > fd) { fd = x; far = p; } });
+      if (far && fd > 1e-3 * len) n.crossVectors(chord, far.clone().sub(W[0]));
+    }
+  }
+  if (n.length() / 2 < 1e-4 * len * len) {
+    /* STRAIGHT (or nearly): no plane of its own, so the one that holds the
+       line and faces you - the cut goes straight away from the camera. */
+    if (closed) return { why: 'A closed curve that encloses nothing cannot cut' };
+    const d = chord.lengthSq() > 1e-12 ? chord.clone().normalize() : new THREE.Vector3(1, 0, 0);
+    const look = camera.getWorldDirection(new THREE.Vector3());
+    n.copy(look).addScaledVector(d, -look.dot(d));
+    if (n.lengthSq() < 1e-8) n.set(0, 1, 0).addScaledVector(d, -d.y);
+  }
+  n.normalize();
+  const O = W.reduce((acc, p) => acc.add(p), new THREE.Vector3()).multiplyScalar(1 / m);
+  let u = closed ? W[0].clone().sub(O) : chord.clone();
+  u.addScaledVector(n, -u.dot(n));
+  if (u.lengthSq() < 1e-12) u.set(1, 0, 0).addScaledVector(n, -n.x);
+  if (u.lengthSq() < 1e-12) u.set(0, 0, 1).addScaledVector(n, -n.z);
+  u.normalize();
+  const w = new THREE.Vector3().crossVectors(u, n);
+  const to2 = p => { const q = p.clone().sub(O); return [q.dot(u), q.dot(w)]; };
+  let pts = W.map(to2);
+  const E = 2 * diag + box.getCenter(new THREE.Vector3()).distanceTo(O);
+  let inward = n.clone();
+  if (!closed) {
+    // Carried straight on past the object, then closed round the left side.
+    const k = pts.length;
+    const dir = (a, b) => { const x = a[0] - b[0], y = a[1] - b[1], l = Math.hypot(x, y) || 1; return [x / l, y / l]; };
+    const s0 = dir(pts[0], pts[1]), s1 = dir(pts[k - 1], pts[k - 2]);
+    const A = [pts[0][0] + s0[0] * E, pts[0][1] + s0[1] * E], B = [pts[k - 1][0] + s1[0] * E, pts[k - 1][1] + s1[1] * E];
+    const dx = B[0] - A[0], dy = B[1] - A[1], dl = Math.hypot(dx, dy) || 1;
+    const side = [-dy / dl, dx / dl];
+    pts = [A].concat(pts, [B, [B[0] + side[0] * E, B[1] + side[1] * E], [A[0] + side[0] * E, A[1] + side[1] * E]]);
+    inward = u.clone().multiplyScalar(side[0]).addScaledVector(w, side[1]).normalize();
+  }
+  if (curveCutCrosses(pts, true)) {
+    return { why: closed ? 'The curve crosses itself' : 'The curve crosses itself once carried past the object - draw it so its ends point outward' };
+  }
+  // The span along the normal: the whole object, and a margin.
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < 8; i++) {
+    const q = new THREE.Vector3(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z);
+    const t = q.sub(O).dot(n);
+    lo = Math.min(lo, t); hi = Math.max(hi, t);
+  }
+  lo -= 0.25 * diag; hi += 0.25 * diag;
+  const vol = e => { let v = 0; const X = e.positions; e.groups.forEach(g => g.triangles.forEach(t => {
+    const a = t[0] * 3, b = t[1] * 3, cc = t[2] * 3;
+    v += (X[a] * (X[b + 1] * X[cc + 2] - X[b + 2] * X[cc + 1]) - X[a + 1] * (X[b] * X[cc + 2] - X[b + 2] * X[cc]) + X[a + 2] * (X[b] * X[cc + 1] - X[b + 1] * X[cc])) / 6; })); return v; };
+  let ed = punchPrism(pts, hi - lo);
+  if (vol(ed) < 0) ed = punchPrism(pts.slice().reverse(), hi - lo);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(ed.positions, 3));
+  const idx = [];
+  ed.groups.forEach(g => { const st = idx.length; g.triangles.forEach(t => idx.push(t[0], t[1], t[2])); geo.addGroup(st, idx.length - st, 0); });
+  geo.setIndex(idx);
+  const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
+  const mesh = new THREE.Mesh(geo, [mats[0]]);
+  const mm = new THREE.Matrix4().makeBasis(u, n, w);
+  mm.setPosition(O.clone().addScaledVector(n, (lo + hi) / 2));
+  mm.decompose(mesh.position, mesh.quaternion, mesh.scale);
+  mesh.updateMatrixWorld(true);
+  return { mesh: mesh, inward: inward, diag: diag };
+}
+
+// One evaluate, two operations; the results as { geometry, mats }.
+function curveCutEvaluate(s) {
+  const o = findObject(s.inputIds[0]), c = findObject(s.curveId);
+  if (!o) return { why: 'The object is gone - pick it again' };
+  if (!c) return { why: 'The curve is gone - pick it again' };
+  const key = s.p.mode;
+  const cache = s.csgCache || (s.csgCache = {});
+  if (cache[key]) return cache[key];
+  const CSG = csgMod;
+  if (!CSG) return { why: 'The boolean engine is still loading' };
+  const cut = curveCutCutter(c, o);
+  if (cut.why) return cut;
+  let out;
+  try {
+    const ev = new CSG.Evaluator();
+    ev.attributes = ['position', 'normal'];
+    ev.useCDTClipping = true;
+    ev.useGroups = true;
+    ev.consolidateGroups = true;
+    ev.removeUnusedMaterials = true;
+    const A = booleanBrushOf(CSG, o), topoA = booleanTopoInput(A, o);
+    const bg = cut.mesh.geometry.clone().applyMatrix4(cut.mesh.matrixWorld);
+    bg.computeVertexNormals();          // the evaluator interpolates every attribute both brushes carry
+    const B = new CSG.Brush(bg, cut.mesh.material);
+    B.updateMatrixWorld(true);
+    const topoB = booleanTopoInput(B, { mesh: cut.mesh });
+    const ops = key === 'knife' ? [CSG.HOLLOW_SUBTRACTION, CSG.HOLLOW_INTERSECTION] : [CSG.SUBTRACTION, CSG.INTERSECTION];
+    const res = ev.evaluate(A, B, ops, ops.map(() => new CSG.Brush()));
+    out = { res: res, topoIn: [topoA, topoB], inward: cut.inward, diag: cut.diag };
+  } catch (err) {
+    console.warn('[curvecut]', err);
+    return { why: 'That cut failed - try Clean up on the object first' };
+  }
+  cache[key] = out;
+  return out;
+}
+
+/* Two CSG results as one, materials matched by identity - or, with `apart`,
+   kept apart per result: the knife's two halves of one face are otherwise
+   coplanar, same material, and the N-gon merge puts the face back whole. */
+function curveCutJoin(rs, apart) {
+  const mats = [], P = [], I = [], groups = [];
+  const keyOf = [];
+  rs.forEach((r, ri) => {
+    const g = r.geometry, pa = g.attributes.position, ix = g.index, base = P.length / 3;
+    const rm = Array.isArray(r.material) ? r.material : [r.material];
+    for (let i = 0; i < pa.count; i++) P.push(pa.getX(i), pa.getY(i), pa.getZ(i));
+    const total = ix ? ix.count : pa.count;
+    const runs = g.groups && g.groups.length ? g.groups : [{ start: 0, count: total, materialIndex: 0 }];
+    runs.forEach(gr => {
+      const mt = rm[gr.materialIndex] || rm[0];
+      const k = apart ? ri : 0;
+      let mi = mats.findIndex((x, j) => x === mt && keyOf[j] === k);
+      if (mi < 0) { mi = mats.length; mats.push(mt); keyOf.push(k); }
+      const st = I.length;
+      for (let k = gr.start; k < Math.min(total, gr.start + gr.count); k++) I.push(base + (ix ? ix.getX(k) : k));
+      groups.push({ start: st, count: I.length - st, materialIndex: mi });
+    });
+  });
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+  geo.setIndex(I);
+  groups.forEach(gr => geo.addGroup(gr.start, gr.count, gr.materialIndex));
+  const mesh = new THREE.Mesh(geo, mats);
+  mesh.updateMatrixWorld(true);
+  return mesh;
+}
+
+function curveCutBuild(s) {
+  const ev = curveCutEvaluate(s);
+  if (ev.why) return { ok: false, why: ev.why };
+  const tris = r => { const g = r.geometry; return g.index ? g.index.count : g.attributes.position ? g.attributes.position.count : 0; };
+  if (ev.res.some(r => !tris(r))) return { ok: false, why: 'The curve does not cut the object' };
+  const pieces = s.p.mode === 'knife' ? [curveCutJoin(ev.res, true)] : ev.res.map(r => curveCutJoin([r]));
+  const eds = pieces.map(m => ({ m: m, ed: editableFromCSGResult(m, ev.topoIn, { type: 'ngon', seed: 0 }) }))
+                    .filter(x => x.ed && x.ed.groups && x.ed.groups.length);
+  if (!eds.length) return { ok: false, why: 'The curve does not cut the object' };
+  if (s.p.mode === 'split' && eds.length < 2) return { ok: false, why: 'The curve does not reach across the object - nothing to split off' };
+  const positions = [], groups = [], outMats = [];
+  let first = null;
+  eds.forEach((x, k) => {
+    // Split: the enclosed piece (the intersection, second) stands off by the gap.
+    const off = s.p.mode === 'split' && k === 1 ? ev.inward.clone().multiplyScalar(Math.max(1e-3, s.p.gap / 100) * ev.diag) : null;
+    const base = positions.length / 3;
+    for (let i = 0; i < x.ed.positions.length; i += 3) {
+      positions.push(x.ed.positions[i] + (off ? off.x : 0), x.ed.positions[i + 1] + (off ? off.y : 0), x.ed.positions[i + 2] + (off ? off.z : 0));
+    }
+    const mats = Array.isArray(x.m.material) ? x.m.material : [x.m.material];
+    x.ed.groups.forEach(g => {
+      groups.push({ triangles: g.triangles.map(t => [t[0] + base, t[1] + base, t[2] + base]), mat: outMats.length });
+      const src = mats[g.mat] || mats[0];
+      outMats.push(src ? src.clone() : new THREE.MeshPhysicalMaterial());
+    });
+    if (!first) first = x.ed;
+  });
+  if (groups.length > OP_FACE_BUDGET) return { ok: false, why: groups.length + ' faces - too many to edit (limit ' + OP_FACE_BUDGET + ')' };
+  s.pieces = eds.length;
+  return { ok: true, ed: { positions: positions, groups: groups }, mats: outMats,
+           shadeMarks: first.shadeMarks || [], angle: first.angle, topo: null,
+           note: eds.some(x => x.ed.capped) ? 'too tangled to close fully' : '' };
+}
+
 /* A PREVIEW, NOT A COMMITTED OP (v2.17). Union, difference and intersect are
    three answers you cannot tell apart without looking at them, and this used
    to commit on the tap and delete both inputs on the way out. Now the result
@@ -42299,6 +42561,7 @@ const ICON = {
   boolop:  '<rect x="2.8" y="7.6" width="10.6" height="10.6" rx="1.2"/><circle cx="15.2" cy="10.4" r="5.6"/>',
   // A block with a round hole through it (v3.12).
   punch:   '<rect x="3" y="3" width="18" height="18" rx="1.6"/><circle cx="12" cy="12" r="4.6"/>',
+  curvecut: '<rect x="3" y="3" width="18" height="18" rx="1.6"/><path d="M2 15c4-6 8 2 12-3s6-4 8-3"/>',
   /* THE CURVE FAMILY (v2.14). One shape - an S running low-left to high-right
      with a dot at each end - so the four read as one set at a glance, and each
      one says which of the four it is by what is ADDED to that shape rather
@@ -42522,7 +42785,10 @@ const HUB_TOOLS_OBJECT_BASE = [
     /* PUNCH (v3.12) beside Boolean: the same cut, made against one object
        with a cutter the op brings. Worn disabled for anything but one. */
     { key: 'punch', icon: 'punch', label: 'Punch', seat: 5,
-      enabled: () => App.selectedObjectIds.size === 1, run: punchSelection }
+      enabled: () => App.selectedObjectIds.size === 1, run: punchSelection },
+    /* CUT WITH A CURVE (v3.15): a curve and an object. */
+    { key: 'curvecut', icon: 'curvecut', label: 'Cut with curve', seat: 4,
+      enabled: () => !!curveCutPick(), run: curveCutSelection }
   ] },
   { key: 'finish', label: 'Finish', seat: 7, door: [
     { key: 'shade', icon: () => App.shadeSmooth ? 'smooth' : 'flat', label: 'Shade', seat: 0,
@@ -42952,6 +43218,7 @@ function tubeCurveOp(curveObj, radius, sides, caps, profile) {
    function that builds the mesh, so that is all the table below holds. */
 App.opSetup = null;   // { kind, curveId, objId, p:{...}, span } while open
 
+const CURVECUT_GAP_SLIDER = { key: 'gap', label: 'gap %', min: () => 0, max: () => 50, step: () => 1, decimals: 0, unit: '%' };
 const OP_SETUP = {
   lathe: {
     label: 'Lathe',
@@ -43190,6 +43457,41 @@ const OP_SETUP = {
       applyShading(obj);
     },
     onToggle: (s) => { App.boolKeep = !!s.p.keep; }
+  },
+  /* CUT WITH A CURVE (v3.15) - see curveCutBuild. Knife keeps one object
+     and adds edges; Split makes two, the gap only while you look. */
+  curvecut: {
+    label: 'Cut',
+    chips: [['knife', 'Knife'], ['split', 'Split']],
+    chipKey: 'mode',
+    chipTip: (k) => (k === 'knife' ? 'Cut edges into the surface along the curve - same shape'
+                   : 'Cut the object in two along the curve'),
+    get slider() {
+      return App.opSetup && App.opSetup.p && App.opSetup.p.mode === 'split' ? CURVECUT_GAP_SLIDER : null;
+    },
+    stepper: null,
+    toggle: { key: 'keep', label: 'Keep original', tip: 'Leave the object standing beside the cut', norebuild: true },
+    defaults: () => ({ mode: 'knife', gap: 5, keep: false }),
+    build: (s) => curveCutBuild(s),
+    readout: (s) => (s.p.mode === 'split' && s.pieces ? s.pieces + ' pieces' : ''),
+    name: (s) => { const a = findObject(s.inputIds[0]); return (a ? a.name : 'Object') + (s.p.mode === 'split' ? ' split' : ' cut'); },
+    renames: true,
+    doneLabel: (s) => (s.p.mode === 'split' ? 'Split' : 'Knife'),
+    after: (s, obj, r) => {
+      const a = findObject(s.inputIds[0]);
+      const ang = r && typeof r.angle === 'number' ? r.angle : a && a.mesh.userData.autoSmoothAngle;
+      if (typeof ang === 'number') obj.mesh.userData.autoSmoothAngle = ang;
+      refreshOpReadout();
+      applyShading(obj);
+    },
+    // OK on Split: the two pieces become two objects.
+    commit: (s, o) => {
+      if (s.p.mode !== 'split') return null;
+      const parts = separateObject(o);
+      if (!parts) return null;
+      removeObjects([o]);
+      return parts;
+    }
   },
   /* PUNCH (v3.12). One object and a cutter the op makes itself - see
      punchCutter. The Boolean's own topology row, Generate and readout,
@@ -43985,14 +44287,25 @@ function finishOpSetup(keep) {
         if (gone.length) removeObjects(gone);
         App.selectedObjectIds = new Set([o.id]);
       }
-      pushHistory();
-      const w = auditWinding(o);
-      if (PICK_DEBUG) console.log('[winding]', JSON.stringify(w));
-      const trouble = windingTrouble(w);
-      if (s.note) trouble.push(s.note);
       const done = OP_SETUP[s.kind];
+      // v3.15: a spec may make its one result into several objects (Split).
+      const parts = done.commit ? done.commit(s, o) : null;
+      if (parts && parts.length) {
+        App.selectedObjectIds = new Set(parts.map(x => x.id));
+        App.activeObjectId = parts[0].id;
+      }
+      const shown = parts && parts.length ? parts : [o];
+      pushHistory();
+      const trouble = [];
+      shown.forEach(x => {
+        const w = auditWinding(x);
+        if (PICK_DEBUG) console.log('[winding]', JSON.stringify(w));
+        windingTrouble(w).forEach(t => { if (trouble.indexOf(t) < 0) trouble.push(t); });
+      });
+      if (s.note) trouble.push(s.note);
       toast((done.doneLabel ? done.doneLabel(s) : done.label) +
-            ' · ' + faceCount(o.mesh.geometry) + ' faces' +
+            (shown.length > 1 ? ' · ' + shown.length + ' pieces' : '') +
+            ' · ' + shown.reduce((a, x) => a + faceCount(x.mesh.geometry), 0) + ' faces' +
             (trouble.length ? ' - ' + trouble.join(', ') : ''));
       return;
     }
@@ -56585,7 +56898,7 @@ if (PICK_DEBUG) {
     /* v2.13, reshaped in v2.17: the ring seat, the build behind its
        preview, and the survey that refuses ahead of both. */
     booleanSelection, openBooleanSetup, booleanBuild, booleanSurvey,
-    punchSelection,
+    punchSelection, curveCutSelection, curveCutCutter,
     editableFromCSGResult,
     /* THREE and the primitive builder, so a probe can put a real scene
        together rather than hand-rolling a cube and getting the winding
