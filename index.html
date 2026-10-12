@@ -3240,7 +3240,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.14a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.14b</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -33594,6 +33594,16 @@ function booleanBrushOf(CSG, o) {
    real T-vertex near a corner was silently skipped. Distance, not fraction. */
 const CSG_WELD_TOL = 3.5e-4;
 const CSG_ON_EDGE_TOL2 = CSG_WELD_TOL * CSG_WELD_TOL;
+/* A SLIVER WITH A SHORT EDGE IS TWO VERTICES THAT SHOULD BE ONE (fix). The
+   evaluator's CDT splitter inserts the closest point of every two constraint
+   segments whose lines nearly meet; for two collinear segments joined end to
+   end that point is numerically anywhere along them, so a corner comes back
+   TWICE, 1e-4..1e-3 apart, with a sliver between the twins. Dropping the
+   sliver opened its two long edges (the 1e-4 grid never welded the twins, and
+   the heal refuses a T within the weld of an end). Collapsing its short edge
+   instead keeps the surface closed. Slivers whose every edge is longer than
+   this are real T's - dropped, and the heal closes them as before. */
+const CSG_COLLAPSE_TOL = 2e-3;
 const CSG_HEAL_EDGE_CAP = 20000;    // beyond this, say so rather than grind
 const CSG_HEAL_SPLIT_CAP = 2000000; // and the same for the split walk
 
@@ -33818,18 +33828,55 @@ function editableFromCSGResult(res, topoIn, topoOpt) {
     slotVert[i - start] = n;
   }
 
-  const tris = [], matOfTri = [];
+  let tris = [], matOfTri = [];
   for (let t = 0; t + 2 < count; t += 3) {
     const a = slotVert[t], b = slotVert[t + 1], c = slotVert[t + 2];
-    /* Dropped HERE, before healing, not later by mergeCoplanarTriangles.
-       A sliver has no plane to agree with and no honest normal, and leaving
-       it in makes a T-junction LOOK closed: it contributes the edge counts
-       that hide the gap, and it is only discarded afterwards, by which time
-       the one pass that could have healed what its removal opens has run. */
     if (a === b || b === c || a === c) continue;
-    if (csgTriIsSliver(positions, a, b, c)) continue;
     tris.push(flip ? [a, c, b] : [a, b, c]);
     matOfTri.push(matOfSlot[start + t]);
+  }
+  /* SLIVERS: a short edge is collapsed, a long thin one is dropped - HERE,
+     before healing, not later by mergeCoplanarTriangles. A sliver has no
+     plane to agree with and no honest normal, and leaving it in makes a
+     T-junction LOOK closed. The collapse keeps the vertex an INPUT had (so
+     the seam test still owns it), else the first; a collapse can make a new
+     sliver of a neighbour, so it runs to a fixed point. */
+  {
+    const nV0 = positions.length / 3;
+    const par = new Int32Array(nV0);
+    for (let i = 0; i < nV0; i++) par[i] = i;
+    const find = i => { while (par[i] !== i) { par[i] = par[par[i]]; i = par[i]; } return i; };
+    const inputKey = new Set();
+    if (topoIn) topoIn.forEach(t => t.keys.forEach(k => inputKey.add(k)));
+    const isInput = i => inputKey.has(Math.round(positions[i * 3] * 1e4) + '_' + Math.round(positions[i * 3 + 1] * 1e4) + '_' + Math.round(positions[i * 3 + 2] * 1e4));
+    const unite = (i, j) => { let a = find(i), b = find(j); if (a === b) return; if (isInput(a) && !isInput(b)) { const t = a; a = b; b = t; } par[a] = b; };
+    const d2 = (i, j) => { const x = positions[i * 3] - positions[j * 3], y = positions[i * 3 + 1] - positions[j * 3 + 1], z = positions[i * 3 + 2] - positions[j * 3 + 2]; return x * x + y * y + z * z; };
+    const lim = CSG_COLLAPSE_TOL * CSG_COLLAPSE_TOL;
+    let collapsed = 0;
+    for (let pass = 0; pass < 16; pass++) {
+      let changed = 0;
+      for (let k = 0; k < tris.length; k++) {
+        const t = tris[k], a = find(t[0]), b = find(t[1]), c = find(t[2]);
+        if (a === b || b === c || a === c) continue;
+        if (!csgTriIsSliver(positions, a, b, c)) continue;
+        const ab = d2(a, b), bc = d2(b, c), ca = d2(c, a), m = Math.min(ab, bc, ca);
+        if (m > lim) continue;
+        if (m === ab) unite(a, b); else if (m === bc) unite(b, c); else unite(c, a);
+        changed++;
+      }
+      collapsed += changed;
+      if (!changed) break;
+    }
+    const T2 = [], M2 = [], newIdx = new Int32Array(nV0).fill(-1), P2 = [];
+    for (let k = 0; k < tris.length; k++) {
+      const t = tris[k], a = find(t[0]), b = find(t[1]), c = find(t[2]);
+      if (a === b || b === c || a === c) continue;
+      if (csgTriIsSliver(positions, a, b, c)) continue;
+      const u = [a, b, c];
+      for (let i = 0; i < 3; i++) { const v = u[i]; if (newIdx[v] < 0) { newIdx[v] = P2.length / 3; P2.push(positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]); } u[i] = newIdx[v]; }
+      T2.push(u); M2.push(matOfTri[k]);
+    }
+    positions = P2; tris = T2; matOfTri = M2;
   }
   if (!tris.length) return null;
   /* THE TRIANGLE BUDGET, BEFORE THE EXPENSIVE PART (found in review). The

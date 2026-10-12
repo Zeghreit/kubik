@@ -430,20 +430,24 @@
     cancel(); await wait(50);
     /* The fixture has to BE open, or this passes on "no open edges, none
        said" (it did, the first time, on a can that closed): 4 holes through
-       one face in N-gon - known limit 1, 24 open edges on the plain Boolean. */
+       one face in N-gon was it until v3.14a closed it; now a ring of 8 holes
+       through the solid can tapped 9 degrees off a facet's middle, whose bores
+       cross inside it (the residue of known limit 2, _crosschk -9/8). */
     clear(); aim();
-    Bar = mk('Bar', 'cube', { h: 1, v: 1, x: 4, y: 1, z: 1 });
+    Bar = mk('Can12', 'cylinder', { h: 12, v: 1 });
     await openOn(Bar);
-    Object.assign(S().p, { px: 0, py: 0.5, pz: 0, nx: 0, ny: 1, nz: 0, ux: 1, uy: 0, uz: 0, size: 0.3,
-                           topo: 'ngon', pat: 'line', axis: 'x', count: 4 });
+    { const fa = -15 * Math.PI / 180, th = -9 * Math.PI / 180, r = 0.5 * Math.cos(15 * Math.PI / 180) / Math.cos(th - fa);
+      Object.assign(S().p, { px: r * Math.cos(th), py: 0.1, pz: r * Math.sin(th), nx: Math.cos(fa), ny: 0, nz: Math.sin(fa), ux: 0, uy: 1, uz: 0,
+                             size: 0.2, topo: 'ngon', pat: 'ring', axis: 'y', count: 8 }); }
     K.refreshOpSetupMesh();
     { const wp = K.auditWinding(K.App.objects.find(o => o.id === S().objId));
-      const said = /^(\d+) open edges? · /.exec(readout());
-      check('the fixture is open (known limit 1)', wp.boundary > 0, 'audit ' + wp.boundary);
+      const said = /^(\d+) open edges?[^·]* · /.exec(readout());
+      check('the fixture is open (known limit 2)', wp.boundary > 0, 'audit ' + wp.boundary);
       check('readout says the preview\'s open edges, first', !!said && +said[1] === wp.boundary, 'audit ' + wp.boundary + ' / readout "' + readout() + '"');
       chip('opGrouping2', 'Quads').click();
       const wq = K.auditWinding(K.App.objects.find(o => o.id === S().objId));
-      check('...and drops it when the preview closes', wq.boundary === 0 && !/open edge/.test(readout()), 'audit ' + wq.boundary + ' / "' + readout() + '"'); }
+      const saidQ = /^(\d+) open edges?[^·]* · /.exec(readout());
+      check('...and in Quads still agrees with the audit', wq.boundary === 0 ? !saidQ : !!saidQ && +saidQ[1] === wq.boundary, 'audit ' + wq.boundary + ' / "' + readout() + '"'); }
     cancel(); await wait(50);
 
     /* 24. A pattern with no cutter on the object is refused, not committed
