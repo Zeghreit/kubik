@@ -3240,7 +3240,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.14b</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.14c</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -40208,7 +40208,7 @@ function editableFromImportedMeshes(meshes) {
   const uvs = [];
   let uvMissing = false;
   const tris = [];
-  const matOfTri = [];
+  const matOfTri = [], faceOfTri = [];
   /* material key -> the THREE material it came from (a2.69). The key is the
      same (mesh, sub-group) pair the merge refuses to cross, so looking a
      group's key up here is exactly "which glTF material painted this face". */
@@ -40274,6 +40274,10 @@ function editableFromImportedMeshes(meshes) {
        with two textured materials arrived carrying two maps between twelve
        faces instead of twelve. */
     const single = !Array.isArray(m.material) && !!m.material;
+    /* KUBIK'S OWN FACES (v3.14c): the export button writes one primitive per
+       material and the face each vertex belongs to; a face is never merged
+       with a coplanar neighbour of the same material. */
+    const fAttr = geo.attributes._kubikface && geo.attributes._kubikface.count === pos.count ? geo.attributes._kubikface : null;
     for (let gi = 0; gi < (gsrc ? gsrc.length : 1); gi++) {
       const mi2 = gsrc ? gsrc[gi].materialIndex : 0;
       /* null, not a neighbour. A group whose materialIndex is out of range
@@ -40290,6 +40294,7 @@ function editableFromImportedMeshes(meshes) {
       if (flip) { const sw = tri[1]; tri[1] = tri[2]; tri[2] = sw; }
       tris.push(tri);
       matOfTri.push(mi * 4096 + sub[t]);
+      faceOfTri.push(fAttr ? mi + ':' + Math.round(fAttr.getX(tri[0] - base)) : null);
     }
     triCount += n;
     geo.dispose();
@@ -40302,7 +40307,11 @@ function editableFromImportedMeshes(meshes) {
   for (let i = 0; i < positions.length; i++) {
     if (!Number.isFinite(positions[i])) return null;
   }
-  const groups = mergeCoplanarTriangles(positions, tris, ti => matOfTri[ti]);
+  /* With Kubik's face numbers the merge key is material AND face; the
+     groups get the material key back. */
+  const anyFace = faceOfTri.some(f => f !== null);
+  const groups = mergeCoplanarTriangles(positions, tris, anyFace ? (ti => faceOfTri[ti] === null ? matOfTri[ti] : matOfTri[ti] + '/' + faceOfTri[ti]) : (ti => matOfTri[ti]));
+  if (anyFace) groups.forEach(g => { if (typeof g.mat === 'string') g.mat = +g.mat.slice(0, g.mat.indexOf('/')); });
   const out = { positions, groups, triCount, matSrc };
   /* A non-finite UV is a file saying nothing useful, and it would reach the
      shader as a sampler read at an undefined texel. Dropped whole rather than
@@ -41363,12 +41372,12 @@ function fbxTextureManager(counter, base) {
      against: a texture is looked for BESIDE the file, by its leaf name -
      an FBX routinely records the absolute path on the machine that wrote
      it. Tracked so the importer can wait for the pictures before it reads
-     them; without a base nothing here changes. */
-  if (base) {
-    mgr.kubik = { started: false, done: false, wait: null };
-    mgr.onStart = () => { mgr.kubik.started = true; };
-    mgr.onLoad = () => { mgr.kubik.done = true; if (mgr.kubik.wait) mgr.kubik.wait(); };
-  }
+     them. v3.14c: tracked WITHOUT a base too - a picture embedded in the
+     file (a data: or blob: URL) also decodes after parse returns, and the
+     file picker's import read its material before it had. */
+  mgr.kubik = { started: false, done: false, wait: null };
+  mgr.onStart = () => { mgr.kubik.started = true; };
+  mgr.onLoad = () => { mgr.kubik.done = true; if (mgr.kubik.wait) mgr.kubik.wait(); };
   const BLANK = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8Xw8AAoMBgDTD2qgAAAAASUVORK5CYII=';
   mgr.setURLModifier((url) => {
     const u = String(url || '');
@@ -41502,11 +41511,9 @@ async function importFbxBuffer(buf, label, opt) {
   /* AND THE MAPS ARE READ BEFORE THAT, not after (v3.10). landImport reads
      the FBX materials' pictures through matSrc - the ORIGINAL materials - and
      the release below nulls every texture's image first, so not one FBX map
-     ever reached a material. Fixed here for a load with somewhere to fetch
-     pictures from (embed `load` by url); the file-picker path keeps its old
-     order until it gets its own version. */
-  const landFirst = !!(opt && opt.base);
-  if (landFirst) landImport(built, label);
+     ever reached a material. v3.10 fixed it for embed `load` by url; v3.14c
+     for the file picker too (its maps are the ones embedded in the file). */
+  landImport(built, label);
   root.traverse(n => {
     if (!n.isMesh) return;
     if (n.geometry) n.geometry.dispose();
@@ -41525,7 +41532,6 @@ async function importFbxBuffer(buf, label, opt) {
     });
   });
 
-  if (!landFirst) landImport(built, label);
   /* After landImport, so its own toast is the one that stays up when both
      have something to say - the face count is what the person is waiting
      for, and this is a footnote.
@@ -41886,9 +41892,87 @@ function buildExportGroup(only, named) {
   return group;
 }
 
+/* ONE PRIMITIVE PER MATERIAL, VERTICES WELDED (v3.10). buildExportGroup
+   hands GLTFExporter one group per FACE, which is what lets Kubik reopen its
+   own file with every face it had - and makes a 5000-face character into
+   5000 primitives, each of which three's GLTFLoader expands to the whole
+   vertex buffer: 100 million vertices on the way back in, and "Invalid array
+   length". A host wants the asset, not the editor's bookkeeping.
+
+   Faces are regrouped by the material they wear and every vertex that
+   agrees on position, normal and UV exactly is one vertex again, so the
+   file has the welding its source had. Not one triangle is made, lost or
+   moved; the triangles of one material are written in the order they had. */
+/* AND THE EXPORT BUTTON KEEPS ITS FACES (v3.14c): with `faces`, every vertex
+   also carries the number of the face it belongs to (`_kubikface`, written
+   as the glTF attribute _KUBIKFACE - an underscore name every other reader
+   ignores), and a vertex is never shared across faces. One primitive per
+   material, and Kubik's own importer still splits the faces where they were. */
+function compactForExport(m, faces) {
+  if (!m.isMesh) return;
+  const geo = m.geometry;
+  const mats = Array.isArray(m.material) ? m.material : [m.material];
+  const pos = geo.attributes.position;
+  const idx = geo.index ? geo.index.array : null;
+  const nIdx = idx ? idx.length : pos.count;
+  const keyOf = mm => (mm && mm.userData && mm.userData.kubikDef ? 'd:' + mm.userData.kubikDef : 'u:' + (mm ? mm.uuid : '')) +
+    '|' + (mm ? mm.side : 0) + '|' + (mm ? mm.name : '');
+  const runs = geo.groups.length ? geo.groups : [{ start: 0, count: nIdx, materialIndex: 0 }];
+  const order = [], byKey = new Map();
+  runs.forEach(g => {
+    const mm = mats[g.materialIndex] || mats[0];
+    const k = keyOf(mm);
+    let e = byKey.get(k);
+    if (!e) { e = { mat: mm, runs: [] }; byKey.set(k, e); order.push(e); }
+    e.runs.push(g);
+  });
+  const names = ['position', 'normal', 'uv'].filter(n => geo.attributes[n]);
+  const src = names.map(n => geo.attributes[n]);
+  const dst = names.map(() => []);
+  const seen = new Map();
+  const index = [], faceOf = [];
+  const ng = new THREE.BufferGeometry();
+  order.forEach((e, mi) => {
+    const start = index.length;
+    e.runs.forEach(g => {
+      const fi = runs.indexOf(g);
+      for (let k = g.start; k < g.start + g.count; k++) {
+        const vi = idx ? idx[k] : k;
+        let key = faces ? fi + '#' : '';
+        for (let a = 0; a < src.length; a++) {
+          for (let c = 0; c < src[a].itemSize; c++) key += src[a].getComponent(vi, c) + ',';
+        }
+        let ni = seen.get(key);
+        if (ni === undefined) {
+          ni = dst[0].length / 3;
+          seen.set(key, ni);
+          for (let a = 0; a < src.length; a++) {
+            for (let c = 0; c < src[a].itemSize; c++) dst[a].push(src[a].getComponent(vi, c));
+          }
+          if (faces) faceOf.push(fi);
+        }
+        index.push(ni);
+      }
+    });
+    ng.addGroup(start, index.length - start, mi);
+  });
+  names.forEach((n, a) => ng.setAttribute(n, new THREE.Float32BufferAttribute(dst[a], src[a].itemSize)));
+  if (faces) ng.setAttribute('_kubikface', new THREE.Float32BufferAttribute(faceOf, 1));
+  ng.setIndex(index);
+  geo.dispose();
+  const keep = new Set(order.map(e => e.mat));
+  mats.forEach(mm => { if (mm && !keep.has(mm)) mm.dispose(); });
+  m.geometry = ng;
+  m.material = order.length > 1 ? order.map(e => e.mat) : order[0].mat;
+}
+
 async function exportGlbAction() {
   if (!App.objects.length) { toast('Nothing to export'); return; }
   const group = buildExportGroup();
+  /* ONE PRIMITIVE PER MATERIAL (v3.14c), not one per face: a 5000-face model
+     was 5000 primitives, and three's GLTFLoader expands each to the whole
+     vertex buffer - 100 million vertices on the way back in. */
+  group.children.forEach(m => compactForExport(m, true));
   const exporter = new GLTFExporter();
   try {
     const result = await exporter.parseAsync(group, { binary: true });
@@ -55860,7 +55944,7 @@ if (EMBED) (function embedMain() {
     if (!objs.length) fail('empty', 'Nothing to export');
     await picturesReady(objs);
     const group = buildExportGroup(new Set(objs.map(o => o.id)), true);
-    group.children.forEach(compactForExport);
+    group.children.forEach(m => compactForExport(m));
     try {
       const out = await new GLTFExporter().parseAsync(group, { binary: true });
       return out;
@@ -55873,72 +55957,6 @@ if (EMBED) (function embedMain() {
         (Array.isArray(n.material) ? n.material : [n.material]).forEach(m => m && m.dispose());
       });
     }
-  }
-
-  /* ONE PRIMITIVE PER MATERIAL, VERTICES WELDED (v3.10). buildExportGroup
-     hands GLTFExporter one group per FACE, which is what lets Kubik reopen its
-     own file with every face it had - and makes a 5000-face character into
-     5000 primitives, each of which three's GLTFLoader expands to the whole
-     vertex buffer: 100 million vertices on the way back in, and "Invalid array
-     length". A host wants the asset, not the editor's bookkeeping.
-
-     Faces are regrouped by the material they wear and every vertex that
-     agrees on position, normal and UV exactly is one vertex again, so the
-     file has the welding its source had. Not one triangle is made, lost or
-     moved; the triangles of one material are written in the order they had. */
-  function compactForExport(m) {
-    if (!m.isMesh) return;
-    const geo = m.geometry;
-    const mats = Array.isArray(m.material) ? m.material : [m.material];
-    const pos = geo.attributes.position;
-    const idx = geo.index ? geo.index.array : null;
-    const nIdx = idx ? idx.length : pos.count;
-    const keyOf = mm => (mm && mm.userData && mm.userData.kubikDef ? 'd:' + mm.userData.kubikDef : 'u:' + (mm ? mm.uuid : '')) +
-      '|' + (mm ? mm.side : 0) + '|' + (mm ? mm.name : '');
-    const runs = geo.groups.length ? geo.groups : [{ start: 0, count: nIdx, materialIndex: 0 }];
-    const order = [], byKey = new Map();
-    runs.forEach(g => {
-      const mm = mats[g.materialIndex] || mats[0];
-      const k = keyOf(mm);
-      let e = byKey.get(k);
-      if (!e) { e = { mat: mm, runs: [] }; byKey.set(k, e); order.push(e); }
-      e.runs.push(g);
-    });
-    const names = ['position', 'normal', 'uv'].filter(n => geo.attributes[n]);
-    const src = names.map(n => geo.attributes[n]);
-    const dst = names.map(() => []);
-    const seen = new Map();
-    const index = [];
-    const ng = new THREE.BufferGeometry();
-    order.forEach((e, mi) => {
-      const start = index.length;
-      e.runs.forEach(g => {
-        for (let k = g.start; k < g.start + g.count; k++) {
-          const vi = idx ? idx[k] : k;
-          let key = '';
-          for (let a = 0; a < src.length; a++) {
-            for (let c = 0; c < src[a].itemSize; c++) key += src[a].getComponent(vi, c) + ',';
-          }
-          let ni = seen.get(key);
-          if (ni === undefined) {
-            ni = dst[0].length / 3;
-            seen.set(key, ni);
-            for (let a = 0; a < src.length; a++) {
-              for (let c = 0; c < src[a].itemSize; c++) dst[a].push(src[a].getComponent(vi, c));
-            }
-          }
-          index.push(ni);
-        }
-      });
-      ng.addGroup(start, index.length - start, mi);
-    });
-    names.forEach((n, a) => ng.setAttribute(n, new THREE.Float32BufferAttribute(dst[a], src[a].itemSize)));
-    ng.setIndex(index);
-    geo.dispose();
-    const keep = new Set(order.map(e => e.mat));
-    mats.forEach(mm => { if (mm && !keep.has(mm)) mm.dispose(); });
-    m.geometry = ng;
-    m.material = order.length > 1 ? order.map(e => e.mat) : order[0].mat;
   }
 
   const PRESET_DIR = {

@@ -1,4 +1,4 @@
-# Handoff — NEXT: Zeghreit tests v3.14a+b on the phone (Punch patterns on defaults, holes, rings). Then: the residue (crossing bores at a triple point, dense sphere 56/150 open), or (b) the Dynamic booleans design talk. Last shipped: v3.14b sliver collapse.
+# Handoff — NEXT (Zeghreit's order 12.10): ~~5 small bugs~~ done v3.14c -> 2 cutting with a curve -> 3 boolean residue -> 6 heavy-mesh plan. Last shipped: v3.14c FBX maps from the picker + Export compaction.
 
 Live: https://zeghreit.github.io/kubik/ · repo `C:\Users\a.bodrov\Projects\kubik` · the project now runs in Claude Code on the PC (rules: `CLAUDE.md`).
 Read `CURRENT_STATE.md` first — its last section (v3.14) is the truth for Punch now. Client reference: `EMBED.md` in the repo root.
@@ -26,8 +26,8 @@ Idea from chat: the cutter stays a separate object linked to its target; grab it
 4. Quads var 1 is not the best layout on a punched cube (40q/32t vs 64q via Generate).
 5. Cutting with a curve (planned after v3.14, its own version).
 6. Declarative select: `select: { mode, where: { normal, angle } | { box } | { side } }` + grow / shrink / loop; answer `{ count, ids, bounds }`.
-7. Plain-editor FBX bug (v3.10): `importFbxBuffer` releases the parse before landImport — no FBX map reaches a material.
-8. Export button writes one primitive per FACE → `compactForExport` for the button too.
+7. ~~Plain-editor FBX bug~~ — FIXED v3.14c.
+8. ~~Export button one primitive per face~~ — FIXED v3.14c (compacted + `_KUBIKFACE` face numbers keep the round trip).
 9. Heavy-mesh plan toward ~1M faces.
 10. Reviews not done: fable on `compactForExport` + `fitDistance`; opus on the v3.11 layer.
 11. Small: Extrude via `op` needs `amount`; Clear creases/seams with nothing to clear answer `refused`; UV ring not in `op`.
