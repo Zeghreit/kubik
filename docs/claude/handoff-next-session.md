@@ -1,55 +1,38 @@
-# Handoff — NEXT: v3.14 Punch patterns (decided 12.10, Zeghreit: "do as you see fit"). Last shipped: v3.13a (Punch freeze fix, 2a44837, confirmed on the phone). v3.13 Measure over embed (dc1320b), v3.12 Punch (28fe227).
+# Handoff — NEXT: Zeghreit's call between (a) v3.14a, the boolean pipeline limits patterns now reach in one tap, and (b) the Dynamic booleans design talk. Last shipped: v3.14 Punch patterns + rounded square.
 
-**12.10: v3.14 recon DONE, plan agreed, NO code written, nothing pushed. Paused to move the project to Claude Code — continue there from "v3.14 — recon findings" below.**
-
-Live: https://zeghreit.github.io/kubik/ · repo `C:\Users\a.bodrov\Projects\kubik` (**PC needs `git pull` to 2a44837**)
-Read `CURRENT_STATE.md` first — its last sections (v3.12 Punch, v3.13a) are the truth. Client reference: `EMBED.md` in the repo root.
+Live: https://zeghreit.github.io/kubik/ · repo `C:\Users\a.bodrov\Projects\kubik` · the project now runs in Claude Code on the PC (rules: `CLAUDE.md`).
+Read `CURRENT_STATE.md` first — its last section (v3.14) is the truth for Punch now. Client reference: `EMBED.md` in the repo root.
 Standing constraint: **UV transform stays 2D-only.**
 
-**CLOUD BENCH WORKS** (re-confirmed 12.10: `_punchchk` ALL GREEN on 2a44837). Build and test entirely in the cloud: add_repo with push, `python3 _cloudprobe.py <probe>.js out.txt` (headless Chromium, `_dev/csg` committed). Env: `VIEWPORT=390x844 TOUCH=1 SHOT=file.png` gives a phone-size run plus a screenshot. Push from the cloud, `git pull` on the PC.
-**Probe tricks (v3.13a):** a hung page blocks `_cloudprobe`'s `pg.title()` forever — post progress with a SYNC XHR to `/p` and print it in the route handler; to locate a hang, enable `Debugger` over CDP BEFORE `goto`, then `Debugger.pause` and print `callFrames`. CPU profile: `Profiler.start` before `goto`, stop after the probe says done.
-**BRIDGE TRAP (04.10): Desktop Commander `write_file` of ~100+ lines killed the bridge three times. ≤30-line chunks.**
+**PC BENCH WORKS** (12.10): `py _clean_probe.py <probe>.js out.txt` runs the cloud probes too — headless Chrome, CDN live. `PROBE_TIMEOUT=<s>` (default 120), `PROBE_PORT=<n>` (own port and page, so two runs can share the PC). Only `/result`, `/report`, `/done` end a run; any other POST path is a progress line. Long runs with `run_in_background`.
 **`.gitignore` has `_*`** — a new probe needs `git add -f`.
 
-## v3.14 — Punch patterns
-Scope: **arrays (line / ring) + mirror + rounded-rectangle cutter**, one version. Cutting with a curve = later, its own version. Dynamic booleans = after that, START WITH A DESIGN TALK, no code (see below).
+## v3.14 — shipped (12.10)
+Arrays (line / ring) + mirror + rounded-square cutter, a second "Pattern" page on the Punch bar; the op bar's readout made visible on a phone (it was 0 px wide beside Punch's slider since v3.12), and Punch's readout now says "N open edges" before OK. All in `CURRENT_STATE.md` → "Punch patterns and a rounded square (v3.14)". Verified: `_punchchk` 86/86, `_punchperf` ALL PASS, `_boolchk` PASS, `_opbarchk` no overlaps 320–430 px, fable review of the placement (3 fixed, 1 made visible, 4 limits written down), opus review of the bar and failure paths (1 bug fixed: a refused build wiped Generate's layout). Below 520 px Lathe and Tube now put their slider on its own line (it used to run off the screen) - 48 px taller bar, worth a look on the phone. Waiting for Zeghreit's feel on the phone: is the Pattern page findable, are the default count 6 / gap 50% right, does the outline on the far side of a ring (drawn on top, like v3.12's) read as help or clutter, and is the extra readout line under the slider worth its 13 px.
 
-### Recon findings (12.10, measured / read in code at 2a44837)
-- **Overlap trap is already solved by the engine.** `booleanBuild(objs, kind)` (~l.36853) chains: `acc = ev.evaluate(acc, brush_i, OP)` for every input. So pass `[target, c1..cN]` — each cutter is its own valid subtraction/union, overlapping copies never form one self-intersecting brush. No pre-union, no spacing clamp needed. Cost = N evaluates → measure with `_punchperf`, cap count at 24. Cache key = kind + all ids joined, so per-copy ids just work.
-- **Exact duplicates must be dropped**, not chained: an even ring of THROUGH holes on a solid cylinder gives pairs of cutters on the same line with coincident walls (coplanar CSG). Rule: drop a copy if near an existing one (|Δp| < 0.25·size, n·n' > 0.9), and for holes also if (anti)parallel and within 0.05·size of an existing bore's line.
-- **Bar at 390px (screenshot taken):** 244 px tall, 3 rows of cells. Row 1 = Hole/Dent/Boss (x 12..185), ~190 px free to its right. Row 2 = topology chips + Square toggle. Row 3 = sides stepper + Generate + ✕✓. `#opCells` is `flex-wrap`, cells in DOM order: opGrouping, opGrouping2, opToggleWrap, opSegments, opSegments2, opExtraWrap, commit. Steppers 116 px, commit 152 px, chips ~45 px each.
-- `p.square` read at 5 places (punchCutter ×2, refreshPunchOutline, punchPointerMove, stepper2.hidden). `spec.toggle` for SETUPS only flipped in `toggleOpSetupSwitch` (~l.43270) and drawn in `showOpSetupBar` (~l.43370); l.18379/18415/55787 are OP_SPECS (pending ops / command layer) — punch is not there (`OP_GESTURE`), safe.
-- `hideOpBar` (~l.18564) hides cells by id — a new bar cell must be hidden there too, or it stays up under the next op's bar.
-- `_punchchk` finds the outline as `c.isLineLoop && renderOrder === 999` and clicks `#opToggle` expecting Square — both need updating with the change below.
+## (a) v3.14a candidates — measured, with repro probes
+1. **4+ holes through one flat face come back open in N-gon / Tris / Loops** — the plain Boolean too (`_holeschk.js`: bar with 4 cylinders 24 open edges, 8 → 86, 12 → 164; Quads closes to 8, 6 open at 12). Suspect `topoBridge` (or the fall-back merge after it gives up) on faces with several holes. A line of holes makes this the common case.
+2. **3+ through-bores crossing inside a solid** (ring of holes through a solid can) — raw three-bvh-csg output closed, the 1e-4 GRID weld + heal in `editableFromCSGResult` open it (`_crosschk.js`: 22 / 293 vertex pairs within 3.5e-4 left apart; a tolerance weld cut 66 open edges to 14, not to 0). Same family as the dense-sphere loose end below — a fable review of CSG → weld → heal is the right first step.
+3. Quads on a faceted wall moves volume (one dent on a 12-gon can 0.00426 vs 0.0018), and with 3+ cutters in the facet band opens the shell (default can, boss Ring ×6: 12 open edges, 2 shells; N-gon closed). This one hits the DEFAULTS (12-sided cylinder, Quads) — likely the first thing Zeghreit sees.
+4. Copies whose walls nearly touch (0.9–1.1 × size apart) open now and then; ragged band (numbers in CURRENT_STATE).
 
-### The plan (agreed, Claude's call)
-1. **`punchCopies(s, size)`** → list of frames {point, normal, u, mi}, memoised on the pattern params + size. Base = the tap (not re-hit). Axis = one of the target's world axes (matrixWorld columns), centre = bbox centre.
-   - **Line**: N copies centred on the tap, centre-to-centre `size·(1 + gap/10)`. March along the surface from copy to copy: tangent = axis flattened against the current normal (axis ∥ n → base u), step, re-hit; stop a side when the tangent vanishes or a ray misses. Follows a cylinder wall.
-   - **Ring**: N copies, point/normal/u rotated by 2πk/N about the axis through the centre, each re-hit. Tap on the axis (radius < 0.05·size) → only the base, say so.
-   - **Mirror** (toggle, composes with both): reflect every frame across the plane ⟂ axis through the centre, re-hit, dedupe.
-   - Re-hit = `punchHit` along −n' from `p' + n'·(size+…)`, fallback from `p' + n'·diag`; reject a hit farther than ~0.5·diag from p'. Missed copies dropped; readout prefix "k of N ·".
-2. **Build**: `punchBuild` → `booleanBuild([o, ...cutters])`; cutter id = shape params + each copy's frame. `spec.build` compares the joined ids (topoBooks/seed reset as now).
-3. **Shape**: Square toggle → cycling button Round → Square → Rounded (`p.shape`; label = current shape, active when not round). Needs `toggle.cycle(s)` / `toggle.active(p)` / label-as-function support in `toggleOpSetupSwitch` + `showOpSetupBar`. Round keeps `buildPrimitiveEditable('cylinder')`, Square keeps 'cube' (exact volumes in `_punchchk`). Rounded = own convex prism from a 2D profile (4 segments per corner, corner radius = `corner/10` × half-size, stepper2 shows %), winding fixed per triangle against the centroid. Stepper2 for Round = sides with "3 = triangle" in its text/tip. Drag sizing for Rounded = the square rule. One `punchProfile(p, r)` feeds both the prism and the outline.
-4. **UI — a pattern page**, state on `s` (NOT in `s.p`, so it is no undo step and no rebuild): new cell `#opPageWrap` after `#opGrouping` (row 1). Main page label "Pattern" (or "Ring ×6 + Mirror Y" when on); pattern page label "Back". On the pattern page, via getters on `OP_SETUP.punch`: chips One/Line/Ring (`pat`), chips2 X/Y/Z (`axis`, default Y), toggle Mirror, stepper count (2..24, hidden for One), stepper2 gap % (Line only, 10..500%), Generate hidden. Fits in 3 rows at 390 px (row 2: XYZ 135 + Mirror 73 + count 116 = 336).
-   Defaults: shape round, corner 3, pat one, axis y, mirror off, count 6, gap 5.
-5. **Outline**: `punchLine` → `LineSegments`, one loop per landed copy; live slider recomputes copies at the live size.
-6. **Verify**: extend `_punchchk` (line on a flat face: volume = N × one hole; ring of holes on a cylinder: closed and wound, one shell; mirror pair symmetric; even-ring dedupe; rounded volume vs analytic `s² − (4−π)cr²` × height; outline shows N loops) + `_punchperf` (24-copy timing) + `_boolchk` + `_opbarchk` (pattern page at 390 px). Fable review on the copy placement maths (re-hit, marching, dedupe tolerances).
-
-## Dynamic booleans (after v3.14, design talk first)
-Idea from chat: the cutter stays a separate object linked to its target; grab it with a finger and move → outline/ghost follows live, release → target recomputes (the same live / commit-on-release pattern v3.13a added for the slider). No gizmo. Open questions: where the link lives (save/load/undo), what the cutter looks like in the scene (ghost?), when and how to bake, what Undo steps, cost on a phone (one CSG per release is fine, per move is not), chains of several cutters.
+## (b) Dynamic booleans (design talk first, no code)
+Idea from chat: the cutter stays a separate object linked to its target; grab it with a finger and move → outline/ghost follows live, release → target recomputes (the same live / commit-on-release pattern v3.13a added for the slider). No gizmo. Open questions: where the link lives (save/load/undo), what the cutter looks like in the scene (ghost?), when and how to bake, what Undo steps, cost on a phone (one CSG per release is fine, per move is not), chains of several cutters — and now patterns: is a pattern one linked cutter or N.
 
 ## Next / open (after the above)
 1. Zeghreit's verdict on Punch feel: tap/slide, default size, depth as %.
-2. **Punch on a dense UV sphere gives an open / multi-shell result at 94 of 150 sizes** (already in N-gon → CSG + heal on curved high-density targets). Candidate for a fable review of CSG → heal on curved targets.
+2. **Punch on a dense UV sphere gives an open / multi-shell result at 94 of 150 sizes** (already in N-gon → CSG + heal on curved high-density targets). See (a) 2.
 3. Remaining slow builds ~1.5–2 s desktop on huge holes — on a phone a few seconds. If it bites: a busy indicator or a smaller budget.
 4. Quads var 1 is not the best layout on a punched cube (40q/32t vs 64q via Generate).
-5. Declarative select: `select: { mode, where: { normal, angle } | { box } | { side } }` + grow / shrink / loop; answer `{ count, ids, bounds }`.
-6. Plain-editor FBX bug (v3.10): `importFbxBuffer` releases the parse before landImport — no FBX map reaches a material.
-7. Export button writes one primitive per FACE → `compactForExport` for the button too.
-8. Heavy-mesh plan toward ~1M faces.
-9. Reviews not done: fable on `compactForExport` + `fitDistance`; opus on the v3.11 layer.
-10. Small: Extrude via `op` needs `amount`; Clear creases/seams with nothing to clear answer `refused`; UV ring not in `op`.
-11. Old opens: `_gpuchk` NO REPORT; `_projchk` 4494kb fixture; glTF clearcoat/sheen; FBX unit scale.
+5. Cutting with a curve (planned after v3.14, its own version).
+6. Declarative select: `select: { mode, where: { normal, angle } | { box } | { side } }` + grow / shrink / loop; answer `{ count, ids, bounds }`.
+7. Plain-editor FBX bug (v3.10): `importFbxBuffer` releases the parse before landImport — no FBX map reaches a material.
+8. Export button writes one primitive per FACE → `compactForExport` for the button too.
+9. Heavy-mesh plan toward ~1M faces.
+10. Reviews not done: fable on `compactForExport` + `fitDistance`; opus on the v3.11 layer.
+11. Small: Extrude via `op` needs `amount`; Clear creases/seams with nothing to clear answer `refused`; UV ring not in `op`.
+12. Old opens: `_gpuchk` NO REPORT; `_projchk` 4494kb fixture; glTF clearcoat/sheen; FBX unit scale.
+13. From the stage-1 UI report (ui-hybrid): A1–A6 data loss and keyboard, B1 heat, B3 small targets.
 
 ## Harnesses
-Cloud: `_punchchk.js` (~1 min), `_punchperf.js` (~4 min), `_boolchk.js`, `_opbarchk.js`. Any probe driving `opSlider` must send 'change' after 'input'. PC (untracked): `py -3 _embedchk.py [page]` on localhost:8996; `_opchk.html` → `_opchk_out.txt`.
+`_punchchk.js` (~2 min), `_punchperf.js` (~5 min), `_boolchk.js`, `_opbarchk.js` — all via `_clean_probe.py` on the PC (or `_cloudprobe.py` in the cloud). Any probe driving `opSlider` must send 'change' after 'input'. Repro: `_holeschk.js`, `_crosschk.js`. PC (untracked): `py -3 _embedchk.py [page]` on localhost:8996; `_opchk.html` → `_opchk_out.txt`.

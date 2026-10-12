@@ -2245,10 +2245,22 @@
      hint + a 90px rail overran a 412px screen and pushed the slider off. */
   @media (max-width: 520px) { #opHint { display: none; } }
   /* What the layout is (v2.79). Same voice as the hint, but it stays on a
-     phone: the boolean has no slider, so the head has the room. */
+     phone: the boolean has no slider, so the head has the room.
+     LAST, AND ON A PHONE ON ITS OWN LINE (v3.14). Punch has a slider, and at
+     375 px the readout was squeezed to 0 px wide - "var 2", "4 of 6" and
+     "open edges" were never seen on a phone (measured). Below 520 px the
+     head may wrap and the readout takes a line under it. The slider wraps on
+     its 90 px floor, not its 110 px basis: on the basis it left the first
+     line too (measured) where, unwrapped, it had shrunk to fit. */
   #opReadout {
     font-family: var(--mono); font-size: 10px; letter-spacing: .06em; color: var(--text-dim);
     white-space: nowrap; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    order: 1;
+  }
+  @media (max-width: 520px) {
+    #opHead { flex-wrap: wrap; row-gap: 0; }
+    #opHead #opSlider { flex-basis: 90px; }
+    #opReadout { flex-basis: 100%; }
   }
   #drawer input[type=range] { flex: 1 1 120px; min-width: 110px; accent-color: var(--accent); height: 28px; }
   #opBar input[type=range] {
@@ -2966,6 +2978,8 @@
       </div>
       <div id="opCells">
       <div class="group" id="opGrouping"></div>
+      <!-- A SECOND PAGE OF THE SAME BAR (v3.14): Punch's Pattern / Back. -->
+      <div class="group" id="opPageWrap" style="display:none"><button id="opPage"></button></div>
       <div class="group" id="opGrouping2" style="display:none"></div>
       <div class="group" id="opToggleWrap"><button id="opToggle"></button></div>
       <div class="stepper" id="opSegments">
@@ -3226,7 +3240,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.13a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.14</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -18334,7 +18348,7 @@ function showOpBar() {
      drag on the model is the control), no Cancel (tap away, or Undo), and
      the label counts the sections stacked so far. */
   if (op.live) {
-    ['opSlider', 'opValue', 'opSegments', 'opSegments2', 'opExtraWrap', 'opGrouping2', 'opReadout', 'opToggleWrap', 'opCancel'].forEach(id => {
+    ['opSlider', 'opValue', 'opSegments', 'opSegments2', 'opExtraWrap', 'opGrouping2', 'opPageWrap', 'opReadout', 'opToggleWrap', 'opCancel'].forEach(id => {
       document.getElementById(id).style.display = 'none';
     });
     document.getElementById('opOk').textContent = 'Done';
@@ -18568,6 +18582,9 @@ function hideOpBar() {
   document.getElementById('opSegments2').style.display = 'none';
   document.getElementById('opExtraWrap').style.display = 'none';
   document.getElementById('opGrouping2').style.display = 'none';
+  document.getElementById('opPageWrap').style.display = 'none';
+  document.getElementById('opSegments').title = '';
+  document.getElementById('opSegments2').title = '';
   document.getElementById('opReadout').style.display = 'none';
   // The chooser bars (Mirror, Extrude grouping) drive this bar by hand and
   // know nothing about the toggle, so it goes away with the bar itself.
@@ -18709,6 +18726,14 @@ document.getElementById('opSegMinus').addEventListener('click', () => stepSegmen
 document.getElementById('opSegPlus').addEventListener('click', () => stepSegments(1));
 document.getElementById('opSeg2Minus').addEventListener('click', () => stepOpSetup2(-1));
 document.getElementById('opSeg2Plus').addEventListener('click', () => stepOpSetup2(1));
+// v3.14: the other page of the bar. Not a step and not a build - only which
+// controls are showing.
+document.getElementById('opPage').addEventListener('click', () => {
+  const s = App.opSetup, spec = opSetupSpec();
+  if (!s || !spec || !spec.page) return;
+  s.page = !s.page;
+  showOpSetupBar();
+});
 document.getElementById('opExtra').addEventListener('click', () => {
   const spec = opSetupSpec();
   if (spec && spec.extra && App.opSetup) spec.extra.run(App.opSetup);
@@ -26420,7 +26445,7 @@ function showKnifeBar() {
     refreshKnifeBar();
   });
   el.appendChild(back);
-  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opSegments2', 'opExtraWrap', 'opGrouping2', 'opReadout'].forEach(id => { document.getElementById(id).style.display = 'none'; });
+  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opSegments2', 'opExtraWrap', 'opGrouping2', 'opPageWrap', 'opReadout'].forEach(id => { document.getElementById(id).style.display = 'none'; });
   document.getElementById('opOk').style.display = '';
   surfaceIn(opBarEl);
   refreshKnifeBar();
@@ -27241,7 +27266,7 @@ function showCurveBar() {
   btn.textContent = 'Back';
   btn.title = 'Remove the last point';
   btn.classList.remove('active');
-  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opSegments2', 'opExtraWrap', 'opGrouping2', 'opReadout'].forEach(id => {
+  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opSegments2', 'opExtraWrap', 'opGrouping2', 'opPageWrap', 'opReadout'].forEach(id => {
     document.getElementById(id).style.display = 'none';
   });
   document.getElementById('opOk').style.display = '';
@@ -27625,7 +27650,7 @@ function showCurveEditBar() {
   btn.textContent = 'Delete point';
   btn.title = 'Remove the point you have selected';
   btn.classList.remove('active');
-  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opSegments2', 'opExtraWrap', 'opGrouping2', 'opReadout'].forEach(id => {
+  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opSegments2', 'opExtraWrap', 'opGrouping2', 'opPageWrap', 'opReadout'].forEach(id => {
     document.getElementById(id).style.display = 'none';
   });
   document.getElementById('opOk').style.display = '';
@@ -32292,7 +32317,7 @@ function showMirrorChooser(axis) {
     el.appendChild(b);
   });
   document.getElementById('opLabel').textContent = 'Mirror';
-  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opSegments2', 'opExtraWrap', 'opGrouping2', 'opReadout', 'opToggleWrap', 'opOk'].forEach(id => {
+  ['opSlider', 'opValue', 'opHint', 'opSegments', 'opSegments2', 'opExtraWrap', 'opGrouping2', 'opPageWrap', 'opReadout', 'opToggleWrap', 'opOk'].forEach(id => {
     document.getElementById(id).style.display = 'none';
   });
   surfaceIn(opBarEl);
@@ -36961,7 +36986,7 @@ let punchDrag = null;
 const punchLineMat = new THREE.LineBasicMaterial({
   color: 0xffd23d, transparent: true, depthTest: false, depthWrite: false
 });
-const punchLine = new THREE.LineLoop(new THREE.BufferGeometry(), punchLineMat);
+const punchLine = new THREE.LineSegments(new THREE.BufferGeometry(), punchLineMat);
 punchLine.renderOrder = 999;
 punchLine.visible = false;
 punchLine.frustumCulled = false;
@@ -37098,16 +37123,263 @@ function punchSpan(p, o, f) {
   return [-sink, dep];
 }
 
-/* The cutter as an input booleanBuild can take. Its id names everything it
-   is made of, so the setup's CSG cache is reused for Generate and thrown
-   away the moment the cutter changes. */
-function punchCutter(s) {
+/* The cutter's cross-section in its own (u, w) plane, going round the way
+   primCylinder goes - so the rounded prism and every outline are drawn from
+   one list, and a round outline still sits on the cylinder's corners. */
+const PUNCH_CORNER_SEGS = 4;
+function punchProfile(p, r) {
+  if (p.shape === 'square') return [[-r, -r], [r, -r], [r, r], [-r, r]];
+  const pts = [];
+  if (p.shape === 'rounded') {
+    // Corner radius in tenths of the half-width, 1..9: at 10 it is a circle.
+    const cr = Math.max(1, Math.min(9, p.corner | 0)) / 10 * r, k = r - cr;
+    [[k, k], [-k, k], [-k, -k], [k, -k]].forEach((c, q) => {
+      for (let j = 0; j <= PUNCH_CORNER_SEGS; j++) {
+        const a = (q + j / PUNCH_CORNER_SEGS) * Math.PI / 2;
+        pts.push([c[0] + cr * Math.cos(a), c[1] + cr * Math.sin(a)]);
+      }
+    });
+    return pts;
+  }
+  const n = Math.max(3, p.sides | 0);
+  for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2; pts.push([r * Math.cos(a), r * Math.sin(a)]); }
+  return pts;
+}
+
+/* A straight prism on a profile: primCylinder's faces with the profile for
+   its ring - a quad per side, an n-gon at each end, wound out. Only the
+   rounded square uses it; round and square keep the primitives v3.12 was
+   measured with. */
+function punchPrism(pts, h) {
+  const ed = { positions: [], groups: [] }, n = pts.length, Y = h / 2;
+  const ring = (i, y) => V3(pts[i % n][0], y, pts[i % n][1]);
+  for (let i = 0; i < n; i++) primFace(ed, [ring(i, -Y), ring(i, Y), ring(i + 1, Y), ring(i + 1, -Y)]);
+  const top = [], bottom = [];
+  for (let i = 0; i < n; i++) { top.push(ring(n - i, Y)); bottom.push(ring(i, -Y)); }
+  primFace(ed, top);
+  primFace(ed, bottom);
+  return ed;
+}
+
+/* ---------------- PATTERNS (v3.14) ----------------
+   One tap, several cutters: a LINE of them along one of the object's own
+   axes, a RING of them round it, and a MIRROR of whatever is there across
+   the plane through the object's middle. Every copy is a frame with the
+   tap's own fields, found by casting back onto the surface, so a line on a
+   can's wall follows the wall. A copy that finds no surface is dropped and
+   the readout says how many landed.
+
+   Each copy is its own input to booleanBuild, which folds them in one after
+   another - so overlapping cutters never have to become one shape first. */
+const PUNCH_COPIES_MAX = 24;
+
+// One of the object's own axes, in the world: what a pattern runs along.
+function punchAxis(o, k) {
+  o.mesh.updateMatrixWorld(true);
+  const e = o.mesh.matrixWorld.elements, i = k === 'x' ? 0 : k === 'z' ? 8 : 4;
+  const a = new THREE.Vector3(e[i], e[i + 1], e[i + 2]);
+  return a.lengthSq() > 1e-20 ? a.normalize() : new THREE.Vector3(0, 1, 0);
+}
+
+// The middle of the object's own box, in the world: what a ring turns about.
+function punchCentre(o) {
+  o.mesh.updateMatrixWorld(true);
+  const g = o.mesh.geometry;
+  g.computeBoundingBox();
+  return g.boundingBox.getCenter(new THREE.Vector3()).applyMatrix4(o.mesh.matrixWorld);
+}
+
+const punchRec = (pt, n, u, mi) => ({ px: pt.x, py: pt.y, pz: pt.z, nx: n.x, ny: n.y, nz: n.z,
+                                      ux: u.x, uy: u.y, uz: u.z, mi: mi | 0 });
+
+/* Back onto the surface from a point that may be just off it: along -n from
+   a little way out, then from right outside the object if that start was
+   inside another part of it. A landing more than half the object away from
+   where it was aimed is some other part, not this spot.
+   A ring or mirror copy (minDot) must also land on a face turned the way it
+   was aimed, within ~37°: a ring of 8 round a box aims its 45° copies at the
+   edges, and cutters stood on an edge came back as grooves with open edges
+   (fable, measured). A line does not ask - it follows the surface over a fold. */
+const PUNCH_AIM_DOT = 0.8;
+function punchReHit(o, pt, n, size, diag, minDot) {
+  const dir = n.clone().negate();
+  for (const h of [size + 1e-3, diag]) {
+    const hit = punchHit(o, new THREE.Ray(pt.clone().addScaledVector(n, h), dir));
+    if (hit && hit.point.distanceTo(pt) <= 0.5 * diag &&
+        (minDot == null || hit.normal.dot(n) >= minDot)) return hit;
+  }
+  return null;
+}
+
+/* The same cutter twice: this close, facing the same way. For a hole also
+   one on (nearly) the same bore from either side - an even ring of holes
+   through a box meets every bore twice, and two cutters sharing their walls
+   is the coplanar case the boolean is worst at. NEARLY: a tap a little off
+   the middle puts the far copy's bore beside the first one, not on it -
+   measured on a box, 0.3 of the size apart, the two grazing walls left 61
+   open edges. Within half the size the two openings would merge into one
+   anyway, and the bore that is kept makes it.
+   NOT SOLVED HERE (measured, v3.14): three or more through-bores crossing
+   inside a solid - a ring of 6 holes through a solid can - can come back
+   open. The evaluator's own output is closed; the weld and heal after it
+   (editableFromCSGResult) open it. OK says so, as for any boolean. */
+/* 'same' (a copy on top of another - the user asked for one that is not
+   there, so the readout counts it) or 'bore' (the opening is made by the
+   bore that stays - said nothing about). */
+function punchDup(list, f, size, hole) {
+  let why = false;
+  list.some(e => {
+    const dx = f.px - e.px, dy = f.py - e.py, dz = f.pz - e.pz;
+    const dn = f.nx * e.nx + f.ny * e.ny + f.nz * e.nz;
+    if (dn > 0.9 && dx * dx + dy * dy + dz * dz < 0.0625 * size * size) return (why = 'same');
+    if (!hole || Math.abs(dn) <= 0.9) return false;
+    const t = dx * e.nx + dy * e.ny + dz * e.nz;
+    const ox = dx - t * e.nx, oy = dy - t * e.ny, oz = dz - t * e.nz;
+    return ox * ox + oy * oy + oz * oz < 0.25 * size * size && (why = 'bore');
+  });
+  return why;
+}
+
+/* One side of a line, along the surface from the tap. The direction is the
+   axis laid flat on the surface wherever the march has got to, so it bends
+   with a curved wall; it stops where the axis points out of the surface or
+   a cast finds nothing. Sub-steps of at most half the cutter, so the gap is
+   measured along the surface, not along a chord through the air. Returns
+   how many copies it reached. */
+function punchMarch(o, base, dir, sign, n, first, step, size, diag, add) {
+  let pt = new THREE.Vector3(base.px, base.py, base.pz);
+  let nn = new THREE.Vector3(base.nx, base.ny, base.nz);
+  const u = new THREE.Vector3(base.ux, base.uy, base.uz);
+  let prev = null;
+  for (let k = 0; k < n; k++) {
+    const len = k ? step : first, m = Math.max(1, Math.ceil(len / (0.5 * size)));
+    let hit = null;
+    for (let j = 0; j < m; j++) {
+      const t = dir.clone().addScaledVector(nn, -dir.dot(nn)).multiplyScalar(sign);
+      /* Where the axis points out of the surface the line ends. On a smooth
+         wall the tangent fades away; on a FACETED one it never gets short
+         (sin 7.5° on a 24-sided can) - it flips over at the facet past that
+         point, and the march rocked across it, stacking copies (measured). */
+      if (t.length() < 0.05 || (prev && t.dot(prev) <= 0)) return k;
+      t.normalize();
+      hit = punchReHit(o, pt.clone().addScaledVector(t, len / m), nn, size, diag);
+      if (!hit) return k;
+      pt = hit.point; nn = hit.normal; prev = t;
+    }
+    add(punchRec(pt, nn, u, hit.mi));
+  }
+  return n;
+}
+
+/* Where every cutter of the pattern stands, at a size (the slider's live one
+   while a finger is on it). `want` is how many the settings ask for, `missed`
+   how many found no surface or landed on another copy ("overlap" - near a
+   sphere's pole a ring of 6 is one cutter, fable); a hole dropped for sharing
+   a bore is not missed - its opening is there. Remembered for the last
+   settings: the outline, the id check and the build all ask. */
+function punchCopies(s, size) {
+  const p = s.p, o = punchTarget(s);
+  if (size == null) size = p.size;
+  const key = [p.pat, p.axis, p.mirror ? 1 : 0, p.count, p.gap, p.kind, size,
+               p.px, p.py, p.pz, p.nx, p.ny, p.nz, p.ux, p.uy, p.uz, p.mi].join(',');
+  if (s.copiesMemo && s.copiesMemo.key === key) return s.copiesMemo.val;
+  const P0 = new THREE.Vector3(p.px, p.py, p.pz), N0 = new THREE.Vector3(p.nx, p.ny, p.nz);
+  const U0 = new THREE.Vector3(p.ux, p.uy, p.uz);
+  const base = punchRec(P0, N0, U0, p.mi);
+  const val = { list: [base], want: 1, missed: 0, why: '' };
+  const out = val.list;
+  if (o && (p.pat === 'line' || p.pat === 'ring' || p.mirror)) {
+    const hole = p.kind === 'hole';
+    const add = (rec) => {
+      const dup = punchDup(out, rec, size, hole);
+      if (!dup) out.push(rec);
+      else if (dup === 'same') { val.missed++; val.why = val.why || 'overlap'; }
+    };
+    const diag = punchBox(o).getSize(new THREE.Vector3()).length();
+    const axis = punchAxis(o, p.axis), c = punchCentre(o);
+    const N = Math.max(2, Math.min(p.mirror ? PUNCH_COPIES_MAX / 2 : PUNCH_COPIES_MAX, p.count | 0));
+    if (p.pat === 'line') {
+      val.want = N;
+      const d = size * (1 + Math.max(1, p.gap | 0) / 10);
+      /* An axis straight out of the surface goes nowhere: the cutter's own
+         across-direction. The SAME test the march stops on - two tests left
+         a band of tilts (2.6-2.9°) where neither held and nothing was placed
+         (fable, measured). */
+      const dir = axis.clone().addScaledVector(N0, -axis.dot(N0)).length() < 0.05 ? U0.clone().normalize() : axis;
+      // Centred on the tap: odd, one on it and the rest a step apart each way;
+      // even, none on it and the first half a step out.
+      const odd = N % 2 === 1, side = odd ? (N - 1) / 2 : N / 2, first = odd ? d : d / 2;
+      if (!odd) out.length = 0;
+      const got = punchMarch(o, base, dir, 1, side, first, d, size, diag, add) +
+                  punchMarch(o, base, dir, -1, side, first, d, size, diag, add);
+      val.missed += 2 * side - got;
+    } else if (p.pat === 'ring') {
+      val.want = N;
+      const rel = P0.clone().sub(c);
+      if (rel.clone().addScaledVector(axis, -rel.dot(axis)).length() < 0.05 * size) {
+        val.missed = N - 1; val.why = 'on the axis';
+      } else {
+        const q = new THREE.Quaternion();
+        for (let k = 1; k < N; k++) {
+          q.setFromAxisAngle(axis, 2 * Math.PI * k / N);
+          const hit = punchReHit(o, c.clone().add(rel.clone().applyQuaternion(q)),
+                                 N0.clone().applyQuaternion(q), size, diag, PUNCH_AIM_DOT);
+          if (!hit) { val.missed++; continue; }
+          add(punchRec(hit.point, hit.normal, U0.clone().applyQuaternion(q), hit.mi));
+        }
+      }
+    }
+    if (p.mirror) {
+      // Across the plane through the middle, square to the axis; mirrors of
+      // what is there, not of mirrors.
+      const ref = (v) => v.addScaledVector(axis, -2 * v.dot(axis));
+      const n0 = out.length;
+      val.want *= 2;
+      val.missed *= 2;
+      for (let i = 0; i < n0; i++) {
+        const e = out[i];
+        const hit = punchReHit(o, ref(new THREE.Vector3(e.px, e.py, e.pz).sub(c)).add(c),
+                               ref(new THREE.Vector3(e.nx, e.ny, e.nz)), size, diag, PUNCH_AIM_DOT);
+        if (!hit) { val.missed++; continue; }
+        add(punchRec(hit.point, hit.normal, ref(new THREE.Vector3(e.ux, e.uy, e.uz)), hit.mi));
+      }
+    }
+  }
+  s.copiesMemo = { key: key, val: val };
+  return val;
+}
+
+/* In front of the readout: what the preview's own audit found (v3.14 - a
+   pattern reaches the boolean's open cases in one tap, and OK used to be the
+   first thing that said so), then "4 of 6 ·" when copies are missing. */
+function punchCopiesNote(s) {
+  const c = punchCopies(s);
+  return (s.punchTrouble ? s.punchTrouble + ' · ' : '') +
+         (c.missed ? (c.want - c.missed) + ' of ' + c.want + (c.why ? ' (' + c.why + ')' : '') + ' · ' : '');
+}
+
+// What the Pattern button says on the cutter's page.
+function punchPatternLabel(p) {
+  const parts = [];
+  if (p.pat === 'line' || p.pat === 'ring') parts.push((p.pat === 'line' ? 'Line' : 'Ring') + ' ×' + p.count);
+  if (p.mirror) parts.push('Mirror');
+  return parts.length ? parts.join(' + ') + ' ' + String(p.axis || 'y').toUpperCase() : 'Pattern';
+}
+
+/* A cutter's id names everything it is made of, so the setup's CSG cache is
+   reused for Generate and thrown away the moment any cutter changes. */
+const punchCutId = (p, c) => 'punch:' + [p.kind, p.size, p.depth, p.sides, p.shape, p.corner,
+  c.px, c.py, c.pz, c.nx, c.ny, c.nz, c.ux, c.uy, c.uz, c.mi].join(',');
+
+/* One cutter, stood on one copy's frame, as an input booleanBuild can take. */
+function punchCutter(s, c) {
   const p = s.p, o = punchTarget(s);
   if (!o) return null;
-  const f = punchFrame(p), span = punchSpan(p, o, f);
+  const f = punchFrame(c), span = punchSpan(p, o, f);
   const h = Math.max(1e-3, span[1] - span[0]);
-  const ed = p.square
+  const ed = p.shape === 'square'
     ? buildPrimitiveEditable('cube', { h: 1, v: 1, x: p.size, y: h, z: p.size })
+    : p.shape === 'rounded' ? punchPrism(punchProfile(p, p.size / 2), h)
     : buildPrimitiveEditable('cylinder', { h: p.sides | 0, v: 1, x: p.size, y: h, z: p.size });
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(ed.positions, 3));
@@ -37122,44 +37394,44 @@ function punchCutter(s) {
      not a clone, so the evaluator folds it into the target's own and the
      coplanar merge is not stopped at a boundary that is not really there. */
   const mats = Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material];
-  const mesh = new THREE.Mesh(geo, [mats[p.mi | 0] || mats[0]]);
+  const mesh = new THREE.Mesh(geo, [mats[c.mi | 0] || mats[0]]);
   const m = new THREE.Matrix4().makeBasis(f.u, f.n, f.w);
   m.setPosition(f.o.clone().addScaledVector(f.n, (span[0] + span[1]) / 2));
   m.decompose(mesh.position, mesh.quaternion, mesh.scale);
   mesh.updateMatrixWorld(true);
-  /* A round cutter's walls smooth into one another unless the sides are few
-     enough to read as facets - the same 33° rule every object here uses. */
-  const id = 'punch:' + [p.kind, p.size, p.depth, p.sides, p.square ? 1 : 0,
-                         p.px, p.py, p.pz, p.nx, p.ny, p.nz, p.ux, p.uy, p.uz, p.mi].join(',');
-  return { id: id, name: 'Punch', mesh: mesh };
+  return { id: punchCutId(p, c), name: 'Punch', mesh: mesh };
 }
 
-// What the Boolean does with the cutter: a hole and a dent take it away,
-// a boss adds it.
+// What the Boolean does with the cutters: a hole and a dent take them away,
+// a boss adds them. One input per copy.
 function punchBuild(s, seed) {
   const o = punchTarget(s);
   if (!o) return { ok: false, why: 'The object is gone - pick it again' };
-  const c = punchCutter(s);
-  return booleanBuild([o, c], s.p.kind === 'boss' ? 'union' : 'difference',
+  const cs = punchCopies(s).list.map(c => punchCutter(s, c));
+  /* An even line whose first half-steps both run off the object has no
+     cutter at all, and booleanBuild with one input hands it back unchanged -
+     OK then committed "X punched", same volume, one history step (fable). */
+  if (!cs.length) return { ok: false, why: 'No copy lands on the object - move the tap or change the pattern' };
+  return booleanBuild([o].concat(cs), s.p.kind === 'boss' ? 'union' : 'difference',
                       { type: s.p.topo, seed: seed, cache: s.csgCache || (s.csgCache = {}) });
 }
 
-/* The outline of the cutter on the surface, drawn while the bar is up so you
-   can see where the next tap and the next drag will act - and drawn on top,
-   because a hole's rim is exactly where the preview's own walls would hide it. */
+/* The outline of every cutter on the surface, drawn while the bar is up so
+   you can see where the next tap and the next drag will act - and drawn on
+   top, because a hole's rim is exactly where the preview's own walls would
+   hide it. One loop per copy, as pairs of points. */
 function refreshPunchOutline(liveSize) {
   const s = punchOpen();
   if (!s) { if (punchLine.visible) { punchLine.visible = false; invalidate(); } return; }
-  const p = s.p, f = punchFrame(p), r = (liveSize != null ? liveSize : p.size) / 2;
-  const lift = f.o.clone().addScaledVector(f.n, r * 0.02 + 1e-4);
-  const pts = [];
-  const at = (a, b) => pts.push(lift.x + f.u.x * a + f.w.x * b, lift.y + f.u.y * a + f.w.y * b,
-                                lift.z + f.u.z * a + f.w.z * b);
-  if (p.square) { at(-r, -r); at(r, -r); at(r, r); at(-r, r); }
-  else {
-    const n = Math.max(3, p.sides | 0);
-    for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2; at(r * Math.cos(a), r * Math.sin(a)); }
-  }
+  const p = s.p, size = liveSize != null ? liveSize : p.size, r = size / 2;
+  const prof = punchProfile(p, r), pts = [];
+  punchCopies(s, size).list.forEach(c => {
+    const f = punchFrame(c);
+    const lift = f.o.clone().addScaledVector(f.n, r * 0.02 + 1e-4);
+    const at = (q) => pts.push(lift.x + f.u.x * q[0] + f.w.x * q[1], lift.y + f.u.y * q[0] + f.w.y * q[1],
+                               lift.z + f.u.z * q[0] + f.w.z * q[1]);
+    prof.forEach((q, i) => { at(q); at(prof[(i + 1) % prof.length]); });
+  });
   punchLine.geometry.dispose();
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
@@ -37222,7 +37494,7 @@ function punchPointerMove(ev) {
   const q = new THREE.Vector3();
   if (!raycaster.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(f.n, f.o), q)) return;
   const d = q.sub(f.o);
-  const across = s.p.square ? 2 * Math.max(Math.abs(d.dot(f.u)), Math.abs(d.dot(f.w))) : 2 * d.length();
+  const across = s.p.shape !== 'round' ? 2 * Math.max(Math.abs(d.dot(f.u)), Math.abs(d.dot(f.w))) : 2 * d.length();
   punchDrag.size = Math.max(punchSizeMin(s), Math.min(punchSizeMax(s), across));
   refreshPunchOutline(punchDrag.size);
 }
@@ -42762,14 +43034,11 @@ const OP_SETUP = {
   },
   /* PUNCH (v3.12). One object and a cutter the op makes itself - see
      punchCutter. The Boolean's own topology row, Generate and readout,
-     because the cut is the Boolean's: only the cutter is new. */
+     because the cut is the Boolean's: only the cutter is new.
+     v3.14: two pages, the cutter and its pattern. The controls that differ
+     between them are answered by punchPart, below this table. */
   punch: {
     label: 'Punch',
-    chips: [['hole', 'Hole'], ['dent', 'Dent'], ['boss', 'Boss']],
-    chipKey: 'kind',
-    chipTip: (k) => (k === 'hole' ? 'Right through the object'
-                   : k === 'dent' ? 'Pressed in to the depth below (in a hollow it bites the walls around it too)'
-                   : 'Raised out to the height below'),
     slider: { key: 'size', label: 'size',
               // The floor IS one step, so every value the slider can stop
               // on is a whole number of steps - 0.4 stays 0.4.
@@ -42778,21 +43047,12 @@ const OP_SETUP = {
               // v3.13a: while the finger is on the slider only the outline moves.
               live: (s, v) => refreshPunchOutline(v),
               decimals: 3, unit: '' },
-    // Depth in tenths of the size: a dent half as deep as it is wide is 5.
-    stepper: { key: 'depth', max: () => 30, min: () => 1,
-               show: (n) => (n * 10) + '%', hidden: (p) => p.kind === 'hole' },
-    stepper2: { key: 'sides', max: () => 64, min: () => 3, hidden: (p) => !!p.square },
-    toggle: { key: 'square', label: 'Square', tip: 'A box instead of a cylinder' },
-    // The sides counter means nothing for a box: the bar is drawn again.
-    onToggle: () => showOpSetupBar(),
-    chips2: [['ngon', 'N-gon'], ['tris', 'Tris'], ['quads', 'Quads'], ['loops', 'Loops']],
-    chip2Key: 'topo',
-    chip2Tip: (k) => OP_SETUP.boolean.chip2Tip(k),
-    onChip2: () => { App.opSetup.p.seed = 0; },
-    onChip: () => { App.opSetup.p.seed = 0; },
+    page: { label: (s) => punchPatternLabel(s.p), on: (s) => s.p.pat !== 'one' || !!s.p.mirror,
+            tip: 'Copies in a line or a ring, and a mirror' },
     defaults: (s) => {
       const o = punchTarget(s);
-      const p = { kind: 'hole', topo: 'quads', seed: 0, depth: 3, sides: PUNCH_SIDES, square: false, size: 0.25 };
+      const p = { kind: 'hole', topo: 'quads', seed: 0, depth: 3, sides: PUNCH_SIDES, shape: 'round', corner: 3,
+                  pat: 'one', axis: 'y', mirror: false, count: 6, gap: 5, size: 0.25 };
       if (!o) return p;
       const sz = punchBox(o).getSize(new THREE.Vector3());
       const mid = [sz.x, sz.y, sz.z].sort((a, b) => a - b)[1];
@@ -42801,24 +43061,99 @@ const OP_SETUP = {
       return p;
     },
     /* A new cutter is a new cut: the layouts Generate found for the last
-       one, and the seed it stopped on, mean nothing here - so "var 1" again. */
+       one, and the seed it stopped on, mean nothing here - so "var 1" again.
+       ONLY ONCE IT HAS BUILT (v3.14, found in review): reset before a build
+       that was then refused, the readout said "var 0", and the bar's Undo of
+       that refused step swapped the layout Generate had found for var 1 -
+       refreshOpSetupMesh puts s.p back, nothing put these back. */
     build: (s) => {
-      const c = punchCutter(s);
-      if (c && c.id !== s.punchCut) {
-        if (s.punchCut != null) { s.topoBooks = {}; s.p.seed = 0; }
-        s.punchCut = c.id;
+      const id = punchCopies(s).list.map(c => punchCutId(s.p, c)).join('|');
+      const fresh = s.punchCut != null && id !== s.punchCut;
+      const r = punchBuild(s, fresh ? 0 : s.p.seed | 0);
+      if (r.ok) {
+        if (fresh) { s.topoBooks = {}; s.p.seed = 0; }
+        s.punchCut = id;
       }
-      return punchBuild(s, s.p.seed | 0);
+      return r;
     },
     buildAt: (s, seed) => punchBuild(s, seed),
-    extra: { label: 'Generate', tip: 'Another layout of the same type - Undo goes back',
-             run: (s) => generateBooleanLayout(s) },
-    readout: (s) => OP_SETUP.boolean.readout(s),
+    readout: (s) => punchCopiesNote(s) + OP_SETUP.boolean.readout(s),
     name: (s) => { const o = punchTarget(s); return (o ? o.name : 'Object') + ' punched'; },
     doneLabel: (s) => ({ hole: 'Hole', dent: 'Dent', boss: 'Boss' }[s.p.kind] || 'Punch'),
-    after: (s, obj, r) => { OP_SETUP.boolean.after(s, obj, r); refreshPunchOutline(); }
+    /* The preview audited as OK will audit it, before the Boolean's own after
+       redraws the readout (v3.14): so "12 open edges" shows while the size,
+       the count or the topology can still be changed. */
+    after: (s, obj, r) => {
+      s.punchTrouble = windingTrouble(auditWinding(obj)).join(', ');
+      OP_SETUP.boolean.after(s, obj, r);
+      refreshPunchOutline();
+    }
   }
 };
+
+/* THE TWO PAGES OF PUNCH'S BAR (v3.14). Everything the bar draws it reads
+   off the spec, so the spec answers for whichever page is showing. The page
+   lives on the setup, not in s.p: turning it is not a step and builds
+   nothing. */
+const PUNCH_MAIN = {
+  chips: [['hole', 'Hole'], ['dent', 'Dent'], ['boss', 'Boss']],
+  chipKey: 'kind',
+  chipTip: (k) => (k === 'hole' ? 'Right through the object'
+                 : k === 'dent' ? 'Pressed in to the depth below (in a hollow it bites the walls around it too)'
+                 : 'Raised out to the height below'),
+  onChip: () => { App.opSetup.p.seed = 0; },
+  chips2: OP_SETUP.boolean.chips2,
+  chip2Key: 'topo',
+  chip2Tip: (k) => OP_SETUP.boolean.chip2Tip(k),
+  onChip2: () => { App.opSetup.p.seed = 0; },
+  // Depth in tenths of the size: a dent half as deep as it is wide is 5.
+  stepper: { key: 'depth', max: () => 30, min: () => 1,
+             show: (n) => (n * 10) + '%', hidden: (p) => p.kind === 'hole' },
+  // One button, three shapes: it says the one in use, lit when not round.
+  toggle: { key: 'shape', label: (p) => ({ square: 'Square', rounded: 'Rounded' }[p.shape] || 'Round'),
+            cycle: (p) => { p.shape = p.shape === 'round' ? 'square' : p.shape === 'square' ? 'rounded' : 'round'; },
+            active: (p) => p.shape !== 'round',
+            tip: 'Round, square, or square with rounded corners' },
+  // The counter beside it means something else for each shape: the bar is drawn again.
+  onToggle: () => showOpSetupBar(),
+  extra: { label: 'Generate', tip: 'Another layout of the same type - Undo goes back',
+           run: (s) => generateBooleanLayout(s) }
+};
+const PUNCH_SIDES_STEP = { key: 'sides', max: () => 64, min: () => 3, hidden: (p) => p.shape === 'square',
+                           tip: 'Sides round the cutter - 3 is a triangle' };
+// A corner mark on the number: beside a dent's depth both read "30%", and a
+// phone has no hover to tell them apart.
+const PUNCH_CORNER_STEP = { key: 'corner', max: () => 9, min: () => 1, show: (n) => '╭' + (n * 10) + '%',
+                            tip: 'How round the corners are, as a share of half the width' };
+const PUNCH_PATTERN = {
+  chips: [['one', 'One'], ['line', 'Line'], ['ring', 'Ring']],
+  chipKey: 'pat',
+  chipTip: (k) => (k === 'one' ? 'Just the one cutter'
+                 : k === 'line' ? 'Copies in a row along the axis, following the surface'
+                 : 'Copies round the axis, through the middle of the object'),
+  onChip: () => { App.opSetup.p.seed = 0; },
+  chips2: [['x', 'X'], ['y', 'Y'], ['z', 'Z']],
+  chip2Key: 'axis',
+  chip2Tip: (k) => 'The object\'s own ' + k.toUpperCase() + ' axis',
+  onChip2: () => { App.opSetup.p.seed = 0; },
+  // Mirrored, every cutter is two: the ceiling halves so the whole stays at 24.
+  stepper: { key: 'count', min: () => 2, max: (p) => (p.mirror ? PUNCH_COPIES_MAX / 2 : PUNCH_COPIES_MAX),
+             show: (n) => '×' + n, hidden: (p) => p.pat === 'one', tip: 'How many cutters' },
+  stepper2: { key: 'gap', min: () => 1, max: () => 50, show: (n) => (n * 10) + '%',
+              hidden: (p) => p.pat !== 'line', tip: 'The gap between two cutters, as a share of their size' },
+  toggle: { key: 'mirror', label: 'Mirror', tip: 'Again on the far side of the middle, across the axis' },
+  onToggle: (s) => { s.p.count = Math.min(s.p.count, PUNCH_PATTERN.stepper.max(s.p)); showOpSetupBar(); },
+  extra: null
+};
+function punchPart(k) {
+  const s = punchOpen();
+  if (s && s.page) return PUNCH_PATTERN[k];
+  if (k === 'stepper2') return s && s.p.shape === 'rounded' ? PUNCH_CORNER_STEP : PUNCH_SIDES_STEP;
+  return PUNCH_MAIN[k];
+}
+['chips', 'chipKey', 'chipTip', 'onChip', 'chips2', 'chip2Key', 'chip2Tip', 'onChip2',
+ 'stepper', 'stepper2', 'toggle', 'onToggle', 'extra'].forEach(k =>
+  Object.defineProperty(OP_SETUP.punch, k, { get: () => punchPart(k), enumerable: true }));
 
 function opSetupSpec() {
   return App.opSetup ? OP_SETUP[App.opSetup.kind] : null;
@@ -43271,8 +43606,10 @@ function toggleOpSetupSwitch() {
   const s = App.opSetup, spec = opSetupSpec();
   if (!s || !spec || !spec.toggle) return;
   opSetupMark();
-  s.p[spec.toggle.key] = !s.p[spec.toggle.key];
-  document.getElementById('opToggle').classList.toggle('active', !!s.p[spec.toggle.key]);
+  const tg = spec.toggle;
+  // v3.14: a toggle may step through more than two states (Punch's shape).
+  if (tg.cycle) tg.cycle(s.p); else s.p[tg.key] = !s.p[tg.key];
+  document.getElementById('opToggle').classList.toggle('active', tg.active ? tg.active(s.p) : !!s.p[tg.key]);
   if (spec.onToggle) spec.onToggle(s);
   // Keep originals changes what SURVIVES, not what the preview looks like.
   if (!spec.toggle.norebuild) refreshOpSetupMesh();
@@ -43306,6 +43643,17 @@ function showOpSetupBar() {
     });
   } else {
     el.style.display = 'none';
+  }
+  // v3.14: a bar with a second page has its button right after the chips.
+  const pgWrap = document.getElementById('opPageWrap');
+  if (spec.page) {
+    const pb = document.getElementById('opPage');
+    pgWrap.style.display = 'inline-flex';
+    pb.textContent = s.page ? 'Back' : spec.page.label(s);
+    pb.title = s.page ? 'Back to the cutter' : spec.page.tip || '';
+    pb.classList.toggle('active', !s.page && !!spec.page.on(s));
+  } else {
+    pgWrap.style.display = 'none';
   }
   // The second row of chips (v2.79): same shape as the first, its own key.
   const el2 = document.getElementById('opGrouping2');
@@ -43355,6 +43703,8 @@ function showOpSetupBar() {
                    !(spec.stepper2.hidden && spec.stepper2.hidden(s.p, s));
   document.getElementById('opSegments2').style.display = useStep2 ? '' : 'none';
   if (useStep2) document.getElementById('opSeg2Value').textContent = opStepText(spec.stepper2, s.p[spec.stepper2.key]);
+  document.getElementById('opSegments').title = (useStep && spec.stepper.tip) || '';
+  document.getElementById('opSegments2').title = (useStep2 && spec.stepper2.tip) || '';
   const xWrap = document.getElementById('opExtraWrap');
   if (spec.extra && (!spec.extra.when || spec.extra.when(s))) {
     xWrap.style.display = 'inline-flex';
@@ -43368,10 +43718,11 @@ function showOpSetupBar() {
   const wrap = document.getElementById('opToggleWrap');
   const btn = document.getElementById('opToggle');
   if (spec.toggle) {
+    const tg = spec.toggle;
     wrap.style.display = 'inline-flex';
-    btn.textContent = spec.toggle.label;
-    btn.title = spec.toggle.tip || '';
-    btn.classList.toggle('active', !!s.p[spec.toggle.key]);
+    btn.textContent = typeof tg.label === 'function' ? tg.label(s.p) : tg.label;
+    btn.title = tg.tip || '';
+    btn.classList.toggle('active', tg.active ? tg.active(s.p) : !!s.p[tg.key]);
   } else {
     wrap.style.display = 'none';
   }
@@ -43403,6 +43754,15 @@ function abandonOpSetup() {
   refreshPunchOutline();
   hideOpBar();
   document.getElementById('opToggleWrap').style.display = 'none';
+}
+
+// What a winding audit found, in words: OK's toast, and Punch's readout (v3.14).
+function windingTrouble(w) {
+  const t = [];
+  if (w.boundary) t.push(w.boundary + ' open edge' + (w.boundary === 1 ? '' : 's'));
+  if (w.conflictEdges) t.push(w.conflictEdges + ' reversed');
+  if (w.nonManifold) t.push(w.nonManifold + ' non-manifold');
+  return t;
 }
 
 function finishOpSetup(keep) {
@@ -43469,10 +43829,7 @@ function finishOpSetup(keep) {
       pushHistory();
       const w = auditWinding(o);
       if (PICK_DEBUG) console.log('[winding]', JSON.stringify(w));
-      const trouble = [];
-      if (w.boundary) trouble.push(w.boundary + ' open edge' + (w.boundary === 1 ? '' : 's'));
-      if (w.conflictEdges) trouble.push(w.conflictEdges + ' reversed');
-      if (w.nonManifold) trouble.push(w.nonManifold + ' non-manifold');
+      const trouble = windingTrouble(w);
       if (s.note) trouble.push(s.note);
       const done = OP_SETUP[s.kind];
       toast((done.doneLabel ? done.doneLabel(s) : done.label) +

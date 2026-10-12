@@ -15,12 +15,12 @@
 
   const IDS = ['opGrouping', 'opToggleWrap', 'opSegments', 'opCancel', 'opOk'];
 
-  function report(tag) {
+  function report(tag, ids) {
     const bar = document.getElementById('opBar').getBoundingClientRect();
     say(tag + '   bar ' + Math.round(bar.left) + '..' + Math.round(bar.right) +
         '  h=' + Math.round(bar.height));
     const seen = [];
-    IDS.forEach(id => {
+    (ids || IDS).forEach(id => {
       const el = document.getElementById(id);
       if (!el || el.offsetParent === null) { say('  ' + id.padEnd(13) + '(hidden)'); return; }
       const r = el.getBoundingClientRect();
@@ -78,6 +78,34 @@
       await sleep(120);
       report(String(w).padEnd(5));
     }
+    /* v3.14: Punch's two pages, with the widest things each one shows -
+       the cutter page under a long pattern name, the pattern page with
+       both counters and Mirror. */
+    K.cancelPendingOp();
+    K.setMode('object');
+    A.selectedObjectIds = new Set([o.id]); A.activeObjectId = null;
+    K.punchSelection();
+    for (let i = 0; i < 400 && !A.opSetup; i++) await sleep(25);
+    if (!A.opSetup) { say('PUNCH DID NOT OPEN'); vp.style.width = was; finish(); return; }
+    const P_IDS = ['opGrouping', 'opPageWrap', 'opGrouping2', 'opToggleWrap', 'opSegments', 'opSegments2',
+                   'opExtraWrap', 'opCancel', 'opOk'];
+    Object.assign(A.opSetup.p, { pat: 'line', count: 12, mirror: true, kind: 'dent' });
+    K.refreshOpSetupMesh();
+    document.getElementById('opPage').click();            // pattern page
+    for (const pg of ['pattern', 'cutter']) {
+      say('punch, ' + pg + ' page: "' + document.getElementById('opPage').textContent + '"');
+      for (const w of [430, 393, 375, 360, 320]) {
+        vp.style.width = w + 'px';
+        vp.getBoundingClientRect();
+        await sleep(120);
+        // The readout's own line is a max-width: 520px rule, and this window
+        // is 900 wide whatever the viewport element is narrowed to - so its
+        // width here says nothing about a phone (checked in the browser pane).
+        report(String(w).padEnd(5), P_IDS);
+      }
+      document.getElementById('opPage').click();
+    }
+    K.finishOpSetup(false);
     vp.style.width = was;
     finish();
   }

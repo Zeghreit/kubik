@@ -4,7 +4,8 @@
    (or added), a closed wound shell, one history step, nothing left on Cancel. */
 (async function () {
   const out = [];
-  const say = s => out.push(s);
+  // Each line also goes out as progress (/p), so a hang shows where it stopped.
+  const say = s => { out.push(s); try { const x = new XMLHttpRequest(); x.open('POST', '/p', true); x.send(s); } catch (e) {} };
   let K;
   const post = b => { try { const x = new XMLHttpRequest(); x.open('POST', '/result', true); x.send(b); } catch (e) {} };
   const wait = ms => new Promise(r => setTimeout(r, ms));
@@ -45,7 +46,10 @@
   }
   const ngonArea = (n, r) => 0.5 * n * r * r * Math.sin(2 * Math.PI / n);
   const near = (a, b, tol) => Math.abs(a - b) <= tol * Math.max(1, Math.abs(b));
-  const outline = () => K.scene.children.find(c => c.isLineLoop && c.renderOrder === 999);
+  // v3.14: one loop per cutter, drawn as segments.
+  const outline = () => K.scene.children.find(c => c.isLineSegments && c.renderOrder === 999 &&
+                                                   c.material.color.getHex() === 0xffd23d);
+  const outVerts = () => outline().geometry.attributes.position.count;
 
   function aim() {
     K.camera.position.set(1.6, 2.6, 2.2);
@@ -230,6 +234,242 @@
     R = result(); w = K.auditWinding(R);
     check('sphere boss: closed and wound, one shell', w.boundary === 0 && w.nonManifold === 0 && w.reversed === 0 && (w.shells == null || w.shells === 1), JSON.stringify(w));
     say('sphere boss: ' + JSON.stringify(stats(R)));
+
+    /* ---------------- v3.14: shapes and patterns ---------------- */
+    const vis = id => document.getElementById(id).style.display !== 'none';
+    const page = () => document.getElementById('opPage');
+    const tg = () => document.getElementById('opToggle');
+    const seg = () => document.getElementById('opSegValue').textContent;
+    const seg2 = () => document.getElementById('opSeg2Value').textContent;
+    const closed = w => w.boundary === 0 && w.nonManifold === 0 && w.reversed === 0 && w.conflictEdges === 0;
+
+    /* 14. Rounded square: the button cycles Round -> Square -> Rounded, the
+       corner counter reads 30%, the hole takes exactly the profile's area. */
+    clear(); aim();
+    A = mk('Box', 'cube', { h: 1, v: 1 });
+    await openOn(A); await tapAt(0, 0.5, 0); setSize(0.4);
+    check('shape: starts Round, unlit', tg().textContent === 'Round' && !tg().classList.contains('active'), tg().textContent);
+    tg().click();
+    check('shape: Square, lit, sides hidden', tg().textContent === 'Square' && tg().classList.contains('active') && !vis('opSegments2'));
+    tg().click();
+    check('shape: Rounded shows corner 30%', tg().textContent === 'Rounded' && vis('opSegments2') && seg2() === '╭30%', tg().textContent + ' ' + seg2());
+    check('rounded outline: one loop of 20 sides', outVerts() === 40, outVerts());
+    ok(); await wait(80);
+    R = result(); w = K.auditWinding(R);
+    const cr = 0.3 * 0.2;
+    const aPoly = 0.16 - 4 * cr * cr * (1 - 2 * Math.sin(Math.PI / 8)), aArc = 0.16 - (4 - Math.PI) * cr * cr;
+    check('rounded hole: closed and wound', closed(w), JSON.stringify(w));
+    check('rounded hole: volume = 1 - profile area', near(volume(R), 1 - aPoly, 1e-4),
+          volume(R).toFixed(6) + ' vs ' + (1 - aPoly).toFixed(6) + ' (true arcs ' + (1 - aArc).toFixed(6) + ')');
+    say('rounded hole: ' + JSON.stringify(stats(R)));
+    K.undo(); await wait(80);
+
+    /* 15. The pattern page: its own controls, turning it is not a step,
+       the bar's Undo walks a pattern change back. */
+    clear(); aim();
+    let Bar = mk('Bar', 'cube', { h: 1, v: 1, x: 4, y: 1, z: 1 });
+    await openOn(Bar); await tapAt(0, 0.5, 0); setSize(0.3);
+    const st0 = S().steps.length;
+    check('page button says Pattern, unlit', page().textContent === 'Pattern' && !page().classList.contains('active'), page().textContent);
+    page().click();
+    check('pattern page: Back, One/Line/Ring, X/Y/Z, Mirror', page().textContent === 'Back' && !!chip('opGrouping', 'Ring') &&
+          !!chip('opGrouping2', 'X') && tg().textContent === 'Mirror');
+    check('pattern page: One and Y lit; counters and Generate hidden', chip('opGrouping', 'One').classList.contains('active') &&
+          chip('opGrouping2', 'Y').classList.contains('active') && !vis('opSegments') && !vis('opSegments2') && !vis('opExtraWrap'));
+    check('turning the page is not a step', S().steps.length === st0, st0 + ' -> ' + S().steps.length);
+    chip('opGrouping', 'Ring').click();
+    K.opSetupStepBack();
+    check('bar undo takes the pattern back, page stays', S().p.pat === 'one' && page().textContent === 'Back', S().p.pat);
+    chip('opGrouping', 'Line').click();
+    check('line: count x6 and gap 50% shown', vis('opSegments') && seg() === '×6' && vis('opSegments2') && seg2() === '50%', seg() + ' ' + seg2());
+    chip('opGrouping2', 'X').click();
+    document.getElementById('opSegMinus').click(); document.getElementById('opSegMinus').click();
+    check('line: count 4', S().p.count === 4 && seg() === '×4', seg());
+
+    /* 16. A line of 4 holes along the bar's top: four times one hole. */
+    check('line: 4 outline loops', outVerts() === 4 * 12 * 2, outVerts());
+    check('line: no "k of N" in the readout', !/ of /.test(readout()), readout());
+    say('line preview: ' + readout());
+    page().click();
+    check('back: the button names the pattern, lit', page().textContent === 'Line ×4 X' && page().classList.contains('active'), page().textContent);
+    ok(); await wait(80);
+    R = result(); w = K.auditWinding(R);
+    check('line holes: closed and wound', closed(w), JSON.stringify(w));
+    check('line holes: volume 4 - 4 holes', near(volume(R), 4 - 4 * ngonArea(12, 0.15), 1e-4), volume(R).toFixed(6) + ' vs ' + (4 - 4 * ngonArea(12, 0.15)).toFixed(6));
+    say('line holes: ' + JSON.stringify(stats(R)));
+    K.undo(); await wait(80);
+
+    /* 17. Copies that run off the ends are counted; Mirror halves the count's ceiling. */
+    Bar = K.App.objects[0];
+    await openOn(Bar); await tapAt(0, 0.5, 0); setSize(0.3);
+    page().click(); chip('opGrouping', 'Line').click(); chip('opGrouping2', 'X').click();
+    S().p.gap = 50; K.refreshOpSetupMesh();      // 500%: copies at +-0.9, +-2.7, +-4.5 on a bar 4 long
+    check('line off the ends: "2 of 6"', /^2 of 6 · /.test(readout()), readout());
+    check('line off the ends: 2 loops', outVerts() === 2 * 12 * 2, outVerts());
+    S().p.gap = 5; S().p.count = 20;
+    tg().click();                                // Mirror on
+    check('mirror clamps the count to 12', S().p.mirror && S().p.count === 12 && seg() === '×12', S().p.count + ' ' + seg());
+    cancel(); await wait(50);
+
+    /* 18. A ring of dents on a 12-sided can is six times one dent (60 degrees
+       is a symmetry of the 12-gon, so every copy lands on an equal spot).
+       N-gon: Quads rebuilds the band on a faceted wall as if it were round,
+       which moves the volume (measured: one dent 0.00426 against 0.0018) -
+       this checks where the copies land, not that. */
+    clear(); aim();
+    const Can = mk('Can12', 'cylinder', { h: 12, v: 1 });
+    const V0 = volume(Can);
+    const onWall = [0.47 * Math.cos(-0.3), 0.1, 0.47 * Math.sin(-0.3)];
+    await openOn(Can); await tapAt(onWall[0], onWall[1], onWall[2]); setSize(0.2);
+    chip('opGrouping', 'Dent').click(); chip('opGrouping2', 'N-gon').click();
+    ok(); await wait(80);
+    const V1 = volume(result());
+    K.undo(); await wait(80);
+    await openOn(K.App.objects[0]); await tapAt(onWall[0], onWall[1], onWall[2]); setSize(0.2);
+    chip('opGrouping', 'Dent').click(); chip('opGrouping2', 'N-gon').click();
+    page().click(); chip('opGrouping', 'Ring').click();
+    check('ring of dents: 6 loops', outVerts() === 6 * 12 * 2, outVerts());
+    ok(); await wait(80);
+    R = result(); w = K.auditWinding(R);
+    check('ring of dents: closed and wound, one shell', closed(w) && (w.shells == null || w.shells === 1), JSON.stringify(w));
+    check('ring of dents: volume V0 - 6 dents', near(volume(R), V0 - 6 * (V0 - V1), 1e-4),
+          volume(R).toFixed(6) + ' vs ' + (V0 - 6 * (V0 - V1)).toFixed(6) + ' (one dent ' + (V0 - V1).toFixed(6) + ')');
+    K.undo(); await wait(80);
+
+    /* 19. INFO, a known limit: 6 through-holes round the SOLID can cross
+       inside it; the weld and heal after the CSG can open that. */
+    await openOn(K.App.objects[0]); await tapAt(onWall[0], onWall[1], onWall[2]); setSize(0.2);
+    page().click(); chip('opGrouping', 'Ring').click();
+    say('INFO ring of 6 holes through a solid can: ' + (outVerts() / 24) + ' cutters, ' + JSON.stringify(K.auditWinding(K.App.objects.find(o => o.id === S().objId))));
+    cancel(); await wait(50);
+
+    /* 19b. A ring of 4 holes round a box, tapped a little off the middle:
+       each far copy lies beside the near bore (0.3 of the size), so it is
+       dropped - 2 cutters, 4 openings, one closed shell. */
+    clear(); aim();
+    A = mk('Box', 'cube', { h: 1, v: 1 });
+    await openOn(A); await tapAt(0.5, 0.05, 0.03); setSize(0.2);
+    check('box ring: tapped the +X side', near(S().p.nx, 1, 1e-6), [S().p.nx, S().p.ny, S().p.nz].join(','));
+    page().click(); chip('opGrouping', 'Ring').click();
+    document.getElementById('opSegMinus').click(); document.getElementById('opSegMinus').click();
+    check('box ring of 4 holes: far copies dropped, 2 loops', S().p.count === 4 && outVerts() === 2 * 12 * 2, outVerts());
+    check('box ring of 4 holes: no "k of N"', !/ of /.test(readout()), readout());
+    ok(); await wait(80);
+    R = result(); w = K.auditWinding(R);
+    check('box ring of 4 holes: closed and wound, one shell', closed(w) && (w.shells == null || w.shells === 1), JSON.stringify(w));
+    say('box ring of 4 holes: ' + JSON.stringify(stats(R)) + ' vol ' + volume(R).toFixed(5));
+    K.undo(); await wait(80);
+
+    /* back to the can for 20 */
+    clear(); aim();
+    mk('Can12', 'cylinder', { h: 12, v: 1 });
+
+    /* 20. A ring tapped on its own axis: only the one, and the readout says why. */
+    await openOn(K.App.objects[0]); await tapAt(0, 0.5, 0);
+    page().click(); chip('opGrouping', 'Ring').click();
+    check('ring on the axis: "1 of 6 (on the axis)"', /^1 of 6 \(on the axis\) · /.test(readout()), readout());
+    cancel(); await wait(50);
+
+    /* 21. Mirror X on the bar: a pair of dents, the result symmetric across
+       the middle (N-gon, so no new points are placed by the topology). */
+    clear(); aim();
+    Bar = mk('Bar', 'cube', { h: 1, v: 1, x: 4, y: 1, z: 1 });
+    await openOn(Bar); await tapAt(1.0, 0.5, 0.2); setSize(0.3);
+    chip('opGrouping', 'Dent').click(); chip('opGrouping2', 'N-gon').click();
+    page().click(); tg().click(); chip('opGrouping2', 'X').click();
+    check('mirror: 2 loops', outVerts() === 2 * 12 * 2, outVerts());
+    page().click();
+    check('mirror: the button says Mirror X', page().textContent === 'Mirror X', page().textContent);
+    ok(); await wait(80);
+    R = result(); w = K.auditWinding(R);
+    check('mirror dents: closed and wound', closed(w), JSON.stringify(w));
+    check('mirror dents: volume 4 - 2 dents', near(volume(R), 4 - 2 * ngonArea(12, 0.15) * 0.09, 1e-4), volume(R).toFixed(6));
+    const pts = []; {
+      const ed = K.toEditable(R.mesh), P = ed.positions, v = new K.THREE.Vector3();
+      for (let i = 0; i < P.length; i += 3) pts.push(v.fromArray(P, i).applyMatrix4(R.mesh.matrixWorld).clone());
+    }
+    const unmatched = pts.filter(a => !pts.some(b => Math.abs(a.x + b.x) < 1e-4 && Math.abs(a.y - b.y) < 1e-4 && Math.abs(a.z - b.z) < 1e-4)).length;
+    check('mirror dents: every point has its mirror across x = 0', unmatched === 0, unmatched + ' of ' + pts.length + ' unmatched');
+
+    /* 22. A line round a FACETED wall stops where the axis points out of it
+       (found in a visual check: on a 24-sided can it rocked across that
+       facet and stacked copies). 9 along X from 34 degrees: 1 fits before
+       0 degrees, 4 the other way. The gap along the surface is the promised
+       0.225 (1.5 x 0.15), about 25.8 degrees of a 0.5 radius. */
+    clear(); aim();
+    const Can24 = mk('Can24', 'cylinder', { h: 24, v: 1 });
+    await openOn(Can24);
+    Object.assign(S().p, { px: 0.5 * Math.cos(0.6), py: 0.2, pz: 0.5 * Math.sin(0.6), nx: Math.cos(0.6), ny: 0, nz: Math.sin(0.6),
+                           ux: 0, uy: 1, uz: 0, size: 0.15, kind: 'dent', pat: 'line', axis: 'x', count: 9 });
+    K.refreshOpSetupMesh();
+    const angs = S().copiesMemo.val.list.map(f => Math.atan2(f.pz, f.px) * 180 / Math.PI).sort((a, b) => a - b);
+    const gaps = angs.slice(1).map((a, i) => a - angs[i]);
+    check('faceted line: "6 of 9"', /^6 of 9 · /.test(readout()), readout());
+    check('faceted line: evenly spaced along the wall', gaps.every(g => Math.abs(g - 25.8) < 1.5), angs.map(a => a.toFixed(1)).join(' '));
+
+    /* 23. The readout says what the preview's own audit says, before OK
+       (fable: Ring x6 of bosses on the default 12-sided can, Quads, came back
+       open and only OK said so). Asserted as agreement, so it stays true
+       whether the pipeline opens this case or one day closes it. */
+    cancel(); await wait(50);
+    /* The fixture has to BE open, or this passes on "no open edges, none
+       said" (it did, the first time, on a can that closed): 4 holes through
+       one face in N-gon - known limit 1, 24 open edges on the plain Boolean. */
+    clear(); aim();
+    Bar = mk('Bar', 'cube', { h: 1, v: 1, x: 4, y: 1, z: 1 });
+    await openOn(Bar);
+    Object.assign(S().p, { px: 0, py: 0.5, pz: 0, nx: 0, ny: 1, nz: 0, ux: 1, uy: 0, uz: 0, size: 0.3,
+                           topo: 'ngon', pat: 'line', axis: 'x', count: 4 });
+    K.refreshOpSetupMesh();
+    { const wp = K.auditWinding(K.App.objects.find(o => o.id === S().objId));
+      const said = /^(\d+) open edges? · /.exec(readout());
+      check('the fixture is open (known limit 1)', wp.boundary > 0, 'audit ' + wp.boundary);
+      check('readout says the preview\'s open edges, first', !!said && +said[1] === wp.boundary, 'audit ' + wp.boundary + ' / readout "' + readout() + '"');
+      chip('opGrouping2', 'Quads').click();
+      const wq = K.auditWinding(K.App.objects.find(o => o.id === S().objId));
+      check('...and drops it when the preview closes', wq.boundary === 0 && !/open edge/.test(readout()), 'audit ' + wq.boundary + ' / "' + readout() + '"'); }
+    cancel(); await wait(50);
+
+    /* 24. A pattern with no cutter on the object is refused, not committed
+       unchanged (fable: a narrow bar, an even line whose half-steps both run off). */
+    clear(); aim();
+    const Narrow = mk('Narrow', 'cube', { h: 1, v: 1, x: 0.2, y: 1, z: 1 });
+    await openOn(Narrow);
+    Object.assign(S().p, { px: 0, py: 0.5, pz: 0, nx: 0, ny: 1, nz: 0, ux: 1, uy: 0, uz: 0, size: 0.15 });
+    K.refreshOpSetupMesh();
+    /* From a layout Generate found, so a reset shows (review: the refused
+       build had wiped it - "var 0", and the bar's Undo swapped it for var 1). */
+    document.getElementById('opExtra').click();
+    const seed0 = S().p.seed, hash0 = S().topoInfo && S().topoInfo.hash, rd0 = readout();
+    check('narrow bar: Generate found another layout first', seed0 > 0, 'seed ' + seed0 + ' "' + rd0 + '"');
+    page().click(); chip('opGrouping', 'Line').click();   // 6 along X: the first half-step, 0.11, is past the 0.1 half-width
+    check('no cutter lands: refused, the settings go back', S().p.pat === 'one' && S().built.pat === 'one', S().p.pat);
+    check('...the layout and its readout stay', S().p.seed === seed0 && readout() === rd0, 'seed ' + S().p.seed + ' "' + readout() + '"');
+    K.opSetupStepBack();
+    check('...and Undo of the refused step keeps the layout', !!S().topoInfo && S().topoInfo.hash === hash0 && S().p.seed === seed0, 'seed ' + S().p.seed);
+    cancel(); await wait(50);
+
+    /* 25. Ring of 8 round a box from the middle of +X: the 45° copies aim at
+       the edges and are not stood there (fable: grooves, open edges). */
+    clear(); aim();
+    const Box8 = mk('Box', 'cube', { h: 1, v: 1 });
+    await openOn(Box8);
+    Object.assign(S().p, { px: 0.5, py: 0, pz: 0, nx: 1, ny: 0, nz: 0, ux: 0, uy: 1, uz: 0, size: 0.2, kind: 'dent', pat: 'ring', count: 8 });
+    K.refreshOpSetupMesh();
+    check('ring of 8 round a box: the 4 on the faces only', /^4 of 8 · /.test(readout()) && S().copiesMemo.val.list.length === 4, readout());
+    w = K.auditWinding(K.App.objects.find(o => o.id === S().objId));
+    check('ring of 8 round a box: closed', closed(w), JSON.stringify(w));
+    cancel(); await wait(50);
+
+    /* 26. Near a sphere's pole a ring is one cutter, and the readout says so. */
+    clear(); aim();
+    const Ball = mk('Ball', 'sphere', { h: 16, v: 8 });
+    await openOn(Ball);
+    Object.assign(S().p, { px: 0.02, py: Math.sqrt(0.25 - 0.0004), pz: 0, nx: 0.04, ny: Math.sqrt(1 - 0.0016), nz: 0,
+                           ux: 1, uy: 0, uz: 0, size: 0.2, kind: 'dent', pat: 'ring', count: 6 });
+    K.refreshOpSetupMesh();
+    check('ring at the pole: "1 of 6 (overlap)"', /^1 of 6 \(overlap\) · /.test(readout()), readout());
+    cancel(); await wait(50);
   } catch (e) {
     say('ERROR=' + (e && e.stack ? e.stack.split('\n').slice(0, 6).join(' / ') : e));
     fails++;

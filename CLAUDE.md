@@ -105,4 +105,6 @@ services. Never touch apps Zeghreit opened himself.
 - Сообщение коммита: заголовок, ПУСТАЯ строка, тело — без пустой строки тело склеивается с заголовком.
 - «Shell cwd was reset» при репозитории вне рабочей папки сессии — не ошибка; лучше открывать сессию прямо в папке репозитория.
 - Сеть песочницы Bash: разрешённые домены — в `.claude/settings.json` → `sandbox.network.allowedDomains` (сейчас fonts.googleapis.com, fonts.gstatic.com).
+- Пробы на ПК: `py _clean_probe.py <probe>.js out.txt` (headless Chrome, CDN живой) — облачные пробы тоже идут здесь. `PROBE_TIMEOUT=<с>` (по умолчанию 120), `PROBE_PORT=<n>` — свой порт и страница, чтобы два прогона (или субагент) не столкнулись. Не запускать прогон через `(… &)` — умирает вместе с оболочкой; только `run_in_background`.
+- Окно headless-проб по умолчанию 900 px: правила `@media (max-width: 520px)` там не срабатывают, даже если проба сужает элемент вьюпорта. Для них `PROBE_WINDOW=500,800` (innerWidth 512) — или встроенный браузер (`resize_window` 375 / 320).
 - curl к Google даёт HTTP 000 / `CRYPT_E_REVOCATION_OFFLINE` — это schannel не может проверить отзыв сертификата; лечится `ssl-no-revoke` в `~/.curlrc` (уже добавлено) или флагом `--ssl-no-revoke`.

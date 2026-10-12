@@ -91,6 +91,48 @@
     const want = S().sliderLive, hist = K.App.historyIndex;
     document.getElementById('opOk').click(); await wait(100);
     check('OK mid-drag keeps the live size', !S() && K.App.historyIndex === hist + 1, 'live=' + want);
+
+    /* 5. v3.14: the most a pattern makes - 24 cutters - and the slider with
+       24 copies to place on every move. Desktop CPU; a phone is a few times slower. */
+    const time = (f) => { const t = performance.now(); f(); return performance.now() - t; };
+    const shell = () => { const w = K.auditWinding(preview()); return 'shells ' + w.shells + ' boundary ' + w.boundary + ' nm ' + w.nonManifold; };
+    clear();
+    const bar = K.createObjectFromEditable('Bar', new K.THREE.Vector3(0, 0, 0),
+      K.buildPrimitiveEditable('cube', { h: 1, v: 1, x: 8, y: 1, z: 1 }), K.makeMaterialSet(6, 0x9aa3b2), {});
+    K.pushHistory();
+    check('bar opens', await openOn(bar));
+    Object.assign(S().p, { px: 0, py: 0.5, pz: 0, nx: 0, ny: 1, nz: 0, ux: 1, uy: 0, uz: 0, size: 0.2, pat: 'line', axis: 'x', count: 24, gap: 5 });
+    for (const topo of ['ngon', 'quads']) {
+      S().p.topo = topo;
+      const d = time(() => K.refreshOpSetupMesh());
+      check('line x24 holes, ' + topo + ': builds', d < 8000, d.toFixed(0) + 'ms, ' + S().copiesMemo.val.list.length + ' cutters, ' + shell());
+    }
+    clear();
+    const can = mk('cylinder', { h: 48, v: 1 });
+    check('can opens', await openOn(can));
+    Object.assign(S().p, { px: 0.5, py: 0.25, pz: 0, nx: 1, ny: 0, nz: 0, ux: 0, uy: 1, uz: 0, size: 0.1, kind: 'dent',
+                           pat: 'ring', axis: 'y', count: 12, mirror: true });
+    for (const topo of ['ngon', 'quads']) {
+      S().p.topo = topo;
+      const d = time(() => K.refreshOpSetupMesh());
+      check('ring x12 + mirror (24 dents), ' + topo + ': builds', d < 8000, d.toFixed(0) + 'ms, ' + S().copiesMemo.val.list.length + ' cutters, ' + shell());
+    }
+    clear();
+    const ball = mk('sphere', { h: 48, v: 32 });
+    check('sphere opens', await openOn(ball));
+    Object.assign(S().p, { size: 0.15, pat: 'ring', axis: 'y', count: 24, kind: 'dent' });
+    K.refreshOpSetupMesh();
+    const sl2 = document.getElementById('opSlider'), lo2 = +sl2.min, hi2 = +sl2.max;
+    sl2.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    let busy2 = 0;
+    for (let i = 0; i < 30; i++) {
+      sl2.value = lo2 + (hi2 - lo2) * (0.05 + 0.1 * i / 30);
+      const a2 = performance.now(); sl2.dispatchEvent(new Event('input', { bubbles: true })); busy2 += performance.now() - a2;
+      await wait(16);
+    }
+    check('drag with 24 copies on a 48x32 sphere: moves stay cheap', busy2 < 300, busy2.toFixed(1) + 'ms for 30');
+    sl2.dispatchEvent(new Event('change', { bubbles: true }));
+    say('INFO lift: ' + S().copiesMemo.val.list.length + ' dents, ' + shell());
   } catch (e) { fails++; say('ERROR ' + e.message + ' ' + (e.stack || '').split('\n')[1]); }
   say(fails ? fails + ' FAILED' : 'ALL PASS');
   post(out.join('\n'));
