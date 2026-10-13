@@ -19094,7 +19094,7 @@ Plan from the 12.10 handoff (Zeghreit: "do as you see fit"). Supersedes two thin
 - **Fable reviewed** the placement (49 probe runs): 3 fixed above (zero cutters, edge landings, the dead band), 1 made visible (overlap). Fable's own one-off probes - NOT in the committed suite, whose pattern fixtures are all unscaled primitives at the origin - found placement exact on scaled, rotated and moved objects, a lying can, a torus's inner wall, a sphere line pole to pole, a thin plate. **Opus reviewed** the bar pages, the toggle, failure paths, the CSS and the tests: 1 bug fixed (the refused build above), the page button added to the chooser bars' hide lists, the Lathe/Tube/Boolean layout change written down.
 - **Known limits - the boolean pipeline's, not the pattern's, but a pattern reaches them in one tap.** The readout now names the open edges before OK, and OK names them as always.
   1. ~~4+ holes through one flat face come back open~~ - fixed in v3.14b (twin vertices, see below).
-  2. 3+ through-bores crossing inside a solid: mostly fixed in v3.14b. Residue: `_crosschk` -9/6 and -9/8 (bores meeting at a triple crossing) still open, 4 and 12 edges (were 388 and 1068).
+  2. 3+ through-bores crossing inside a solid: mostly fixed in v3.14b. Residue closed in v3.16b.
   3. ~~Quads on a faceted wall moves volume~~ - fixed in v3.14a, see below. (The "3+ cutters open the shell" half did not reproduce on the cloud bench: default can, boss Ring x6, Quads closed.)
   4. Copies whose walls nearly touch (centres 0.9-1.1 x size apart) come back open now and then - the band is ragged (fable: ring of 10-12 on a cube top; a mirrored pair exactly 1.0 apart, 1 non-manifold). Not deduped: overlapping slots are wanted.
 
@@ -19144,4 +19144,13 @@ Asked by AF (its `af_to_obj`: FBX -> OBJ for Mixamo's auto-rigger, moving off Bl
 ## Punch on a multi-material object (v3.16a)
 
 - `punchCutter` gave the cutter the tapped face's OWN material object; on a target with several materials three-bvh-csg 0.0.18 threw "Cannot destructure property 'count' of 'groupIndices[index]'" (consolidateGroups) and Punch refused with "That boolean failed". Now the cutter wears a COPY - one per setup and source material (`s.cutMats`), shared by every cutter of a pattern so overlapping cutters' faces still merge. Probe `_punchmmchk.js` (six-material cube: was refused, now one closed result); `_punchchk` 88/88, `_punchperf` ALL PASS (sweep still open in 56 of 150 - unchanged).
+
+## The sliver collapse may not pinch, and a closed sliver stays (v3.16b)
+
+- Fable, instrumented per stage: three-bvh-csg's own (grid-welded) output is CLOSED for `_crosschk` -9/6, -9/8 and the dense-sphere Punch at 0.636; `editableFromCSGResult` opened them. Two causes:
+  1. the v3.14b sliver COLLAPSE joined two vertices of different sheets (bore walls crossing in a thin wedge, 1.1e-3..1.6e-3 apart, neither an input vertex) - 4 faces on their shared neighbours' edges. Now a join is refused when it breaks the edge-collapse LINK CONDITION: for any third vertex x, cnt(a,x) + cnt(b,x) - 2 * apexCount(x) > 2 (per-pass vertex -> triangle incidence, merged on unite).
+  2. the sliver DROP removed thin triangles that were real surface (every edge used exactly twice) - opening 33..83 edges the heal then split wrongly (a third face on closed edges, cascading: nm14 / 21 shells). Now a sliver is dropped only when one of its edges is NOT used exactly twice; a locally closed sliver is kept (importTriNormal still has a normal down to height 1e-10).
+- Measured: `_crosschk` all six cases closed, one shell (-9/6 was b4 nm1 sh4, -9/8 b12 nm3 sh5). `_punchperf` 0.636: one closed shell (was 21 shells, nm14); sweep open in 24 of 150 (was 56) - fable: 20 of those are the probe reading a STALE preview (sizes >= 1.08 are refused, p.size stays 1.074), and the 4 real ones (1.008..1.074, a razor ring) are open in the evaluator's raw soup - but the same sizes tapped on top of the sphere come back closed. `_holeschk` all b0, `_boolchk` 712/712, `_curvecutchk` 43/43, `_punchmmchk`, `_exportchk` green.
+- `_punchchk` 23 had to give up its open fixture: every open case we had now closes. The fixture is the ring of 10 holes through the can; the check is AGREEMENT (readout says open edges iff the audit finds them), and the audit count is printed as INFO. The "N open edges" display itself is no longer exercised by a fixture.
+- Patch script kept in the scratchpad only (`_patch_sliver_keep.py`); the code is the record.
 

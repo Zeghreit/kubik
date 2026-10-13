@@ -1,4 +1,4 @@
-# Handoff — NEXT (Zeghreit's order 12.10): 5 done (v3.14c), 2 done (v3.16 Cut with curve: Knife / Split) -> 3 boolean residue -> 6 heavy-mesh plan. Then: Punch shapes from a curve (inside Punch). Last shipped: v3.16a Punch multi-material fix; v3.16 Cut with curve; before it v3.15 embed `export obj` (for AF) + .obj/.stl buttons export objects where they stand.
+# Handoff — NEXT (Zeghreit's order 12.10): 5 done (v3.14c), 2 done (v3.16 Cut with curve: Knife / Split) -> 3 boolean residue (DONE v3.16b) -> 6 heavy-mesh plan (WRITTEN; next: step A). Then: Punch shapes from a curve (inside Punch). Last shipped: v3.16a Punch multi-material fix; v3.16 Cut with curve; before it v3.15 embed `export obj` (for AF) + .obj/.stl buttons export objects where they stand.
 
 Live: https://zeghreit.github.io/kubik/ · repo `C:\Users\a.bodrov\Projects\kubik` · the project now runs in Claude Code on the PC (rules: `CLAUDE.md`).
 Read `CURRENT_STATE.md` first — its last section (v3.14) is the truth for Punch now. Client reference: `EMBED.md` in the repo root.
@@ -15,7 +15,7 @@ Arrays (line / ring) + mirror + rounded-square cutter, a second "Pattern" page o
 
 ## (a) v3.14a candidates — measured, with repro probes
 1. ~~4+ holes through one face open~~ — FIXED v3.14b: a CSG "twin" corner's sliver is collapsed instead of dropped (`CURRENT_STATE.md` → "A sliver's short edge is collapsed"). Also closed the box ring of bosses.
-2. 3+ through-bores crossing — mostly FIXED v3.14b; residue `_crosschk` -9/6, -9/8 (4 and 12 open edges, triple crossing). Dense UV sphere sweep now 56/150 open (was 94).
+2. ~~3+ through-bores crossing~~ — FIXED v3.16b (collapse link condition + closed slivers kept). Dense sphere sweep 24/150 open, 20 of them a stale-preview artifact of the probe (`_punchperf` should skip refused sizes).
 3. ~~Quads on a faceted wall moves volume~~ — FIXED v3.14a (per-piece volume guard, `CURRENT_STATE.md` → "Quads may not move volume"). The "Ring ×6 opens the shell" half did not reproduce on the cloud bench. New sighting: a ring of bosses/dents tapped near the middle of a box's top face is open in EVERY topology (N-gon b18) — belongs to 1/4.
 4. Copies whose walls nearly touch (0.9–1.1 × size apart) open now and then; ragged band (numbers in CURRENT_STATE).
 

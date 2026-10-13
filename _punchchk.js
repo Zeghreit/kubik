@@ -432,18 +432,19 @@
        said" (it did, the first time, on a can that closed): 4 holes through
        one face in N-gon was it until v3.14a closed it; now a ring of 8 holes
        through the solid can tapped 9 degrees off a facet's middle, whose bores
-       cross inside it (the residue of known limit 2, _crosschk -9/8). */
+       cross inside it - closed by v3.16b; now 10 holes, whose evaluator output
+       itself has edges used 4 times (b2 nm2). */
     clear(); aim();
     Bar = mk('Can12', 'cylinder', { h: 12, v: 1 });
     await openOn(Bar);
     { const fa = -15 * Math.PI / 180, th = -9 * Math.PI / 180, r = 0.5 * Math.cos(15 * Math.PI / 180) / Math.cos(th - fa);
       Object.assign(S().p, { px: r * Math.cos(th), py: 0.1, pz: r * Math.sin(th), nx: Math.cos(fa), ny: 0, nz: Math.sin(fa), ux: 0, uy: 1, uz: 0,
-                             size: 0.2, topo: 'ngon', pat: 'ring', axis: 'y', count: 8 }); }
+                             size: 0.2, topo: 'ngon', pat: 'ring', axis: 'y', count: 10 }); }
     K.refreshOpSetupMesh();
     { const wp = K.auditWinding(K.App.objects.find(o => o.id === S().objId));
       const said = /^(\d+) open edges?[^·]* · /.exec(readout());
-      check('the fixture is open (known limit 2)', wp.boundary > 0, 'audit ' + wp.boundary);
-      check('readout says the preview\'s open edges, first', !!said && +said[1] === wp.boundary, 'audit ' + wp.boundary + ' / readout "' + readout() + '"');
+      say('INFO fixture audit ' + wp.boundary + ' open edges (v3.16b closed every open case we had; the readout is checked as agreement either way)');
+      check('readout agrees with the preview\'s audit', wp.boundary === 0 ? !said : !!said && +said[1] === wp.boundary, 'audit ' + wp.boundary + ' / readout "' + readout() + '"');
       chip('opGrouping2', 'Quads').click();
       const wq = K.auditWinding(K.App.objects.find(o => o.id === S().objId));
       const saidQ = /^(\d+) open edges?[^·]* · /.exec(readout());

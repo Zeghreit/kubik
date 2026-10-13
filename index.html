@@ -3240,7 +3240,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.16a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.16b</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -33852,26 +33852,88 @@ function editableFromCSGResult(res, topoIn, topoOpt) {
     const unite = (i, j) => { let a = find(i), b = find(j); if (a === b) return; if (isInput(a) && !isInput(b)) { const t = a; a = b; b = t; } par[a] = b; };
     const d2 = (i, j) => { const x = positions[i * 3] - positions[j * 3], y = positions[i * 3 + 1] - positions[j * 3 + 1], z = positions[i * 3 + 2] - positions[j * 3 + 2]; return x * x + y * y + z * z; };
     const lim = CSG_COLLAPSE_TOL * CSG_COLLAPSE_TOL;
+    /* A COLLAPSE MAY NOT PINCH TWO SHEETS TOGETHER (measured: three bores
+       crossing at one point). Twins are two copies of ONE corner, so every
+       edge that both of them have to a third vertex x belongs to a triangle
+       on the short edge itself. Where two sheets pass within the tolerance of
+       each other, two DIFFERENT vertices also sit that close, each with its
+       own closed fan - and uniting them lays both fans on the same edges:
+       four triangles on one edge (a ring of 6 bores: 9 such collapses, 8
+       edges used four times, 4 open edges and a non-manifold edge at the
+       end). The link condition refuses exactly that: an edge x-a, x-b that
+       would be used more than twice after the join. The sliver then stays a
+       sliver - kept below when its edges are all matched, else dropped and
+       healed as a T. */
+    const inc = new Map();
+    const incOf = v => inc.get(v) || [];
+    const pinches = (a, b) => {
+      const list = incOf(a).concat(incOf(b)), seen = new Set(), cA = new Map(), cB = new Map(), apex = new Map();
+      for (let i = 0; i < list.length; i++) {
+        const k = list[i];
+        if (seen.has(k)) continue;
+        seen.add(k);
+        const t = tris[k], x = find(t[0]), y = find(t[1]), z = find(t[2]);
+        if (x === y || y === z || x === z) continue;
+        const w = [x, y, z], hasA = w.indexOf(a) >= 0, hasB = w.indexOf(b) >= 0;
+        if (hasA && hasB) { const o = w[0] !== a && w[0] !== b ? w[0] : w[1] !== a && w[1] !== b ? w[1] : w[2]; apex.set(o, (apex.get(o) || 0) + 1); continue; }
+        if (!hasA && !hasB) continue;
+        const m = hasA ? cA : cB, self = hasA ? a : b;
+        for (let r = 0; r < 3; r++) if (w[r] !== self) m.set(w[r], (m.get(w[r]) || 0) + 1);
+      }
+      let bad = false;
+      cA.forEach((n, o) => { const nb = cB.get(o); if (nb && n + nb - 2 * (apex.get(o) || 0) > 2) bad = true; });
+      return bad;
+    };
+    const join = (i, j) => {
+      const a = find(i), b = find(j);
+      if (a === b || pinches(a, b)) return false;
+      unite(a, b);
+      const r = find(a), o = r === a ? b : a;
+      inc.set(r, incOf(r).concat(incOf(o))); inc.delete(o);
+      return true;
+    };
     let collapsed = 0;
     for (let pass = 0; pass < 16; pass++) {
       let changed = 0;
+      inc.clear();
+      for (let k = 0; k < tris.length; k++) {
+        const t = tris[k];
+        for (let i = 0; i < 3; i++) { const v = find(t[i]); let l = inc.get(v); if (!l) inc.set(v, l = []); if (l[l.length - 1] !== k) l.push(k); }
+      }
       for (let k = 0; k < tris.length; k++) {
         const t = tris[k], a = find(t[0]), b = find(t[1]), c = find(t[2]);
         if (a === b || b === c || a === c) continue;
         if (!csgTriIsSliver(positions, a, b, c)) continue;
         const ab = d2(a, b), bc = d2(b, c), ca = d2(c, a), m = Math.min(ab, bc, ca);
         if (m > lim) continue;
-        if (m === ab) unite(a, b); else if (m === bc) unite(b, c); else unite(c, a);
-        changed++;
+        if (m === ab ? join(a, b) : m === bc ? join(b, c) : join(c, a)) changed++;
       }
       collapsed += changed;
       if (!changed) break;
+    }
+    /* A SLIVER THAT IS CLOSED ON ALL THREE EDGES STAYS (measured). What is
+       left after the collapse is either a real T - the apex of a neighbour
+       lying on its long edge, so one of its edges is matched by nothing on
+       the far side once it goes - or a thin triangle of the surface itself:
+       the wall of a thin wedge between two bores, or the dense sphere's seam
+       where several vertices stand nearly in a row. Dropping the second kind
+       opened edges no T could close (the heal found no far side asking).
+       Kept when each of its edges is used exactly twice; dropped otherwise,
+       and the heal closes the T as before. */
+    const useC = new Map(), ekN = (a, b) => (a < b ? a * nV0 + b : b * nV0 + a);
+    for (let k = 0; k < tris.length; k++) {
+      const t = tris[k], a = find(t[0]), b = find(t[1]), c = find(t[2]);
+      if (a === b || b === c || a === c) continue;
+      useC.set(ekN(a, b), (useC.get(ekN(a, b)) || 0) + 1);
+      useC.set(ekN(b, c), (useC.get(ekN(b, c)) || 0) + 1);
+      useC.set(ekN(c, a), (useC.get(ekN(c, a)) || 0) + 1);
     }
     const T2 = [], M2 = [], newIdx = new Int32Array(nV0).fill(-1), P2 = [];
     for (let k = 0; k < tris.length; k++) {
       const t = tris[k], a = find(t[0]), b = find(t[1]), c = find(t[2]);
       if (a === b || b === c || a === c) continue;
-      if (csgTriIsSliver(positions, a, b, c)) continue;
+      if (csgTriIsSliver(positions, a, b, c) &&
+          !(useC.get(ekN(a, b)) === 2 && useC.get(ekN(b, c)) === 2 && useC.get(ekN(c, a)) === 2)) continue;
       const u = [a, b, c];
       for (let i = 0; i < 3; i++) { const v = u[i]; if (newIdx[v] < 0) { newIdx[v] = P2.length / 3; P2.push(positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]); } u[i] = newIdx[v]; }
       T2.push(u); M2.push(matOfTri[k]);
