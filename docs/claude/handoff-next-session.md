@@ -32,7 +32,7 @@ Idea from chat: the cutter stays a separate object linked to its target; grab it
 7. ~~Plain-editor FBX bug~~ — FIXED v3.14c.
 7a. Export button .obj of an FBX import is upside down against the FBX pictures (v3.15 loose end; embed is right - needs the source format kept per object).
 8. ~~Export button one primitive per face~~ — FIXED v3.14c (compacted + `_KUBIKFACE` face numbers keep the round trip).
-9. Heavy-mesh plan toward ~1M faces.
+9. ~~Heavy-mesh plan toward ~1M faces~~ — WRITTEN 13.10 with measurements (`claude/heavy-mesh-plan.md`, top section; bench `_heavyscale.js`). Next step from it: A (incremental applyShading on drag), then B (history without full snapshots).
 10. Reviews not done: fable on `compactForExport` + `fitDistance`; opus on the v3.11 layer.
 11. Small: Extrude via `op` needs `amount`; Clear creases/seams with nothing to clear answer `refused`; UV ring not in `op`.
 12. Old opens: `_gpuchk` NO REPORT; `_projchk` 4494kb fixture; glTF clearcoat/sheen; FBX unit scale.
