@@ -1,4 +1,4 @@
-# Embedding Kubik — protocol reference (v3.15)
+# Embedding Kubik — protocol reference (v3.17)
 
 Kubik can live in an `<iframe>` on another page (a "host") and be driven over
 `postMessage`. Without `?embed=1` none of this exists — not even a `message`
@@ -64,6 +64,8 @@ answers `error.code = 'unknown'`.
 | `setView` | `{ view: 'node' \| 'full' }` | `{ view }` — no reload |
 | `ops` | - | `{ ops: [...], gesture: [...] }` - see op |
 | `op` | `{ name, select?, params? }` | `{ op, selection, said, stats }` |
+| `transform` | `{ object, position?, rotation?, scale?, matrix?, space?, mode? }` | `{ objects: [transform], stats }` - see below (v3.17) |
+| `getTransform` | `{ objects?: 'all' \| [id or name] }` | `{ objects: [transform] }` |
 | `undo` / `redo` | - | `{ stats }` |
 | `selection` | - | `{ mode, object, objects, ids, count, rev }` |
 | `camera` | `{ preset: 'fit' \| 'front' \| 'back' \| 'left' \| 'right' \| 'top' \| 'three-quarter' }` | `null` |
@@ -158,6 +160,32 @@ what the viewport shows. Grid and helpers are hidden in the picture.
 - With a roughness/metallic map the factor is set to 1, so the map rules.
 - Pictures are resized to 1024 on the long side, as every texture in Kubik.
 - An object without UVs is refused (`nouv`).
+
+### transform (v3.17)
+Numeric move / turn / scale of whole objects - what Centre does, with numbers.
+One history step, so `undo`, `redo` and `rev` behave as for an `op`; `export`
+and `measure` see the new place (both are world space).
+```js
+{ cmd: 'transform', args: { object: 3,               // id or name, or a list
+    position: [0, 1, 0],                              // metres, Y up
+    rotation: [0, 90, 0],                             // euler degrees, order XYZ - or a quaternion [x,y,z,w]
+    scale: 2,                                         // a number, or [x, y, z]
+    space: 'world', mode: 'set' } }                   // defaults
+// matrix: 16 numbers, column-major (three's Matrix4.toArray) - instead of the three above
+// -> { objects: [{ id, name, position, rotation, quaternion, scale, matrix }], stats }
+```
+- `mode: 'set'` writes the value. `'add'` offsets: position `+`, rotation
+  composed, scale `x`, a matrix is multiplied on.
+- `space` only matters for `add`: `world` measures along the scene's axes
+  (a turn is about the object's own origin, which is not its bbox centre),
+  `local` along the object's own.
+- Everything is validated first; a bad argument (`args`: missing `object`, zero
+  scale, a matrix not of 16 numbers) touches nothing. A call that changes
+  nothing answers `refused`. Answers `busy` while a person has an operation open.
+- `getTransform` reads the same record without a history step.
+- **Join keeps no UV** (Join builds one mesh and drops the UV channel): for a
+  textured assembly keep the parts as separate objects and place them with
+  `transform`; do not join them.
 
 ### op - the command layer (v3.11)
 

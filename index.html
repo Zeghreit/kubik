@@ -3240,7 +3240,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.16b</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.17</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -56138,7 +56138,7 @@ if (EMBED) (function embedMain() {
   const CAPS = ['load', 'load.url', 'load.buffer', 'load.glb', 'load.gltf', 'load.fbx', 'load.obj',
     'export.glb', 'export.obj', 'stats', 'measure', 'snapshot.png', 'setMaps', 'setView', 'camera',
     'event.ready', 'event.dirty', 'event.selection',
-    'op', 'ops', 'undo', 'redo', 'selection', 'rev'];
+    'op', 'ops', 'undo', 'redo', 'selection', 'rev', 'transform', 'getTransform'];
   const hostOrigin = (() => {
     const h = EMBED_Q.get('host');
     if (!h) return null;
@@ -56875,6 +56875,89 @@ if (EMBED) (function embedMain() {
   }
   /* ---- end of the command layer ---- */
 
+  /* TRANSFORM (v3.17): the numeric move/turn/scale the ring never had. Same
+     write as Centre - the mesh's own position/quaternion/scale, one
+     pushHistory - so undo, rev and export (world space) follow for free.
+     Meshes sit at the scene root, so world and local differ only in which
+     axes an `add` is measured along. */
+  const D2R = Math.PI / 180;
+  function vec3(v, what) {
+    if (!Array.isArray(v) || v.length !== 3 || !v.every(Number.isFinite)) fail('args', what + ' must be [x, y, z]');
+    return v;
+  }
+  function tfOut(o) {
+    const m = o.mesh; m.updateMatrix();
+    const e = new THREE.Euler().setFromQuaternion(m.quaternion, 'XYZ');
+    return { id: o.id, name: o.name, position: m.position.toArray(),
+      rotation: [e.x / D2R, e.y / D2R, e.z / D2R], quaternion: m.quaternion.toArray(),
+      scale: m.scale.toArray(), matrix: m.matrix.toArray() };
+  }
+  function getTransform(a) {
+    return { objects: pickObjects(a && a.objects !== undefined ? a.objects : (a && a.object)).map(tfOut) };
+  }
+  function transform(a) {
+    needIdle();
+    const mode = a.mode || 'set', space = a.space || 'world';
+    if (mode !== 'set' && mode !== 'add') fail('args', "mode is 'set' or 'add'");
+    if (space !== 'world' && space !== 'local') fail('args', "space is 'world' or 'local'");
+    if (a.object === undefined || a.object === null) fail('args', 'object is required');
+    if (a.matrix === undefined && a.position === undefined && a.rotation === undefined && a.scale === undefined) {
+      fail('args', 'give position, rotation, scale or matrix');
+    }
+    if (a.matrix !== undefined && (a.position !== undefined || a.rotation !== undefined || a.scale !== undefined)) {
+      fail('args', 'matrix excludes position / rotation / scale');
+    }
+    const objs = pickObjects(a.object);
+    // validate everything before touching anything
+    let pos, q, scl, mat;
+    if (a.position !== undefined) pos = new THREE.Vector3().fromArray(vec3(a.position, 'position'));
+    if (a.rotation !== undefined) {
+      const r = a.rotation;
+      if (Array.isArray(r) && r.length === 4 && r.every(Number.isFinite)) {
+        q = new THREE.Quaternion().fromArray(r);
+        if (q.lengthSq() < 1e-12) fail('args', 'quaternion has zero length');
+        q.normalize();
+      } else {
+        const v = vec3(r, 'rotation');
+        q = new THREE.Quaternion().setFromEuler(new THREE.Euler(v[0] * D2R, v[1] * D2R, v[2] * D2R, 'XYZ'));
+      }
+    }
+    if (a.scale !== undefined) {
+      scl = Number.isFinite(a.scale) ? new THREE.Vector3(a.scale, a.scale, a.scale)
+        : new THREE.Vector3().fromArray(vec3(a.scale, 'scale'));
+      if (!(Math.abs(scl.x) > 1e-9 && Math.abs(scl.y) > 1e-9 && Math.abs(scl.z) > 1e-9)) fail('args', 'scale must not be zero');
+    }
+    if (a.matrix !== undefined) {
+      if (!Array.isArray(a.matrix) || a.matrix.length !== 16 || !a.matrix.every(Number.isFinite)) fail('args', 'matrix must be 16 numbers (column-major)');
+      mat = new THREE.Matrix4().fromArray(a.matrix);
+    }
+    const before = objs.map(o => o.mesh.matrix.toArray().join());
+    objs.forEach(o => {
+      const m = o.mesh;
+      if (mat) {   // a matrix is always the new local transform, in either mode 'set' (add: applied on top)
+        const full = mode === 'add'
+          ? (space === 'world' ? mat.clone().multiply(m.matrix) : m.matrix.clone().multiply(mat)) : mat;
+        full.decompose(m.position, m.quaternion, m.scale);
+      } else {
+        if (pos) {
+          if (mode === 'set') m.position.copy(pos);
+          else m.position.add(space === 'local' ? pos.clone().applyQuaternion(m.quaternion) : pos);
+        }
+        if (q) {
+          if (mode === 'set') m.quaternion.copy(q);
+          else if (space === 'local') m.quaternion.multiply(q); else m.quaternion.premultiply(q);
+        }
+        if (scl) { if (mode === 'set') m.scale.copy(scl); else m.scale.multiply(scl); }
+      }
+      m.updateMatrix(); m.updateMatrixWorld(true);
+    });
+    if (objs.every((o, i) => o.mesh.matrix.toArray().join() === before[i])) fail('refused', 'Transform changed nothing');
+    refreshUI();
+    refreshGizmoAttachment();
+    pushHistory();
+    return { objects: objs.map(tfOut), stats: stats({}) };
+  }
+
   const CMDS = {
     hello: () => ({ version: VERSION, caps: CAPS, view: view }),
     load: load,
@@ -56892,6 +56975,8 @@ if (EMBED) (function embedMain() {
     camera: cameraCmd,
     ops: opsCmd,
     op: opCmd,
+    transform: transform,
+    getTransform: getTransform,
     undo: () => histCmd(undo, 'undo'),
     redo: () => histCmd(redo, 'redo'),
     selection: () => Object.assign(selNow(), { rev: curRev() })
