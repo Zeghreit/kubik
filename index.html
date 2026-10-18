@@ -41425,7 +41425,9 @@ function importObjText(text, mtlText, label) {
   }
   const built = editableFromObjText(text, mtlText);
   if (!built.length) { toast('No faces in that .obj'); return; }
+  const n0 = App.objects.length;
   landImport(built, label, built.skipped);
+  if (App.objects.length > n0) App.uvBottom = true;   // .obj counts V from the bottom
 }
 
 /* ---------------- STL (a2.71) ----------------
@@ -41890,7 +41892,9 @@ async function importFbxBuffer(buf, label, opt) {
      the release below nulls every texture's image first, so not one FBX map
      ever reached a material. v3.10 fixed it for embed `load` by url; v3.14c
      for the file picker too (its maps are the ones embedded in the file). */
+  const n0 = App.objects.length;
   landImport(built, label);
+  if (App.objects.length > n0) App.uvBottom = true;   // FBX counts V from the bottom
   root.traverse(n => {
     if (!n.isMesh) return;
     if (n.geometry) n.geometry.dispose();
@@ -41964,7 +41968,9 @@ async function importGltfBuffer(buf, label, opt) {
     if (!ed || !ed.groups.length) continue;
     built.push({ name: part.name, ed });
   }
+  const n0 = App.objects.length;
   landImport(built, label);
+  if (App.objects.length > n0) App.uvBottom = false;  // glTF counts V from the top
 }
 
 /* EVERY READER ENDS HERE (a2.70). glTF and OBJ disagree about almost
@@ -42386,8 +42392,10 @@ document.getElementById('btnExportGlb').addEventListener('click', exportGlbActio
      mesh came from and flips them all; embed keeps the UVs of a mesh loaded
      from FBX or OBJ, which count V from the bottom already, as .obj does
      (their pictures are the ones turned over on the way in -
-     encodeImportTexture). The button's .obj of an FBX import is therefore
-     upside down against the FBX's own pictures - a loose end. */
+     encodeImportTexture). The button now follows App.uvBottom, set by the
+     last FBX/OBJ (true) or glTF (false) import: one flag for the whole
+     document, so a scene mixing both formats is exported by its last import
+     (embed keeps its exact per-object map). */
 function objText(group, flipV) {
   group.updateMatrixWorld(true);
   group.children.forEach((n, i) => {
@@ -42402,7 +42410,7 @@ function objText(group, flipV) {
 document.getElementById('btnExportObj').addEventListener('click', () => {
   if (!App.objects.length) { toast('Nothing to export'); return; }
   const group = buildExportGroup();
-  const data = objText(group, () => true);
+  const data = objText(group, () => !App.uvBottom);
   const anyUV = (function () {
     let f = false;
     group.traverse(n => { if (n.isMesh && n.geometry.attributes.uv) f = true; });
