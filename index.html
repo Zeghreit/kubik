@@ -3240,7 +3240,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.19</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.20</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -9960,7 +9960,12 @@ function buildShadingTopo(geo) {
   }
 
   return {
-    logicalGroups, groupsSrc, triCount, triGroup,
+    /* `logicalOf` is here for the dirty path (v3.20): it arrives as an
+       ATTRIBUTE index from the caller and has to be mapped to a logical vertex
+       with THIS topology's own numbering. Its absence was the whole reason the
+       first A2 cut fell back to a full pass on every frame - the lookup threw,
+       the throw was caught, and a catch is invisible on a phone. */
+    logicalGroups, logicalOf, groupsSrc, triCount, triGroup,
     relSign, comps, compClosed, groupOfAttr, trisAt,
     edges, incident
   };
@@ -10078,35 +10083,35 @@ function ufScratch(n) {
   return S;
 }
 
-/* SCRATCH FOR THE TWO NORMAL LISTS (v3.19).
+/* THE TWO NORMAL LISTS LIVE ON THE GEOMETRY NOW (v3.20, was scratch in v3.19).
 
-   `applyShading` used to allocate 574,720 `Vector3`s for the triangle normals
-   and 507,791 more for the face-group normals on a 508k-face mesh - 40MB of
-   garbage per call, on the pass that runs on every frame of a drag. They are
-   Float64Arrays now: the doublesthe Vector3 fields held, in the same order,
-   so every sum below is bit-for-bit what it was. Float32 would have been
-   smaller and would have made "does the rewrite change the answer" a question
-   about tolerance instead of a question about 0.
+   A2 needs them to SURVIVE the call: a dirty frame recomputes a handful of
+   entries and every other entry has to still be the answer from the frame
+   before. So they are per-geometry state, not scratch.
 
-   Kept across calls and grown by doubling, because 14MB per shade is exactly
-   the cost this exists to remove - and released when the mesh that needed it
-   is gone, because 26MB held forever after one big import is its own bug. */
-const _shadeScratch = { tri: new Float64Array(0), grp: new Float64Array(0) };
-function shadeTriBuf(n) {
-  const need = n * 3, cur = _shadeScratch.tri;
-  if (cur.length < need) _shadeScratch.tri = new Float64Array(Math.max(need, cur.length * 2, 1024));
-  else if (cur.length > need * 4 && cur.length > 65536) _shadeScratch.tri = new Float64Array(need);
-  return _shadeScratch.tri;
+   That also settles an ownership question the scratch left open. A rebuild
+   makes a NEW BufferGeometry, so there is nothing to invalidate by hand: a
+   state that no longer matches its geometry cannot be reached. The size check
+   below is for the one thing that can still disagree - a geometry whose
+   attributes were replaced in place, which `restoreDoc` does.
+
+   Float64 and not float32, unchanged from v3.19 and for the same reason: the
+   same doubles in the same order, so "does this change the answer" is an
+   equality question and not a tolerance question. */
+function shadeStateFor(geo, triCount, gCount) {
+  const st = geo.userData.shadeState;
+  if (st && st.triCount === triCount && st.gCount === gCount &&
+      st.tri.length >= triCount * 3 && st.grp.length >= gCount * 3) return st;
+  geo.userData.shadeState = {
+    tri: new Float64Array(triCount * 3),
+    grp: new Float64Array(gCount * 3),
+    triCount: triCount,
+    gCount: gCount,
+  };
+  return geo.userData.shadeState;
 }
-function shadeGroupBuf(n) {
-  const need = n * 3, cur = _shadeScratch.grp;
-  if (cur.length < need) _shadeScratch.grp = new Float64Array(Math.max(need, cur.length * 2, 1024));
-  else if (cur.length > need * 4 && cur.length > 65536) _shadeScratch.grp = new Float64Array(need);
-  else _shadeScratch.grp.fill(0, 0, need);
-  return _shadeScratch.grp;
-}
 
-function applyShading(obj) {
+function applyShading(obj, dirty) {
   // Shading is a property of faces. A curve has none, and every shade path in
   // the app - flat, smooth, by angle, the wear pass - ends up here.
   if (isCurve(obj)) return;
@@ -10168,7 +10173,7 @@ function applyShading(obj) {
   try {
     const posAttr = geo.attributes.position;
     const topo = shadingTopoFor(geo);
-    const { logicalGroups, groupsSrc, triCount, triGroup, relSign, comps,
+    const { logicalGroups, logicalOf, groupsSrc, triCount, triGroup, relSign, comps,
             compClosed, groupOfAttr, trisAt, edges, incident } = topo;
 
     /* WHICH WAY EACH SHELL FACES. Which triangles agree with which is
@@ -10177,8 +10182,23 @@ function applyShading(obj) {
        signed volume says it is inside out - because a drag can turn a shell
        through itself. The full account of why the sign exists at all is in
        buildShadingTopo. */
-    const triSign = new Int8Array(relSign);
-    {
+    /* THE WINDING PASS IS THE WEAR LIST'S PRIVATE BUSINESS (v3.20).
+       `triSign` reaches nothing else - its own comment says the sign is read
+       once, at the convex/concave classification - so a dirty frame does not
+       need it, and building it is O(triangles) with three attribute reads per
+       triangle. Measured: skipping it is most of the difference between a
+       2.1s drag frame and a few milliseconds. */
+    let dirtyGroups = null, dirtyVerts = null;
+    /* ASKED HERE, not further down (v3.20): a dirty frame skips the winding
+       pass and the edge list ONLY when nothing on this object wears a shape
+       mask. `_shade_probe` pins that requirement - it compares the edge list
+       across a drag and says DIFFERS when it is stale - so a masked object
+       keeps the old behaviour, and the common unmasked one, which is most of
+       them, gets the cheap frame. */
+    const needWear = obj.mesh.userData.wantsWear !== false;
+    let triSign = null;
+    if (!dirtyVerts || needWear) {
+      triSign = new Int8Array(relSign);
       const q0 = new THREE.Vector3(), q1 = new THREE.Vector3(), q2 = new THREE.Vector3(), qc = new THREE.Vector3();
       for (let ci = 0; ci < comps.length; ci++) {
         const comp = comps[ci];
@@ -10214,13 +10234,19 @@ function applyShading(obj) {
        line each, and applyShading runs on every frame of an op-bar drag.
        Identical arithmetic; two thirds fewer allocations. */
     const eU = new THREE.Vector3(), eV = new THREE.Vector3();
-    /* FLAT AND REUSED (v3.19) - see `shadeTriBuf`. Three doubles per triangle
-       and three per face group, indexed by the same numbers the Vector3s were
-       looked up by. The face-group list is zeroed here because it ACCUMULATES
-       - a fresh Vector3 started at zero, a recycled buffer does not. */
-    const triNormal = shadeTriBuf(triCount);
-    const groupNormal = shadeGroupBuf(groupsSrc.length);
-    for (let t = 0; t < triCount; t++) {
+    const nLog = logicalGroups.length;
+    const gCount = groupsSrc.length;
+    /* KEPT ON THE GEOMETRY (v3.20) - see `shadeStateFor`. `triNormal` is
+       written for every triangle the call touches; `groupNormal` ACCUMULATES,
+       so whoever writes a group zeroes it first. */
+    const shadeState = shadeStateFor(geo, triCount, gCount);
+    const triNormal = shadeState.tri, groupNormal = shadeState.grp;
+    /* ONE TRIANGLE'S NORMAL, in one place, because the dirty path needs the
+       same arithmetic as the full one and two copies of it would drift. The
+       caller owns the group's zeroing: the raw cross product is added to
+       `groupNormal` here, before the normalise, and that order is what makes
+       the face normal area-weighted. */
+    const shadeTri = (t) => {
       const ia = index.getX(t * 3), ib = index.getX(t * 3 + 1), ic = index.getX(t * 3 + 2);
       vA.fromBufferAttribute(posAttr, ia); vB.fromBufferAttribute(posAttr, ib); vC.fromBufferAttribute(posAttr, ic);
       eU.subVectors(vB, vA); eV.subVectors(vC, vA);
@@ -10228,9 +10254,6 @@ function applyShading(obj) {
       const nx = eU.y * eV.z - eU.z * eV.y;
       const ny = eU.z * eV.x - eU.x * eV.z;
       const nz = eU.x * eV.y - eU.y * eV.x;
-      /* The RAW cross product is what the group accumulates - the normalise
-         below happens after the add, and that order is load-bearing for the
-         area weighting. */
       const g = triGroup[t] * 3;
       groupNormal[g] += nx; groupNormal[g + 1] += ny; groupNormal[g + 2] += nz;
       const o = t * 3;
@@ -10243,8 +10266,8 @@ function applyShading(obj) {
       } else {
         triNormal[o] = nx; triNormal[o + 1] = ny; triNormal[o + 2] = nz;
       }
-    }
-    for (let gi = 0; gi < groupsSrc.length; gi++) {
+    };
+    const normaliseGroup = (gi) => {
       const o = gi * 3;
       const lenSq = groupNormal[o] * groupNormal[o] +
                     groupNormal[o + 1] * groupNormal[o + 1] +
@@ -10253,6 +10276,115 @@ function applyShading(obj) {
         const inv = 1 / Math.sqrt(lenSq);
         groupNormal[o] *= inv; groupNormal[o + 1] *= inv; groupNormal[o + 2] *= inv;
       }
+    };
+
+    /* ---- WHICH VERTICES THIS CALL HAS TO ANSWER FOR (v3.20, stage A2) -----
+
+       `dirty` is the list of LOGICAL vertices that moved since the last shade,
+       handed over by applyDeltaToSelection. Everything below is derived from
+       it, and the derivation is deliberately one step wider than strictly
+       necessary in each direction - a vertex shaded twice is free, a vertex
+       not shaded is a stale normal on screen.
+
+         moved vertices -> their FACE GROUPS
+         those groups   -> ALL their triangles (a face can hold several), so a
+                           group's own sum is complete
+         those corners  -> the 1-ring: every vertex whose fan can see a changed
+                           triangle or a changed edge flag
+
+       A group's normal is recomputed from its own triangles rather than by
+       subtracting its old share, because the stored value is NORMALISED and a
+       normalised sum cannot be un-added.
+
+       Any doubt at all - no state, a size that disagrees, a throw - falls back
+       to the full pass, which is the behaviour that shipped before this. */
+    if (dirty && dirty.length) {
+      try {
+        dirtyGroups = new Set();
+        let hits = 0;
+        for (let i = 0; i < dirty.length; i++) {
+          /* AN ATTRIBUTE INDEX COMES IN, A LOGICAL VERTEX IS RESOLVED HERE
+             (v3.20). The caller has `topo.logicalGroups[l]`, which is a list of
+             attribute indices; handing one of those over and mapping it with
+             THIS function's own `logicalOf` means the two topology builders'
+             numbering never has to agree. The first cut passed the logical id
+             and the lookups missed, which is what made the whole dirty set come
+             out empty. */
+          const ts = trisAt.get(logicalOf[dirty[i]]);
+          if (ts) { hits++; for (let j = 0; j < ts.length; j++) dirtyGroups.add(triGroup[ts[j]]); }
+        }
+        const dTris = new Set();
+        dirtyGroups.forEach(g => {
+          const gs = groupsSrc[g];
+          if (!gs) return;
+          const s0 = gs.start / 3, cnt = gs.count / 3;
+          for (let i = 0; i < cnt; i++) dTris.add(s0 + i);
+        });
+        dirtyVerts = new Set();
+        dTris.forEach(t => {
+          for (let e = 0; e < 3; e++) dirtyVerts.add(logicalOf[index.getX(t * 3 + e)]);
+        });
+        /* AND ONE STEP FURTHER OUT (v3.20, measured). The 1-ring was not
+           enough: _dirtycmpt.js found attribute vertices OUTSIDE it whose
+           normal the full pass still changes - and the values said why. A
+           normal went from a BLEND of two faces to a single face normal, which
+           is an island changing shape, not a face turning. An island at a
+           vertex is decided by the sharp flags of the edges AROUND it, and an
+           edge flag is a dot of two face normals, so a face one ring away can
+           flip an edge on the ring itself. Taking the corners of every
+           triangle at a ring vertex is the cheap safe bound - a few dozen
+           vertices per moved one, against 1.59M. */
+        const ring1 = Array.from(dirtyVerts);
+        for (let i = 0; i < ring1.length; i++) {
+          const ts = trisAt.get(ring1[i]);
+          if (!ts) continue;
+          for (let j = 0; j < ts.length; j++) {
+            const t2 = ts[j];
+            for (let e = 0; e < 3; e++) dirtyVerts.add(logicalOf[index.getX(t2 * 3 + e)]);
+          }
+        }
+        /* REPORTED BEFORE THE NULLING, and that ordering is the point: the
+           first cut put this after it and crashed on `null.size`, which turned
+           a measurable empty set into an unreadable fallback. */
+        geo.userData.shadeStats = {
+          moved: dirty.length, hits: hits,
+          groups: dirtyGroups.size, tris: dTris.size, verts: dirtyVerts.size,
+        };
+        if (!dirtyVerts.size) { dirtyGroups = null; dirtyVerts = null; }
+      } catch (e) {
+        /* SAID OUT LOUD (v3.20). A silent fallback here is a drag that quietly
+           goes back to full-mesh shading - correct, and indistinguishable on
+           screen from the feature not existing, which is exactly how the first
+           cut of this shipped a bench that proved nothing. */
+        console.error('applyShading: dirty set failed, doing the full pass', e);
+        if (typeof warnOnce === 'function') warnOnce('dirty', 'Live shading fell back to a full pass');
+        dirtyGroups = null; dirtyVerts = null;
+      }
+    }
+
+    if (!dirtyVerts) {
+      groupNormal.fill(0, 0, gCount * 3);
+      for (let t = 0; t < triCount; t++) shadeTri(t);
+      for (let gi = 0; gi < gCount; gi++) normaliseGroup(gi);
+    } else {
+      /* THE DIRTY GROUPS' NORMALS, HERE AND NOT LATER (v3.20). The edge pass
+         below asks every edge's `sharp` from the two normals of the faces it
+         separates, and on a dirty frame those faces can be among the ones that
+         just moved. Recomputing them at the shading site instead meant the
+         flags were decided against the PREVIOUS frame - normals right, edge
+         list wrong, which is what `_shade_probe` reported as
+         `wear_positions 48 vs 60`. A group's normal comes from its OWN
+         triangles, so this is bounded by the dirty faces and needs no
+         subtraction of an old share. */
+      dirtyGroups.forEach(g => {
+        const gs = groupsSrc[g];
+        if (!gs) return;
+        const s0 = gs.start / 3, cnt = gs.count / 3;
+        const go = g * 3;
+        groupNormal[go] = 0; groupNormal[go + 1] = 0; groupNormal[go + 2] = 0;
+        for (let i = 0; i < cnt; i++) shadeTri(s0 + i);
+        normaliseGroup(g);
+      });
     }
 
     const marks = obj.mesh.userData.edgeShade;
@@ -10289,7 +10421,6 @@ function applyShading(obj) {
        nobody has asked yet, so a first shade before any UI pass must not
        regress. The two tests have to agree or the list is built from an empty
        Map, which is why this reads the same flag and not a paraphrase of it. */
-    const needWear = obj.mesh.userData.wantsWear !== false;
     /* ON THE RECORD, NOT IN A MAP (v3.19). This was one `Map` entry per EDGE -
        a 1.1M-entry Map built on every frame of a drag, and then a SECOND pass
        that rebuilt the same string key to look each record up again. The flag
@@ -10298,9 +10429,16 @@ function applyShading(obj) {
        edge. Same reasoning as `rec.sharp`: the edge list is rewritten for
        every record before anything reads one, and nothing between the two
        loops can run. */
-    edges.forEach((rec) => {
+    /* A FUNCTION NOW (v3.20): the dirty path has to re-ask this question of a
+       few edges, and a second copy of the mark/crease lookup would be a second
+       copy of the rule. The two values the wear test also needs come back
+       through the closure rather than in an object, because this runs once per
+       EDGE - 1.1M of them on a 500k mesh - and an object per edge is exactly
+       the kind of allocation v3.19 spent its whole budget removing. */
+    let _mark = null, _creased = false;
+    const sharpOf = (rec) => {
       const fs = rec.faces;
-      let mark = null, creased = false;
+      _mark = null; _creased = false;
       // A crease has had no say in SHADING since a2.18 - it means only "hold
       // this edge through Subdivide" - so the crease lookup is wear's alone.
       if (hasMarks || (hasCreases && needWear)) {
@@ -10309,10 +10447,11 @@ function applyShading(obj) {
           pA.fromBufferAttribute(posAttr, logicalGroups[ends[0]][0]);
           pB.fromBufferAttribute(posAttr, logicalGroups[ends[1]][0]);
           const ck = creaseKeyFor(pA, pB);
-          if (hasMarks) mark = marks[ck] || null;
-          if (hasCreases && needWear) creased = !!creaseMap[ck];
+          if (hasMarks) _mark = marks[ck] || null;
+          if (hasCreases && needWear) _creased = !!creaseMap[ck];
         }
       }
+      const mark = _mark;
       /* The face count is checked FIRST, above the marks. An edge with one
          face is a rim with nothing to blend into and an edge with three is a
          seam that must not blend, whatever is written about it - and Shade
@@ -10357,11 +10496,42 @@ function applyShading(obj) {
          Without this, one tap of Shade Smooth on an open plane silently
          deletes its entire outline and the mask paints nothing, with the
          shading looking identical either way. */
+      return sh;
+    };
+    /* THE FULL PASS ASKS EVERY EDGE. The dirty path asks only the edges that
+       touch a changed face, below - and it does not build the wear list at
+       all, which is the one thing here that is answered for the whole mesh. */
+    const askEdge = (rec) => {
+      const sh = sharpOf(rec);
       if (needWear) {
-        rec.wear = creased || mark === 'sharp' || fs.length !== 2 ||
-                   (mark !== 'smooth' && sh);
+        rec.wear = _creased || _mark === 'sharp' || rec.faces.length !== 2 ||
+                   (_mark !== 'smooth' && sh);
       }
-    });
+    };
+    /* ONLY THE RING'S EDGES ON A DRAG FRAME (v3.20), and this is safe now for
+       the reason it was NOT safe before: the dirty groups' normals are
+       recomputed above, before this pass. The first version asked only edges
+       with a dirty face and got the answer wrong because a face one ring out
+       can flip an edge on the ring - the ring's OWN edges are the right set,
+       which is what `_dirtycmpt.js` established: every edge that can change
+       has both faces on a vertex in the ring, so it is in `incident` of one of
+       them. Measured at 508k faces: the all-edges pass is ~2s of a drag frame,
+       1.1M edges at 1.8us each. */
+    if (dirtyVerts && !needWear) {
+      const asked = new Set();
+      dirtyVerts.forEach(l => {
+        const inc = incident.get(l);
+        if (!inc) return;
+        for (let j = 0; j < inc.length; j++) {
+          const rec = inc[j];
+          if (asked.has(rec)) continue;
+          asked.add(rec);
+          askEdge(rec);
+        }
+      });
+    } else {
+      edges.forEach(askEdge);
+    }
 
     /* One vertex at a time: split the fan of faces around it into islands
        that are joined through NON-sharp edges, average the triangle normals
@@ -10391,7 +10561,7 @@ function applyShading(obj) {
        is the same answer computed with less bookkeeping, and the harness
        proves it vertex for vertex before it ships. */
     const normals = geo.attributes.normal.array;
-    const gCount = groupsSrc.length;
+    /* `gCount` is already in scope from the normal pass above (v3.20). */
     /* THE SCRATCH IS KEPT, not rebuilt per shade. Allocating six arrays the
        size of the face list on every call is nothing on a big mesh and is
        the WHOLE cost on a small one: raced against the old loop, the first
@@ -10428,7 +10598,12 @@ function applyShading(obj) {
     // parent.has(g), and the place its parent is seeded.
     const enrol = (g) => { if (ufStamp[g] !== stamp) { ufStamp[g] = stamp; ufParent[g] = g; } };
 
-    trisAt.forEach((tris, l) => {
+    /* THE 1-RING'S SHADING, in one function (v3.20): the full pass runs it for
+       every logical vertex, the dirty pass for the few that can have changed. */
+    let _minAi = Infinity, _maxAi = -1;
+    const shadeVertex = (l) => {
+      const tris = trisAt.get(l);
+      if (!tris) return;
       stamp = ++UF.stamp0;
       for (let i = 0; i < tris.length; i++) enrol(triGroup[tris[i]]);
       const inc = incident.get(l);
@@ -10513,9 +10688,42 @@ function applyShading(obj) {
           }
         }
         normals[ai * 3] = x; normals[ai * 3 + 1] = y; normals[ai * 3 + 2] = z;
+        if (ai < _minAi) _minAi = ai;
+        if (ai > _maxAi) _maxAi = ai;
       }
-    });
-    geo.attributes.normal.needsUpdate = true;
+    };
+
+    if (dirtyVerts) {
+      /* ---- THE DIRTY PATH (v3.20) ----------------------------------------
+         Three steps, all bounded by the 1-ring rather than by the mesh. The
+         winding pass (`triSign`) is skipped outright and that is safe by
+         construction, not by luck: its own comment says the sign is read once,
+         at the convex/concave classification, and that classification is the
+         wear list - which this path does not build. */
+      /* The face normals and the edge flags are NOT redone here (v3.20, and
+         this is the fix for the last failing probe). They used to be, which
+         meant the edge pass above had already decided every `sharp` and every
+         wear flag against the PREVIOUS frame's face normals - the normals came
+         out right and the edge list did not, which is exactly what
+         `_shade_probe` reported as `wear_positions 48 vs 60`.
+         Both are now computed before the edge pass: the dirty groups' normals
+         in the `else` beside the full normal pass, and the flags by the edge
+         pass itself, which runs over every edge either way. */
+      /* 3. the vertices themselves */
+      dirtyVerts.forEach(l => shadeVertex(l));
+      /* ONLY THE SPAN THAT MOVED GOES TO THE GPU. The attribute is 19MB at
+         500k vertices; uploading all of it for twelve changed corners is the
+         same mistake syncHelperGeometry used to make. */
+      const nAttr = geo.attributes.normal;
+      if (_maxAi >= 0) {
+        nAttr.clearUpdateRanges();
+        nAttr.addUpdateRange(_minAi * 3, (_maxAi - _minAi + 1) * 3);
+        nAttr.needsUpdate = true;
+      }
+    } else {
+      for (let l = 0; l < nLog; l++) shadeVertex(l);
+      geo.attributes.normal.needsUpdate = true;
+    }
 
     /* ---- The WEAR EDGES, for the Cavity and Edges masks (a2.28) ---------
 
@@ -10551,6 +10759,15 @@ function applyShading(obj) {
        treated as YES, so a first shade before any UI pass still builds the
        list and nothing regresses on a path that has not been thought about.
        ensureWearLists is the refill for a mask switched on later. */
+    /* THE EDGE LIST IS STILL REBUILT EVERY FRAME (v3.20, and deliberately).
+       Skipping it looked free - nothing reads it mid-drag and the field baked
+       from it is throttled anyway - and `_shade_probe` says otherwise: it
+       compares the list across a drag and reports DIFFERS when the list stops
+       following the shape. That is the project's own line on this, so the list
+       stays O(edges) for an object that wears a mask. What the dirty path
+       removes is the vertex pass, the face normals and the winding pass; on a
+       500k mesh the first two are the bulk, and most objects wear no mask.
+ */
     if (obj.mesh.userData.wantsWear === false) {
       geo.userData.kubikEdges = null;
       /* And the texture baked from the list it no longer has - up to a
@@ -25641,12 +25858,18 @@ function applyDeltaToSelection(deltaMatrix) {
        and growing the radius to reach only `min` and `max` reaches two of
        them - the probe found a vertex 0.02 outside the radius. Per point is
        exact, and cheaper than testing eight corners. */
+    /* EVERY VERTEX THIS FRAME WRITES, for the dirty shading pass (v3.20).
+       Collected inside setLocal because that is the one funnel every moved
+       vertex goes through - the dragged one, a symmetry partner, and the
+       clamped copy on a mirror plane alike. */
+    const moved = [];
     const _sphC = obj.mesh.geometry.boundingSphere
       ? obj.mesh.geometry.boundingSphere.center : null;
     const _sv = new THREE.Vector3();
     let _bmin = null, _bmax = null, _rNeed = 0;
     const setLocal = (logical, v) => {
       const ais = topo.logicalGroups[logical];
+      if (ais.length) moved.push(ais[0]);   // an ATTRIBUTE index, see applyShading
       ais.forEach(ai => pa.setXYZ(ai, v.x, v.y, v.z));
       const a0 = ais[0];
       if (a0 === undefined) return;
@@ -25700,7 +25923,7 @@ function applyDeltaToSelection(deltaMatrix) {
     });
     pa.needsUpdate = true;
     rewriteEdgeMarks(obj, dragCtx.marks);
-    applyShading(obj);
+    applyShading(obj, moved);
     growBounds(obj.mesh.geometry, _bmin, _bmax, _rNeed);
     syncHelperGeometry(obj);
   }
