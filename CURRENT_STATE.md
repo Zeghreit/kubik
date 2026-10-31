@@ -142,9 +142,18 @@ which is why every earlier frame was a full pass. With it, at **507,791 faces**:
 So a one-vertex drag costs **68ms instead of 510ms - about 7.5x** - and the dirty
 branch is proved to have run by `shadeStats` itself, not by a proxy.
 
-68ms is still 4x a 16ms frame, and the remaining weight is the work that is NOT
-the vertex pass: the ring's edge flags, the normals of six face groups, and
-`growBounds`. That is where the next cut in A goes.
+68ms is still 4x a 16ms frame, and the split says the remaining weight is NOT the
+vertex pass. Measured on the same live drag: the dirty shade for the DRAGGED
+vertex covers 6 face groups, 6 triangles and 19 vertices, while a second call on
+a deliberately awkward vertex (the sphere's pole, 624 groups / 982 triangles /
+1703 vertices) costs 48.8ms on its own. The frame is 68-74ms with a 19-vertex
+ring, so ~65ms of it is somewhere else - and the likely owner is the WEAR EDGE
+LIST, which is still rebuilt over every edge on a drag frame.
+
+That is the next cut in A, and it has a shape: keep a per-edge offset into the
+flat `kubikEdges` arrays (`rec.wearAt`), rewrite only the entries for edges at ring
+vertices, and leave the rest of the array alone. Then the list still follows the
+shape - which `_shade_probe` requires - without being O(edges) per frame.
 
 THE RECIPE, so nobody repeats the six dead ends: select the object
 (`selectedObjectIds`, `activeObjectId`), `setTransformTool('move')`,
