@@ -126,3 +126,33 @@ Two smaller things learned, both worth keeping:
 
 Work is in `_a2_wip2_utf8.diff` (scratch, untracked). index.html is back at the
 shipped v3.19.
+
+## v3.20 (A2) - THIRD attempt 31.10: the shading is right, the mask list is not
+Progress this time, and it is real. `_dirtycmpt.js` now classifies every
+difference instead of only counting it, and that split found the bug in one run:
+the 1-ring was too small. A normal went from a BLEND of two faces to a single
+face normal, which is an island changing shape, not a face turning - an edge
+flag is a dot of two face normals, so a face one ring out can flip an edge on
+the ring. Widening to the corners of every triangle at a ring vertex, and
+re-asking sharp for EVERY edge at every ring vertex (idempotent, so
+over-asking cannot be wrong), made all 9 cases match a full pass exactly.
+
+Three more defects, all found by the probes and all fixed:
+- `triSign` (the winding pass, O(triangles)) ran on every dirty frame and was
+  never read - it only feeds the convex/concave test in the wear list.
+- a TDZ bug: `moved.push(ais[0])` was written above `const ais = ...`. Caught by
+  `_shade_probe`, not by `node --check`.
+- `rec.wear` is only assigned by the full edge loop, so skipping that loop left
+  a freshly built topology with no wear flags and an EMPTY edge list.
+
+The last one is where it stands. With the edge loop restored, the drag case in
+`_shade_probe` is identical again, but the sphere case still reports
+`wear_positions LENGTH 48 vs 60` - 8 edges instead of 10. Something about which
+records carry `wear` across a topology rebuild is still not right, and it is
+NOT worth guessing at: the next step is to count `rec.wear` set vs the number of
+edges the list expects, on the frame that rebuilds the topology.
+
+Do not skip the edge list to make it faster. `_shade_probe` pins that the list
+follows the shape across a drag, and it is right to.
+
+Work is in `_a2_wip3.diff` (scratch, untracked). index.html is back at v3.19.
