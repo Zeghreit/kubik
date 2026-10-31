@@ -178,11 +178,29 @@ An O(mesh) pass survives inside `applyShading` that is none of the four things
 guessed at so far, and the numbers no longer disagree - they all point at the same
 unexplained cost.
 
-NEXT ACTION, and it is not another guess: read `applyShading` from its first line
-to its last, list every loop, and tick off which of them can run with `dirtyVerts`
-set. One of them is O(triangles) or O(vertices) and has not been noticed. That
-reading is what the next session should start with - six guesses have now been
-spent, and each cost a round.
+THE LOOP INVENTORY IS DONE, and it eliminates the loops. Every iteration in
+`applyShading` that can run with `dirtyVerts` set is bounded by the ring:
+
+    10305-10343  build the dirty set (moved -> groups -> tris -> 2-ring)   bounded
+    10379-10385  recompute the dirty groups' normals                      bounded
+    10522-10525  re-ask the ring's edges                                  bounded
+    10608-10681  inside shadeVertex (one vertex's fan)                    bounded
+    10713        shade this ring's vertices                               bounded
+    10367-10368  the FULL normal pass                  only when !dirtyVerts
+    10533        all edges                              only when !dirtyVerts or needWear
+    10724        all vertices                           only when !dirtyVerts
+    10793        the wear edge list                      only when the object wants wear
+
+So with `dirtyVerts` set and wear off, nothing in this function iterates the mesh -
+and yet the call costs 45ms. The cost is therefore in a NON-LOOP statement, and the
+prime suspect is an allocation sized by the mesh: the normal-attribute guard
+(`nAttr.count !== pCount` builds a fresh Float32Array(pCount*3), 19MB at 500k), or
+`shadeStateFor` / `ufScratch` re-allocating when their size key disagrees.
+
+NEXT ACTION, decisive and cheap: put `performance.now()` marks at five points
+inside applyShading (entry, after the state lookup, after the dirty set, after the
+shift, after the vertices), run the drag once, read the five numbers, remove the
+marks. That is one round of work and it ends six rounds of guessing.
 
 ## The road to 500k: what stages 0 and A1 actually bought (v3.18, v3.19)
 
