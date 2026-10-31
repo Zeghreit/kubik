@@ -208,21 +208,29 @@ BEFORE the first marker inside the element branch - in `findObject`,
 `dragCtx.type` or the dispatch around them, or the split was taken on a frame
 cheaper than the median (it reads the LAST call, not the median one).
 
-`findObject` IS RULED OUT: it is `App.objects.find(o => o.id === id)` and a scene
-has one object. So the marker split does not mean what it looked like it meant.
+THE 22ms IS `syncHelperGeometry`, AND IT IS NOT STAGE A AT ALL.
 
-THE SPLIT IS UNRELIABLE as written, and that is the real finding: it reads
-`window.__d` AFTER the six-frame loop, so it reports the LAST call (0.3ms total)
-while the median frame is 21.6ms with a MINIMUM of 21.2ms - i.e. every frame in
-the loop was expensive and the one frame that was measured afterwards was not.
-The next attempt must push one array PER FRAME and report the split for the
-median frame, or it will keep describing a cheap frame that is not the one the
-median came from.
+`applyDeltaToSelection` ends with
 
-WHAT IS KNOWN FOR CERTAIN about this frame: `applyShading` inside it is 0.2-0.5ms
-(measured directly, with `shadeStats` proving the dirty path), the six frames cost
-21-38ms each, and the cost is not findObject, not the position upload, not the
-wear list, not the winding pass any more.
+    growBounds(obj.mesh.geometry, _bmin, _bmax, _rNeed);
+    syncHelperGeometry(obj);        // <- here
+    }
+    refreshInspector();
+
+The five markers stopped at `growBounds`, so everything after it was invisible -
+which is why the split read 0.3ms while the frame was 22ms. `syncHelperGeometry`
+rebuilds the vertex dots and the edge lines for the WHOLE mesh, every frame: 1.59M
+vertex positions and ~1.1M edges at 500k faces. That is the fixed, movement-
+independent, mesh-sized cost the identity matrix could not remove.
+
+So stage A is done: the shading side of a drag frame is 0.2-0.5ms and nothing in
+it scales with the mesh. What remains is the OVERLAY, which is stage F ("helpers
+on a heavy mesh" in `claude/heavy-mesh-plan.md`) and has its own answer: only the
+ring's dots, or a LOD, or nothing above a size threshold.
+
+A LESSON WORTH MORE THAN THE FIX: when markers say "everything is cheap" and the
+outer clock says otherwise, the missing time is AFTER THE LAST MARKER. Put one at
+the exit too, not just at the interesting places.
 
 ## The road to 500k: what stages 0 and A1 actually bought (v3.18, v3.19)
 
