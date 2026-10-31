@@ -208,6 +208,32 @@ BEFORE the first marker inside the element branch - in `findObject`,
 `dragCtx.type` or the dispatch around them, or the split was taken on a frame
 cheaper than the median (it reads the LAST call, not the median one).
 
+## One operation at 500k: where the 2.6s goes
+
+Measured with four marks inside `applyShading`, three runs, 507,791 faces:
+
+    total 2627ms | "normals" 2200 | edges 54 | vertices 0 | tail 358
+
+The first bucket is misnamed by where the marks landed: it includes
+`shadingTopoFor(geo)`, and OUTSIDE a drag that cache is deliberately off
+(`live` = dragCtx = null), so every operation builds the shading topology from
+scratch. **`buildShadingTopo` is ~2.2s of a 2.6s shade at 500k** - 1.1M edge
+records in a Map, 574k triangles, and the winding components.
+
+That reframes the next step. Chunking the geometry does not touch this: an
+operation rebuilds the whole editable, so the topology is rebuilt in full whatever
+the output is cut into. The lever is making `buildShadingTopo` cheap - typed/CSR
+arrays instead of a Map of per-edge objects, one flat list per relation, built in
+two passes (count, then fill):
+    key -> edge record   1.1M Map entries with an object each
+    -> edgeEnds Int32Array, edgeFaces CSR, incident CSR, trisAt CSR
+Expected effect on an operation: ~2.6s -> under 1s. It is confined to one function
+plus the loops that read its output, and `_shade_probe` already pins everything
+that function feeds.
+
+Second: the `tail` 358ms is the per-vertex union-find pass over 1.59M vertices,
+which is the honest O(V) cost and stays until the vertex model changes.
+
 ## The face list is counts, not objects (v3.21d)
 
 `groups` in a document was `faceRanges(g).map(gr => ({start, count, materialIndex}))`
