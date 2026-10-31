@@ -106,43 +106,32 @@ Three things the probes taught, all of them now in the code:
 
 `_dirtycmpt.js`: 9 of 9 cases bit-identical to a full pass, with the dirty path
 proven to run (the update range is the witness). 36-probe suite clean.
-MEASURED SINCE, by `_dragscale.js` - a probe that drives the app's own drag
-(`beginDirectDrag` / `applyDeltaToSelection` / `endDirectDrag`) instead of calling
-applyShading in the cold. At **507,791 faces**: drag frame **529ms** median
-(min 517, max 532 over five frames; the FIRST frame is 3,264ms because it builds
-the shading topology, which the rest of a drag then reuses).
+MEASURED SINCE, and the measurement changes what the earlier number meant.
 
-Before this stage the same frame was a full applyShading, ~3.5s - so A2 is about
-6.7x, and 529ms is still 30x over a 16ms frame.
+`_dragscale.js` / `_dragsplit.js` drive the app's own drag. The prelude that makes
+a drag START is the one `_shade_probe` uses and this probe was missing:
+`App.selectedObjectIds = new Set([id])`, `setTransformTool('move')`,
+`App.transformMode = 'free'`, and a witness (`position.version` moved) before any
+timing is believed.
 
-WHAT IS LEFT IS CPU WORK, and two guesses about it have been tested and are
-wrong, so do not repeat them:
-- the full 19MB position upload is NOT in this number at all - the probe times
-  `applyDeltaToSelection`, which does no render, so nothing is uploaded. Narrowing
-  `pa.needsUpdate` to an update range changed the median from 529ms to 659ms,
-  which is run-to-run noise and not an improvement; that edit was reverted.
-- `rewriteEdgeMarks` returns at its first line when there are no marks, so it is
-  free on an unmarked mesh.
-So the ~530ms is inside applyDeltaToSelection itself: the setLocal loop, the
-dirty shade, and growBounds.
+At **507,791 faces**, drag started and witnessed:
 
-`_dragsplit.js` CANNOT START A DRAG on the bench fixture: nine taps around the
-canvas, each checked by `position.version` moving, and none of them captured.
-`_shade_probe` starts one happily on its own fixtures, so the missing piece is in
-its prelude (a real tap that leaves a component selected before beginDirectDrag),
-and THAT is what to copy next - not more guessing at the fixture. Until then the
-frame split stays unestablished.
+    full frame                      536ms  [513-621]
+    dirty shade, 12 spread verts     53ms
 
-The one number that did come out of it: a dirty shade with a warm topology costs
-**60ms** for twelve spread-out vertices.
- **a dirty shade with a warm
-topology costs 60ms** for twelve spread-out vertices - much more than a ring
-should, because twelve vertices at opposite ends of a 508k mesh drag in a large
-part of the 2-ring. The full-frame half of that run did not start a drag at all
-(`full frame 0ms`), so the split is not established yet; the probe needs to
-assert the drag started before it believes either number, the same lesson
-`_dirtycmpt.js` taught about the update range.
+So the shading is about a tenth of the frame and the rest is `applyDeltaToSelection`
+itself - the `setLocal` loop and `growBounds`, which are O(ENTRIES).
 
+AND THE ENTRIES ARE THE WHOLE MESH in this fixture: the probe selects the OBJECT
+and never a single vertex, so every logical vertex is dragged. That is why the
+earlier "529ms drag frame" figure is really a **whole-mesh element drag**, not a
+one-vertex drag - and it is consistent with A2, whose whole point is that cost
+follows what moved. A one-vertex drag on the same mesh should be milliseconds.
+
+The measurement that is still owed: a SINGLE-vertex drag, which needs the probe
+to pick a vertex and select it before beginDirectDrag (`pickVertexOnActive` plus
+whatever the app puts in the selection). Until that exists, quote 536ms as "every
+vertex moved", never as "a drag frame".
 
 ## The road to 500k: what stages 0 and A1 actually bought (v3.18, v3.19)
 
