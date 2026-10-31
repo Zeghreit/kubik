@@ -96,3 +96,33 @@ What is already known for the next attempt:
 The work is in `_a2_wip.diff` (scratch, untracked) - index.html was reverted to
 the shipped v3.19, which is what is live. Each probe run took ~10 minutes, so
 budget for that: the probe itself is fast, the headless boot is not.
+
+## v3.20 (A2) - SECOND attempt 31.10, still not shipped, reverted
+The root cause of the empty dirty set was found: `buildShadingTopo` did not
+return `logicalOf`, so the first lookup threw, the throw was caught, and every
+frame fell back to the full pass. With `logicalOf` returned (and the caller now
+passing an ATTRIBUTE index, `topo.logicalGroups[l][0]`, mapped inside
+applyShading with its own `logicalOf`), the dirty path RUNS: the update range
+appears, and `geo.userData.shadeStats` reports a sane set - a box corner gives
+3 of 6 faces, 6 of 12 triangles, 7 of 8 vertices.
+
+`_dirtycmpt.js` then says the buffer is WRONG on some shapes and right on
+others: sphere 4/4 match, box 3/4 (the single-vertex case differs), torus 0/4.
+So the 1-ring is too small somewhere, or a cached value is not refreshed.
+The probe is ready and prints groups/tris/verts per row - the next step is to
+have it report WHICH attribute vertices differ (index + old/new normal) rather
+than only that the hash differs; that is what will say whether the misses are
+outside the ring or inside it.
+
+Two smaller things learned, both worth keeping:
+- the probe must prove the dirty path RAN before it proves it was right. The
+  witness is `geometry.attributes.normal.updateRanges.length`: the dirty path
+  always leaves one, the full pass never does.
+- an object per `edges.forEach` was avoided on purpose in v3.19 and the same
+  care applies here: `shadeStats` is one small object per dirty FRAME, which is
+  fine, but nothing inside a per-edge or per-vertex loop may allocate.
+- wrapping console.log in the probe made the whole run hang for 10 minutes.
+  Do not do that again; report through `geo.userData` instead.
+
+Work is in `_a2_wip2_utf8.diff` (scratch, untracked). index.html is back at the
+shipped v3.19.
