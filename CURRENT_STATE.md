@@ -142,27 +142,26 @@ which is why every earlier frame was a full pass. With it, at **507,791 faces**:
 So a one-vertex drag costs **68ms instead of 510ms - about 7.5x** - and the dirty
 branch is proved to have run by `shadeStats` itself, not by a proxy.
 
-68ms is still 4x a 16ms frame, and TWO guesses about where it goes have been
-tested and are both WRONG. Do not repeat them:
+68ms is still 4x a 16ms frame. THE SAME DRAG ON A 100x SMALLER MESH IS 1.3ms,
+which settles what kind of cost this is.
 
-- **the wear edge list** - turning `wantsWear` off for the object and re-running
-  the same drag gives 68.3ms against 67.9ms. Not it.
-- **the winding pass** (`triSign`) - it is skipped whenever the object needs no
-  wear list, which that same run does, and the frame does not move. Not it.
-- and the dirty shade of the DRAGGED vertex is 19 vertices (shadeStats
-  `{moved:1, groups:6, tris:6, verts:19}`), so it is not the vertex work either.
+    faces      ring (shadeStats)              frame
+    5,360      6 groups / 7 tris / 21 verts   1.3ms
+    507,791    6 groups / 6 tris / 19 verts   68ms
 
-So ~65ms of a one-vertex drag frame is some OTHER part of `applyDeltaToSelection`
-that has not been split out yet: `setLocal`, `growBounds`, the world-matrix
-inverse, `rewriteEdgeMarks`. The next measurement has to time those four inside
-one frame - guessing has now cost two rounds.
+Same ring to within a vertex, 100x the faces, 50x the frame. So an O(MESH) pass
+is still being paid on a one-vertex drag frame, and it is none of the things that
+have been tested: not the vertex pass (the ring is the same), not the wear list
+(`wantsWear = false` gives 68.3 vs 67.9ms), not `triSign` (it is skipped in that
+same run and the frame does not move).
 
-ONE NUMBER TO KEEP IN VIEW while doing it: `applyShading` called directly with a
-DELIBERATELY AWKWARD vertex (attribute 0, the sphere's pole: 624 face groups, 982
-triangles, 1703 ring vertices) costs 47.5ms. That is the worst case of the dirty
-path, not a typical one, and it is close to the whole frame - which means the
-frame may simply be dominated by something that scales with RING SIZE, not with
-the entry count.
+NEXT MEASUREMENT, precisely: call `applyShading(o, [theDraggedVertexAttr])` on the
+508k mesh - the DRAGGED vertex, not attribute 0. The earlier 47.5ms figure used
+attribute 0, which is the sphere's pole with 624 groups, so it measured a
+pathological ring and confounded everything. If that call is milliseconds, the
+O(mesh) work is OUTSIDE applyShading and inside `applyDeltaToSelection`
+(growBounds, rewriteEdgeMarks, setLocal); if it is ~60ms, the dirty branch itself
+still has an O(mesh) pass.
 
 ## The road to 500k: what stages 0 and A1 actually bought (v3.18, v3.19)
 
