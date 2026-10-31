@@ -124,8 +124,15 @@ wrong, so do not repeat them:
 - `rewriteEdgeMarks` returns at its first line when there are no marks, so it is
   free on an unmarked mesh.
 So the ~530ms is inside applyDeltaToSelection itself: the setLocal loop, the
-dirty shade, and growBounds. The next measurement must time those three apart
-inside one frame rather than guess at which one owns it.
+dirty shade, and growBounds.
+
+`_dragsplit.js` split it once and got half an answer: **a dirty shade with a warm
+topology costs 60ms** for twelve spread-out vertices - much more than a ring
+should, because twelve vertices at opposite ends of a 508k mesh drag in a large
+part of the 2-ring. The full-frame half of that run did not start a drag at all
+(`full frame 0ms`), so the split is not established yet; the probe needs to
+assert the drag started before it believes either number, the same lesson
+`_dirtycmpt.js` taught about the update range.
 
 
 ## The road to 500k: what stages 0 and A1 actually bought (v3.18, v3.19)
