@@ -128,13 +128,20 @@ earlier "529ms drag frame" figure is really a **whole-mesh element drag**, not a
 one-vertex drag - and it is consistent with A2, whose whole point is that cost
 follows what moved. A one-vertex drag on the same mesh should be milliseconds.
 
-The measurement that is still owed: a SINGLE-vertex drag. `_dragsplit.js` now
-calls `pickVertexOnActive(ev)` before `beginDirectDrag` and gets **-1** at a tap
-one quarter in from the corner - nothing picked, so the selection stays empty and
-every vertex is still dragged. Two things to try first next time: tap the CENTRE
-of the mesh (the camera frames it there) rather than a quarter point, and check
-`setMode('vertex')` actually took before picking. Until a pick succeeds, quote
-536ms as "every vertex moved", never as "a drag frame".
+A SINGLE-VERTEX DRAG IS ALSO ~526ms, and that contradicts the O(entries) reading.
+
+`_dragone.js` taps the CENTRE (the quarter point picks nothing - `pickVertexOnActive`
+returned -1 there), gets a vertex (143722), starts the drag with the version
+witness, and a frame is **525.9ms [510.9-640.1]** - the same as the whole-mesh
+drag, to within noise. So the frame does NOT follow what moved, even though the
+dirty shade of twelve spread vertices was measured at ~51ms.
+
+That leaves one question, and it is the only one worth asking next: is
+`applyShading` inside the drag taking the dirty path AT ALL? The probe can answer
+it by timing `applyShading(o, [thatOneId])` while the drag is live: milliseconds
+means the drag frame is spent elsewhere in applyDeltaToSelection, ~500ms means the
+dirty branch is not being entered (empty `moved`, or `dirtyVerts` empty and the
+silent fallback running).
 
 ## The road to 500k: what stages 0 and A1 actually bought (v3.18, v3.19)
 
