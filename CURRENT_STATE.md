@@ -208,9 +208,21 @@ BEFORE the first marker inside the element branch - in `findObject`,
 `dragCtx.type` or the dispatch around them, or the split was taken on a frame
 cheaper than the median (it reads the LAST call, not the median one).
 
-NEXT: `findObject` is the only thing there that could scale, and the split has to
-be read per frame (push one array per frame, not one shared `window.__d`) so a
-cheap last frame cannot masquerade as a cheap frame.
+`findObject` IS RULED OUT: it is `App.objects.find(o => o.id === id)` and a scene
+has one object. So the marker split does not mean what it looked like it meant.
+
+THE SPLIT IS UNRELIABLE as written, and that is the real finding: it reads
+`window.__d` AFTER the six-frame loop, so it reports the LAST call (0.3ms total)
+while the median frame is 21.6ms with a MINIMUM of 21.2ms - i.e. every frame in
+the loop was expensive and the one frame that was measured afterwards was not.
+The next attempt must push one array PER FRAME and report the split for the
+median frame, or it will keep describing a cheap frame that is not the one the
+median came from.
+
+WHAT IS KNOWN FOR CERTAIN about this frame: `applyShading` inside it is 0.2-0.5ms
+(measured directly, with `shadeStats` proving the dirty path), the six frames cost
+21-38ms each, and the cost is not findObject, not the position upload, not the
+wear list, not the winding pass any more.
 
 ## The road to 500k: what stages 0 and A1 actually bought (v3.18, v3.19)
 
