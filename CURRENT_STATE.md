@@ -208,6 +208,32 @@ BEFORE the first marker inside the element branch - in `findObject`,
 `dragCtx.type` or the dispatch around them, or the split was taken on a frame
 cheaper than the median (it reads the LAST call, not the median one).
 
+## The winding components are built only for objects that need them (v3.21e)
+
+The 2.2s bucket in the measurement below was `buildShadingTopo`, and the single
+biggest piece of it was the winding-component pass - `dmap`, one entry per edge
+with an array of the triangles on it, plus the BFS. `relSign` reaches nothing but
+the convex/concave test in the WEAR list, so an object that wears no shape mask
+never looks at it, and that is most objects.
+
+`withComponents` is now a parameter of `buildShadingTopo` / `shadingTopoFor`, fed
+by `applyShading`'s own `needWear` (which is read before the topology now), and it
+is part of the cache key so a topo built without components is never handed to a
+caller that needs them.
+
+Measured at 507,791 faces, median of three:
+
+    rebuild (one operation)   3.42s -> 1.89s
+    applyShading              2.80s -> 1.54s
+    import build              6.29s -> 4.24s
+
+With `wantsWear` forced on, the same shade is 2.77s - the components are still
+built, exactly as before, and `_shade_probe` (which runs with wear ON) reports
+every normal and every edge identical. 36-probe suite clean.
+
+What is left of an operation: ~1.5s of shade with the components removed, plus
+~0.35s of per-vertex union-find that is the honest O(V) cost.
+
 ## One operation at 500k: where the 2.6s goes
 
 Measured with four marks inside `applyShading`, three runs, 507,791 faces:

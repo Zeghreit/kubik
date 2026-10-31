@@ -9788,7 +9788,7 @@ function ensureEdgeField(mesh) {
    lifts, where before they merged mid-drag. That is the whole behavioural
    difference, it lasts one gesture, and the uncached pass runs again the
    moment the drag ends. */
-function buildShadingTopo(geo) {
+function buildShadingTopo(geo, withComponents) {
   PERF.shadeTopo++;
   const index = geo.index;
   const posAttr = geo.attributes.position;
@@ -9826,8 +9826,18 @@ function buildShadingTopo(geo) {
      triangle that survives culling faces the camera by definition. The
      normals written below stay exactly as authored; the sign is read once,
      at the classification. */
-  const relSign = new Int8Array(triCount);
-  const comps = [], compClosed = [];
+  /* THE WINDING COMPONENTS ARE ONLY FOR THE WEAR LIST (v3.21e).
+     `relSign` reaches nothing else - its own comment below says the sign is read
+     once, at the convex/concave classification - so an object that wears no shape
+     mask never looks at this. It is the second largest Map in the build (one
+     entry per edge, each with an array) and it was built for every object on
+     every operation. `withComponents` is the caller's `needWear`, and it is part
+     of the cache key so a topo built without them is never handed to a caller
+     that needs them. */
+  let relSign = null, comps = null, compClosed = null;
+  if (withComponents) {
+  relSign = new Int8Array(triCount);
+  comps = []; compClosed = [];
   {
     const dmap = new Map();
     for (let t = 0; t < triCount; t++) {
@@ -9876,6 +9886,7 @@ function buildShadingTopo(geo) {
          question about positions and is asked per frame. */
       comps.push(comp); compClosed.push(closed);
     }
+  }
   }
 
   const groupOfAttr = new Int32Array(posAttr.count).fill(-1);
@@ -9967,7 +9978,7 @@ function buildShadingTopo(geo) {
        the throw was caught, and a catch is invisible on a phone. */
     logicalGroups, logicalOf, groupsSrc, triCount, triGroup,
     relSign, comps, compClosed, groupOfAttr, trisAt,
-    edges, incident
+    edges, incident, withComponents: !!withComponents
   };
 }
 
@@ -10016,7 +10027,7 @@ function settleShadingAfterDrag(ctx) {
   if (_bvhOn) freshenBoundsTree(obj.mesh.geometry);
 }
 
-function shadingTopoFor(geo) {
+function shadingTopoFor(geo, withComponents) {
   let live = null;
   /* try/catch rather than a truthiness test: both names are `let`s declared
      some 8,000 lines further down, and a primitive built during startup runs
@@ -10033,8 +10044,9 @@ function shadingTopoFor(geo) {
   if (c && live && c.drag === live && c.index === geo.index &&
       c.icount === geo.index.count && c.gcount === faceCount(geo) &&
       c.fgen === (geo.userData.kubikFaceGen || 0) &&
-      c.pcount === geo.attributes.position.count) return c;
-  const topo = buildShadingTopo(geo);
+      c.pcount === geo.attributes.position.count &&
+      c.withComponents === !!withComponents) return c;
+  const topo = buildShadingTopo(geo, withComponents);
   topo.drag = live;
   topo.index = geo.index;
   topo.icount = geo.index.count;
@@ -10172,7 +10184,10 @@ function applyShading(obj, dirty) {
 
   try {
     const posAttr = geo.attributes.position;
-    const topo = shadingTopoFor(geo);
+    /* Asked BEFORE the topology (v3.21e): it decides whether the winding
+       components are built at all. */
+    const needWear = obj.mesh.userData.wantsWear !== false;
+    const topo = shadingTopoFor(geo, needWear);
     const { logicalGroups, logicalOf, groupsSrc, triCount, triGroup, relSign, comps,
             compClosed, groupOfAttr, trisAt, edges, incident } = topo;
 
@@ -10195,7 +10210,6 @@ function applyShading(obj, dirty) {
        across a drag and says DIFFERS when it is stale - so a masked object
        keeps the old behaviour, and the common unmasked one, which is most of
        them, gets the cheap frame. */
-    const needWear = obj.mesh.userData.wantsWear !== false;
     let triSign = null;
     /* `needWear` ALONE (v3.21a). This read `!dirtyVerts || needWear`, and
        `dirtyVerts` is not computed until 90 lines below - so the left half was
