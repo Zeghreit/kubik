@@ -128,25 +128,25 @@ earlier "529ms drag frame" figure is really a **whole-mesh element drag**, not a
 one-vertex drag - and it is consistent with A2, whose whole point is that cost
 follows what moved. A one-vertex drag on the same mesh should be milliseconds.
 
-EVERY "DRAG FRAME" NUMBER MEASURED SO FAR WAS A FULL PASS. The witness says so.
+SYNTHETIC DRAGS DO NOT START. `_dragptr.js` dispatches real `pointerdown` /
+`pointermove` / `pointerup` on the canvas at the mesh centre: the tap picks a
+vertex (143722) and the moves cost 7.8ms each, but `shadeStats` is NONE - no
+shading ran at all, so no drag was ever captured. `beginDirectDrag` does capture
+one, but with an EMPTY entry list, which is why every frame it produced was a full
+pass.
 
-`applyShading`'s dirty branch writes `geometry.userData.shadeStats`; a full pass
-never does. After five real drag frames at 507,791 faces the probe reads **NONE**,
-and the frame is 513-526ms - exactly a full shade. The same probe, calling
-`applyShading(o, [oneAttr])` directly while that drag is live, gets **51ms**.
+`_shade_probe` is the only thing in the project that starts a drag with real
+entries, and its setup is what has to be copied - in full, not guessed at: it sets
+`selectedObjectIds`, `setTransformTool('move')`, `App.transformMode = 'free'`, and
+something in its tap/selection prelude that this probe has not reproduced.
+READ `_shade_probe.js` FROM THE TOP before writing another drag probe.
 
-So the drag `beginDirectDrag` captured has an EMPTY entry list: it bumps
-`position.version` (so the probe's witness passes) and calls
-`applyShading(obj, moved)` with an empty `moved`, which correctly falls back to the
-full pass. That is why the number does not follow what moved - there was nothing
-moving.
-
-Consequence, and it is the honest one: A2 is proven CORRECT (`_dirtycmpt.js`, 9/9
-bit-identical) and its dirty path costs 51ms for one vertex, but **it has never
-been shown to engage in a real drag from a probe**. The next attempt must start a
-drag that actually has entries - capture the vertex the way the app's own
-pointerdown does, not just `pickVertexOnActive` plus `beginDirectDrag` - and use
-`shadeStats` being PRESENT as the witness that the dirty branch ran.
+What A2 can still be quoted as, with evidence:
+- CORRECT: `_dirtycmpt.js`, 9/9 bit-identical to a full pass, dirty branch proven
+  to run by the update range and by `shadeStats`.
+- CHEAP WHEN IT RUNS: `applyShading(o, [oneAttr])` on a live drag is **51ms**
+  against ~510ms for the full pass.
+- NOT MEASURED: its effect on a drag that a probe actually captures.
 
 ## The road to 500k: what stages 0 and A1 actually bought (v3.18, v3.19)
 
