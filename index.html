@@ -9951,7 +9951,15 @@ function buildShadingTopo(geo, withComponents) {
            first shade after each topo rebuild, and leaves the read in the
            union-find - the hot load this whole change was made for -
            polymorphic until it settles. */
-        rec = { faces: [], use: [], opp: [], tri: [], ends: [lo, hi], sharp: false };
+        /* THREE ARRAYS ARE THE WEAR LIST'S ALONE (v3.21f): `use`, `opp` and
+           `tri` are read only by `isOutline` and the convex/concave test, and
+           neither runs for an object without a shape mask. At 1.1M edges that is
+           3.3M arrays that were built for nothing on every operation. They are
+           absent - not empty - when `withComponents` is false, and the cache key
+           carries that flag, so a wear caller never receives such a record. */
+        rec = withComponents
+          ? { faces: [], use: [], opp: [], tri: [], ends: [lo, hi], sharp: false }
+          : { faces: [], ends: [lo, hi], sharp: false };
         edges.set(k, rec);
         let ia = incident.get(lo); if (!ia) { ia = []; incident.set(lo, ia); } ia.push(rec);
         let ib = incident.get(hi); if (!ib) { ib = []; incident.set(hi, ib); } ib.push(rec);
@@ -9962,11 +9970,14 @@ function buildShadingTopo(geo, withComponents) {
       let gi = -1;
       for (let z = 0; z < fs.length; z++) if (fs[z] === g) { gi = z; break; }
       if (gi < 0) {
-        gi = fs.length; fs.push(g); rec.use.push(0);
-        rec.opp.push(index.getX(t * 3 + (e + 2) % 3));
-        rec.tri.push(t);
+        gi = fs.length; fs.push(g);
+        if (withComponents) {
+          rec.use.push(0);
+          rec.opp.push(index.getX(t * 3 + (e + 2) % 3));
+          rec.tri.push(t);
+        }
       }
-      rec.use[gi]++;
+      if (withComponents) rec.use[gi]++;
     }
   }
 

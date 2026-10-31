@@ -208,6 +208,23 @@ BEFORE the first marker inside the element branch - in `findObject`,
 `dragCtx.type` or the dispatch around them, or the split was taken on a frame
 cheaper than the median (it reads the LAST call, not the median one).
 
+## And three of an edge's five arrays are wear's alone (v3.21f)
+
+An edge record was `{faces, use, opp, tri, ends, sharp}` - five arrays each, so
+5.5M arrays for 1.1M edges on every operation. `use`, `opp` and `tri` are read only
+by `isOutline` and the convex/concave test, and neither runs for an object without
+a shape mask. They are now ABSENT rather than empty when `withComponents` is false,
+and the cache key carries that flag, so a wear caller never receives such a record.
+
+    rebuild (one operation)   1.89s -> 1.59s
+    applyShading              1.54s -> 1.21s
+
+WITH WEAR ON the same shade is 2.89s and `_shade_probe` reports every wear
+position identical, so the record shape is right in both worlds. 36 probes clean.
+
+Cumulative on this line of work, 507,791 faces: one operation **3.42s -> 1.59s**,
+`applyShading` **2.80s -> 1.21s**, import **6.29s -> 4.12s**.
+
 ## The winding components are built only for objects that need them (v3.21e)
 
 The 2.2s bucket in the measurement below was `buildShadingTopo`, and the single
