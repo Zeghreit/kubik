@@ -128,20 +128,25 @@ earlier "529ms drag frame" figure is really a **whole-mesh element drag**, not a
 one-vertex drag - and it is consistent with A2, whose whole point is that cost
 follows what moved. A one-vertex drag on the same mesh should be milliseconds.
 
-A SINGLE-VERTEX DRAG IS ALSO ~526ms, and that contradicts the O(entries) reading.
+EVERY "DRAG FRAME" NUMBER MEASURED SO FAR WAS A FULL PASS. The witness says so.
 
-`_dragone.js` taps the CENTRE (the quarter point picks nothing - `pickVertexOnActive`
-returned -1 there), gets a vertex (143722), starts the drag with the version
-witness, and a frame is **525.9ms [510.9-640.1]** - the same as the whole-mesh
-drag, to within noise. So the frame does NOT follow what moved, even though the
-dirty shade of twelve spread vertices was measured at ~51ms.
+`applyShading`'s dirty branch writes `geometry.userData.shadeStats`; a full pass
+never does. After five real drag frames at 507,791 faces the probe reads **NONE**,
+and the frame is 513-526ms - exactly a full shade. The same probe, calling
+`applyShading(o, [oneAttr])` directly while that drag is live, gets **51ms**.
 
-That leaves one question, and it is the only one worth asking next: is
-`applyShading` inside the drag taking the dirty path AT ALL? The probe can answer
-it by timing `applyShading(o, [thatOneId])` while the drag is live: milliseconds
-means the drag frame is spent elsewhere in applyDeltaToSelection, ~500ms means the
-dirty branch is not being entered (empty `moved`, or `dirtyVerts` empty and the
-silent fallback running).
+So the drag `beginDirectDrag` captured has an EMPTY entry list: it bumps
+`position.version` (so the probe's witness passes) and calls
+`applyShading(obj, moved)` with an empty `moved`, which correctly falls back to the
+full pass. That is why the number does not follow what moved - there was nothing
+moving.
+
+Consequence, and it is the honest one: A2 is proven CORRECT (`_dirtycmpt.js`, 9/9
+bit-identical) and its dirty path costs 51ms for one vertex, but **it has never
+been shown to engage in a real drag from a probe**. The next attempt must start a
+drag that actually has entries - capture the vertex the way the app's own
+pointerdown does, not just `pickVertexOnActive` plus `beginDirectDrag` - and use
+`shadeStats` being PRESENT as the witness that the dirty branch ran.
 
 ## The road to 500k: what stages 0 and A1 actually bought (v3.18, v3.19)
 
