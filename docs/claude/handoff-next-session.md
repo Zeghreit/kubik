@@ -260,3 +260,32 @@ it from NEW steps while still reading it from old files is the safe version.
 
 Do not touch this without a probe that round-trips a doc through save -> load ->
 compare, and one that undoes an edit that changed exactly one face's material.
+
+## B - THE LOADER SIDE, and it is the sharper argument (31.10)
+
+`restoreDoc` does `od.materials.map(...)` and that map builds a REAL
+`THREE.MeshPhysicalMaterial` per entry (index.html, the `const mats = od.materials.map`
+block). `od.materials` is one entry per FACE. So opening a 508k-face file creates
+508,000 physical materials before `dressFromPool` replaces them with pooled
+instances on the next reconcile - a transient spike that is worse than the 190MB
+step, and it exists for exactly the same reason.
+
+That settles the shape of the first B change, and it is small:
+
+1. `serializeDoc`: when the per-face material definitions collapse to few runs,
+   write `materialRuns: [{count, def}, ...]` INSTEAD of `materials`. Old files
+   keep the old key and stay readable.
+2. `restoreDoc`: `const matDefs = od.materialRuns ? expandRuns(od.materialRuns) : od.materials`
+   where `expandRuns` returns a per-face ARRAY OF THE SAME REFERENCES (one small
+   object per run, 4MB of pointers at 508k, not 508k objects). Then use
+   `matDefs` in the two places that read `od.materials` (the length check against
+   `liveLook.surfaces`, and the `.map`), and let `dressFromPool` collapse the
+   rest as it already does.
+3. `estimateDocBytes`: count `materialRuns.length * 160` when the key is present,
+   or the step will look smaller than it is to `trimHistory`.
+4. `finishes` is a separate, later decision - see the entry above.
+
+PROVE IT WITH: build an object of a few thousand faces, paint ONE face a
+different material, save the doc, restore it, and compare - face count, the
+material on every face, and the colour/metalness of the one painted face. Then
+undo one edit and compare again. Not before.
