@@ -30009,23 +30009,48 @@ function pickEdgeOnActive(ev, bias = 1) {
      wins" is supposed to hold everywhere, not just for vertices. */
   let cands = [];
   let facingDropped = 0;
+  /* SAME TREATMENT AS THE VERTEX SWEEP (v3.21c): one composed matrix, no
+     allocation per point, and the segment distance done in numbers. This picker
+     was 339ms median at 507,791 faces - worse than the vertex one, because it
+     runs TWO projections and four `Vector2`s through `closestOnSegmentPx` for
+     every one of 1.1M edges. */
+  projectSetup();
+  const mvpE = mvpFor(obj);
   topo.edges.forEach((e, i) => {
     const a = topo.logicalGroups[e[0]][0], b = topo.logicalGroups[e[1]][0];
-    const pA = new THREE.Vector3(pa.getX(a), pa.getY(a), pa.getZ(a)); obj.mesh.localToWorld(pA);
-    const pB = new THREE.Vector3(pa.getX(b), pa.getY(b), pa.getZ(b)); obj.mesh.localToWorld(pB);
-    const sA = worldToScreenPx(pA), sB = worldToScreenPx(pB);
-    if (!sA || !sB) return;
-    const near = closestOnSegmentPx(tap, sA, sB);
-    if (near.d > limit) return;
+    const ax = pa.getX(a), ay = pa.getY(a), az = pa.getZ(a);
+    const bx = pa.getX(b), by = pa.getY(b), bz = pa.getZ(b);
+    const sA = projectPoint(mvpE, ax, ay, az);
+    if (!sA.ok) return;
+    const axp = sA.x, ayp = sA.y;
+    const sB = projectPoint(mvpE, bx, by, bz);
+    if (!sB.ok) return;
+    const bxp = sB.x, byp = sB.y;
+    const abx = bxp - axp, aby = byp - ayp;
+    const len2 = abx * abx + aby * aby;
+    let nearT, nearD;
+    if (len2 < 1e-9) {
+      nearT = 0;
+      const ex = tap.x - axp, ey = tap.y - ayp;
+      nearD = Math.sqrt(ex * ex + ey * ey);
+    } else {
+      nearT = ((tap.x - axp) * abx + (tap.y - ayp) * aby) / len2;
+      nearT = nearT < 0 ? 0 : (nearT > 1 ? 1 : nearT);
+      const ex = tap.x - (axp + abx * nearT), ey = tap.y - (ayp + aby * nearT);
+      nearD = Math.sqrt(ex * ex + ey * ey);
+    }
+    if (nearD > limit) return;
     if (!edgeVisible(obj, e)) { facingDropped++; return; }
+    const pA = new THREE.Vector3(ax, ay, az); obj.mesh.localToWorld(pA);
+    const pB = new THREE.Vector3(bx, by, bz); obj.mesh.localToWorld(pB);
     /* Depth where you actually aimed, not at the midpoint: an edge running
        away from the camera is far nearer at one end than the other, and the
        midpoint would misreport both. */
     const zA = pA.distanceTo(camera.position), zB = pB.distanceTo(camera.position);
     // The same spot along the edge that decided the depth, for the same
     // reason - an edge is often hidden at one end and plain at the other.
-    cands.push({ i: i, d: near.d, z: zA + (zB - zA) * near.t,
-                 p: pA.clone().lerp(pB, near.t) });
+    cands.push({ i: i, d: nearD, z: zA + (zB - zA) * nearT,
+                 p: pA.clone().lerp(pB, nearT) });
   });
   if (!cands.length) {
     if (facingDropped) pickHiddenOnly = true;

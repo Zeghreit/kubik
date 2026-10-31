@@ -222,9 +222,15 @@ the returned ids are IDENTICAL to the old picker's, which is the proof the
 arithmetic did not move. `_pick_probe` passes; the occlusion budget still holds at
 12.
 
-Still open: `pickEdgeOnActive` is **339ms** for the same reason (two projections per
-edge over 1.1M edges) and has not been given the same treatment - that is the next
-step, and it is the same change.
+`pickEdgeOnActive` got the same treatment and went **339ms -> 134ms** median
+(max 145, down from 727). It runs two projections and four `Vector2`s through
+`closestOnSegmentPx` for every one of 1.1M edges; both are gone, and the segment
+distance is now arithmetic on numbers.
+
+What is left in both is the sweep itself - O(vertices) and O(edges) per tap with no
+allocation. The next step is the spatial one from the plan: a 32px screen grid
+built once per (camera, geometry), or a GPU id buffer. Until then a vertex tap is
+~17-34ms and an edge tap ~134ms at 500k, both of which are usable but not instant.
 
 ## The drag frame is 0.2ms (v3.21b)
 
