@@ -155,13 +155,21 @@ have been tested: not the vertex pass (the ring is the same), not the wear list
 (`wantsWear = false` gives 68.3 vs 67.9ms), not `triSign` (it is skipped in that
 same run and the frame does not move).
 
-NEXT MEASUREMENT, precisely: call `applyShading(o, [theDraggedVertexAttr])` on the
-508k mesh - the DRAGGED vertex, not attribute 0. The earlier 47.5ms figure used
-attribute 0, which is the sphere's pole with 624 groups, so it measured a
-pathological ring and confounded everything. If that call is milliseconds, the
-O(mesh) work is OUTSIDE applyShading and inside `applyDeltaToSelection`
-(growBounds, rewriteEdgeMarks, setLocal); if it is ~60ms, the dirty branch itself
-still has an O(mesh) pass.
+MEASURED, and it lands INSIDE applyShading: the dirty shade of the DRAGGED
+vertex's own ring - 6 face groups, 6 triangles, 19 vertices - costs **45.2ms** on
+the 508k mesh, against 1.2ms for the same ring on a 5,360-face mesh. So the dirty
+branch still contains an O(MESH) pass.
+
+The candidate is `triSign`, which is rebuilt over every triangle whenever the
+object wants a wear list, and that run had wear ON.
+
+WHERE THE NUMBERS DO NOT AGREE, and this has to be resolved before acting on it:
+the same drag with `wantsWear = false` - which skips `triSign` AND the full edge
+pass - is still **66.9ms**. If `triSign` were the owner, that frame should have
+collapsed to a few milliseconds. So either the skip is not happening on that path,
+or a second O(mesh) pass is being paid as well. The next probe must report
+`shadeStats` and the frame time on the WEAR-OFF loop separately, and check that
+`needWear` really is false there.
 
 ## The road to 500k: what stages 0 and A1 actually bought (v3.18, v3.19)
 
