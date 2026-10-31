@@ -21,7 +21,7 @@ work. What is gone is the implied ceiling.
   remove it as a stray network call. Weekly unique opens is the metric the
   promotion plan is steered by.
 - Repo: `C:\Users\a.bodrov\Projects\kubik` (index.html is ~52,400 lines)
-- Version at time of writing: **2.93**
+- Version at time of writing: **3.19**
 - **2.0 is claimed.** The `a2.x` line — alpha 2.0 — ran from a2.0 to a2.113a
   and is finished; everything below that is written `a2.N` is history, and
   the number is kept because the comments in the code cite it. New work from
@@ -36,6 +36,60 @@ appear only where they explain why something is the way it is. It was
 rewritten at v1.93 because it had accumulated per-version sediment and had
 begun contradicting itself — a handoff that argues with itself is worse
 than none. Prefer rewriting a section over appending to it.
+
+## The road to 500k: what stages 0 and A1 actually bought (v3.18, v3.19)
+
+The next big number is 500k faces in one scene. These are the first two steps
+of `claude/heavy-mesh-plan.md`, and each was measured with `_heavytarget.js`
+(headless Chrome, desktop CPU, median of three with a forced GC between).
+
+**v3.18 - the rebuild stops making garbage.** `separateGroupVertices` built one
+`Map` per GROUP, and a group is a face: 507,791 Maps per rebuild of a 508k
+mesh. Two flat tables with a generation stamp now do the same job for every
+group at once, the index buffer falls out of the same pass, and everything is
+written into typed arrays of final size instead of grown by `push`.
+`rebuildFromEditable` also called `geo.addGroup` once per FACE and
+`mergeDrawGroups` then cleared all of them and rebuilt the real runs from the
+finished material array - that call is gone. And `Float32BufferAttribute` runs
+`new Float32Array(array)`, which COPIED a buffer that was already float32:
+19MB per operation at 500k. A plain `BufferAttribute` wraps it instead.
+Same harness, before and after: import build at 508k **7.31s -> 5.54s**, one
+operation **3.16s -> 2.98s**. The rebuild half of an operation is now ~250ms of
+those 2.98s, so the ceiling was always applyShading.
+
+**v3.19 - applyShading stops allocating per element (stage A1).** Triangle
+normals were 574,720 `Vector3`, face-group normals 507,791 more, and the wear
+list a `Map` with one entry per EDGE (1.1M) plus a second pass that rebuilt
+every string key to look its own entry up again. Now: two reused
+`Float64Array`s, and the wear flag lives on the edge record. Float64 and not
+float32 on purpose - the same doubles, summed in the same order - so the answer
+had to be identical, and `_shadecmpt.js` proves it: 15 rows (7 shapes x wear
+on/off, plus a rebuild through `rebuildFromEditable`) hash the whole normal
+attribute, the whole edge list and the face map, and every hash matches the
+saved v3.18 byte for byte.
+
+**And it is not faster.** Median of three, 508k faces: applyShading 3.83s
+(v3.18) against 3.51s (v3.19), spread +-0.3s; at 177k, 1.15s against 1.19s. The
+allocation was not where the time went. It stays in the tree because A2 (the
+dirty set on a drag) needs a buffer that is not rebuilt from scratch on every
+call, and because 40MB of garbage per frame is a cost a phone pays in heat even
+when the clock does not show it.
+
+**The bench lesson, and this is the part that changes how the rest is measured.**
+At 500k the same operation on the SAME build read 2.73s, 2.82s and 3.64s across
+three runs. A single shot at this size is GC weather: +-20-45%. Every number
+below and in `heavy-mesh-plan.md` is now a median with a forced GC, and a claim
+under ~30% at 500k needs two runs of the same harness to mean anything. The
+v3.16 table in that document was taken single-shot and is optimistic by roughly
+a third - its shape is right, its decimals are not.
+
+**Where the 3.5s of applyShading actually goes**, measured by subtraction rather
+than by reading the code: 575k triangle normals, 1.1M edges with a dot each,
+1.59M logical-vertex fans through the union-find, and 4.8M attribute reads
+through `BufferAttribute.getX`. All of it O(N), per call, none of it
+allocation. That is what stage A2 exists to remove, and no in-place tuning of
+this function will stand in for it.
+
 
 ## Materials are physical (v3.00)
 

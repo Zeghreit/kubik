@@ -3240,7 +3240,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.17</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.19</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -10078,6 +10078,34 @@ function ufScratch(n) {
   return S;
 }
 
+/* SCRATCH FOR THE TWO NORMAL LISTS (v3.19).
+
+   `applyShading` used to allocate 574,720 `Vector3`s for the triangle normals
+   and 507,791 more for the face-group normals on a 508k-face mesh - 40MB of
+   garbage per call, on the pass that runs on every frame of a drag. They are
+   Float64Arrays now: the doublesthe Vector3 fields held, in the same order,
+   so every sum below is bit-for-bit what it was. Float32 would have been
+   smaller and would have made "does the rewrite change the answer" a question
+   about tolerance instead of a question about 0.
+
+   Kept across calls and grown by doubling, because 14MB per shade is exactly
+   the cost this exists to remove - and released when the mesh that needed it
+   is gone, because 26MB held forever after one big import is its own bug. */
+const _shadeScratch = { tri: new Float64Array(0), grp: new Float64Array(0) };
+function shadeTriBuf(n) {
+  const need = n * 3, cur = _shadeScratch.tri;
+  if (cur.length < need) _shadeScratch.tri = new Float64Array(Math.max(need, cur.length * 2, 1024));
+  else if (cur.length > need * 4 && cur.length > 65536) _shadeScratch.tri = new Float64Array(need);
+  return _shadeScratch.tri;
+}
+function shadeGroupBuf(n) {
+  const need = n * 3, cur = _shadeScratch.grp;
+  if (cur.length < need) _shadeScratch.grp = new Float64Array(Math.max(need, cur.length * 2, 1024));
+  else if (cur.length > need * 4 && cur.length > 65536) _shadeScratch.grp = new Float64Array(need);
+  else _shadeScratch.grp.fill(0, 0, need);
+  return _shadeScratch.grp;
+}
+
 function applyShading(obj) {
   // Shading is a property of faces. A curve has none, and every shade path in
   // the app - flat, smooth, by angle, the wear pass - ends up here.
@@ -10186,18 +10214,46 @@ function applyShading(obj) {
        line each, and applyShading runs on every frame of an op-bar drag.
        Identical arithmetic; two thirds fewer allocations. */
     const eU = new THREE.Vector3(), eV = new THREE.Vector3();
-    const triNormal = new Array(triCount);
-    const groupNormal = [];
-    for (let gi = 0; gi < groupsSrc.length; gi++) groupNormal.push(new THREE.Vector3());
+    /* FLAT AND REUSED (v3.19) - see `shadeTriBuf`. Three doubles per triangle
+       and three per face group, indexed by the same numbers the Vector3s were
+       looked up by. The face-group list is zeroed here because it ACCUMULATES
+       - a fresh Vector3 started at zero, a recycled buffer does not. */
+    const triNormal = shadeTriBuf(triCount);
+    const groupNormal = shadeGroupBuf(groupsSrc.length);
     for (let t = 0; t < triCount; t++) {
       const ia = index.getX(t * 3), ib = index.getX(t * 3 + 1), ic = index.getX(t * 3 + 2);
       vA.fromBufferAttribute(posAttr, ia); vB.fromBufferAttribute(posAttr, ib); vC.fromBufferAttribute(posAttr, ic);
-      const nrm = new THREE.Vector3().crossVectors(
-        eU.subVectors(vB, vA), eV.subVectors(vC, vA));
-      groupNormal[triGroup[t]].add(nrm);
-      triNormal[t] = nrm.lengthSq() > 1e-12 ? nrm.normalize() : nrm;
+      eU.subVectors(vB, vA); eV.subVectors(vC, vA);
+      /* Vector3.crossVectors written out, in its own order. */
+      const nx = eU.y * eV.z - eU.z * eV.y;
+      const ny = eU.z * eV.x - eU.x * eV.z;
+      const nz = eU.x * eV.y - eU.y * eV.x;
+      /* The RAW cross product is what the group accumulates - the normalise
+         below happens after the add, and that order is load-bearing for the
+         area weighting. */
+      const g = triGroup[t] * 3;
+      groupNormal[g] += nx; groupNormal[g + 1] += ny; groupNormal[g + 2] += nz;
+      const o = t * 3;
+      const lenSq = nx * nx + ny * ny + nz * nz;
+      if (lenSq > 1e-12) {
+        /* `normalize()` is `divideScalar(length() || 1)`, which is this
+           multiply by 1/length - same operations, same last bit. */
+        const inv = 1 / Math.sqrt(lenSq);
+        triNormal[o] = nx * inv; triNormal[o + 1] = ny * inv; triNormal[o + 2] = nz * inv;
+      } else {
+        triNormal[o] = nx; triNormal[o + 1] = ny; triNormal[o + 2] = nz;
+      }
     }
-    groupNormal.forEach(n => { if (n.lengthSq() > 1e-12) n.normalize(); });
+    for (let gi = 0; gi < groupsSrc.length; gi++) {
+      const o = gi * 3;
+      const lenSq = groupNormal[o] * groupNormal[o] +
+                    groupNormal[o + 1] * groupNormal[o + 1] +
+                    groupNormal[o + 2] * groupNormal[o + 2];
+      if (lenSq > 1e-12) {
+        const inv = 1 / Math.sqrt(lenSq);
+        groupNormal[o] *= inv; groupNormal[o + 1] *= inv; groupNormal[o + 2] *= inv;
+      }
+    }
 
     const marks = obj.mesh.userData.edgeShade;
     const hasMarks = !!marks && Object.keys(marks).length > 0;
@@ -10234,8 +10290,15 @@ function applyShading(obj) {
        regress. The two tests have to agree or the list is built from an empty
        Map, which is why this reads the same flag and not a paraphrase of it. */
     const needWear = obj.mesh.userData.wantsWear !== false;
-    const wear = new Map();
-    edges.forEach((rec, k) => {
+    /* ON THE RECORD, NOT IN A MAP (v3.19). This was one `Map` entry per EDGE -
+       a 1.1M-entry Map built on every frame of a drag, and then a SECOND pass
+       that rebuilt the same string key to look each record up again. The flag
+       it stored is a boolean about an edge, so it lives on the edge now, and
+       the pass below walks `edges` once more instead of rebuilding a key per
+       edge. Same reasoning as `rec.sharp`: the edge list is rewritten for
+       every record before anything reads one, and nothing between the two
+       loops can run. */
+    edges.forEach((rec) => {
       const fs = rec.faces;
       let mark = null, creased = false;
       // A crease has had no say in SHADING since a2.18 - it means only "hold
@@ -10261,7 +10324,12 @@ function applyShading(obj) {
       if (fs.length !== 2) sh = true;
       else if (mark === 'sharp') sh = true;
       else if (mark === 'smooth') sh = false;
-      else sh = groupNormal[fs[0]].dot(groupNormal[fs[1]]) < cosLimit - SHARP_EPS;
+      else {
+        const a = fs[0] * 3, b = fs[1] * 3;
+        sh = (groupNormal[a] * groupNormal[b] +
+              groupNormal[a + 1] * groupNormal[b + 1] +
+              groupNormal[a + 2] * groupNormal[b + 2]) < cosLimit - SHARP_EPS;
+      }
       /* ON THE RECORD, and ONLY on the record (a2.82). The union-find reads
          this once per incident edge per vertex, which was one of the two Map
          lookups that loop was paying.
@@ -10290,11 +10358,8 @@ function applyShading(obj) {
          deletes its entire outline and the mask paints nothing, with the
          shading looking identical either way. */
       if (needWear) {
-        wear.set(k, creased ? true
-                  : mark === 'sharp' ? true
-                  : fs.length !== 2 ? true
-                  : mark === 'smooth' ? false
-                  : sh);
+        rec.wear = creased || mark === 'sharp' || fs.length !== 2 ||
+                   (mark !== 'smooth' && sh);
       }
     });
 
@@ -10383,8 +10448,8 @@ function applyShading(obj) {
         if (accStamp[r] !== stamp) {
           accStamp[r] = stamp; accX[r] = 0; accY[r] = 0; accZ[r] = 0; touched.push(r);
         }
-        const nv = triNormal[t];
-        accX[r] += nv.x; accY[r] += nv.y; accZ[r] += nv.z;
+        const no = t * 3;
+        accX[r] += triNormal[no]; accY[r] += triNormal[no + 1]; accZ[r] += triNormal[no + 2];
       }
       for (let i = 0; i < touched.length; i++) {
         const r = touched[i];
@@ -10433,14 +10498,16 @@ function applyShading(obj) {
           if (accStamp[r] === stamp) { x = accX[r]; y = accY[r]; z = accZ[r]; }
         }
         if (x * x + y * y + z * z < 1e-12) {
-          const gn = groupNormal[g];
-          if (gn.lengthSq() > 1e-12) { x = gn.x; y = gn.y; z = gn.z; }
+          const go = g * 3;
+          const gx = groupNormal[go], gy = groupNormal[go + 1], gz = groupNormal[go + 2];
+          if (gx * gx + gy * gy + gz * gz > 1e-12) { x = gx; y = gy; z = gz; }
           else {
             let got = false;
             for (let q = 0; q < tris.length; q++) {
               if (triGroup[tris[q]] !== g) continue;
-              const tn = triNormal[tris[q]];
-              if (tn.lengthSq() > 1e-12) { x = tn.x; y = tn.y; z = tn.z; got = true; break; }
+              const to = tris[q] * 3;
+              const tx = triNormal[to], ty = triNormal[to + 1], tz = triNormal[to + 2];
+              if (tx * tx + ty * ty + tz * tz > 1e-12) { x = tx; y = ty; z = tz; got = true; break; }
             }
             if (!got) continue;       // nothing anywhere says which way it faces
           }
@@ -10506,9 +10573,8 @@ function applyShading(obj) {
     const wePos = [], weKind = [];
     const wA = new THREE.Vector3(), wB = new THREE.Vector3();
     const wM = new THREE.Vector3(), wO = new THREE.Vector3();
-    wear.forEach((isEdge, k) => {
-      if (!isEdge) return;
-      const rec = edges.get(k);
+    edges.forEach((rec) => {
+      if (!rec.wear) return;
       if (!isOutline(rec)) return;
       const ends = rec.ends, fs = rec.faces, ops = rec.opp, ots = rec.tri;
       if (!ends || !fs || !fs.length) return;
@@ -10531,12 +10597,13 @@ function applyShading(obj) {
          normal: on a warped face the sum points nowhere useful, and after
          Flip Normals it points inward, which inverted every edge of it. */
       if (fs.length === 2 && ops.length >= 2 && ots.length >= 1) {
-        const n0 = triNormal[ots[0]];
-        if (n0 && n0.lengthSq() > 1e-12) {
+        const n0o = ots[0] * 3;
+        const n0x = triNormal[n0o], n0y = triNormal[n0o + 1], n0z = triNormal[n0o + 2];
+        if (n0x * n0x + n0y * n0y + n0z * n0z > 1e-12) {
           wM.copy(wA).add(wB).multiplyScalar(0.5);
           wO.fromBufferAttribute(posAttr, ops[1]).sub(wM);
           // The one place the winding pass is read.
-          convex = wO.dot(n0) * triSign[ots[0]] < 0;
+          convex = (wO.x * n0x + wO.y * n0y + wO.z * n0z) * triSign[ots[0]] < 0;
         }
       }
       wePos.push(wA.x, wA.y, wA.z, wB.x, wB.y, wB.z);
@@ -12205,6 +12272,35 @@ function toEditable(mesh) {
 // across neighbouring faces and the result is stuck looking smooth. Vertices at
 // the same position are still welded logically (see computeLogicalOf), so
 // editing and the Shade Smooth overlay continue to treat them as one point.
+/* TWO FLAT TABLES FOR EVERY GROUP AT ONCE, instead of one Map per group (v3.18).
+
+   `separateGroupVertices` used to build a fresh `Map` for EVERY group, and a
+   group here is a FACE - so a 508k-face import allocated 508k Maps to look up a
+   handful of vertex ids each, and every one of them went straight in the bin.
+   Measured on that import the whole rebuild was 3.16s, and this was the largest
+   single item in the half of it that is not shading.
+
+   `_sepOwner[vi]` is the stamp of the group whose private copy that logical
+   vertex currently holds, `_sepCopy[vi]` is the attribute index of that copy.
+   The stamp is the group's own 1-based number, so it is unique within a call
+   and nothing has to be cleared between groups; only the vertices actually
+   touched are reset at the end, which is O(corners) and not O(vertices).
+
+   Scratch, so it is never freed: 12 bytes per LOGICAL vertex, kept across
+   calls and grown by doubling. That is the price of not allocating 508k
+   objects, and it is paid once. */
+const _sepScratch = { owner: new Int32Array(0), copy: new Int32Array(0), touched: new Int32Array(0) };
+let _sepCap = 0;
+function _sepTables(n) {
+  if (n <= _sepCap) return;
+  let c = _sepCap || 1024;
+  while (c < n) c *= 2;
+  _sepCap = c;
+  _sepScratch.owner = new Int32Array(c);
+  _sepScratch.copy = new Int32Array(c);
+  _sepScratch.touched = new Int32Array(c);
+}
+
 function separateGroupVertices(ed) {
   /* AND THE UV COMES WITH EACH COPY (v2.28). This function is why a seam costs
      nothing here: every face already gets private vertices, so two faces that
@@ -12215,23 +12311,64 @@ function separateGroupVertices(ed) {
      Carried only when the incoming UV actually describes the incoming
      vertices. The check is in one place because every op ends up here. */
   const withUV = uvsMatch(ed);          // length only; the caller decided
-  const positions = [];
-  const uvs = withUV ? [] : null;
-  const groups = ed.groups.map(g => {
-    const remap = new Map();
-    const triangles = g.triangles.map(tri => tri.map(vi => {
-      let ni = remap.get(vi);
-      if (ni === undefined) {
-        ni = positions.length / 3;
-        positions.push(ed.positions[vi * 3], ed.positions[vi * 3 + 1], ed.positions[vi * 3 + 2]);
-        if (uvs) uvs.push(ed.uvs[vi * 2], ed.uvs[vi * 2 + 1]);
-        remap.set(vi, ni);
+  const groups = ed.groups;
+  const L = (ed.positions.length / 3) | 0;
+  /* Sized from `corners` as well as `L`: every index this function will ask
+     about is a corner, so a table of max(L, corners) entries cannot be run
+     out of - and `touched` only ever holds distinct logical vertices. */
+  let corners = 0;
+  for (let gi = 0; gi < groups.length; gi++) corners += groups[gi].triangles.length * 3;
+  _sepTables(Math.max(L, corners));
+  const owner = _sepScratch.owner, copyOf = _sepScratch.copy, touched = _sepScratch.touched;
+  /* THE OUTPUT IS BUILT AT ITS FINAL SIZE, not grown by push. `corners` is an
+     upper bound on the attribute vertex count - every corner its own vertex -
+     and the real count is smaller by exactly what shared corners save, so a
+     quad keeps four vertices for six corners. The bound is trimmed below
+     rather than guessed at twice. */
+  const posBuf = new Float32Array(corners * 3);
+  const uvBuf = withUV ? new Float32Array(corners * 2) : null;
+  const index = new Uint32Array(corners);
+  const starts = new Int32Array(groups.length + 1);
+  let nv = 0, nc = 0, nt = 0, maxIdx = 0;
+  for (let gi = 0; gi < groups.length; gi++) {
+    const tris = groups[gi].triangles;
+    const stamp = gi + 1;
+    starts[gi] = nc;
+    for (let ti = 0; ti < tris.length; ti++) {
+      const tri = tris[ti];
+      for (let k = 0; k < 3; k++) {
+        const vi = tri[k];
+        if (owner[vi] !== stamp) {
+          const ni = nv++;
+          if (owner[vi] === 0) touched[nt++] = vi;   // first claim in THIS call
+          owner[vi] = stamp;
+          copyOf[vi] = ni;
+          posBuf[ni * 3] = ed.positions[vi * 3];
+          posBuf[ni * 3 + 1] = ed.positions[vi * 3 + 1];
+          posBuf[ni * 3 + 2] = ed.positions[vi * 3 + 2];
+          if (uvBuf) { uvBuf[ni * 2] = ed.uvs[vi * 2]; uvBuf[ni * 2 + 1] = ed.uvs[vi * 2 + 1]; }
+          if (ni > maxIdx) maxIdx = ni;
+        }
+        index[nc++] = copyOf[vi];
       }
-      return ni;
-    }));
-    return { triangles };
-  });
-  const out = { positions, groups };
+    }
+  }
+  starts[groups.length] = nc;
+  for (let i = 0; i < nt; i++) owner[touched[i]] = 0;
+  /* TRIMMED TO THE REAL COUNT. Carrying the upper bound as a subarray would
+     keep a third of the buffer alive behind the attribute for the life of the
+     geometry, so this copies instead - one memcpy, against megabytes held
+     forever on a heavy mesh. */
+  const positions = nv * 3 === posBuf.length ? posBuf : posBuf.slice(0, nv * 3);
+  const uvs = uvBuf ? (nv * 2 === uvBuf.length ? uvBuf : uvBuf.slice(0, nv * 2)) : null;
+  /* Uint16 when the mesh is small enough for one. `setIndex` picks the type
+     from a plain array on its own; a typed array it takes as given, so the
+     choice is made here rather than left to a loop over 1.7M values. */
+  const out = {
+    positions,
+    index: maxIdx > 65535 ? index : new Uint16Array(index),
+    faceStarts: starts,
+  };
   if (uvs) out.uvs = uvs;
   return out;
 }
@@ -12345,29 +12482,35 @@ function rebuildFromEditable(obj, edInArg) {
   if (!keepUV && edIn.uvs) edIn = { positions: edIn.positions, groups: edIn.groups };
   const ed = separateGroupVertices(edIn);
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(ed.positions, 3));
+  /* WRAPPED, NOT COPIED (v3.18). `Float32BufferAttribute`'s constructor runs
+     `new Float32Array(array)`, which COPIES an array that is already float32 -
+     19MB of pointless memcpy at 500k vertices, on every operation. A plain
+     `BufferAttribute` over the same typed array is the same attribute. */
+  geo.setAttribute('position', new THREE.BufferAttribute(ed.positions, 3));
   /* Length-checked again on the way out, and not because separateGroupVertices
      is untrusted: an editable with no groups copies no vertices, so `uvs` comes
      back as an empty ARRAY rather than absent, and that set a uv attribute of
      count zero - an attribute that exists and describes nothing, which is the
      one state this whole gate exists to prevent. The broken build found it. */
   if (ed.uvs && ed.uvs.length && ed.uvs.length * 3 === ed.positions.length * 2) {
-    geo.setAttribute('uv', new THREE.Float32BufferAttribute(ed.uvs, 2));
+    geo.setAttribute('uv', new THREE.BufferAttribute(ed.uvs, 2));
   }
-  const flatIndex = [];
-  /* THE FACE MAP IS BUILT HERE, and this is the only place in the app where
-     the face layout is born (v2.23). Everything downstream asks the map how
-     many faces there are rather than counting draw groups. */
-  const faceStarts = new Int32Array(ed.groups.length + 1);
-  ed.groups.forEach((g, gi) => {
-    const start = flatIndex.length;
-    faceStarts[gi] = start;
-    g.triangles.forEach(tri => flatIndex.push(tri[0], tri[1], tri[2]));
-    geo.addGroup(start, g.triangles.length * 3, gi);
-  });
-  faceStarts[ed.groups.length] = flatIndex.length;
-  geo.setIndex(flatIndex);
-  publishFaces(geo, faceStarts);
+  /* THE FACE MAP IS BORN IN separateGroupVertices (v3.18, was v2.23 here).
+     The index buffer and the face starts come out of the SAME pass that gave
+     the faces their private vertices, so the caller no longer walks the
+     triangle lists a second time to flatten them. Everything downstream asks
+     the map how many faces there are rather than counting draw groups. */
+  geo.setIndex(new THREE.BufferAttribute(ed.index, 1));
+  publishFaces(geo, ed.faceStarts);
+  /* AND NO PER-FACE DRAW GROUPS ARE MADE HERE ANY MORE (v3.18). This used to
+     call `geo.addGroup(start, n, gi)` once per FACE - half a million group
+     objects on a 508k import - and then `mergeDrawGroups` called
+     `clearGroups()` and rebuilt the real runs from the finished material
+     array, throwing every one of them away. The runs are born there now,
+     which is the only place that has the material array to decide them by;
+     `faceRanges` and the two export paths already treat an empty group list
+     as "one run over the whole index buffer", so the window before
+     reconcileFinishes reads nothing that is missing. */
   geo.computeBoundingSphere();
   geo.computeBoundingBox();
 
@@ -57180,7 +57323,7 @@ if (PICK_DEBUG) {
     setCurveHandle, curveHandleChip, curveSplitSpan, curveSpanCtl,
     /* v2.23: a face and a draw group are two different things. The map is
        the one source of truth for how many faces a mesh has. */
-    publishFaces, publishFacesFromGroups, faceCount, faceRanges, mergeDrawGroups,
+    publishFaces, publishFacesFromGroups, faceCount, faceRanges, mergeDrawGroups, separateGroupVertices,
     /* v2.25: the BVH switch, so a probe can fire the same ray both ways. A
        faster answer is worth nothing until it is proven to be the SAME
        answer, and nothing about index order, groups or faceIndex is obvious

@@ -43,3 +43,32 @@ Idea from chat: the cutter stays a separate object linked to its target; grab it
 
 ## Harnesses
 `_punchchk.js` (~2 min), `_punchperf.js` (~5 min), `_boolchk.js`, `_opbarchk.js` — all via `_clean_probe.py` on the PC (or `_cloudprobe.py` in the cloud). Any probe driving `opSlider` must send 'change' after 'input'. Repro: `_holeschk.js`, `_crosschk.js`. PC (untracked): `py -3 _embedchk.py [page]` on localhost:8996; `_opchk.html` → `_opchk_out.txt`.
+
+## v3.18 / v3.19 - shipped (31.10): heavy-mesh stages 0 and A1, both measured
+Stage 0 (v3.18): `separateGroupVertices` no longer builds a Map per FACE (508k
+Maps on a 508k rebuild); `rebuildFromEditable` no longer calls `geo.addGroup`
+per face for `mergeDrawGroups` to throw away; `Float32BufferAttribute` no
+longer copies buffers that are already float32. Import build at 508k 7.31s ->
+5.54s, one operation 3.16s -> 2.98s (single shot, before/after the same bench).
+Stage A1 (v3.19): triangle and face-group normals are two reused Float64Arrays
+instead of 1.08M Vector3s, and the wear list is a flag on the edge record
+instead of a Map with 1.1M entries plus a second key-rebuild pass. Proven
+identical by `_shadecmpt.js` (15 rows, hashes of the whole normal buffer, the
+whole edge list and the face map, against a saved v3.18) - and proven NOT
+faster: 3.83s vs 3.51s median at 508k, spread +-0.3s.
+
+Bench method changed with this: `_heavytarget.js` now takes the median of
+three with a forced GC, because the same operation on the same build read
+2.73/2.82/3.64s across three single-shot runs. Any claim under ~30% at 500k
+needs two runs of the same harness. Older numbers in
+`claude/heavy-mesh-plan.md` are single-shot and optimistic by about a third.
+
+Not run: the full `_runprobes.py` battery after v3.19 - only probes 0 (ops),
+3 (perf), 18 (shade) and 23 (imp) were run, all clean; the whole 36-probe
+suite was run and clean on v3.18. No opus/fable review on either patch.
+
+Next, in order, from `claude/heavy-mesh-plan.md`: **A2 - applyShading on a
+dirty set** (a drag frame must be O(moved), not O(N)), then B (delta history:
+one step is 190MB at 500k, which is above the 128MB hard ceiling, so undo
+today is one step deep), then D (GPU picking: one tap is 1.0-2.1s), then C
+(rebuild in a Worker), then E+F (typed arrays + chunks), then G (helper LOD).
