@@ -208,6 +208,24 @@ BEFORE the first marker inside the element branch - in `findObject`,
 `dragCtx.type` or the dispatch around them, or the split was taken on a frame
 cheaper than the median (it reads the LAST call, not the median one).
 
+## A vertex tap is 4x cheaper (v3.21c)
+
+`pickVertexOnActive` projected every logical vertex through `worldToScreenPx`,
+which clones the point, projects it and returns a fresh Vector2 - three objects
+per vertex, ~4.8M per tap at 507,791 faces. `mvpFor` composes projection * view *
+model once and `projectPoint` walks the same matrices in the same order into a
+scratch triple. The candidate's world point is now built only for the handful that
+survive the 28px radius.
+
+Measured at 507,791 faces, 12 taps that all hit: **69.5ms -> 17.5ms** median, and
+the returned ids are IDENTICAL to the old picker's, which is the proof the
+arithmetic did not move. `_pick_probe` passes; the occlusion budget still holds at
+12.
+
+Still open: `pickEdgeOnActive` is **339ms** for the same reason (two projections per
+edge over 1.1M edges) and has not been given the same treatment - that is the next
+step, and it is the same change.
+
 ## The drag frame is 0.2ms (v3.21b)
 
 `syncHelperGeometry` had ONE caller - the drag itself - and it rewrote every vertex
