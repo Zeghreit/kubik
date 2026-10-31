@@ -106,10 +106,17 @@ Three things the probes taught, all of them now in the code:
 
 `_dirtycmpt.js`: 9 of 9 cases bit-identical to a full pass, with the dirty path
 proven to run (the update range is the witness). 36-probe suite clean.
-NOT measured: the drag frame at 500k. `_heavytarget.js` cannot see it - outside
-a real drag `shadingTopoFor` rebuilds the topology on every call, so that column
-is dominated by the rebuild, not by the shade. A drag-driven probe is the next
-measurement.
+MEASURED SINCE, by `_dragscale.js` - a probe that drives the app's own drag
+(`beginDirectDrag` / `applyDeltaToSelection` / `endDirectDrag`) instead of calling
+applyShading in the cold. At **507,791 faces**: drag frame **529ms** median
+(min 517, max 532 over five frames; the FIRST frame is 3,264ms because it builds
+the shading topology, which the rest of a drag then reuses).
+
+Before this stage the same frame was a full applyShading, ~3.5s - so A2 is about
+6.7x, and 529ms is still 30x over a 16ms frame. What is left is not the shading:
+the position attribute is written through `setXYZ` and `needsUpdate`, which is a
+full 19MB upload per frame, and `rewriteEdgeMarks` runs too. Both are the next
+thing to look at, and neither belongs to A2.
 
 
 ## The road to 500k: what stages 0 and A1 actually bought (v3.18, v3.19)
