@@ -163,13 +163,26 @@ branch still contains an O(MESH) pass.
 The candidate is `triSign`, which is rebuilt over every triangle whenever the
 object wants a wear list, and that run had wear ON.
 
-WHERE THE NUMBERS DO NOT AGREE, and this has to be resolved before acting on it:
-the same drag with `wantsWear = false` - which skips `triSign` AND the full edge
-pass - is still **66.9ms**. If `triSign` were the owner, that frame should have
-collapsed to a few milliseconds. So either the skip is not happening on that path,
-or a second O(mesh) pass is being paid as well. The next probe must report
-`shadeStats` and the frame time on the WEAR-OFF loop separately, and check that
-`needWear` really is false there.
+RESOLVED - and the answer is "none of the four things tested". Measured on the
+same live drag at 507,791 faces:
+
+    frames, wear ON                     69-74ms
+    frames, wear OFF (wantsWear=false)  67-72ms   -> not the wear list, not triSign
+    topology builds across 12 frames    0         -> the shade-topo cache IS working
+    shadeStats                          6 groups / 6 tris / 19 verts
+    applyShading(dragged attr), direct  45-53ms
+
+So a dirty call whose ring is NINETEEN vertices costs ~45ms, with the topology
+cached, the wear list off, the winding pass skipped and the vertex pass bounded.
+An O(mesh) pass survives inside `applyShading` that is none of the four things
+guessed at so far, and the numbers no longer disagree - they all point at the same
+unexplained cost.
+
+NEXT ACTION, and it is not another guess: read `applyShading` from its first line
+to its last, list every loop, and tick off which of them can run with `dirtyVerts`
+set. One of them is O(triangles) or O(vertices) and has not been noticed. That
+reading is what the next session should start with - six guesses have now been
+spent, and each cost a round.
 
 ## The road to 500k: what stages 0 and A1 actually bought (v3.18, v3.19)
 
