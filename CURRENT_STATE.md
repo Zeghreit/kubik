@@ -126,7 +126,16 @@ wrong, so do not repeat them:
 So the ~530ms is inside applyDeltaToSelection itself: the setLocal loop, the
 dirty shade, and growBounds.
 
-`_dragsplit.js` split it once and got half an answer: **a dirty shade with a warm
+`_dragsplit.js` CANNOT START A DRAG on the bench fixture: nine taps around the
+canvas, each checked by `position.version` moving, and none of them captured.
+`_shade_probe` starts one happily on its own fixtures, so the missing piece is in
+its prelude (a real tap that leaves a component selected before beginDirectDrag),
+and THAT is what to copy next - not more guessing at the fixture. Until then the
+frame split stays unestablished.
+
+The one number that did come out of it: a dirty shade with a warm topology costs
+**60ms** for twelve spread-out vertices.
+ **a dirty shade with a warm
 topology costs 60ms** for twelve spread-out vertices - much more than a ring
 should, because twelve vertices at opposite ends of a 508k mesh drag in a large
 part of the 2-ring. The full-frame half of that run did not start a drag at all
