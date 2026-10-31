@@ -38820,6 +38820,45 @@ function docMaterials(mats) {
   return { materials: out };
 }
 
+/* THE SAME FOR `finishes` (v3.21). It is a map from face index to a material
+   DEFINITION id, and `reconcileFinishes` derives it from the stamps on the
+   materials at every rebuild - but the document still needs it, because a file
+   written before the stamp relies on it to say which preset a face wore (the
+   surface numbers alone do not carry a mask or a bevel). So it is not dropped,
+   it is RUN-ENCODED the same way, and old files keep the map.
+
+   Runs are by face index from 0 to the highest index present, with `null` for a
+   gap - a face with no entry is a real state and has to survive as one. */
+function docFinishRuns(fin) {
+  const keys = Object.keys(fin);
+  if (!keys.length) return { finishes: {} };
+  let max = -1;
+  for (let i = 0; i < keys.length; i++) { const k = +keys[i]; if (k > max) max = k; }
+  const runs = [];
+  for (let i = 0; i <= max; i++) {
+    const id = fin[i] === undefined ? null : fin[i];
+    const last = runs[runs.length - 1];
+    if (last && last.id === id) last.count++;
+    else runs.push({ count: 1, id: id });
+  }
+  if (runs.length * 2 >= keys.length) return { finishes: { ...fin } };
+  return { finishRuns: runs };
+}
+
+function expandFinishRuns(od) {
+  if (!od) return {};
+  if (!od.finishRuns) return od.finishes || {};
+  const out = {}, runs = od.finishRuns;
+  let at = 0;
+  for (let i = 0; i < runs.length; i++) {
+    for (let k = 0; k < runs[i].count; k++) {
+      if (runs[i].id !== null) out[at] = runs[i].id;
+      at++;
+    }
+  }
+  return out;
+}
+
 /* One shape for the reader. Everything above `restoreDoc` may then read
    `odMats`, and never `od.materials`, without caring which form the file took. */
 function expandMaterialRuns(od) {
@@ -38984,7 +39023,7 @@ function serializeDocBody() {
            read the same function, so they were writing a snapshot that kept
            changing under them too. */
         smoothGroups: { ...(o.mesh.userData.smoothGroups || {}) },
-        finishes: { ...(o.mesh.userData.finishes || {}) },
+        ...docFinishRuns(o.mesh.userData.finishes || {}),
         creases: { ...(o.mesh.userData.creases || {}) },
         edgeShade: { ...(o.mesh.userData.edgeShade || {}) },
         // Same position-keyed shape as creases/edgeShade.
@@ -39439,8 +39478,9 @@ function restoreDoc(doc, opts = {}) {
        becomes history step 0 after a load, and a later restore that takes the
        `keepAppearance` path (where the remap is deliberately empty) would
        otherwise put the file's original ids back and lose the import. */
-    const origFin = od.finishes || {};   // before the remap below overwrites it (v3.01)
-    let finishes = look ? look.finishes : remapFinishes(od.finishes || {}, matIdRemap);
+    const odFin = expandFinishRuns(od);
+    const origFin = odFin;               // before the remap below overwrites it (v3.01)
+    let finishes = look ? look.finishes : remapFinishes(odFin, matIdRemap);
     if (!look && matIdRemap.size) od.finishes = finishes;
     const mats = odMats.map((md, i) => {
       const src = (look && look.surfaces[i]) ? look.surfaces[i] : md;
@@ -39836,6 +39876,9 @@ function estimateDocBytes(d) {
     ['smoothGroups', 'finishes', 'creases', 'edgeShade', 'seams'].forEach(k => {
       if (o[k]) n += Object.keys(o[k]).length * 72;
     });
+    /* AND A RUN-ENCODED `finishes` IS COUNTED AS ITS RUNS, not as the map it
+       would expand to - the same reason `materialRuns` is counted as itself. */
+    if (o.finishRuns) n += o.finishRuns.length * 40 - Object.keys(o.finishes || {}).length * 72;
     if (o.curve && o.curve.pts) n += o.curve.pts.length * 40;
     if (o.tube && o.tube.cv && o.tube.cv.pts) n += o.tube.cv.pts.length * 40;
   });

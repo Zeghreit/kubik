@@ -62,6 +62,28 @@ is a separate decision because a file written before the stamp relies on it.
 through JSON, and comes back with the same 192 faces and the same colour.
 36-probe suite clean.
 
+### And `finishes` too (same version)
+
+`finishes` is a map from face index to a material DEFINITION id - one key per
+face, 36MB of a 500k step. It is NOT derivable from the document (`reconcileFinishes`
+rebuilds it from the stamps on the live materials, but a file written before the
+stamp relies on this map to say which preset a face wore), so it is run-encoded
+rather than dropped: `finishRuns: [{count, id|null}]`, with `null` for a gap,
+because a face with no entry is a real state. `docFinishRuns` falls back to the
+map when the runs are not shorter, and `expandFinishRuns` gives the reader one
+shape either way.
+
+Measured at 507,791 faces: step **143,571kB -> 111,313kB** (296 -> 224 B/face).
+That is the first time a 500k step sits UNDER `HISTORY_HARD_BYTES` (128MB), which
+is what makes an undo stack possible there at all - before this one step was
+above the ceiling and `trimHistory` collapsed to a single step.
+`serializeDoc` 0.47s -> 0.63s: the runs cost a little to build, and the step is
+a fifth smaller and a third cheaper than v3.20 overall (190MB/1.33s).
+
+Still open for B: sharing unchanged objects between steps, and positions as
+`Float32Array` - the remaining 224 B/face is mostly the geometry snapshot itself,
+which is what those two steps are for.
+
 
 ## A drag frame shades only what moved (v3.20, stage A2)
 
