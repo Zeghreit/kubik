@@ -128,10 +128,13 @@ earlier "529ms drag frame" figure is really a **whole-mesh element drag**, not a
 one-vertex drag - and it is consistent with A2, whose whole point is that cost
 follows what moved. A one-vertex drag on the same mesh should be milliseconds.
 
-The measurement that is still owed: a SINGLE-vertex drag, which needs the probe
-to pick a vertex and select it before beginDirectDrag (`pickVertexOnActive` plus
-whatever the app puts in the selection). Until that exists, quote 536ms as "every
-vertex moved", never as "a drag frame".
+The measurement that is still owed: a SINGLE-vertex drag. `_dragsplit.js` now
+calls `pickVertexOnActive(ev)` before `beginDirectDrag` and gets **-1** at a tap
+one quarter in from the corner - nothing picked, so the selection stays empty and
+every vertex is still dragged. Two things to try first next time: tap the CENTRE
+of the mesh (the camera frames it there) rather than a quarter point, and check
+`setMode('vertex')` actually took before picking. Until a pick succeeds, quote
+536ms as "every vertex moved", never as "a drag frame".
 
 ## The road to 500k: what stages 0 and A1 actually bought (v3.18, v3.19)
 
