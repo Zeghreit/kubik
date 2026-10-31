@@ -180,3 +180,47 @@ block by hand and read it back before verifying.
 
 State: index.html is v3.19, `_a2_wip3_utf8.diff` holds the A2 work, and the
 edit above is the ONLY thing between this stage and a measured drag frame.
+
+## B (delta history) - DESIGN ONLY, not started. Read this before writing code.
+
+The number: one history step at 500k faces is 190MB. `HISTORY_MAX_BYTES` is
+48MB and `HISTORY_HARD_BYTES` is 128MB, so past ~330k faces a single step is
+over the hard ceiling and `trimHistory` collapses the stack to one step - undo
+becomes "one press, or nothing". `estimateDocBytes` counts a step by walking the
+serialized doc, and `serializeDoc` deep-copies EVERY object into EVERY step.
+
+Why this is not a quick patch: history is the app's only undo, and a delta that
+is subtly wrong silently corrupts a user's model on the SECOND undo, not the
+first. It has to be proven, not argued.
+
+The first step, and the smallest thing that pays: STOP COPYING THE OBJECTS THAT
+DID NOT CHANGE. An operation touches one object; the others can travel by
+REFERENCE into the new step. `serializeDoc` already builds a fresh doc per step,
+so the change is inside it, per object.
+
+The correctness question that decides the design, and it must be answered by
+reading the code, not from memory: WHAT can change an object without replacing
+`obj.mesh.geometry`? Every op funnels through `rebuildFromEditable`, which makes
+a NEW BufferGeometry - that part is safe to key on identity. The dangerous ones
+are the in-place mutations: a vertex drag writes `attributes.position` and sets
+`needsUpdate` (so `position.version` moves), `edgeShade` / `creases` / `seams` /
+`finishes` are plain maps on userData that some paths rewrite without a rebuild,
+and materials are POOLED and shared, so a material's own state can change while
+the object's geometry does not.
+
+So the key for "unchanged" has to cover: geometry IDENTITY, `position.version`,
+the identity of the material array AND of each pooled material in it, and a
+version stamp on each of the userData maps. The last part means adding a counter
+that those writers bump - and that is the part that has to be found by grepping
+every writer, because a missed one is a wrong undo.
+
+Second step, once sharing works and is proven: a topology-preserving step stores
+positions as a Float32Array of the whole object (12 bytes per vertex) instead of
+a JS array of doubles (24 plus slot overhead), and a MOVE-ONLY step stores just
+the moved indices and their old values - a drag then costs bytes, not megabytes.
+
+How to prove it, before trusting any of it: build a fixture, apply a known
+sequence of ten edits, then undo ten times and compare the whole doc (positions,
+face map, materials, userData maps) at every step against a run that took the
+same steps with history DISABLED and re-applied from scratch. Anything that
+differs is a defect. Do not ship on "the undo looked right".
