@@ -208,6 +208,25 @@ BEFORE the first marker inside the element branch - in `findObject`,
 `dragCtx.type` or the dispatch around them, or the split was taken on a frame
 cheaper than the median (it reads the LAST call, not the median one).
 
+## The face list is counts, not objects (v3.21d)
+
+`groups` in a document was `faceRanges(g).map(gr => ({start, count, materialIndex}))`
+- one OBJECT PER FACE, 508k of them per history step, charged 72 bytes each. The
+runs tile the index buffer in order and `materialIndex` is the face's own index,
+so the array is derivable from the COUNTS: `groupRuns: [n0, n1, ...]`.
+`docGroupRuns` verifies both facts before writing them and falls back to the old
+array for a geometry whose groups are merged draw runs with no face map, so no
+reader has to guess; `restoreDoc` rebuilds the runs from the counts.
+
+Measured at 507,791 faces: one step **111,313kB -> 79,576kB** (224 -> 160 B/face).
+Together with the material and finish runs that is **190MB -> 79.6MB** for a 500k
+step, and `serializeDoc` 1.33s -> 0.67s.
+
+What is left in those 79.6MB is the geometry itself - positions as JS doubles
+(~38MB) and the index buffer (~14MB). Getting under the 64MB that would allow two
+steps needs the second half of B: share the unchanged objects between steps, and
+store positions as typed arrays or as a move-only delta. Neither is a local change.
+
 ## A vertex tap is 4x cheaper (v3.21c)
 
 `pickVertexOnActive` projected every logical vertex through `worldToScreenPx`,

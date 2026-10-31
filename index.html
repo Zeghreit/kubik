@@ -39012,6 +39012,32 @@ function expandMaterialRuns(od) {
   return (od && od.materials) || [];
 }
 
+/* THE FACE LIST AS COUNTS, NOT AS OBJECTS (v3.21d).
+
+   `groups` was `faceRanges(g).map(gr => ({start, count, materialIndex}))` - one
+   OBJECT PER FACE, 508k of them in every history step of a 500k mesh, and
+   `estimateDocBytes` charges 72 bytes each. The runs tile the index buffer in
+   order and `materialIndex` is the face's own index, so the array is derivable
+   from the COUNTS alone: 8 bytes a face instead of 72.
+
+   Verified before it is used: cumulative starts from zero and materialIndex equal
+   to the index, on every run. Anything else - a geometry whose groups are merged
+   draw runs with no face map - keeps the old array, so no reader has to guess. */
+function docGroupRuns(g) {
+  const ranges = faceRanges(g);
+  let at = 0, ok = true;
+  for (let i = 0; i < ranges.length; i++) {
+    if (ranges[i].start !== at || ranges[i].materialIndex !== i) { ok = false; break; }
+    at += ranges[i].count;
+  }
+  if (!ok || !ranges.length) {
+    return { groups: ranges.map(gr => ({ start: gr.start, count: gr.count, materialIndex: gr.materialIndex })) };
+  }
+  const counts = new Array(ranges.length);
+  for (let i = 0; i < ranges.length; i++) counts[i] = ranges[i].count;
+  return { groupRuns: counts };
+}
+
 function serializeDoc(opts) {
   const doc = serializeDocBody();
   if (opts && opts.withTextures) {
@@ -39148,7 +39174,7 @@ function serializeDocBody() {
              has merged them into. The file is the face list; merging is a
              rendering decision taken on the way to the GPU and belongs
              nowhere near a document that another version has to read. */
-          groups: faceRanges(g).map(gr => ({ start: gr.start, count: gr.count, materialIndex: gr.materialIndex }))
+          ...docGroupRuns(g)
         },
         // Record the real surface values, not just which preset was picked.
         // A preset name can go missing when meshes are merged or rebuilt; the
@@ -39583,7 +39609,15 @@ function restoreDoc(doc, opts = {}) {
       geo.setAttribute('uv', new THREE.Float32BufferAttribute(od.geometry.uv, 2));
     }
     geo.setIndex(od.geometry.index);
-    od.geometry.groups.forEach(gr => geo.addGroup(gr.start, gr.count, gr.materialIndex));
+    if (od.geometry.groupRuns) {
+      /* COUNTS BACK INTO RUNS (v3.21d): starts are cumulative and the material
+         index is the face's own, which is what docGroupRuns verified. */
+      let at = 0;
+      const cr = od.geometry.groupRuns;
+      for (let i = 0; i < cr.length; i++) { geo.addGroup(at, cr[i], i); at += cr[i]; }
+    } else if (od.geometry.groups) {
+      od.geometry.groups.forEach(gr => geo.addGroup(gr.start, gr.count, gr.materialIndex));
+    }
     /* A FILE STORES ONE GROUP PER FACE and always will - that is what makes a
        document written by any version readable by any other. The face map is
        published from those groups here; merging into draw runs happens later,
@@ -40002,7 +40036,8 @@ function estimateDocBytes(d) {
       // that carries it costs that (v2.28a, found in review).
       n += (g.uv ? g.uv.length * 8 : 0);
       n += (g.index ? g.index.length * 8 : 0);
-      n += (g.groups ? g.groups.length * 72 : 0);
+      /* COUNTS ARE COUNTED AS NUMBERS (v3.21d): 8 bytes a face, not 72. */
+      n += g.groupRuns ? g.groupRuns.length * 8 : (g.groups ? g.groups.length * 72 : 0);
     }
     /* A RUN-ENCODED LIST IS COUNTED AS ITSELF, or trimHistory ranks a step
        smaller than it is and the ceiling stops bounding anything. */
