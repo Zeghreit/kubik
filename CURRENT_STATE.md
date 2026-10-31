@@ -113,10 +113,19 @@ applyShading in the cold. At **507,791 faces**: drag frame **529ms** median
 the shading topology, which the rest of a drag then reuses).
 
 Before this stage the same frame was a full applyShading, ~3.5s - so A2 is about
-6.7x, and 529ms is still 30x over a 16ms frame. What is left is not the shading:
-the position attribute is written through `setXYZ` and `needsUpdate`, which is a
-full 19MB upload per frame, and `rewriteEdgeMarks` runs too. Both are the next
-thing to look at, and neither belongs to A2.
+6.7x, and 529ms is still 30x over a 16ms frame.
+
+WHAT IS LEFT IS CPU WORK, and two guesses about it have been tested and are
+wrong, so do not repeat them:
+- the full 19MB position upload is NOT in this number at all - the probe times
+  `applyDeltaToSelection`, which does no render, so nothing is uploaded. Narrowing
+  `pa.needsUpdate` to an update range changed the median from 529ms to 659ms,
+  which is run-to-run noise and not an improvement; that edit was reverted.
+- `rewriteEdgeMarks` returns at its first line when there are no marks, so it is
+  free on an unmarked mesh.
+So the ~530ms is inside applyDeltaToSelection itself: the setLocal loop, the
+dirty shade, and growBounds. The next measurement must time those three apart
+inside one frame rather than guess at which one owns it.
 
 
 ## The road to 500k: what stages 0 and A1 actually bought (v3.18, v3.19)
