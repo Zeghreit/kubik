@@ -72,3 +72,27 @@ dirty set** (a drag frame must be O(moved), not O(N)), then B (delta history:
 one step is 190MB at 500k, which is above the 128MB hard ceiling, so undo
 today is one step deep), then D (GPU picking: one tap is 1.0-2.1s), then C
 (rebuild in a Worker), then E+F (typed arrays + chunks), then G (helper LOD).
+
+## v3.20 (A2, dirty-set shading) - ATTEMPTED 31.10, NOT SHIPPED, reverted
+`applyShading(obj, dirty)` with a 1-ring was written and does not work yet: the
+dirty set comes out EMPTY and the pass silently falls back to the full one, so
+every "result matches a full shade" row was true for the wrong reason. Caught by
+`_dirtycmpt.js`, whose witness is `normal.updateRanges` - the dirty path always
+leaves one, the full pass never does; a missing range is a FAIL there, by name.
+
+What is already known for the next attempt:
+- the fallback is now LOUD (`warnOnce('dirty', ...)`), which it was not in the
+  first cut - that silence is what let the probe pass vacuously.
+- `logicalOf` has to be in applyShading's destructure of the shading topo; the
+  first cut forgot it, which threw inside the dirty-set try and fell back.
+  Fixed, and the set was still empty, so there is a SECOND reason.
+- `computeTopology` and `buildShadingTopo` both call `computeLogicalOf(pos)`, so
+  their logical numbering ought to be identical - the open question is why
+  `trisAt.get(id)` misses for ids taken from `topo.logicalGroups[l]`.
+- a candidate that removes the question entirely: pass an ATTRIBUTE index
+  (`topo.logicalGroups[l][0]`) instead of a logical id, and map it inside
+  applyShading with its own `logicalOf`.
+
+The work is in `_a2_wip.diff` (scratch, untracked) - index.html was reverted to
+the shipped v3.19, which is what is live. Each probe run took ~10 minutes, so
+budget for that: the probe itself is fast, the headless boot is not.
