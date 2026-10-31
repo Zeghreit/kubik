@@ -128,25 +128,30 @@ earlier "529ms drag frame" figure is really a **whole-mesh element drag**, not a
 one-vertex drag - and it is consistent with A2, whose whole point is that cost
 follows what moved. A one-vertex drag on the same mesh should be milliseconds.
 
-SYNTHETIC DRAGS DO NOT START. `_dragptr.js` dispatches real `pointerdown` /
-`pointermove` / `pointerup` on the canvas at the mesh centre: the tap picks a
-vertex (143722) and the moves cost 7.8ms each, but `shadeStats` is NONE - no
-shading ran at all, so no drag was ever captured. `beginDirectDrag` does capture
-one, but with an EMPTY entry list, which is why every frame it produced was a full
-pass.
+A2 IS MEASURED ON A REAL DRAG, and it works. The missing line was
+`App.selectedElements`.
 
-`_shade_probe` is the only thing in the project that starts a drag with real
-entries, and its setup is what has to be copied - in full, not guessed at: it sets
-`selectedObjectIds`, `setTransformTool('move')`, `App.transformMode = 'free'`, and
-something in its tap/selection prelude that this probe has not reproduced.
-READ `_shade_probe.js` FROM THE TOP before writing another drag probe.
+`_shade_probe` line 82 sets `A.selectedElements = new Set([nearestLogical(...)])`
+before its drag. A drag without a selected ELEMENT captures an empty entry list,
+which is why every earlier frame was a full pass. With it, at **507,791 faces**:
 
-What A2 can still be quoted as, with evidence:
-- CORRECT: `_dirtycmpt.js`, 9/9 bit-identical to a full pass, dirty branch proven
-  to run by the update range and by `shadeStats`.
-- CHEAP WHEN IT RUNS: `applyShading(o, [oneAttr])` on a live drag is **51ms**
-  against ~510ms for the full pass.
-- NOT MEASURED: its effect on a drag that a probe actually captures.
+    shadeStats after the frame   {"moved":1,"hits":1,"groups":6,"tris":6,"verts":19}
+    frame                        68.2ms  [66.1-159.8]
+    full pass, same mesh         ~510ms
+
+So a one-vertex drag costs **68ms instead of 510ms - about 7.5x** - and the dirty
+branch is proved to have run by `shadeStats` itself, not by a proxy.
+
+68ms is still 4x a 16ms frame, and the remaining weight is the work that is NOT
+the vertex pass: the ring's edge flags, the normals of six face groups, and
+`growBounds`. That is where the next cut in A goes.
+
+THE RECIPE, so nobody repeats the six dead ends: select the object
+(`selectedObjectIds`, `activeObjectId`), `setTransformTool('move')`,
+`transformMode = 'free'`, `setMode('vertex')`, `ensureHelpers`, then
+`App.selectedElements = new Set([logicalId])`, then `beginDirectDrag`. Witness the
+dirty branch with `geometry.userData.shadeStats`, never with `position.version` -
+a drag with no entries bumps the version too and looks like it worked.
 
 ## The road to 500k: what stages 0 and A1 actually bought (v3.18, v3.19)
 
