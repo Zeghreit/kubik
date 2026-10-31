@@ -224,3 +224,39 @@ sequence of ten edits, then undo ten times and compare the whole doc (positions,
 face map, materials, userData maps) at every step against a run that took the
 same steps with history DISABLED and re-applied from scratch. Anything that
 differs is a defect. Do not ship on "the undo looked right".
+
+## B - WHERE THE 190MB ACTUALLY IS (measured by the estimate's own formula, 31.10)
+
+A step does not cost what a mesh costs. At 508k faces `estimateDocBytes` charges,
+per FACE:
+
+    96B   materials[i]   - serializeDoc writes `mats.map(m => ({color, roughness,
+                           metalness, phys, themed}))`, and `mats` is ONE ENTRY
+                           PER FACE. 508k fresh objects per step, every one of
+                           them describing the same definition.
+    72B   finishes[i]    - `{...userData.finishes}` has one key per face, and
+                           reconcileFinishes DERIVES that map from the material
+                           stamps on every rebuild anyway.
+    72B   positions      - shared across faces, the only genuinely new data
+    48B   index
+    72B   groups
+    32B   the rest
+
+So ~168 of the 392 bytes per face are PER-FACE MATERIAL BOOKKEEPING, not
+geometry. That is about 85MB of a 190MB step, and it is redundant: the scene has
+one material definition and 508k references to it.
+
+THIS CHANGES THE FIRST MOVE. Delta/sharing machinery is the second thing, not the
+first: a step that stops writing derived per-face data is a small, local change
+to serializeDoc/restoreDoc, needs no new key for "did this object change", and
+cannot corrupt an undo if the reader still accepts the old shape.
+
+Shape that keeps old files readable: write `materials` as RUNS -
+`[{count, def}, ...]` - beside the existing per-face array only when the runs are
+worth it, and have the reader expand runs into the per-face array it already
+expects. `finishes` is the harder call: it is derived, but a file written before
+the material stamp relies on it, so the reader must keep honouring it. Dropping
+it from NEW steps while still reading it from old files is the safe version.
+
+Do not touch this without a probe that round-trips a doc through save -> load ->
+compare, and one that undoes an edit that changed exactly one face's material.
