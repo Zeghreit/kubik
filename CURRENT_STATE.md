@@ -178,29 +178,31 @@ An O(mesh) pass survives inside `applyShading` that is none of the four things
 guessed at so far, and the numbers no longer disagree - they all point at the same
 unexplained cost.
 
-THE LOOP INVENTORY IS DONE, and it eliminates the loops. Every iteration in
-`applyShading` that can run with `dirtyVerts` set is bounded by the ring:
+THE 40ms WAS ONE WRONG CONDITION, and it is fixed (v3.21a).
 
-    10305-10343  build the dirty set (moved -> groups -> tris -> 2-ring)   bounded
-    10379-10385  recompute the dirty groups' normals                      bounded
-    10522-10525  re-ask the ring's edges                                  bounded
-    10608-10681  inside shadeVertex (one vertex's fan)                    bounded
-    10713        shade this ring's vertices                               bounded
-    10367-10368  the FULL normal pass                  only when !dirtyVerts
-    10533        all edges                              only when !dirtyVerts or needWear
-    10724        all vertices                           only when !dirtyVerts
-    10793        the wear edge list                      only when the object wants wear
+`applyShading` had
 
-So with `dirtyVerts` set and wear off, nothing in this function iterates the mesh -
-and yet the call costs 45ms. The cost is therefore in a NON-LOOP statement, and the
-prime suspect is an allocation sized by the mesh: the normal-attribute guard
-(`nAttr.count !== pCount` builds a fresh Float32Array(pCount*3), 19MB at 500k), or
-`shadeStateFor` / `ufScratch` re-allocating when their size key disagrees.
+    if (!dirtyVerts || needWear) {   // the winding pass, O(triangles)
 
-NEXT ACTION, decisive and cheap: put `performance.now()` marks at five points
-inside applyShading (entry, after the state lookup, after the dirty set, after the
-shift, after the vertices), run the drag once, read the five numbers, remove the
-marks. That is one round of work and it ends six rounds of guessing.
+and `dirtyVerts` is not computed until ninety lines BELOW that line - so the left
+half was always true and `triSign` was rebuilt over every triangle on every call,
+dirty or not. `triSign` is read only by the wear block, which runs only when
+`needWear`, so the correct condition is `needWear` alone.
+
+Measured at 507,791 faces, on a real drag with a selected element:
+
+    dirty applyShading      40.8ms -> 0.5ms
+    drag frame (1 vertex)   68ms   -> 37.7ms [26.9-51.8]
+
+Eight rounds of guesses (wear list, position upload, triSign-in-the-dirty-path,
+topology cache, normal-attribute guard, ring size, entry count) all missed it; the
+five-point timer found it in one run, and the loop inventory pointed at the line.
+The lesson worth keeping: a guard that mentions a variable declared LATER in the
+same function is always false, and no amount of measuring downstream finds it.
+
+WHAT IS LEFT IN THE FRAME: 37.7ms with the shading now at 0.5ms, so the rest is
+`applyDeltaToSelection` itself - `setLocal`, `growBounds`, the world-matrix
+inverse. That is the next target, and it is a different function.
 
 ## The road to 500k: what stages 0 and A1 actually bought (v3.18, v3.19)
 

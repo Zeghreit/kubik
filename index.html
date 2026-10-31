@@ -10197,7 +10197,14 @@ function applyShading(obj, dirty) {
        them, gets the cheap frame. */
     const needWear = obj.mesh.userData.wantsWear !== false;
     let triSign = null;
-    if (!dirtyVerts || needWear) {
+    /* `needWear` ALONE (v3.21a). This read `!dirtyVerts || needWear`, and
+       `dirtyVerts` is not computed until 90 lines below - so the left half was
+       always true and the winding pass ran on EVERY call, dirty or not. That was
+       the 40ms left in a 19-vertex drag frame: 574k triangles, three attribute
+       reads each, on a call that needed twelve of them. `triSign` is read only by
+       the wear block, which runs only when `needWear`, so this is also the exact
+       condition. Eight rounds of guesses died on this line. */
+    if (needWear) {
       triSign = new Int8Array(relSign);
       const q0 = new THREE.Vector3(), q1 = new THREE.Vector3(), q2 = new THREE.Vector3(), qc = new THREE.Vector3();
       for (let ci = 0; ci < comps.length; ci++) {
