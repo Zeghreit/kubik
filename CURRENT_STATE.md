@@ -142,25 +142,27 @@ which is why every earlier frame was a full pass. With it, at **507,791 faces**:
 So a one-vertex drag costs **68ms instead of 510ms - about 7.5x** - and the dirty
 branch is proved to have run by `shadeStats` itself, not by a proxy.
 
-68ms is still 4x a 16ms frame, and the split says the remaining weight is NOT the
-vertex pass. Measured on the same live drag: the dirty shade for the DRAGGED
-vertex covers 6 face groups, 6 triangles and 19 vertices, while a second call on
-a deliberately awkward vertex (the sphere's pole, 624 groups / 982 triangles /
-1703 vertices) costs 48.8ms on its own. The frame is 68-74ms with a 19-vertex
-ring, so ~65ms of it is somewhere else - and the likely owner is the WEAR EDGE
-LIST, which is still rebuilt over every edge on a drag frame.
+68ms is still 4x a 16ms frame, and TWO guesses about where it goes have been
+tested and are both WRONG. Do not repeat them:
 
-That is the next cut in A, and it has a shape: keep a per-edge offset into the
-flat `kubikEdges` arrays (`rec.wearAt`), rewrite only the entries for edges at ring
-vertices, and leave the rest of the array alone. Then the list still follows the
-shape - which `_shade_probe` requires - without being O(edges) per frame.
+- **the wear edge list** - turning `wantsWear` off for the object and re-running
+  the same drag gives 68.3ms against 67.9ms. Not it.
+- **the winding pass** (`triSign`) - it is skipped whenever the object needs no
+  wear list, which that same run does, and the frame does not move. Not it.
+- and the dirty shade of the DRAGGED vertex is 19 vertices (shadeStats
+  `{moved:1, groups:6, tris:6, verts:19}`), so it is not the vertex work either.
 
-THE RECIPE, so nobody repeats the six dead ends: select the object
-(`selectedObjectIds`, `activeObjectId`), `setTransformTool('move')`,
-`transformMode = 'free'`, `setMode('vertex')`, `ensureHelpers`, then
-`App.selectedElements = new Set([logicalId])`, then `beginDirectDrag`. Witness the
-dirty branch with `geometry.userData.shadeStats`, never with `position.version` -
-a drag with no entries bumps the version too and looks like it worked.
+So ~65ms of a one-vertex drag frame is some OTHER part of `applyDeltaToSelection`
+that has not been split out yet: `setLocal`, `growBounds`, the world-matrix
+inverse, `rewriteEdgeMarks`. The next measurement has to time those four inside
+one frame - guessing has now cost two rounds.
+
+ONE NUMBER TO KEEP IN VIEW while doing it: `applyShading` called directly with a
+DELIBERATELY AWKWARD vertex (attribute 0, the sphere's pole: 624 face groups, 982
+triangles, 1703 ring vertices) costs 47.5ms. That is the worst case of the dirty
+path, not a typical one, and it is close to the whole frame - which means the
+frame may simply be dominated by something that scales with RING SIZE, not with
+the entry count.
 
 ## The road to 500k: what stages 0 and A1 actually bought (v3.18, v3.19)
 
