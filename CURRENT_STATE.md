@@ -37,6 +37,32 @@ rewritten at v1.93 because it had accumulated per-version sediment and had
 begun contradicting itself — a handoff that argues with itself is worse
 than none. Prefer rewriting a section over appending to it.
 
+## The document stops storing a material per face (v3.21, stage B, first step)
+
+`serializeDoc` wrote `materials` as one entry per FACE - 508k fresh objects in
+every history step of a 500k mesh - and `restoreDoc` turned that array into one
+real `MeshPhysicalMaterial` per face before `dressFromPool` replaced them. A
+scene has one definition and 508k references to it.
+
+`docMaterials` now keys the definitions by material OBJECT (pooled instances are
+shared between consecutive faces, so the common case is one lookup per face and
+no string building) and emits `materialRuns: {defs, runs}` when the runs say
+something the per-face array does not; otherwise it falls back to the historical
+shape. `expandMaterialRuns` gives the reader one shape either way, so `restoreDoc`
+reads `odMats` and never `od.materials`. `estimateDocBytes` counts runs as runs,
+or `trimHistory` would rank a step smaller than it is.
+
+Measured at 507,791 faces (median of three): one step **190,063kB -> 143,571kB**
+(392 -> 296 bytes per face), `serializeDoc` **1.33s -> 0.47s**. The remaining
+bulk is `finishes` - one key per face, and `reconcileFinishes` derives that map
+from the material stamps on every rebuild anyway. That is the next step, and it
+is a separate decision because a file written before the stamp relies on it.
+
+`_matrunchk.js`: a 192-face document encodes to 1 run / 1 definition, round-trips
+through JSON, and comes back with the same 192 faces and the same colour.
+36-probe suite clean.
+
+
 ## A drag frame shades only what moved (v3.20, stage A2)
 
 `applyShading(obj, dirty)` - `dirty` is the ATTRIBUTE indices that moved,

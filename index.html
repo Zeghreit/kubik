@@ -3240,7 +3240,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.20</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.21</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -38777,6 +38777,61 @@ document.getElementById('isoChipOut').addEventListener('click', (ev) => {
 
    The autosave does NOT ask. It is re-read only by this browser, where the
    texture library is sitting beside it, and it is written every 900 ms. */
+/* THE DOCUMENT NO LONGER STORES A MATERIAL PER FACE (v3.21).
+
+   `materials` was one entry per FACE - 508k fresh objects in every history step
+   of a 500k mesh, and, worse, 508k real `MeshPhysicalMaterial`s built on load
+   by restoreDoc's `.map` before dressFromPool replaced them. The scene has one
+   definition and 508k references to it, so the document says that now.
+
+   Keyed by the material OBJECT first and its values only when the object is new:
+   dressFromPool hands consecutive faces the same pooled instance, so the common
+   case is one lookup per face and no string building at all.
+
+   The runs and the definitions are separate because a run is `{count, d}` and
+   the definition is shared by every run that names it. A document whose faces
+   really do all differ falls back to the historical per-face array, so nothing
+   downstream has to know this exists. */
+function docMaterials(mats) {
+  const byObj = new Map(), defs = [], runs = [];
+  for (let i = 0; i < mats.length; i++) {
+    const m = mats[i];
+    let d = byObj.get(m);
+    if (d === undefined) {
+      d = defs.length;
+      byObj.set(m, d);
+      defs.push({
+        color: '#' + m.color.getHexString(),
+        roughness: m.roughness,
+        metalness: m.metalness,
+        phys: physSnap(m),
+        themed: !!m.userData.themedDefault
+      });
+    }
+    const last = runs[runs.length - 1];
+    if (last && last.d === d) last.count++;
+    else runs.push({ count: 1, d: d });
+  }
+  if (!defs.length) return { materials: [] };
+  /* Worth it only when the runs say something the per-face array does not. */
+  if (runs.length * 2 < mats.length) return { materialRuns: { defs: defs, runs: runs } };
+  const out = [];
+  for (let i = 0; i < runs.length; i++) for (let k = 0; k < runs[i].count; k++) out.push(defs[runs[i].d]);
+  return { materials: out };
+}
+
+/* One shape for the reader. Everything above `restoreDoc` may then read
+   `odMats`, and never `od.materials`, without caring which form the file took. */
+function expandMaterialRuns(od) {
+  if (od && od.materialRuns) {
+    const defs = od.materialRuns.defs || [], runs = od.materialRuns.runs || [];
+    const out = [];
+    for (let i = 0; i < runs.length; i++) for (let k = 0; k < runs[i].count; k++) out.push(defs[runs[i].d]);
+    return out;
+  }
+  return (od && od.materials) || [];
+}
+
 function serializeDoc(opts) {
   const doc = serializeDocBody();
   if (opts && opts.withTextures) {
@@ -38918,13 +38973,7 @@ function serializeDocBody() {
         // Record the real surface values, not just which preset was picked.
         // A preset name can go missing when meshes are merged or rebuilt; the
         // numbers on the material itself always survive.
-        materials: mats.map(m => ({
-          color: '#' + m.color.getHexString(),
-          roughness: m.roughness,
-          metalness: m.metalness,
-          phys: physSnap(m),
-          themed: !!m.userData.themedDefault
-        })),
+        ...docMaterials(mats),
         /* COPIES. These four were live references, so every doc already in
            the history aliased the very maps the next op was about to mutate
            - and edgeShadeSet/creaseSet hand back the live object and write
@@ -39379,8 +39428,10 @@ function restoreDoc(doc, opts = {}) {
        metal, delete face 1, Undo - plastic and metal came back on faces 2
        and 4. When the counts disagree the RESTORED step's own materials win:
        they are what that step actually looked like. */
+    /* RUNS OR THE OLD PER-FACE ARRAY - one shape from here on (v3.21). */
+    const odMats = expandMaterialRuns(od);
     const liveLook0 = keepLook ? liveLook.get(od.id) : null;
-    const look = (liveLook0 && liveLook0.surfaces.length === od.materials.length)
+    const look = (liveLook0 && liveLook0.surfaces.length === odMats.length)
       ? liveLook0 : null;
     /* The LIVE look is already using this library's ids and must not be
        remapped; only the ids that came out of the file are rewritten. */
@@ -39391,7 +39442,7 @@ function restoreDoc(doc, opts = {}) {
     const origFin = od.finishes || {};   // before the remap below overwrites it (v3.01)
     let finishes = look ? look.finishes : remapFinishes(od.finishes || {}, matIdRemap);
     if (!look && matIdRemap.size) od.finishes = finishes;
-    const mats = od.materials.map((md, i) => {
+    const mats = odMats.map((md, i) => {
       const src = (look && look.surfaces[i]) ? look.surfaces[i] : md;
       const mat = new THREE.MeshPhysicalMaterial({ color: src.color, side: THREE.DoubleSide });
       mat.userData.themedDefault = !!src.themed;
@@ -39772,7 +39823,14 @@ function estimateDocBytes(d) {
       n += (g.index ? g.index.length * 8 : 0);
       n += (g.groups ? g.groups.length * 72 : 0);
     }
-    n += (o.materials ? o.materials.length * 96 : 0);
+    /* A RUN-ENCODED LIST IS COUNTED AS ITSELF, or trimHistory ranks a step
+       smaller than it is and the ceiling stops bounding anything. */
+    if (o.materialRuns) {
+      n += (o.materialRuns.defs ? o.materialRuns.defs.length * 160 : 0);
+      n += (o.materialRuns.runs ? o.materialRuns.runs.length * 16 : 0);
+    } else {
+      n += (o.materials ? o.materials.length * 96 : 0);
+    }
     // 'seams' belongs in this list for the same reason edgeShade is - an
     // uncounted map is exactly the miscount that starved Undo on masks (2.27).
     ['smoothGroups', 'finishes', 'creases', 'edgeShade', 'seams'].forEach(k => {
