@@ -156,3 +156,27 @@ Do not skip the edge list to make it faster. `_shade_probe` pins that the list
 follows the shape across a drag, and it is right to.
 
 Work is in `_a2_wip3.diff` (scratch, untracked). index.html is back at v3.19.
+
+## v3.20 (A2) - round 7: the ordering bug, and a botched apply
+Found it, or very nearly. In the A2 dirty path the recompute of the DIRTY
+GROUPS' normals was written at the shadeVertex site, i.e. AFTER the edge loop
+(`edges.forEach` -> sharpOf -> rec.sharp / rec.wear). So on a dirty frame the
+edge flags were decided against STALE face normals - which is exactly why
+`_shade_probe` reported `wear_positions 48 vs 60` (8 edges where 10 are right)
+while the normals themselves matched.
+
+The fix is a move, not a rewrite: recompute the dirty groups' normals right
+after the `if (!dirtyVerts) { ...full normal pass... }` block, BEFORE the edge
+loop. Once the edge loop always runs (it does now, see the previous entry) the
+separate "re-ask sharp for every edge on the ring" step becomes redundant and
+should be deleted with it.
+
+What NOT to do again: the move was attempted with a text search for the closing
+`  }\n` of the normal block, and that anchor also matches inside a try - the
+result failed `node --check` with "Missing catch or finally after try" and was
+reverted. Do this edit with an exact, unique anchor (the three lines of the
+normal pass plus the `if (!dirtyVerts) {` line above them), or restructure the
+block by hand and read it back before verifying.
+
+State: index.html is v3.19, `_a2_wip3_utf8.diff` holds the A2 work, and the
+edit above is the ONLY thing between this stage and a measured drag frame.
