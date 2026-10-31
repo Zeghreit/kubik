@@ -200,9 +200,17 @@ five-point timer found it in one run, and the loop inventory pointed at the line
 The lesson worth keeping: a guard that mentions a variable declared LATER in the
 same function is always false, and no amount of measuring downstream finds it.
 
-WHAT IS LEFT IN THE FRAME: 37.7ms with the shading now at 0.5ms, so the rest is
-`applyDeltaToSelection` itself - `setLocal`, `growBounds`, the world-matrix
-inverse. That is the next target, and it is a different function.
+WHAT IS LEFT IN THE FRAME, measured rather than guessed: 21-38ms, and it is NOT
+in the three parts of the element branch. `applyDeltaToSelection` was marked at
+entry, after `setLocal`, after `applyShading` and after `growBounds`; the three
+intervals sum to **0.3ms** while the frame is 21.6ms [21.2-37.7]. So the cost sits
+BEFORE the first marker inside the element branch - in `findObject`,
+`dragCtx.type` or the dispatch around them, or the split was taken on a frame
+cheaper than the median (it reads the LAST call, not the median one).
+
+NEXT: `findObject` is the only thing there that could scale, and the split has to
+be read per frame (push one array per frame, not one shared `window.__d`) so a
+cheap last frame cannot masquerade as a cheap frame.
 
 ## The road to 500k: what stages 0 and A1 actually bought (v3.18, v3.19)
 
