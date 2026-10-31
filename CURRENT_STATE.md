@@ -37,6 +37,33 @@ rewritten at v1.93 because it had accumulated per-version sediment and had
 begun contradicting itself — a handoff that argues with itself is worse
 than none. Prefer rewriting a section over appending to it.
 
+## A drag frame shades only what moved (v3.20, stage A2)
+
+`applyShading(obj, dirty)` - `dirty` is the ATTRIBUTE indices that moved,
+resolved inside with the shading topology's own `logicalOf` so the two topology
+builders' numbering never has to agree. It recomputes the dirty groups' normals
+from their own triangles, the ring's edge flags, and the normals of the 1-ring
+widened by one step; only that span of the normal buffer is uploaded.
+
+Three things the probes taught, all of them now in the code:
+- the 1-ring alone was too small. A normal went from a blend of two faces to a
+  single face normal - an island changing shape - because an edge flag is a dot
+  of two face normals, so a face one ring out can flip an edge on the ring.
+- the face normals must be recomputed BEFORE the edge pass. They were not, so
+  every `sharp` and every wear flag on a drag frame was decided against the
+  previous frame: normals right, edge list wrong (`wear_positions 48 vs 60`).
+- `triSign` (the winding pass) and the edge list are skipped on a drag frame
+  only when the object wears no shape mask. `_shade_probe` pins the list to the
+  shape, and it is right to.
+
+`_dirtycmpt.js`: 9 of 9 cases bit-identical to a full pass, with the dirty path
+proven to run (the update range is the witness). 36-probe suite clean.
+NOT measured: the drag frame at 500k. `_heavytarget.js` cannot see it - outside
+a real drag `shadingTopoFor` rebuilds the topology on every call, so that column
+is dominated by the rebuild, not by the shade. A drag-driven probe is the next
+measurement.
+
+
 ## The road to 500k: what stages 0 and A1 actually bought (v3.18, v3.19)
 
 The next big number is 500k faces in one scene. These are the first two steps
