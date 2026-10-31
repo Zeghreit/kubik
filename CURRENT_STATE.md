@@ -208,6 +208,25 @@ BEFORE the first marker inside the element branch - in `findObject`,
 `dragCtx.type` or the dispatch around them, or the split was taken on a frame
 cheaper than the median (it reads the LAST call, not the median one).
 
+## The drag frame is 0.2ms (v3.21b)
+
+`syncHelperGeometry` had ONE caller - the drag itself - and it rewrote every vertex
+dot and every edge line on every frame. `edgeIndicesFor(topo)` now maps a logical
+vertex to the edge indices that touch it (built once per topology, which lives for
+one drag), and `syncHelperGeometry(obj, dirtyLog)` rewrites only the moved
+vertices' dots and their edges, uploading only the span they cover. Called with no
+second argument it still does the whole mesh, which is what a caller that does not
+know what moved has to ask for.
+
+Measured at 507,791 faces, real drag with a selected element:
+
+    drag frame        22-23ms -> 0.20ms [0.10-0.30]
+    dirty shade       0.2ms    (unchanged)
+    full applyShading ~510ms   (unchanged; that is the op path, not the drag)
+
+The frame is now under a 16ms budget by a wide margin, and stage A plus the part of
+F that was blocking it are both closed. 36-probe suite clean.
+
 THE 22ms IS `syncHelperGeometry`, AND IT IS NOT STAGE A AT ALL.
 
 `applyDeltaToSelection` ends with
