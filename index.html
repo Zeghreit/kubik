@@ -1063,6 +1063,20 @@
   #selTag { max-width: 44vw; overflow: hidden; text-overflow: ellipsis; }   /* v2.91: a long name ends in ..., not off the screen */
   #selTag::before { content: 'Sel'; background: var(--accent-mode); color: var(--on-accent); padding: 2px 5px; margin-right: 7px; }
   #selMarks.left #selTag { left: auto; right: calc(100% + 16px); }
+  /* THE SIZE OF WHAT IS FRAMED, under the name (v3.23d). It belongs beside the
+     frame and not in a panel: the frame is what you are looking at when you ask
+     "how big is this", and on a heavy import the answer is also the reason the
+     app is slow. Same glass and mono as the tag above it, one weight lighter so
+     the name stays the label and this stays the measurement. */
+  #selCount {
+    position: absolute; left: calc(100% + 16px); top: -6px; white-space: nowrap;
+    padding: 2px 8px;
+    background: var(--glass-thick); color: var(--text-dim);
+    font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  #selCount:empty { display: none; }
+  #selMarks.left #selCount { left: auto; right: calc(100% + 16px); }
   #viewport > canvas { transform-origin: 70% 45%; transition: transform .5s cubic-bezier(.32, .72, 0, 1); }
   #app:has(#drawer.open) #viewport > canvas,
   #app:has(#helpOverlay.show) #viewport > canvas { transform: scale(.94); }
@@ -2915,7 +2929,7 @@
     <div id="vignette"></div>
     <!-- v2.87. What is selected in Object mode: marks at the corners of its
          bounds and a tag with its name. See #selMarks in the stylesheet. -->
-    <div id="selMarks" aria-hidden="true"><i></i><i></i><i></i><i></i><span id="selTag"></span></div>
+    <div id="selMarks" aria-hidden="true"><i></i><i></i><i></i><i></i><span id="selTag"></span><span id="selCount"></span></div>
     <div id="selectBox"></div>
     <svg id="lassoSvg"><polyline id="lassoPath" /></svg>
     <!-- Was wrapped in #thumbZone until v1.99c. That wrapper applied
@@ -54083,15 +54097,7 @@ function buildObjectSlot(o, isChild) {
      are listed, not only in the Transform panel - that is the place you look to
      decide which one to edit, and on a heavy import it is the number that says
      why the app is slow. Same words as the inspector's line: one source. */
-  const title = document.createElement('span');
-  title.className = 'outTitle';
-  title.appendChild(name);
-  const meta = document.createElement('span');
-  meta.className = 'outMeta';
-  meta.textContent = faceStatsText(o);
-  if (meta.textContent) title.appendChild(meta);
-
-  row.appendChild(sw); row.appendChild(title);
+  row.appendChild(sw); row.appendChild(name);
   row.appendChild(buildOutEye(App.hidden.has(o.id), () => {
     if (App.hidden.has(o.id)) unhideObject(o.id); else hideObject(o.id);
   }));
@@ -56584,13 +56590,14 @@ function hudDrift() {
    Nothing is written to the DOM unless the rectangle or the name changed. */
 const selMarksEl = document.getElementById('selMarks');
 const selTagEl = document.getElementById('selTag');
+const selCountEl = document.getElementById('selCount');
 const _smBox = new THREE.Box3(), _smObjBox = new THREE.Box3(), _smV = new THREE.Vector3();
 let selMarksLast = '';
 function selMarks() {
   let key = '';
   if (App.mode === 'object' && App.selectedObjectIds.size && !uvViewObj) {
     _smBox.makeEmpty();
-    let name = '', n = 0;
+    let name = '', n = 0, fSum = 0, tSum = 0;
     for (const id of App.selectedObjectIds) {
       const o = findObject(id);
       if (!o || !o.mesh || !o.mesh.visible) continue;
@@ -56600,6 +56607,8 @@ function selMarks() {
       _smObjBox.copy(g.boundingBox).applyMatrix4(o.mesh.matrixWorld);
       _smBox.union(_smObjBox);
       name = o.name; n++;
+      fSum += faceCount(g);
+      if (g.index) tSum += g.index.count / 3;
     }
     if (n) {
       const r = viewportRect();
@@ -56612,17 +56621,20 @@ function selMarks() {
       }
       if (!behind && x1 > 0 && y1 > 0 && x0 < r.width && y0 < r.height) {
         const left = r.width - x1 < 150 && x0 > r.width - x1;
-        key = [x0.toFixed(0), y0.toFixed(0), (x1 - x0).toFixed(0), (y1 - y0).toFixed(0), left ? 1 : 0, n > 1 ? n + ' objects' : name].join('\u0001');
+        key = [x0.toFixed(0), y0.toFixed(0), (x1 - x0).toFixed(0), (y1 - y0).toFixed(0), left ? 1 : 0,
+               n > 1 ? n + ' objects' : name, fSum, tSum].join('\u0001');
       }
     }
   }
   if (key === selMarksLast) return;
   selMarksLast = key;
   if (!key) { selMarksEl.classList.remove('show'); return; }
-  const [x, y, w, h, left, label] = key.split('\u0001');
+  const [x, y, w, h, left, label, fSum, tSum] = key.split('\u0001');
   Object.assign(selMarksEl.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
   selMarksEl.classList.toggle('left', left === '1');
   selTagEl.textContent = label;
+  const fmt = (v) => String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  selCountEl.textContent = fSum ? (fmt(fSum) + ' polys · ' + fmt(tSum) + ' tris') : '';
   selMarksEl.classList.add('show');
 }
 
