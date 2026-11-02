@@ -3240,7 +3240,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.21a</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.23</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -9889,17 +9889,26 @@ function buildShadingTopo(geo, withComponents) {
   }
   }
 
+  /* THE TRIANGLES AT A VERTEX AS CSR (v3.23), same treatment as the incident
+     lists: one Map keyed by logical vertex, read once per vertex by the island
+     pass, replaced by a counting sort over the corners. `triStart[l]..triStart[l+1]`
+     indexes `triOf`, which holds triangle ids. */
   const groupOfAttr = new Int32Array(posAttr.count).fill(-1);
-  const trisAt = new Map();
+  const triStart = new Int32Array(nLog + 1);
   for (let t = 0; t < triCount; t++) {
     for (let e = 0; e < 3; e++) {
       const ai = index.getX(t * 3 + e);
       groupOfAttr[ai] = triGroup[t];
-      const l = logicalOf[ai];
-      let lst = trisAt.get(l);
-      if (!lst) { lst = []; trisAt.set(l, lst); }
-      lst.push(t);
+      triStart[logicalOf[ai]]++;
     }
+  }
+  let triTotal = 0;
+  for (let i = 0; i < nLog; i++) { const c = triStart[i]; triStart[i] = triTotal; triTotal += c; }
+  triStart[nLog] = triTotal;
+  const triOf = new Int32Array(triTotal);
+  const triCur = triStart.slice(0, nLog);
+  for (let t = 0; t < triCount; t++) {
+    for (let e = 0; e < 3; e++) triOf[triCur[logicalOf[index.getX(t * 3 + e)]]++] = t;
   }
 
   /* Logical edges on NUMERIC keys (a * nLog + b). The old islands pass
@@ -10009,7 +10018,7 @@ function buildShadingTopo(geo, withComponents) {
        first A2 cut fell back to a full pass on every frame - the lookup threw,
        the throw was caught, and a catch is invisible on a phone. */
     logicalGroups, logicalOf, groupsSrc, triCount, triGroup,
-    relSign, comps, compClosed, groupOfAttr, trisAt,
+    relSign, comps, compClosed, groupOfAttr, triStart, triOf,
     edges, edgeList, incStart, incOf, withComponents: !!withComponents
   };
 }
@@ -10221,7 +10230,7 @@ function applyShading(obj, dirty) {
     const needWear = obj.mesh.userData.wantsWear !== false;
     const topo = shadingTopoFor(geo, needWear);
     const { logicalGroups, logicalOf, groupsSrc, triCount, triGroup, relSign, comps,
-            compClosed, groupOfAttr, trisAt, edges, edgeList, incStart, incOf } = topo;
+            compClosed, groupOfAttr, triStart, triOf, edges, edgeList, incStart, incOf } = topo;
 
     /* WHICH WAY EACH SHELL FACES. Which triangles agree with which is
        topology and lives in the cache above; what has to be asked again on
@@ -10363,8 +10372,11 @@ function applyShading(obj, dirty) {
              numbering never has to agree. The first cut passed the logical id
              and the lookups missed, which is what made the whole dirty set come
              out empty. */
-          const ts = trisAt.get(logicalOf[dirty[i]]);
-          if (ts) { hits++; for (let j = 0; j < ts.length; j++) dirtyGroups.add(triGroup[ts[j]]); }
+          const dl = logicalOf[dirty[i]];
+          if (triStart[dl + 1] > triStart[dl]) {
+            hits++;
+            for (let j = triStart[dl]; j < triStart[dl + 1]; j++) dirtyGroups.add(triGroup[triOf[j]]);
+          }
         }
         const dTris = new Set();
         dirtyGroups.forEach(g => {
@@ -10653,10 +10665,10 @@ function applyShading(obj, dirty) {
        every logical vertex, the dirty pass for the few that can have changed. */
     let _minAi = Infinity, _maxAi = -1;
     const shadeVertex = (l) => {
-      const tris = trisAt.get(l);
-      if (!tris) return;
+      const ts0 = triStart[l], ts1 = triStart[l + 1];
+      if (ts0 === ts1) return;
       stamp = ++UF.stamp0;
-      for (let i = 0; i < tris.length; i++) enrol(triGroup[tris[i]]);
+      for (let i = ts0; i < ts1; i++) enrol(triGroup[triOf[i]]);
       for (let ii = incStart[l]; ii < incStart[l + 1]; ii++) {
         const rec = edgeList[incOf[ii]];
         if (rec.sharp) continue;
@@ -10668,8 +10680,8 @@ function applyShading(obj, dirty) {
         }
       }
       touched.length = 0;
-      for (let i = 0; i < tris.length; i++) {
-        const t = tris[i], r = find(triGroup[t]);
+      for (let i = ts0; i < ts1; i++) {
+        const t = triOf[i], r = find(triGroup[t]);
         if (accStamp[r] !== stamp) {
           accStamp[r] = stamp; accX[r] = 0; accY[r] = 0; accZ[r] = 0; touched.push(r);
         }
@@ -10728,9 +10740,9 @@ function applyShading(obj, dirty) {
           if (gx * gx + gy * gy + gz * gz > 1e-12) { x = gx; y = gy; z = gz; }
           else {
             let got = false;
-            for (let q = 0; q < tris.length; q++) {
-              if (triGroup[tris[q]] !== g) continue;
-              const to = tris[q] * 3;
+            for (let q = ts0; q < ts1; q++) {
+              if (triGroup[triOf[q]] !== g) continue;
+              const to = triOf[q] * 3;
               const tx = triNormal[to], ty = triNormal[to + 1], tz = triNormal[to + 2];
               if (tx * tx + ty * ty + tz * tz > 1e-12) { x = tx; y = ty; z = tz; got = true; break; }
             }
@@ -41189,7 +41201,7 @@ function mergeCoplanarTriangles(positions, tris, matOf) {
    how many vertices are under it. Landing a 200k-triangle mesh gives you an
    app that appears to work and then cannot do anything; saying no is the
    kinder answer, and it says the number so you know what to decimate to. */
-const IMPORT_TRI_BUDGET = 40000;
+const IMPORT_TRI_BUDGET = 1200000;
 
 /* AND A FACE BUDGET - THE NUMBER OF FACES THIS APP CAN HOLD AND STILL BE AN
    EDITOR. Triangles are not what costs. On any smooth or scanned mesh
@@ -41216,7 +41228,7 @@ const IMPORT_TRI_BUDGET = 40000;
    faces, so 12000 refused the very models the mode exists to show. The
    host is a desktop page, not a phone; the editing ops keep their own
    OP_FACE_BUDGET either way. Without ?embed=1 nothing moves. */
-const MESH_FACE_BUDGET = EMBED ? 25000 : 12000;
+const MESH_FACE_BUDGET = EMBED ? 25000 : 500000;
 
 /* AND A SEPARATE, SMALLER ONE FOR THE OPS THAT GENERATE FACES (v2.24).
    Boolean and the curve sweeps borrowed the importer's budget because the

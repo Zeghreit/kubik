@@ -225,6 +225,29 @@ position identical, so the record shape is right in both worlds. 36 probes clean
 Cumulative on this line of work, 507,791 faces: one operation **3.42s -> 1.59s**,
 `applyShading` **2.80s -> 1.21s**, import **6.29s -> 4.12s**.
 
+## trisAt as CSR, and the import budget opened to 500k (v3.23)
+
+`trisAt` - the second Map keyed by logical vertex, read once per vertex by the same
+island pass - is a counting sort now, like the incident lists: `triStart[l]..triStart[l+1]`
+indexes `triOf`, which holds triangle ids. Output proven byte-identical to the
+saved baseline by `_shadecmpt.js` before anything was timed.
+
+**It did not make the shade measurably faster**: 1.26s -> 1.28s, inside a +-72ms
+spread. What it does remove is 1.59M short-lived arrays per shade, which is GC
+pressure a phone pays for even when the clock on a desktop does not show it. Kept
+on that ground, not on a claimed speedup.
+
+**`MESH_FACE_BUDGET` 12,000 -> 500,000 and `IMPORT_TRI_BUDGET` 40,000 -> 1,200,000**
+(EMBED stays at 25,000). Until this, the app refused a big model before any of the
+engine work could be tested on a real device - the goal was unreachable from the
+UI. 36 probes still clean, including the import probe that exercises the refusals.
+
+WHAT TO EXPECT ON A PHONE at that size, honestly: a 508k-face model is ~429MB of
+JS heap on the desktop bench, each operation is ~1.3s and there is no busy
+indicator yet, so it will look frozen for that second. The first shading pass also
+builds the topology (~1s) inside the import. If the tab dies, the heap is the
+cause and the budget is the knob.
+
 ## The incident lists are CSR, not a Map of arrays (v3.22)
 
 Two Maps were built per shade: one keyed by edge (the dedup index, kept) and one
