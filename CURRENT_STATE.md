@@ -225,6 +225,27 @@ position identical, so the record shape is right in both worlds. 36 probes clean
 Cumulative on this line of work, 507,791 faces: one operation **3.42s -> 1.59s**,
 `applyShading` **2.80s -> 1.21s**, import **6.29s -> 4.12s**.
 
+## The incident lists are CSR, not a Map of arrays (v3.22)
+
+Two Maps were built per shade: one keyed by edge (the dedup index, kept) and one
+keyed by VERTEX whose only reader is the per-vertex island pass - 1.59M Map
+lookups per shade at 500k faces. It is a counting sort over the finished edge list
+now: `incStart[l]..incStart[l+1]` indexes `incOf`, which holds EDGE IDS, and
+`edgeList[id]` is the record. Two passes over the edges, no hashing, no
+per-vertex array.
+
+    rebuild (one operation)   1.59s -> 1.26s
+    applyShading              1.21s -> 1.04s
+    import                    4.12s -> 3.62s
+
+PROVEN IDENTICAL before the measurement was believed: `_shadecmpt.js` hashes the
+whole normal buffer, the whole edge list and the face map over 15 rows (7 shapes x
+wear on/off, plus a rebuild), and the output is byte-for-byte the saved baseline.
+36-probe suite clean.
+
+Cumulative on this line, 507,791 faces: one operation **3.42s -> 1.26s**,
+`applyShading` **2.80s -> 1.04s**, import **6.29s -> 3.62s**.
+
 ## The winding components are built only for objects that need them (v3.21e)
 
 The 2.2s bucket in the measurement below was `buildShadingTopo`, and the single

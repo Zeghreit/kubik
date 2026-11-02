@@ -9933,7 +9933,13 @@ function buildShadingTopo(geo, withComponents) {
      applyShading's per-vertex union-find, which had the key and then had to
      go back to `edges` for the record - one Map lookup per incident edge per
      vertex, on the largest phase of the largest function in the app. */
-  const incident = new Map();    // logical vertex -> its edge RECORDS
+  /* THE INCIDENT LISTS AS CSR, not a Map of arrays (v3.22). Two Maps were built
+     per shade: one keyed by edge (the dedup index, kept) and this one keyed by
+     VERTEX, whose only reader is the per-vertex island pass - 1.59M Map lookups
+     per shade at 500k faces. It is a counting sort over the finished edge list
+     now: `incStart[l]..incStart[l+1]` indexes `incOf`, which holds EDGE IDS, and
+     `edgeList[id]` is the record. Same data, no hashing, no per-vertex array. */
+  const edgeList = [];           // edge id -> record, in creation order
   for (let t = 0; t < triCount; t++) {
     const l0 = logicalOf[index.getX(t * 3)], l1 = logicalOf[index.getX(t * 3 + 1)],
           l2 = logicalOf[index.getX(t * 3 + 2)];
@@ -9961,8 +9967,7 @@ function buildShadingTopo(geo, withComponents) {
           ? { faces: [], use: [], opp: [], tri: [], ends: [lo, hi], sharp: false }
           : { faces: [], ends: [lo, hi], sharp: false };
         edges.set(k, rec);
-        let ia = incident.get(lo); if (!ia) { ia = []; incident.set(lo, ia); } ia.push(rec);
-        let ib = incident.get(hi); if (!ib) { ib = []; incident.set(hi, ib); } ib.push(rec);
+        edgeList.push(rec);
       }
       const fs = rec.faces, g = triGroup[t];
       /* An explicit scan rather than indexOf: a face list is one, two or
@@ -9980,6 +9985,22 @@ function buildShadingTopo(geo, withComponents) {
       if (withComponents) rec.use[gi]++;
     }
   }
+  /* COUNTING SORT: one pass to count, a prefix sum, one pass to fill. */
+  const incStart = new Int32Array(nLog + 1);
+  for (let i = 0; i < edgeList.length; i++) {
+    const e = edgeList[i].ends;
+    incStart[e[0]]++; incStart[e[1]]++;
+  }
+  let incTotal = 0;
+  for (let i = 0; i < nLog; i++) { const c = incStart[i]; incStart[i] = incTotal; incTotal += c; }
+  incStart[nLog] = incTotal;
+  const incOf = new Int32Array(incTotal);
+  const incCur = incStart.slice(0, nLog);
+  for (let i = 0; i < edgeList.length; i++) {
+    const e = edgeList[i].ends;
+    incOf[incCur[e[0]]++] = i;
+    incOf[incCur[e[1]]++] = i;
+  }
 
   return {
     /* `logicalOf` is here for the dirty path (v3.20): it arrives as an
@@ -9989,7 +10010,7 @@ function buildShadingTopo(geo, withComponents) {
        the throw was caught, and a catch is invisible on a phone. */
     logicalGroups, logicalOf, groupsSrc, triCount, triGroup,
     relSign, comps, compClosed, groupOfAttr, trisAt,
-    edges, incident, withComponents: !!withComponents
+    edges, edgeList, incStart, incOf, withComponents: !!withComponents
   };
 }
 
@@ -10200,7 +10221,7 @@ function applyShading(obj, dirty) {
     const needWear = obj.mesh.userData.wantsWear !== false;
     const topo = shadingTopoFor(geo, needWear);
     const { logicalGroups, logicalOf, groupsSrc, triCount, triGroup, relSign, comps,
-            compClosed, groupOfAttr, trisAt, edges, incident } = topo;
+            compClosed, groupOfAttr, trisAt, edges, edgeList, incStart, incOf } = topo;
 
     /* WHICH WAY EACH SHELL FACES. Which triangles agree with which is
        topology and lives in the cache above; what has to be asked again on
@@ -10552,10 +10573,8 @@ function applyShading(obj, dirty) {
     if (dirtyVerts && !needWear) {
       const asked = new Set();
       dirtyVerts.forEach(l => {
-        const inc = incident.get(l);
-        if (!inc) return;
-        for (let j = 0; j < inc.length; j++) {
-          const rec = inc[j];
+        for (let j = incStart[l]; j < incStart[l + 1]; j++) {
+          const rec = edgeList[incOf[j]];
           if (asked.has(rec)) continue;
           asked.add(rec);
           askEdge(rec);
@@ -10638,9 +10657,8 @@ function applyShading(obj, dirty) {
       if (!tris) return;
       stamp = ++UF.stamp0;
       for (let i = 0; i < tris.length; i++) enrol(triGroup[tris[i]]);
-      const inc = incident.get(l);
-      if (inc) for (let i = 0; i < inc.length; i++) {
-        const rec = inc[i];
+      for (let ii = incStart[l]; ii < incStart[l + 1]; ii++) {
+        const rec = edgeList[incOf[ii]];
         if (rec.sharp) continue;
         const fs = rec.faces;
         for (let j = 0; j < fs.length; j++) enrol(fs[j]);
