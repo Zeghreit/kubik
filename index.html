@@ -18746,7 +18746,17 @@ function applyPendingOpInner() {
      ever opens; everything else gets it from the worker that refused. */
   if (op.kind !== 'bridge') op.lastWhy = opRefusal;
 
-  App.selectedElements = resultSelection;
+  /* A PREVIEW FRAME THAT RETURNS NO SELECTION KEEPS THE ONE ON SCREEN (v3.23e).
+     While the slider moves, an op re-runs from the snapshot every frame and some
+     of those runs come back with an empty set - the new faces exist but nothing
+     names them yet. Assigning that empty set blanks the selection, so every
+     frame the tint vanished and the next brought it back: the flashing that
+     stops the moment the value stops changing. Keeping the previous set changes
+     nothing for a real edit (an op that means to clear the selection still does,
+     on the frame it commits) and leaves a preview's highlight where the eye
+     already was. */
+  const livePreview = !!(op && op.live && !op.settled);
+  if (resultSelection.size || !livePreview) App.selectedElements = resultSelection;
   setActiveObjectHelpersVisible(obj, App.mode);
   refreshElementColors(obj);
   updateFrameVisibility();
