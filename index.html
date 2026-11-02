@@ -2436,6 +2436,14 @@
     text-transform: uppercase; color: var(--text-dim); margin-bottom: 8px; gap: 10px;
   }
   .insp-head button { min-height: 44px; min-width: 44px; padding: 2px 8px; justify-content: center; }
+  /* The object's size in polygons, under its name (v3.23b). Same mono, dim and
+     small as the head above it: this is a fact about the thing you picked, not a
+     control, so it must not read as a button or compete with the fields. */
+  .insp-stats {
+    font-family: var(--mono); font-size: 11px; color: var(--text-dim);
+    letter-spacing: .02em; margin: -2px 0 10px; min-height: 13px;
+  }
+  .insp-stats b { color: var(--text); font-weight: 600; }
 
   /* Lower-right - the one corner nothing else on screen has claimed, and a
      secondary weight (panel-coloured, not accent-filled) so it doesn't
@@ -3212,6 +3220,7 @@
         <span id="inspTitle">Transform</span>
         <button id="inspClose" class="small">✕</button>
       </div>
+      <div id="inspStats" class="insp-stats"></div>
       <div class="insp-row"><span class="insp-label">Pos</span>
         <input type="number" id="posX" step="0.1" /><input type="number" id="posY" step="0.1" /><input type="number" id="posZ" step="0.1" />
       </div>
@@ -3240,7 +3249,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.23</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.23b</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -32529,6 +32538,21 @@ function inspectorTarget() {
   return ids.length === 1 ? findObject(ids[0]) : null;
 }
 
+/* Polygons and triangles of one object, for the line under its name (v3.23b).
+   "Polygons" is what this app calls FACES - an n-gon stays one however many
+   triangles it is drawn with - so the two numbers are the model's own shape and
+   what the GPU is handed, and on a quad mesh they differ by about two. */
+function faceStatsText(obj) {
+  try {
+    const geo = obj && obj.mesh && obj.mesh.geometry;
+    if (!geo || !geo.index) return '';
+    const faces = faceCount(geo);
+    const tris = geo.index.count / 3;
+    const fmt = (v) => String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+    return '<b>' + fmt(faces) + '</b> polys · <b>' + fmt(tris) + '</b> tris';
+  } catch (e) { return ''; }
+}
+
 function refreshInspector() {
   const obj = inspectorTarget();
   const visible = App.showInspector && !!obj;
@@ -32536,12 +32560,15 @@ function refreshInspector() {
   if (!visible || inspEditing) {
     if (App.showInspector && !obj) {
       document.getElementById('inspTitle').textContent = 'Select one object';
+      { const st = document.getElementById('inspStats'); if (st) st.innerHTML = ''; }
       surfaceIn(inspectorEl);
       Object.values(inspFields).flat().forEach(f => { f.value = ''; f.disabled = true; });
     }
     return;
   }
   document.getElementById('inspTitle').textContent = obj.name;
+  const statsEl = document.getElementById('inspStats');
+  if (statsEl) statsEl.innerHTML = faceStatsText(obj);
   const r = 3;
   const e = new THREE.Euler().setFromQuaternion(obj.mesh.quaternion, 'XYZ');
   const vals = {
@@ -55661,6 +55688,10 @@ document.getElementById('btnInspector').addEventListener('click', (ev) => {
 
 function refreshUI() {
   clearPreHi();   // v2.92: any change of state retires the pre-select
+  /* THE POLY COUNT FOLLOWS EVERY EDIT (v3.23b). refreshInspector used to run
+     only on a drag and on the panel being opened, so after an extrude the number
+     under the name would have been the one from before it. */
+  refreshInspector();
   /* The selected curves' control points are part of the UI, not of any one
      op - they follow the selection, so they are refreshed where every other
      selection-shaped thing is. Cheap: it is one dispose and one small
