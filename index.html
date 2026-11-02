@@ -3263,7 +3263,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.23e</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.23f</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -11218,6 +11218,14 @@ function syncFaceOverlay(obj) {
     // Sorted, so "the same groups" is a list comparison rather than a set one.
     want.sort((a, b) => a - b);
   }
+  /* AN ID THAT IS NO LONGER A FACE IS NOT A FACE (v3.23f). While a live op
+     re-runs from its snapshot, the selection can still name groups from the
+     shape one frame ago; `topo.faceGroups[gi]` is then undefined and the index
+     built below would be copied from the wrong triangle ranges - which is what
+     "the whole object flashes white-blue with polygons distorted" looks like on
+     screen. Stale ids are DROPPED rather than trusted, so a frame in that state
+     draws the faces that do exist and nothing else. */
+  for (let wi = want.length - 1; wi >= 0; wi--) if (!topo.faceGroups[want[wi]]) want.splice(wi, 1);
   if (!want.length) {
     if (ud.faceOverlay) ud.faceOverlay.visible = false;
     ud.faceOverlayIds = null;
@@ -11258,6 +11266,12 @@ function syncFaceOverlay(obj) {
   // A rebuild installs a new attribute; the borrow has to follow it.
   if (mesh.geometry.attributes.position !== geo.attributes.position) {
     mesh.geometry.setAttribute('position', geo.attributes.position);
+    /* AND THE OLD INDEX GOES WITH THE OLD BUFFER (v3.23f). It was copied from
+       the geometry that has just been disposed, so every id in it now points at
+       a different triangle. Dropping it means the rebuild below always runs
+       against the new numbering, and a frame that somehow fails to rebuild draws
+       nothing instead of garbage over the whole object. */
+    mesh.geometry.setIndex(null);
     ud.faceOverlayIds = null;
   }
 
