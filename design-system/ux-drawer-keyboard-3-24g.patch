@@ -1,0 +1,67 @@
+--- a/index.html
++++ b/index.html
+@@ -59052,6 +59052,64 @@
+      propagation only keeps the editor's window-level shortcuts out. */
+   ev.stopPropagation();
+ });
++
++/* The drawer is modal too: a Delete aimed at a panel control must never
++   delete the model. Inert also removes the translated-off-screen sheet from
++   the tab order while closed. Native click and swipe routes all call the
++   wrapped setDrawerOpen, so mouse, touch and keyboard share one state. */
++drawerEl.tabIndex = -1;
++drawerEl.setAttribute('role', 'dialog');
++drawerEl.setAttribute('aria-modal', 'true');
++drawerEl.inert = true;
++drawerEl.setAttribute('aria-hidden', 'true');
++let probeDrawerReturnFocus = null;
++function probeRestoreDrawerFocus() {
++  const previous = probeDrawerReturnFocus;
++  const target = previous && previous.isConnected && previous !== document.body &&
++    previous !== document.documentElement ? previous : document.getElementById('btnMenu');
++  if (target) setTimeout(() => {
++    if (!drawerEl.classList.contains('open') && !helpOverlayEl.classList.contains('show')) {
++      target.focus({ preventScroll: true });
++    }
++  }, 0);
++  probeDrawerReturnFocus = null;
++}
++const probeBaseSetDrawerOpen = setDrawerOpen;
++setDrawerOpen = function (open) {
++  const wasOpen = drawerEl.classList.contains('open');
++  if (open && !wasOpen) probeDrawerReturnFocus = document.activeElement;
++  const result = probeBaseSetDrawerOpen(open);
++  drawerEl.inert = !open;
++  drawerEl.setAttribute('aria-hidden', String(!open));
++  if (open && !wasOpen) drawerEl.focus({ preventScroll: true });
++  if (!open && wasOpen) probeRestoreDrawerFocus();
++  return result;
++};
++drawerEl.addEventListener('keydown', ev => {
++  if (!drawerEl.classList.contains('open')) return;
++  if (ev.key === 'Escape') {
++    ev.preventDefault(); ev.stopPropagation(); setDrawerOpen(false); return;
++  }
++  if (ev.key === 'Tab') {
++    const items = [...drawerEl.querySelectorAll(
++      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])'
++    )].filter(el => el.getClientRects().length);
++    const first = items[0], last = items[items.length - 1];
++    const active = document.activeElement;
++    if (!items.length) {
++      ev.preventDefault(); drawerEl.focus({ preventScroll: true });
++    } else if (!items.includes(active)) {
++      ev.preventDefault(); (ev.shiftKey ? last : first).focus();
++    } else if (ev.shiftKey && active === first) {
++      ev.preventDefault(); last.focus();
++    } else if (!ev.shiftKey && active === last) {
++      ev.preventDefault(); first.focus();
++    }
++  }
++  /* Preserve native button, input and link behavior; only keep the editor's
++     window-level scene shortcuts from seeing keys used inside the sheet. */
++  ev.stopPropagation();
++});
+ </script>
+ </body>
+ </html>
