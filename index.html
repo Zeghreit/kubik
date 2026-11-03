@@ -3263,7 +3263,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.24</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.24a</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -23832,6 +23832,29 @@ function refreshElementColors(obj) {
   syncSeamOverlay(obj);
   syncSelectionOverlay(obj);
   syncSoftOverlay(obj);
+  /* NOBODY LEAVES A CHILD BEHIND (v3.24a). Measured on a phone: a cube with a
+     handful of overlays reported ELEVEN mesh children mid-preview and four a
+     moment later, and every one of the extra ones is a translucent, coplanar
+     sheet - which is the whole-object wash with the hatched z-fighting under it.
+     A sync that replaces an overlay always disposes the one it replaces, so an
+     orphan only appears when a reference is overwritten rather than removed;
+     rather than guess which path does that, the invariant is enforced here, at
+     the one place that has just seen every overlay this object should own. Any
+     child that is not one of the Object3D values in userData is an orphan by
+     construction and is torn down. */
+  const ud = obj.mesh.userData;
+  let keep = null;
+  for (let i = obj.mesh.children.length - 1; i >= 0; i--) {
+    const c = obj.mesh.children[i];
+    if (!keep) {
+      keep = new Set();
+      for (const k in ud) { const v = ud[k]; if (v && v.isObject3D) keep.add(v); }
+    }
+    if (keep.has(c)) continue;
+    obj.mesh.remove(c);
+    if (c.geometry) c.geometry.dispose();
+    if (c.material) { if (Array.isArray(c.material)) c.material.forEach(m => m && m.dispose && m.dispose()); else if (c.material.dispose) c.material.dispose(); }
+  }
 }
 
 /* SEAMS YOU CAN ACTUALLY SEE (v2.59).
