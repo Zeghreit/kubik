@@ -1,0 +1,27 @@
+diff --git a/index.html b/index.html
+index 905982c..32c5425 100644
+--- a/index.html
++++ b/index.html
+@@ -58811,9 +58811,19 @@ bloomToolRing = function (x, y, tools, pointerId, aim) {
+   toolRingActive.lastClientX = aim ? aim.x : x;
+   toolRingActive.lastClientY = aim ? aim.y : y;
+   const cornerLine = tools && Array.isArray(tools.ringRadii) && tools.ringRadii.length === tools.length;
+-  toolRingActive.precise = pointerId !== undefined && !cornerLine &&
+-    toolRingActive.itemEls.some(it => it.r < toolRingActive.radius - 1);
+-  touchToolRingEl.classList.toggle('precise', !!toolRingActive.precise);
++  const t = toolRingActive;
++  const centreShifted = Math.hypot(t.x - t.aimX, t.y - t.aimY) > 1;
++  const originalAngles = toolRingAngles(t.tools);
++  const seatsReshaped = t.itemEls.some((it, i) => {
++    const original = THREE.MathUtils.degToRad(originalAngles[i]);
++    const turned = Math.abs(Math.atan2(Math.sin(it.angle - original), Math.cos(it.angle - original)));
++    return it.r < t.radius - 1 || turned > Math.PI / 180;
++  });
++  /* A wall can redistribute bearings without shortening any seat radius.
++     Detect the centre clamp AND angular redistribution, not just a smaller r,
++     so angle-only clipping cannot keep direction-based flick active. */
++  t.precise = pointerId !== undefined && !cornerLine && (centreShifted || seatsReshaped);
++  touchToolRingEl.classList.toggle('precise', !!t.precise);
+ };
+ function probeRingSeatDisabled(it) {
+   if (!it) return false;
