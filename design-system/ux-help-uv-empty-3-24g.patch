@@ -1,0 +1,68 @@
+diff --git a/index.html b/index.html
+index f0971c0..905982c 100644
+--- a/index.html
++++ b/index.html
+@@ -2958,11 +2958,22 @@ button:disabled { cursor: default; }
+ }
+ #uvViewEmpty {
+   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+-  width: min(330px, calc(100vw - 48px)); padding: 24px 0;
++  width: min(350px, calc(100vw - 48px)); padding: 32px 24px 30px;
++  border-top: 1px solid var(--hair); border-bottom: 1px solid var(--hair);
++  background-image:
++    linear-gradient(rgb(255 255 255 / .024) 1px, transparent 1px),
++    linear-gradient(90deg, rgb(255 255 255 / .024) 1px, transparent 1px);
++  background-size: 40px 40px; background-position: center;
+   font-size: 14px; line-height: 1.55; pointer-events: none;
+ }
++#uvViewEmpty::before {
++  content: 'UV / EMPTY'; display: block; margin-bottom: 12px;
++  color: var(--text); font-family: var(--mono); font-size: 11px;
++  font-weight: 600; letter-spacing: .18em;
++}
++#uvViewEmpty[data-state='unavailable']::before { content: 'UV / UNAVAILABLE'; }
+ #uvEmptyAction {
+-  position: absolute; left: 50%; top: calc(50% + 64px); transform: translateX(-50%);
++  position: absolute; left: 50%; top: calc(50% + 96px); transform: translateX(-50%);
+   display: none; z-index: 3;
+ }
+ #uvEmptyAction.show { display: block; }
+@@ -3402,7 +3413,7 @@ html.uv2d-open #outFly { display: flex; }
+       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
+     </div>
+     <nav class="drawer-nav" id="drawerNav">
+-      <button data-go="dsModel" class="on">Model</button><button data-go="dsLight">Light</button><button data-go="dsTools">Tools</button><button data-go="dsFiles">Files</button>
++      <button data-go="dsModel" class="on">Model</button><button data-go="dsLight">Light</button><button data-go="dsTools">Tools</button><button data-go="dsFiles">Files</button><button type="button" data-help>Help</button>
+     </nav>
+     <div class="drawer-body" id="drawerBody">
+ 
+@@ -48253,7 +48264,7 @@ function openUvView() {
+     uvViewEmptyEl.textContent = res.tooHeavy
+       ? 'Too many triangles to preview here.'
+       : 'No UV yet on this object — run Unwrap first.';
+-    toast(res.tooHeavy ? 'Too many triangles to preview' : 'No UV yet · run Unwrap first');
++    if (res.tooHeavy) toast('Too many triangles to preview');
+   }
+   /* Opened a tick late (review finding, v2.43a): this runs from inside the
+      mode ring's own pointerup, and the click the browser synthesises for
+@@ -52922,6 +52933,12 @@ function markDrawerChip(id) {
+   drawerNavEl.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.go === id));
+ }
+ drawerNavEl.addEventListener('click', (ev) => {
++  const help = ev.target.closest('button[data-help]');
++  if (help) {
++    setDrawerOpen(false);
++    openHelp();
++    return;
++  }
+   const b = ev.target.closest('button[data-go]');
+   const t = b && document.getElementById(b.dataset.go);
+   if (!t) return;
+@@ -58737,6 +58754,7 @@ probeUvUnwrap.addEventListener('click', ev => {
+ function probeSyncUvEmpty() {
+   const visible = uvViewObj && uvViewEmptyEl.style.display !== 'none';
+   const canUnwrap = visible && /^No UV yet/.test(uvViewEmptyEl.textContent);
++  uvViewEmptyEl.dataset.state = canUnwrap ? 'empty' : 'unavailable';
+   probeUvEmptyAction.classList.toggle('show', !!canUnwrap);
+ }
+ new MutationObserver(probeSyncUvEmpty).observe(uvViewEmptyEl,
