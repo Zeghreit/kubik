@@ -13,8 +13,8 @@ html,body{margin:0;min-height:100%;background:#101010;color:#f5f5f5;font:14px/1.
 <body>
 <div id="probeBoot"><div><b>Kubik 3.24g</b><span>Loading the UX probe…</span></div></div>
 <script>
-/* Preview-only: apply the reviewed diff in memory. The source index and
-   main stay unchanged; the same patch can be applied normally after review. */
+/* Preview-only: apply the reviewed diffs in memory. The source index and
+   main stay unchanged; the same patches can be applied normally after review. */
 function probeApplyPatch(source, patch) {
   const src = source.split('\n'), p = patch.split('\n'), out = [];
   let cursor = 0, i = 0;
@@ -42,15 +42,19 @@ function probeApplyPatch(source, patch) {
   return out.join('\n');
 }
 (async () => {
-  const [indexResponse, patchResponse] = await Promise.all([
+  const [indexResponse, patchResponse, labelPatchResponse] = await Promise.all([
     fetch('./index.html', { cache: 'no-store' }),
-    fetch('./design-system/ux-probe-3-24g.patch', { cache: 'no-store' })
+    fetch('./design-system/ux-probe-3-24g.patch', { cache: 'no-store' }),
+    fetch('./design-system/ux-label-stability-3-24g.patch', { cache: 'no-store' })
   ]);
   if (!indexResponse.ok) throw new Error('Could not load index.html: HTTP ' + indexResponse.status);
   if (!patchResponse.ok) throw new Error('Could not load the UX patch: HTTP ' + patchResponse.status);
-  const [source, patch] = await Promise.all([indexResponse.text(), patchResponse.text()]);
+  if (!labelPatchResponse.ok) throw new Error('Could not load the label patch: HTTP ' + labelPatchResponse.status);
+  const [source, patch, labelPatch] = await Promise.all([
+    indexResponse.text(), patchResponse.text(), labelPatchResponse.text()
+  ]);
   if (!source.includes('3.24g')) throw new Error('The branch index is not Kubik 3.24g');
-  const patched = probeApplyPatch(source, patch);
+  const patched = probeApplyPatch(probeApplyPatch(source, patch), labelPatch);
   document.open(); document.write(patched); document.close();
 })().catch(error => {
   const boot = document.getElementById('probeBoot');
