@@ -1,0 +1,73 @@
+diff --git a/index.html b/index.html
+index 11ef9d6..cb5ee4d 100644
+--- a/index.html
++++ b/index.html
+@@ -2903,6 +2903,11 @@ button:disabled { cursor: default; }
+   font-variant-numeric: tabular-nums;
+ }
+ #drawer .drawer-nav button { min-height: 44px; padding-inline: 16px; }
++#drawer .ds-sec-index {
++  margin-right: 8px; color: var(--text-dim);
++  font-family: var(--mono); font-size: 10px; font-weight: 500;
++  font-stretch: 100%; letter-spacing: .12em;
++}
+ #drawerClose, #drawer .ds-switch .group button, #drawer .ds-pm button,
+ #drawer .ds-save button { min-height: 44px; }
+ #drawerClose { min-width: 44px; }
+@@ -3419,7 +3424,7 @@ html.uv2d-open #outFly { display: flex; }
+ 
+       <!-- What you come for most: which model this is, and Save. -->
+       <div class="drawer-sec ds-model" id="dsModel" style="--i:0">
+-        <div class="ds-cap"><span>This model</span><span id="status"></span></div>
++        <div class="ds-cap"><span><span class="ds-sec-index">01</span>This model</span><span id="status"></span></div>
+         <div class="ds-name" id="drawerName">Unsaved</div>
+         <!-- Kept for the probes and the tooltip logic; the name above says it. -->
+         <div class="drawer-note" id="projCurrent" hidden></div>
+@@ -3431,7 +3436,7 @@ html.uv2d-open #outFly { display: flex; }
+       </div>
+ 
+       <div class="drawer-sec" id="dsLight" style="--i:1">
+-        <div class="drawer-title">Light</div>
++        <div class="drawer-title"><span class="ds-sec-index">02</span>Light</div>
+         <div id="lightMenu"></div>
+         <div class="ds-note"><b>Aim it:</b> hold two fingers still, slide with the other hand.</div>
+         <!-- v2.86: the plates' blur is what a phone pays for while the camera
+@@ -3444,7 +3449,7 @@ html.uv2d-open #outFly { display: flex; }
+            0.05 notch of a 200px track. The ranges stay (hidden) and remain
+            the one place the value lives - the buttons step them. -->
+       <div class="drawer-sec" id="dsTools" style="--i:2">
+-        <div class="drawer-title">Snap <small>on or off: hold empty space</small></div>
++        <div class="drawer-title"><span class="ds-sec-index">03</span>Snap <small>on or off: hold empty space</small></div>
+         <div class="ds-steps">
+           <div class="ds-step"><div><div class="ds-t">Move</div><div class="ds-v" id="snapMoveVal">0.25</div></div>
+           <div class="ds-pm" data-for="snapMove"><button data-d="-1" aria-label="Less">−</button><button data-d="1" aria-label="More">+</button></div>
+@@ -3466,7 +3471,7 @@ html.uv2d-open #outFly { display: flex; }
+       </div>
+ 
+       <div class="drawer-sec" id="dsFiles" style="--i:3">
+-        <div class="drawer-title">Saved <small>in this app, no files</small></div>
++        <div class="drawer-title"><span class="ds-sec-index">04</span>Saved <small>in this app, no files</small></div>
+         <div id="projList"></div>
+         <div class="ds-grid">
+           <button id="btnNewScene" class="full" title="Start over with one cube - Undo brings this scene back">New scene</button>
+@@ -58751,6 +58756,20 @@ probeUvUnwrap.addEventListener('click', ev => {
+   ev.stopPropagation();
+   unwrapSelection();
+ });
++/* On a phone the Outliner is a temporary object picker inside UV, not a
++   second workspace. Once a different row has reconciled the live UV target,
++   return the screen to that object's islands. A shelf that was already open
++   on entry keeps its state; desktop always keeps the comparison column. */
++const probeBaseOutlinerActivate = outlinerActivate;
++outlinerActivate = function (t) {
++  const previousUv = uvViewObj;
++  const result = probeBaseOutlinerActivate(t);
++  if (previousUv && uvViewObj && previousUv.id !== uvViewObj.id &&
++      window.innerWidth < 700 && !uvViewEl.dataset.outlinerWasOpen && outlinerIsOpen()) {
++    setOutlinerOpen(false);
++  }
++  return result;
++};
+ function probeSyncUvEmpty() {
+   const visible = uvViewObj && uvViewEmptyEl.style.display !== 'none';
+   const canUnwrap = visible && /^No UV yet/.test(uvViewEmptyEl.textContent);
