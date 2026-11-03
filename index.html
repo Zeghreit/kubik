@@ -3263,7 +3263,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.24c</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.24d</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -18775,6 +18775,9 @@ function applyPendingOpInner() {
   setActiveObjectHelpersVisible(obj, App.mode);
   refreshElementColors(obj);
   updateFrameVisibility();
+  /* The last thing the frame does to this object, and the last chance to drop a
+     sheet nobody owns (v3.24d). */
+  sweepOrphanOverlays(obj);
   /* AGAIN, at the end. The one at the top starts the linger window when the
      work STARTS, and this is the heaviest synchronous path in the app - on a
      subdivided mesh it can outlast the whole 260ms window, so the frame that
@@ -23832,28 +23835,37 @@ function refreshElementColors(obj) {
   syncSeamOverlay(obj);
   syncSelectionOverlay(obj);
   syncSoftOverlay(obj);
-  /* NOBODY LEAVES A CHILD BEHIND (v3.24a). Measured on a phone: a cube with a
-     handful of overlays reported ELEVEN mesh children mid-preview and four a
-     moment later, and every one of the extra ones is a translucent, coplanar
-     sheet - which is the whole-object wash with the hatched z-fighting under it.
-     A sync that replaces an overlay always disposes the one it replaces, so an
-     orphan only appears when a reference is overwritten rather than removed;
-     rather than guess which path does that, the invariant is enforced here, at
-     the one place that has just seen every overlay this object should own. Any
-     child that is not one of the Object3D values in userData is an orphan by
-     construction and is torn down. */
+  sweepOrphanOverlays(obj);
+}
+
+/* NOBODY LEAVES A CHILD BEHIND (v3.24a, v3.24d). Measured on a phone: a cube with
+   a handful of overlays reported ELEVEN mesh children mid-preview and four a
+   moment later, and every one of the extra ones is a translucent, coplanar
+   sheet - which is the whole-object wash with the hatched z-fighting under it.
+   A sync that replaces an overlay always disposes the one it replaces, so an
+   orphan only appears when a reference is overwritten rather than removed;
+   rather than guess which path does that, the invariant is enforced here: every
+   Object3D value in userData is kept, everything else attached to the mesh is an
+   orphan and is torn down.
+
+   AND IT RUNS TWICE, because the first report of it named the culprit (v3.24d):
+   the debug line showed `mesh?:28` - an UNOWNED mesh covering exactly the
+   object's 28 triangles, appearing only on the phone, only during a live op. An
+   unowned child means it is added AFTER the refresh that would have swept it, so
+   the sweep is called again at the end of the preview frame, once every path in
+   it has finished adding things. */
+function sweepOrphanOverlays(obj) {
+  if (!obj || !obj.mesh) return;
   const ud = obj.mesh.userData;
-  let keep = null;
+  const keep = new Set();
+  for (const k in ud) { const v = ud[k]; if (v && v.isObject3D) keep.add(v); }
   for (let i = obj.mesh.children.length - 1; i >= 0; i--) {
     const c = obj.mesh.children[i];
-    if (!keep) {
-      keep = new Set();
-      for (const k in ud) { const v = ud[k]; if (v && v.isObject3D) keep.add(v); }
-    }
     if (keep.has(c)) continue;
     obj.mesh.remove(c);
     if (c.geometry) c.geometry.dispose();
-    if (c.material) { if (Array.isArray(c.material)) c.material.forEach(m => m && m.dispose && m.dispose()); else if (c.material.dispose) c.material.dispose(); }
+    if (Array.isArray(c.material)) c.material.forEach(m => m && m.dispose && m.dispose());
+    else if (c.material && c.material.dispose) c.material.dispose();
   }
 }
 
