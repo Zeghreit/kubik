@@ -3263,7 +3263,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.23j</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.24</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -56633,8 +56633,10 @@ function dbgTrace() {
   const geo = o && o.mesh ? o.mesh.geometry : null;
   const fNow = renderer.info.render.frame;
   const rb = _dbgRebuilds; _dbgRebuilds = 0;
+  const brand = document.querySelector('.brand span');
   _dbgEl.textContent =
-    'frame ' + fNow + '  rebuilds since last ' + rb +
+    'v' + (brand ? brand.textContent.trim() : '?') + '   url ' + (location.pathname + location.search).slice(-28) +
+    '\nframe ' + fNow + '  rebuilds since last ' + rb +
     '\nmode ' + App.mode + '   sel ' + (App.selectedElements ? App.selectedElements.size : -1) +
     '\nop ' + (App.pendingOp ? App.pendingOp.kind : '-') +
     '   ov ' + (ov ? ((ov.visible ? 'VIS' : 'hid') + ' idx' + (ov.geometry.index ? ov.geometry.index.count : 0)) : 'none') +
@@ -56879,9 +56881,24 @@ function showUpdateBanner(newVersion) {
     'text-align:center; cursor:pointer;';
   bar.textContent = 'Update to ' + newVersion + ' available - tap to reload';
   bar.addEventListener('click', () => {
-    // A cache-busted URL forces a real network fetch even where a plain
-    // reload might not.
-    location.href = location.pathname + '?v=' + Date.now();
+    /* TWO THINGS WENT WRONG HERE, both reported from a phone (v3.24):
+       `?debug=1` disappeared, because the whole query was replaced by the
+       cache-buster; and the update came back as the OLD version with the banner
+       again, so tapping it looped.
+
+       The query is preserved now, and the PATH alternates between `/kubik/` and
+       `/kubik/index.html`. Those are two different URLs to the cache, and an iOS
+       Home Screen app hands back the document it stored for the FIRST one - so a
+       buster on the same path can be served the same old file every time, which
+       is exactly the loop. Alternating means the second tap asks for a URL the
+       cache has never held. */
+    const q = new URLSearchParams(location.search);
+    q.delete('v');
+    const search = (q.toString() ? q.toString() + '&' : '') + 'v=' + Date.now();
+    const base = /\/index\.html$/.test(location.pathname)
+      ? location.pathname.replace(/index\.html$/, '')
+      : location.pathname.replace(/\/?$/, '/index.html');
+    location.href = base + '?' + search;
   });
   document.body.appendChild(bar);
 }
