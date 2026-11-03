@@ -1,3 +1,64 @@
+
+## 2026-11-03 - v3.22 ... v3.24e (heavy-mesh follow-up, phone-test round)
+
+### Shipped and measured
+- **v3.22** `incident` Map -> CSR (counting sort). One operation 1.59s -> 1.26s,
+  applyShading 1.21s -> 1.04s, import 4.12s -> 3.62s. Proven byte-identical by
+  `_shadecmpt.js` BEFORE the timing was believed.
+- **v3.23** `trisAt` -> CSR as well. Time did NOT move (1.26 -> 1.28s, inside
+  spread) - kept only because it removes 1.59M short-lived arrays per shade.
+  Same byte-identical proof.
+- **v3.23** `MESH_FACE_BUDGET` 12k -> **500k**, `IMPORT_TRI_BUDGET` 40k -> 1.2M
+  (embed stays 25k). Until this the goal was unreachable from the UI.
+- **v3.23a** dropped `accept` on #fileImport: iOS greys out a file it cannot
+  classify, and .fbx has no registered UTI. This is why an iPhone could see an
+  FBX in Files but not select it.
+- **v3.23b-d** poly/tri counter: `#inspStats` in the inspector and `#selCount`
+  under the selection frame's chip. `#selCount` is the one that matters.
+  `refreshUI` now calls `refreshInspector` so the number follows edits.
+
+### The overlay bug (the long one)
+Symptom on a phone: during a live extrude/bevel the whole object flashed
+white-blue with hatched, skewed polygons; it stopped at the end of the slider.
+Three wrong hypotheses first (empty result selection, stale face-overlay index,
+rebuild ordering) - all three shipped as harmless hardening and none fixed it.
+
+What actually found it was instrumentation, not reasoning: `?debug=1` line
+(commit v3.23g onward) printing mode / op / ov / geo / mats / kids.
+- `kids` showed the mesh carrying 11 mesh children mid-preview and 4 later:
+  orphaned translucent coplanar overlays.
+- `mesh?:28` then named an UNOWNED mesh covering exactly the object's
+  triangles.
+- v3.24a added `sweepOrphanOverlays`: every Object3D in userData is kept,
+  everything else on the mesh is removed and disposed.
+- The end-of-frame call did NOT catch it (still `mesh?:28`), so v3.24e moved the
+  sweep into `selMarks` - the last function before the renderer. Now the debug
+  line reports `SWEPT Mesh:36/MeshBasicMaterial` and `mesh?` is gone.
+
+**Open:** the object still looked uniformly tinted in the last capture even
+though the unowned sheet is now swept. Next step is to confirm visually whether
+the wash is gone; if it is not, the remaining tint is NOT `SELECT_COLOR` (it
+never reaches mesh.material - materials are `#50545b`), so look at what paints
+the whole surface. Do not re-open the three dead hypotheses.
+
+### Update loop / debug lost (v3.24)
+`showUpdateBanner`'s click replaced the whole query with `?v=<ts>` (so
+`?debug=1` vanished) AND re-navigated to the same path, which an iOS Home Screen
+app answers from its own cache -> banner again. Now the query is preserved and
+the path alternates `/kubik/` <-> `/kubik/index.html`.
+
+### Still queued, not started
+- "Mirror and similar: preview the chosen method before confirming."
+- The user's final ask on the overlay: highlight ONLY the changed elements.
+  The mechanism exists - the op's `resultSelection` - and the whole-object
+  sheet was what overrode it.
+
+### Lesson worth keeping
+Five attempts, three of them blind. The one that worked was adding numbers to
+the frame and reading them. `?debug=1` now prints: version, url tail, frame,
+rebuilds since last trace, mode, selection size, live op, face-overlay state,
+geometry index/position counts, material count, the child list WITH its userData
+key and triangle count, objs, sceneMeshes, and what the sweep removed.
 # Handoff — NEXT (Zeghreit's order 12.10): 5 done (v3.14c), 2 done (v3.16 Cut with curve: Knife / Split) -> 3 boolean residue (DONE v3.16b) -> 6 heavy-mesh plan (WRITTEN; next: step A). Then: Punch shapes from a curve (inside Punch). Last shipped: v3.16a Punch multi-material fix; v3.16 Cut with curve; before it v3.15 embed `export obj` (for AF) + .obj/.stl buttons export objects where they stand.
 
 Live: https://zeghreit.github.io/kubik/ · repo `C:\Users\a.bodrov\Projects\kubik` · the project now runs in Claude Code on the PC (rules: `CLAUDE.md`).
