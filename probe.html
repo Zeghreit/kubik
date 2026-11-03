@@ -42,23 +42,25 @@ function probeApplyPatch(source, patch) {
   return out.join('\n');
 }
 (async () => {
-  const [indexResponse, patchResponse, labelPatchResponse, emptyPatchResponse, ringPatchResponse] = await Promise.all([
+  const [indexResponse, patchResponse, labelPatchResponse, emptyPatchResponse, ringPatchResponse, workflowPatchResponse] = await Promise.all([
     fetch('./index.html', { cache: 'no-store' }),
     fetch('./design-system/ux-probe-3-24g.patch', { cache: 'no-store' }),
     fetch('./design-system/ux-label-stability-3-24g.patch', { cache: 'no-store' }),
     fetch('./design-system/ux-help-uv-empty-3-24g.patch', { cache: 'no-store' }),
-    fetch('./design-system/ux-ring-geometry-3-24g.patch', { cache: 'no-store' })
+    fetch('./design-system/ux-ring-geometry-3-24g.patch', { cache: 'no-store' }),
+    fetch('./design-system/ux-uv-outliner-drawer-3-24g.patch', { cache: 'no-store' })
   ]);
   if (!indexResponse.ok) throw new Error('Could not load index.html: HTTP ' + indexResponse.status);
   if (!patchResponse.ok) throw new Error('Could not load the UX patch: HTTP ' + patchResponse.status);
   if (!labelPatchResponse.ok) throw new Error('Could not load the label patch: HTTP ' + labelPatchResponse.status);
   if (!emptyPatchResponse.ok) throw new Error('Could not load the Help/UV patch: HTTP ' + emptyPatchResponse.status);
   if (!ringPatchResponse.ok) throw new Error('Could not load the ring patch: HTTP ' + ringPatchResponse.status);
-  const [source, patch, labelPatch, emptyPatch, ringPatch] = await Promise.all([
-    indexResponse.text(), patchResponse.text(), labelPatchResponse.text(), emptyPatchResponse.text(), ringPatchResponse.text()
+  if (!workflowPatchResponse.ok) throw new Error('Could not load the UV/drawer patch: HTTP ' + workflowPatchResponse.status);
+  const [source, patch, labelPatch, emptyPatch, ringPatch, workflowPatch] = await Promise.all([
+    indexResponse.text(), patchResponse.text(), labelPatchResponse.text(), emptyPatchResponse.text(), ringPatchResponse.text(), workflowPatchResponse.text()
   ]);
   if (!source.includes('3.24g')) throw new Error('The branch index is not Kubik 3.24g');
-  const patched = probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(source, patch), labelPatch), emptyPatch), ringPatch);
+  const patched = probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(source, patch), labelPatch), emptyPatch), ringPatch), workflowPatch);
   document.open(); document.write(patched); document.close();
 })().catch(error => {
   const boot = document.getElementById('probeBoot');
