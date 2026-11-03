@@ -3263,7 +3263,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.24d</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.24e</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -23854,6 +23854,7 @@ function refreshElementColors(obj) {
    unowned child means it is added AFTER the refresh that would have swept it, so
    the sweep is called again at the end of the preview frame, once every path in
    it has finished adding things. */
+let _dbgSwept = '';
 function sweepOrphanOverlays(obj) {
   if (!obj || !obj.mesh) return;
   const ud = obj.mesh.userData;
@@ -23862,6 +23863,11 @@ function sweepOrphanOverlays(obj) {
   for (let i = obj.mesh.children.length - 1; i >= 0; i--) {
     const c = obj.mesh.children[i];
     if (keep.has(c)) continue;
+    if (_dbgOn) {
+      const g = c.geometry;
+      const t = g && g.index ? Math.round(g.index.count / 3) : 0;
+      _dbgSwept = c.type + ':' + t + '/' + (c.material && c.material.type ? c.material.type : '?');
+    }
     obj.mesh.remove(c);
     if (c.geometry) c.geometry.dispose();
     if (Array.isArray(c.material)) c.material.forEach(m => m && m.dispose && m.dispose());
@@ -56669,7 +56675,9 @@ function dbgTrace() {
   const fNow = renderer.info.render.frame;
   const rb = _dbgRebuilds; _dbgRebuilds = 0;
   const brand = document.querySelector('.brand span');
+  const swept = _dbgSwept; _dbgSwept = '';
   _dbgEl.textContent =
+    (swept ? 'SWEPT ' + swept : 'swept none') +
     'v' + (brand ? brand.textContent.trim() : '?') + '   url ' + (location.pathname + location.search).slice(-28) +
     '\nframe ' + fNow + '  rebuilds since last ' + rb +
     '\nmode ' + App.mode + '   sel ' + (App.selectedElements ? App.selectedElements.size : -1) +
@@ -56693,6 +56701,17 @@ function dbgTrace() {
 }
 
 function selMarks() {
+  /* LAST LINE OF DEFENCE (v3.24e). The sweep at the end of the preview frame did
+     not remove the unowned sheet - it was still `mesh?:28` on the next capture -
+     so it is added after every sweep that exists in the op path, i.e. by
+     something that runs between that frame and the draw. Doing it here, in the
+     last function before the renderer, is the only place that cannot be beaten
+     by ordering. Cheap when nothing is attached: it is one Set built from
+     userData and one pass over a handful of children. */
+  if (App.pendingOp) {
+    const _a = findObject(App.activeObjectId);
+    if (_a) sweepOrphanOverlays(_a);
+  }
   dbgTrace();
   let key = '';
   if (App.mode === 'object' && App.selectedObjectIds.size && !uvViewObj) {
