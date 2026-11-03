@@ -1,0 +1,517 @@
+diff --git a/index.html b/index.html
+index 2821d45..1276820 100644
+--- a/index.html
++++ b/index.html
+@@ -2870,6 +2870,141 @@
+     touch-action: none; cursor: grab; background: transparent;
+   }
+   body.kubik-node #kubikShield:active { cursor: grabbing; }
++
++/* ===== KUBIK / ORBITAL STUDIO PROBE =====================================
++   A reversible visual and interaction layer for the published-app copy.
++   The existing mode hues, 10px cuts, motion layer and lite mode remain the
++   source of truth; this pass only tightens material, hierarchy and fit. */
++:root {
++  --bg: #101010;
++  --panel: #161819;
++  --panel2: #1b1d1f;
++  --text: #f5f5f5;
++  --text-dim: #989898;
++  --glass: rgb(16 18 19 / .68);
++  --glass-thick: rgb(16 18 19 / .92);
++  --glass-blur: 20px;
++  --hair: rgb(255 255 255 / .10);
++}
++.plate, #outTray, #matTray, #drawer, #helpCard {
++  box-shadow: inset 0 1px 0 rgb(255 255 255 / .045);
++}
++button, [role="button"] { -webkit-tap-highlight-color: transparent; }
++button:focus-visible, [role="button"]:focus-visible, summary:focus-visible,
++input:focus-visible, select:focus-visible {
++  outline: 2px solid var(--accent-mode); outline-offset: 3px;
++}
++button:disabled { cursor: default; }
++#hdr { gap: 4px; }
++#hdrMode { padding-left: 16px; padding-right: 22px; }
++#symAxes { gap: 4px; }
++#toolChip {
++  font-family: var(--mono); font-size: 11px; letter-spacing: .025em;
++  font-variant-numeric: tabular-nums;
++}
++#drawer .drawer-nav button { min-height: 44px; padding-inline: 16px; }
++#drawerClose, #drawer .ds-switch .group button, #drawer .ds-pm button,
++#drawer .ds-save button { min-height: 44px; }
++#drawerClose { min-width: 44px; }
++#drawer .ds-step, #drawer .ds-seg, #drawer #lightMenu button {
++  border-color: var(--hair); box-shadow: none;
++}
++#drawer .ds-step { background: var(--cut-line), rgb(255 255 255 / .025); }
++#drawer .ds-pm { gap: 0; border: 1px solid var(--hair); }
++#drawer .ds-pm button { border: 0; background: transparent; }
++#drawer .ds-pm button + button { border-left: 1px solid var(--hair); }
++#drawer .ds-cap, #drawer .ds-t, #drawer .ds-v,
++#opValue, #opReadout, #geoBar input, .stepper span {
++  font-family: var(--mono); font-variant-numeric: tabular-nums;
++}
++#outTray { padding: 8px; }
++#outList { gap: 2px; }
++.outRow { min-height: 44px; }
++#toast {
++  font-family: var(--mono); font-size: 11px; letter-spacing: .02em;
++  border-left: 2px solid var(--accent-mode);
++  background: var(--glass-thick); box-shadow: none;
++}
++.hub-item {
++  background: var(--glass-thick); border-color: rgb(255 255 255 / .17);
++  box-shadow: inset 0 1px 0 rgb(255 255 255 / .05);
++}
++.hub-item .tx, .hub-item .dx { font-family: "Archivo", sans-serif; }
++#ringStar { opacity: .58; }
++#ringLabel {
++  font-family: var(--mono); font-size: 11px; letter-spacing: .025em;
++  background: var(--glass-thick); border-left: 2px solid var(--accent-mode);
++}
++#ringLabel.disabled { color: var(--text-dim); border-left-color: var(--text-dim); }
++#viewport:has(#touchToolRing .hub-item) #selMarks { opacity: 0; }
++#selTag, #selCount { backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
++#selTag { padding-block: 5px; }
++#selCount { max-width: min(280px, 72vw); overflow: hidden; text-overflow: ellipsis; }
++#uvView { background: #101010; }
++#uvViewSvg .uv-udim { stroke-opacity: .18; }
++#uvViewSvg .uv-udim-axis { stroke-opacity: .46; }
++#uvViewSvg .uv-udim-num { fill-opacity: .42; font-family: var(--mono); font-weight: 500; }
++#uvViewSvg .uv-edges { stroke-opacity: .34; }
++#uvViewSvg .uv-fill { fill-opacity: .27; }
++#uvViewSvg .uv-island.selected .uv-fill { fill-opacity: .72; }
++#uvViewStatus { font-family: var(--mono); font-size: 11px; letter-spacing: .025em; }
++#uvExit {
++  position: absolute; z-index: 4; top: calc(7px + env(safe-area-inset-top, 0px));
++  right: calc(14px + env(safe-area-inset-right, 0px));
++  width: 64px; min-width: 64px; height: 44px; min-height: 44px; padding: 0;
++  justify-content: center; border: 0; clip-path: var(--cut);
++  background: #f5f5f5; color: #101010;
++  font-family: var(--mono); font-size: 13px; font-weight: 700; letter-spacing: .08em;
++}
++#uvViewEmpty {
++  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
++  width: min(330px, calc(100vw - 48px)); padding: 24px 0;
++  font-size: 14px; line-height: 1.55; pointer-events: none;
++}
++#uvEmptyAction {
++  position: absolute; left: 50%; top: calc(50% + 64px); transform: translateX(-50%);
++  display: none; z-index: 3;
++}
++#uvEmptyAction.show { display: block; }
++#uvUnwrap {
++  min-width: 128px; min-height: 44px; padding: 0 20px; justify-content: center;
++  border: 1px solid var(--hair); clip-path: var(--cut);
++  background: var(--glass-thick); color: var(--text); font-weight: 700;
++}
++html.uv2d-open #matFly, html.uv2d-open #symAxes, html.uv2d-open #toolChip,
++html.uv2d-open #selMarks, html.uv2d-open #isoChip, html.uv2d-open #lightHud,
++html.uv2d-open #softHud, html.uv2d-open #firstHint { display: none !important; }
++html.uv2d-open #outFly { display: flex; }
++@media (min-width: 700px) {
++  html.uv2d-open #app:has(#outFly.open) #uvViewSvgWrap { padding-left: 292px; }
++  html.uv2d-open #app:has(#outFly.open) #uvViewStatus { padding-left: 302px; }
++}
++@media (max-width: 699px) and (min-height: 521px) {
++  #drawerClose { min-height: 44px; min-width: 44px; }
++  #drawer .drawer-nav button { min-height: 44px; }
++}
++@media (max-width: 480px) {
++  #hdr { left: calc(8px + env(safe-area-inset-left, 0px));
++         right: calc(8px + env(safe-area-inset-right, 0px)); gap: 4px; }
++  #hdrMode { padding: 0 13px 0 11px; gap: 6px; flex: 0 1 auto; }
++  #hdrModeName { font-size: 13px; letter-spacing: .035em; }
++  #symAxes { gap: 4px; }
++  #symAxes button { width: 44px; flex: 0 0 44px; }
++  #uvExit { right: calc(8px + env(safe-area-inset-right, 0px)); }
++  #toast { max-width: calc(100vw - 32px); }
++}
++@media (max-width: 340px) {
++  #hdrMode .hdr-glyph { display: none; }
++  #hdrMode { padding-inline: 12px; }
++  #symAxes button::before { font-size: 8px; }
++}
++* { scrollbar-width: thin; scrollbar-color: rgb(255 255 255 / .18) transparent; }
++*::-webkit-scrollbar { width: 6px; height: 6px; }
++*::-webkit-scrollbar-thumb { background: rgb(255 255 255 / .18); }
++*::-webkit-scrollbar-track { background: transparent; }
++@media (prefers-reduced-motion: reduce) {
++  .plate, #toast, .hub-item, #uvExit, #uvUnwrap { transition: none !important; }
++}
+ </style>
+ <!-- On-screen JavaScript console, loaded only when the URL ends in ?debug=1.
+      On a phone there's otherwise no way to see an error without plugging into
+@@ -3212,10 +3347,9 @@
+ 
+     <div id="uvView">
+       <div id="uvViewCard">
+-        <!-- No header row since v2.53: no label, no toggle, no close button.
+-             The mode button switches the component kind and the empty-space
+-             hold ring ("3D") is the way out, the same two controls the 3D
+-             viewport is driven with. -->
++        <button id="uvExit" type="button" title="Return to the 3D viewport" aria-label="Return to 3D">3D</button>
++        <!-- The visible exit complements the empty-space ring; it does not
++             replace that gesture. Outliner stays available above this view. -->
+         <div id="uvViewSvgWrap">
+           <svg id="uvViewSvg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet"></svg>
+         </div>
+@@ -3226,6 +3360,7 @@
+              through to the card's own empty-space hold. -->
+         <div id="uvViewStatus"><span id="uvViewStatusL"></span><span id="uvViewStatusR"></span></div>
+         <div id="uvViewEmpty" style="display:none;">No UV yet on this object — run Unwrap first.</div>
++        <div id="uvEmptyAction"><button id="uvUnwrap" type="button">Unwrap</button></div>
+       </div>
+     </div>
+ 
+@@ -3972,7 +4107,7 @@ scene.add(shadowCatcher);
+    world boxes, faded as the set rises off the floor. No shadow map, no extra geometry pass.
+    Rides the floor grid's toggle, like the catcher did. */
+ const SHOW_CONTACT_SHADOW = true;
+-const CONTACT_SHADOW_OPACITY = 0.95;
++const CONTACT_SHADOW_OPACITY = 0.72;
+ const contactShadow = (() => {
+   const c = document.createElement('canvas');
+   c.width = c.height = 128;
+@@ -4047,8 +4182,8 @@ function updateContactShadow() {
+ let grid = null;
+ let floorGlow = null;
+ const STUDIO = {
+-  sky: 0x1a1d21, upper: 0x16181c, horizon: 0x1b1e22, lower: 0x131518, ground: 0x0e0f11,
+-  axis: 0x8a9a3c, gridAlpha: 0.8, step: 0.25, major: 4, fade: 5, glow: 4, glowAlpha: 0.33
++  sky: 0x191b1d, upper: 0x151719, horizon: 0x1a1c1e, lower: 0x121314, ground: 0x0e0f10,
++  axis: 0x8a9a3c, gridAlpha: 0.46, step: 0.25, major: 4, fade: 5, glow: 4, glowAlpha: 0.24
+ };
+ function buildGrid(major, minor) {
+   const wasVisible = grid ? grid.visible : true;
+@@ -5177,15 +5312,15 @@ const App = {
+    half the job. It was a pair until a2.57a; see the palette block at the
+    top of the file for why Daylight went. */
+ const THEME = {
+-  bg: 0x0b0d10,   // a2.105: --bg, the chrome's ground, cooled with it
+-  hemi: { sky: 0xaeb8ff, ground: 0x14171c, intensity: 0.9 },
+-  key: { color: 0xffffff, intensity: 1.4 },
+-  fill: { color: 0x8899bb, intensity: 0.15 },
+-  grid: [0x6b7380, 0x4b515b],   // v2.89: major, minor - the studio floor's lines
+-  rim: { color: 0x9FB4FF, intensity: 0.75 },
++  bg: 0x101010,
++  hemi: { sky: 0xc2c8d6, ground: 0x161819, intensity: 0.78 },
++  key: { color: 0xffffff, intensity: 1.55 },
++  fill: { color: 0x9ba7b8, intensity: 0.22 },
++  grid: [0x626970, 0x41464b],
++  rim: { color: 0xb8c6e8, intensity: 0.82 },
+   fog: { near: 15, far: 42 },
+   shadow: 0.42,
+-  exposure: 1.2,
++  exposure: 1.08,
+   vignette: '0 0 0',
+   /* Selection is RED, deliberately the one colour the interface never
+      uses. Matching it to the accent (v1.91) made "chosen" agree with the
+@@ -5198,7 +5333,7 @@ const THEME = {
+      not a state of the app, and it has to stay separable from select. */
+   select: 0xff5230, vert: 0x8b939c, edge: 0x5a626b, crease: 0xff7a45,
+   seam: 0xff3bd0,
+-  material: 0x50545b
++  material: 0x66635e
+ };
+ 
+ /* THE SELECTION FOLLOWS THE MODE (a2.59).
+@@ -5670,7 +5805,7 @@ const _dust = (color, amount, cover) => ({ type: 'dust', blend: 'normal', colorO
+ const _mud = (color, amount, height) => ({ type: 'grime', blend: 'normal', color: color, amount: amount,
+   scale: height, detail: 0.6, contrast: 1, roughOn: true, rough: 0.95, seed: 41 });
+ const MATERIAL_DEFAULTS = {
+-  standard: { name: 'Clay',          color: null,      roughness: 0.82, metalness: 0.0, specularIntensity: 0.6 },
++  standard: { name: 'Chalk',         color: '#aaa69f', roughness: 0.78, metalness: 0.0, specularIntensity: 0.48 },
+   plastic:  { name: 'Plastic',       color: '#4a5058', roughness: 0.38, metalness: 0.0, vary: 0.15, varyHue: 0.1, varyScale: 1.5,
+               masks: [_gr(0.55, 3, 11, 0.35), _cav('#3a3c40', 0.4, 0.7), _edge('#3a3f46', 0.4, 0.25, 0.3), _dust('#8a8478', 0.3, 0.45)] },
+   lacquer:  { name: 'Car paint',     color: '#124a60', roughness: 0.3,  metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.03,
+@@ -5728,7 +5863,13 @@ const MATERIAL_DEFAULTS = {
+   bronze:   { name: 'Aged bronze',   color: '#8a5a38', roughness: 0.42, metalness: 1.0, vary: 0.25, varyHue: 0.1, varyScale: 1.5,
+               masks: [_cav('#43877d', 0.7, 0.85, { blend: 'normal', metal: 0, scale: 0.5, detail: 0.7, contrast: 0.35, brk: 0.2 }),
+                       Object.assign(_gr(0.8, 2, 7, 0.35, '#3f8579', 'normal'), { contrast: 2.2, metal: 0 }),
+-                      _edge('#6a4a30', 0.4, 0.15, 0.3)] }
++                      _edge('#6a4a30', 0.4, 0.15, 0.3)] },
++  chalk:    { name: 'Chalk',        color: '#d8d3c8', roughness: 0.92, metalness: 0.0, specularIntensity: 0.35 },
++  studio:   { name: 'Studio clay',  color: '#aaa69f', roughness: 0.78, metalness: 0.0, specularIntensity: 0.48 },
++  graphite: { name: 'Graphite',     color: '#34373a', roughness: 0.64, metalness: 0.12, specularIntensity: 0.55 },
++  oxide:    { name: 'Oxide',        color: '#9b4f3d', roughness: 0.82, metalness: 0.05, specularIntensity: 0.42 },
++  moss:     { name: 'Moss',         color: '#596353', roughness: 0.9,  metalness: 0.0, specularIntensity: 0.34 },
++  mineral:  { name: 'Mineral',      color: '#6d838b', roughness: 0.72, metalness: 0.08, specularIntensity: 0.5 }
+ };
+ /* A mask written in a preset is a PARTIAL one: these are the blanks. Kept beside the presets because
+    loadMaterialLibrary runs before the mask section is reached (MASK_DEFAULT is a const down there),
+@@ -48070,6 +48211,11 @@ function openUvView() {
+   try { ed = toEditable(obj.mesh); }
+   catch (e) { console.warn('openUvView: toEditable failed', e); toast('Could not read this object’s UV'); return; }
+   uvViewObj = obj;
++  document.documentElement.classList.add('uv2d-open');
++  /* The Outliner is the object switcher for this view. Keep the shelf one
++     tap away on a phone and open its safe left column on larger screens. */
++  uvViewEl.dataset.outlinerWasOpen = outlinerIsOpen() ? '1' : '';
++  if (window.innerWidth >= 700) setOutlinerOpen(true);
+   /* THE 3D VIEW STOPS BEING DRAWN (v2.53, Zeghreit's own call). stepFrame
+      skips the render outright while this is set - it is behind an opaque
+      element, so every frame of it is heat and battery for a picture nobody
+@@ -50763,7 +50909,10 @@ function closeUvView() {
+   uvIslandSel.clear();
+   uvFaceSel.clear();
+   uvViewEl.classList.remove('show');
++  document.documentElement.classList.remove('uv2d-open');
+   uvViewObj = null;
++  if (!uvViewEl.dataset.outlinerWasOpen) setOutlinerOpen(false);
++  delete uvViewEl.dataset.outlinerWasOpen;
+   /* THE 3D VIEW COMES BACK (v2.53): the cube, and the frames. stepFrame
+      draws nothing while uvViewObj is set, so the first frame after this
+      has to be asked for - nothing else here would. */
+@@ -56897,8 +57046,17 @@ function refreshObjComponentBtn() {
+        status line, which is why the vertices looked absent rather than
+        unselected. The card is the thing you are looking at; it names itself
+        first. */
+-    if (hn) hn.textContent = uvViewObj ? ('uv \u00b7 ' + uvCompMode)
+-                                       : (isObj ? 'Object' : App.mode);
++    if (hn) {
++      const fullMode = uvViewObj ? ('UV · ' + uvCompMode)
++                                 : (isObj ? 'Object' : App.mode);
++      const shortModes = { object: 'OBJ', vertex: 'VERT', edge: 'EDGE', face: 'FACE', uv: 'UV' };
++      const shortUv = { island: 'UV · ISL', vertex: 'UV · VERT', edge: 'UV · EDGE', face: 'UV · FACE' };
++      hn.textContent = window.innerWidth <= 480
++        ? (uvViewObj ? (shortUv[uvCompMode] || 'UV') : (shortModes[App.mode] || fullMode))
++        : fullMode;
++      hn.parentElement.title = fullMode + ' — tap to switch, hold for modes';
++      hn.parentElement.setAttribute('aria-label', fullMode);
++    }
+     // Soft is the glyph gaining a hollow centre (a2.106), not a longer
+     // word - the block must not grow with the state it reports.
+     const hc = document.querySelector('#hdrMode .hdr-glyph');
+@@ -58557,6 +58715,229 @@ if (PICK_DEBUG) {
+     }
+   };
+ }
++
++/* ===== ORBITAL STUDIO PROBE / BEHAVIOUR ================================
++   Kept in this module so the probe uses the editor's real state and tools. */
++
++/* Full-screen UV: an explicit exit, a reachable empty-state action and the
++   existing Outliner-driven target reconciliation. */
++const probeUvExit = document.getElementById('uvExit');
++const probeUvUnwrap = document.getElementById('uvUnwrap');
++const probeUvEmptyAction = document.getElementById('uvEmptyAction');
++probeUvExit.addEventListener('pointerdown', ev => ev.stopPropagation());
++probeUvExit.addEventListener('click', ev => {
++  ev.stopPropagation();
++  setMode('object');
++});
++probeUvUnwrap.addEventListener('pointerdown', ev => ev.stopPropagation());
++probeUvUnwrap.addEventListener('click', ev => {
++  ev.stopPropagation();
++  unwrapSelection();
++});
++function probeSyncUvEmpty() {
++  const visible = uvViewObj && uvViewEmptyEl.style.display !== 'none';
++  const canUnwrap = visible && /^No UV yet/.test(uvViewEmptyEl.textContent);
++  probeUvEmptyAction.classList.toggle('show', !!canUnwrap);
++}
++new MutationObserver(probeSyncUvEmpty).observe(uvViewEmptyEl,
++  { attributes: true, attributeFilter: ['style'], childList: true, characterData: true, subtree: true });
++
++/* Narrow mode names are an approved responsive shorthand, never a loss of
++   the accessible full name. */
++window.addEventListener('resize', () => {
++  refreshObjComponentBtn();
++  probeSyncUvEmpty();
++}, { passive: true });
++
++/* Selection name and measurements are one floating group. Flip the group
++   when there is room on the other side; otherwise clamp both labels by the
++   same amount so neither escapes a 320px viewport. */
++const probeBaseSelMarks = selMarks;
++selMarks = function () {
++  probeBaseSelMarks();
++  if (!selMarksEl.classList.contains('show')) {
++    selTagEl.style.transform = '';
++    selCountEl.style.transform = '';
++    return;
++  }
++  const vp = viewportEl.getBoundingClientRect();
++  /* Measure layout, not last frame's corrective transform. Reusing that
++     transform made a narrow label oscillate between clamped and unclamped. */
++  selTagEl.style.transform = '';
++  selCountEl.style.transform = '';
++  const bounds = () => {
++    const a = selTagEl.getBoundingClientRect();
++    const b = selCountEl.getBoundingClientRect();
++    const hasB = selCountEl.textContent && b.width;
++    return { left: Math.min(a.left, hasB ? b.left : a.left),
++             right: Math.max(a.right, hasB ? b.right : a.right) };
++  };
++  let r = bounds();
++  if (!selMarksEl.classList.contains('left') && r.right > vp.right - 8) {
++    selMarksEl.classList.add('left');
++    r = bounds();
++  } else if (selMarksEl.classList.contains('left') && r.left < vp.left + 8) {
++    selMarksEl.classList.remove('left');
++    r = bounds();
++  }
++  let shift = 0;
++  if (r.left < vp.left + 8) shift = vp.left + 8 - r.left;
++  else if (r.right > vp.right - 8) shift = vp.right - 8 - r.right;
++  const tx = shift ? 'translateX(' + shift.toFixed(1) + 'px)' : '';
++  selTagEl.style.transform = tx;
++  selCountEl.style.transform = tx;
++};
++
++/* A clipped ring becomes a precise marking menu: visible seats keep their
++   own hit areas, empty space between seats cancels, and central flick keeps
++   the original direction-based gesture. Disabled seats explain themselves
++   during aim and never execute on release. */
++const probeBaseBloomToolRing = bloomToolRing;
++bloomToolRing = function (x, y, tools, pointerId, aim) {
++  probeBaseBloomToolRing(x, y, tools, pointerId, aim);
++  if (!toolRingActive) return;
++  toolRingActive.lastClientX = aim ? aim.x : x;
++  toolRingActive.lastClientY = aim ? aim.y : y;
++  const cornerLine = tools && Array.isArray(tools.ringRadii) && tools.ringRadii.length === tools.length;
++  toolRingActive.precise = pointerId !== undefined && !cornerLine &&
++    toolRingActive.itemEls.some(it => it.r < toolRingActive.radius - 1);
++  touchToolRingEl.classList.toggle('precise', !!toolRingActive.precise);
++};
++function probeRingSeatDisabled(it) {
++  if (!it) return false;
++  const shown = it.tool.door ? it.tool.door[0] : it.tool;
++  return !!(shown.enabled && !shown.enabled());
++}
++function probePreciseSeat(ev) {
++  const t = toolRingActive;
++  if (!t) return -1;
++  const hits = [];
++  t.itemEls.forEach((it, i) => {
++    const r = it.el.getBoundingClientRect();
++    const dx = ev.clientX - (r.left + r.width / 2);
++    const dy = ev.clientY - (r.top + r.height / 2);
++    const diamond = Math.abs(dx) + Math.abs(dy);
++    if (diamond <= 42) hits.push({ i, score: diamond });
++  });
++  if (!hits.length) return -1;
++  hits.sort((a, b) => a.score - b.score);
++  /* Overlapping hit areas are nobody's seat rather than a surprise op. */
++  if (hits.length > 1 && hits[1].score - hits[0].score < 6) return -1;
++  return hits[0].i;
++}
++const probeBaseUpdateToolRingHover = updateToolRingHover;
++updateToolRingHover = function (ev) {
++  const t = toolRingActive;
++  if (!t) return;
++  t.lastClientX = ev.clientX;
++  t.lastClientY = ev.clientY;
++  if (!t.precise) return probeBaseUpdateToolRingHover(ev);
++  const rect = viewportEl.getBoundingClientRect();
++  const dx = (ev.clientX - rect.left) - t.aimX;
++  const dy = (ev.clientY - rect.top) - t.aimY;
++  const dist = Math.hypot(dx, dy);
++  let hovered = dist <= TOOL_RING_DEAD_ZONE_PX ? -1 : probePreciseSeat(ev);
++  if (t.door && dist <= TOOL_RING_DEAD_ZONE_PX) {
++    swapToolRing(t.root, null);
++    return updateToolRingHover(ev);
++  }
++  if (!t.door && hovered >= 0 && dist >= toolRingArmPx(t.radius)) {
++    const aimed = t.itemEls[hovered];
++    if (aimed && aimed.tool.door) {
++      swapToolRing(aimed.tool.door, aimed.tool);
++      return updateToolRingHover(ev);
++    }
++  }
++  if (hovered !== t.hoveredIndex) {
++    t.hoveredIndex = hovered;
++    t.itemEls.forEach((it, i) => it.el.classList.toggle('active', i === hovered));
++    placeRingLabel(hovered);
++    placeRingAim(hovered);
++  }
++};
++const probeBasePlaceRingLabel = placeRingLabel;
++placeRingLabel = function (idx) {
++  probeBasePlaceRingLabel(idx);
++  const t = toolRingActive;
++  if (!t || !t.labelEl) return;
++  const lab = t.labelEl;
++  if (idx < 0) { lab.classList.remove('disabled'); return; }
++  const it = t.itemEls[idx];
++  const disabled = probeRingSeatDisabled(it);
++  lab.classList.toggle('disabled', disabled);
++  if (disabled) {
++    lab.textContent = toolLabel(it.tool) + ' · needs a valid selection';
++    const vp = viewportEl.getBoundingClientRect();
++    const lr = lab.getBoundingClientRect();
++    let shift = 0;
++    if (lr.left < vp.left + 8) shift = vp.left + 8 - lr.left;
++    else if (lr.right > vp.right - 8) shift = vp.right - 8 - lr.right;
++    if (shift) lab.style.left = (parseFloat(lab.style.left || '0') + shift) + 'px';
++  }
++};
++const probeBaseCloseToolRing = closeToolRing;
++closeToolRing = function (run) {
++  const t = toolRingActive;
++  if (run && t) {
++    const it = t.hoveredIndex >= 0 ? t.itemEls[t.hoveredIndex] : null;
++    if (probeRingSeatDisabled(it)) run = false;
++    if (t.precise && (!it || t.lastClientX === undefined)) run = false;
++  }
++  touchToolRingEl.classList.remove('precise');
++  const result = probeBaseCloseToolRing(run);
++  setTimeout(probeMaybeShowDirectHint, 900);
++  return result;
++};
++
++/* Help describes the actual two gesture grammars rather than promising that
++   a clipped ring still picks by travel direction. */
++const probeRingHelp = HELP_SECTIONS.find(s => s.title === 'Tool rings');
++if (probeRingHelp) {
++  probeRingHelp.lead = 'In open space: hold, flick by direction and lift. At a clipped screen edge: release over the visible tool. Return to the middle to cancel.';
++  const near = probeRingHelp.rows.find(r => r[1] === 'Near a border');
++  if (near) near[2] = 'In the centre, flick by direction as usual. At a clipped edge, release over a visible seat or its clear hit area. Between seats, in the middle or outside cancels quietly.';
++  const off = probeRingHelp.rows.find(r => r[1] === 'A hatched seat');
++  if (off) off[2] = 'It has nothing valid to work on. Aim at it to see why; release does not execute it.';
++}
++const probeUvHelp = HELP_SECTIONS.find(s => s.title === 'UV');
++if (probeUvHelp) {
++  const view = probeUvHelp.rows.find(r => r[1] === 'The 2D view');
++  if (view) view[2] = 'Full screen. Outliner switches directly between objects’ UVs; Materials and 3D-only controls step aside. The visible 3D button and the empty-space ring both return to the model.';
++}
++HELP_QUICKSTART.splice(4, 0, 'Drag the selected shape to move it. Two-finger tap switches Move, Rotate and Scale.');
++
++/* The second first-run hint appears after a completed ring gesture. It
++   teaches direct manipulation without turning the viewport into a tour. */
++function probeMaybeShowDirectHint() {
++  if (!firstHintEl || !hasLearned('hold') || hasLearned('direct-drag') ||
++      toolRingActive || uvViewObj || helpOverlayEl.classList.contains('show')) return;
++  const copy = firstHintEl.querySelector('span');
++  if (!copy) return;
++  copy.textContent = 'Drag a selection to move · two-finger tap switches tool';
++  firstHintEl.dataset.probeStep = 'direct';
++  firstHintEl.classList.remove('going');
++  firstHintEl.hidden = false;
++}
++const probeBaseDismissFirstHint = dismissFirstHint;
++dismissFirstHint = function (learn) {
++  const step = firstHintEl && firstHintEl.dataset.probeStep === 'direct' ? 'direct' : 'hold';
++  probeBaseDismissFirstHint(learn);
++  if (learn && step === 'direct' && firstHintEl) {
++    noteLearned('direct-drag');
++    firstHintEl.dataset.probeStep = '';
++  }
++};
++let probeDirectDown = null;
++renderer.domElement.addEventListener('pointerdown', ev => {
++  probeDirectDown = { x: ev.clientX, y: ev.clientY };
++}, { passive: true });
++renderer.domElement.addEventListener('pointerup', ev => {
++  if (!probeDirectDown || !firstHintEl || firstHintEl.hidden || firstHintEl.dataset.probeStep !== 'direct') return;
++  const moved = Math.hypot(ev.clientX - probeDirectDown.x, ev.clientY - probeDirectDown.y);
++  const hasSelection = App.selectedObjectIds.size || App.selectedElements.size;
++  if (moved > 12 && hasSelection) dismissFirstHint(true);
++  probeDirectDown = null;
++}, { passive: true });
+ </script>
+ </body>
+ </html>

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Kubik 3.24g — UX probe</title>
+<style>
+html,body{margin:0;min-height:100%;background:#101010;color:#f5f5f5;font:14px/1.5 system-ui,sans-serif}
+#probeBoot{position:fixed;inset:0;display:grid;place-items:center;text-align:center;padding:32px;box-sizing:border-box}
+#probeBoot b{display:block;font-size:18px;margin-bottom:8px}#probeBoot span{color:#989898}
+</style>
+</head>
+<body>
+<div id="probeBoot"><div><b>Kubik 3.24g</b><span>Loading the UX probe…</span></div></div>
+<script>
+/* Preview-only: apply the reviewed diff in memory. The source index and
+   main stay unchanged; the same patch can be applied normally after review. */
+function probeApplyPatch(source, patch) {
+  const src = source.split('\n'), p = patch.split('\n'), out = [];
+  let cursor = 0, i = 0;
+  while (i < p.length) {
+    const m = /^@@ -(\d+)(?:,\d+)? \+\d+(?:,\d+)? @@/.exec(p[i++]);
+    if (!m) continue;
+    const start = Number(m[1]) - 1;
+    if (start < cursor) throw new Error('Overlapping patch hunk');
+    while (cursor < start) out.push(src[cursor++]);
+    while (i < p.length && !p[i].startsWith('@@ ')) {
+      const line = p[i++];
+      if (line.startsWith('diff --git ')) { i--; break; }
+      if (!line || line.startsWith('\\ No newline')) continue;
+      const kind = line[0], text = line.slice(1);
+      if (kind === ' ') {
+        if (src[cursor] !== text) throw new Error('Context mismatch at source line ' + (cursor + 1));
+        out.push(src[cursor++]);
+      } else if (kind === '-') {
+        if (src[cursor] !== text) throw new Error('Removal mismatch at source line ' + (cursor + 1));
+        cursor++;
+      } else if (kind === '+') out.push(text);
+    }
+  }
+  while (cursor < src.length) out.push(src[cursor++]);
+  return out.join('\n');
+}
+(async () => {
+  const [indexResponse, patchResponse] = await Promise.all([
+    fetch('./index.html', { cache: 'no-store' }),
+    fetch('./design-system/ux-probe-3-24g.patch', { cache: 'no-store' })
+  ]);
+  if (!indexResponse.ok) throw new Error('Could not load index.html: HTTP ' + indexResponse.status);
+  if (!patchResponse.ok) throw new Error('Could not load the UX patch: HTTP ' + patchResponse.status);
+  const [source, patch] = await Promise.all([indexResponse.text(), patchResponse.text()]);
+  if (!source.includes('3.24g')) throw new Error('The branch index is not Kubik 3.24g');
+  const patched = probeApplyPatch(source, patch);
+  document.open(); document.write(patched); document.close();
+})().catch(error => {
+  const boot = document.getElementById('probeBoot');
+  if (boot) boot.innerHTML = '<div><b>Probe could not start</b><span></span></div>';
+  if (boot) boot.querySelector('span').textContent = error.message;
+  console.error(error);
+});
+</script>
+</body>
+</html>
