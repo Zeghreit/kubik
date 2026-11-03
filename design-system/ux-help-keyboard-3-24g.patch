@@ -1,0 +1,82 @@
+--- a/index.html
++++ b/index.html
+@@ -58979,6 +58979,79 @@
+   if (moved > 12 && hasSelection) dismissFirstHint(true);
+   probeDirectDown = null;
+ }, { passive: true });
++
++/* Help is a modal reference surface, not a see-through shortcut overlay.
++   Keep scene commands out while it is open, make Escape and Tab behave as
++   expected, and return keyboard users to the control that opened it. */
++const probeHelpCard = document.getElementById('helpCard');
++const probeHelpTitle = probeHelpCard.querySelector('.insp-head > span');
++const probeHelpClose = document.getElementById('helpClose');
++probeHelpTitle.id = 'helpTitle';
++probeHelpCard.setAttribute('role', 'dialog');
++probeHelpCard.setAttribute('aria-modal', 'true');
++probeHelpCard.setAttribute('aria-labelledby', 'helpTitle');
++probeHelpCard.tabIndex = -1;
++[
++  ['opCancel', 'Cancel operation'], ['opOk', 'Apply operation'],
++  ['inspClose', 'Close inspector'], ['helpClose', 'Close Help']
++].forEach(([id, label]) => document.getElementById(id).setAttribute('aria-label', label));
++let probeHelpReturnFocus = null;
++const probeBaseOpenHelp = openHelp;
++openHelp = function () {
++  if (!helpOverlayEl.classList.contains('show')) probeHelpReturnFocus = document.activeElement;
++  probeBaseOpenHelp();
++  probeHelpCard.focus({ preventScroll: true });
++};
++function probeRestoreHelpFocus() {
++  if (helpOverlayEl.classList.contains('show') || probeHelpReturnFocus === null) return;
++  const previous = probeHelpReturnFocus;
++  const fromClosedDrawer = previous && previous.closest &&
++    previous.closest('#drawer') && !document.getElementById('drawer').classList.contains('open');
++  const target = previous && previous.isConnected && previous !== document.body &&
++    previous !== document.documentElement && !fromClosedDrawer ? previous : document.getElementById('btnMenu');
++  if (target) setTimeout(() => {
++    if (!helpOverlayEl.classList.contains('show')) target.focus({ preventScroll: true });
++  }, 0);
++  probeHelpReturnFocus = null;
++}
++const probeBaseCloseHelp = closeHelp;
++closeHelp = function () {
++  const wasOpen = helpOverlayEl.classList.contains('show');
++  probeBaseCloseHelp();
++  if (wasOpen) probeRestoreHelpFocus();
++};
++/* These two native listeners captured the original closeHelp before this
++   probe wrapped it. Add the focus hand-off at the event surface as well. */
++probeHelpClose.addEventListener('click', probeRestoreHelpFocus);
++helpOverlayEl.addEventListener('click', ev => {
++  if (ev.target === helpOverlayEl) probeRestoreHelpFocus();
++});
++helpOverlayEl.addEventListener('keydown', ev => {
++  if (!helpOverlayEl.classList.contains('show')) return;
++  if (ev.key === 'Escape') {
++    ev.preventDefault(); ev.stopPropagation(); closeHelp(); return;
++  }
++  if (ev.key === 'Tab') {
++    const items = [...probeHelpCard.querySelectorAll(
++      'button:not([disabled]), summary, a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
++    )].filter(el => el.getClientRects().length &&
++      (!el.closest('details:not([open])') || el.tagName === 'SUMMARY'));
++    const first = items[0], last = items[items.length - 1];
++    const active = document.activeElement;
++    if (!items.length) {
++      ev.preventDefault(); probeHelpCard.focus({ preventScroll: true });
++    } else if (!items.includes(active)) {
++      ev.preventDefault(); (ev.shiftKey ? last : first).focus();
++    } else if (ev.shiftKey && active === first) {
++      ev.preventDefault(); last.focus();
++    } else if (!ev.shiftKey && active === last) {
++      ev.preventDefault(); first.focus();
++    }
++  }
++  /* Enter and Space still operate summaries and links natively; stopping
++     propagation only keeps the editor's window-level shortcuts out. */
++  ev.stopPropagation();
++});
+ </script>
+ </body>
+ </html>
