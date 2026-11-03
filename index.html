@@ -3263,7 +3263,7 @@
       <!-- The version is READ from `.brand span` by checkForUpdate, which is
            the only way an iOS Home Screen app ever learns a new build exists.
            It must not lose the element or the class. -->
-      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.23i</span></div>
+      <div class="brand">Kubik <span style="color:var(--text-dim); font-weight:400;">3.23j</span></div>
       <button id="drawerClose" class="small" aria-label="Close the menu">✕</button>
     </div>
     <nav class="drawer-nav" id="drawerNav">
@@ -56640,7 +56640,7 @@ function dbgTrace() {
     '   ov ' + (ov ? ((ov.visible ? 'VIS' : 'hid') + ' idx' + (ov.geometry.index ? ov.geometry.index.count : 0)) : 'none') +
     '\ngeo idx' + (geo && geo.index ? geo.index.count : -1) + ' pos' + (geo && geo.attributes.position ? geo.attributes.position.count : -1) +
     '   mats ' + (o && o.mesh ? (Array.isArray(o.mesh.material) ? o.mesh.material.length : 1) : -1) +
-    '\nkids ' + (o && o.mesh ? o.mesh.children.length : -1) +
+    '\nkids ' + (o && o.mesh ? o.mesh.children.map(c => (c.isPoints ? 'P' : c.isLineSegments ? 'S' : c.isLine ? 'L' : c.isMesh ? 'M' : '?')) : '') +
     '   objs ' + App.objects.length +
     '   sceneMeshes ' + (scene ? scene.children.filter(c => c.isMesh).length : -1) +
     '   ghost ' + (o && o.mesh && o.mesh.userData.previewGhost ? 'YES' : 'no');
