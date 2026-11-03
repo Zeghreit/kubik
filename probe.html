@@ -42,19 +42,21 @@ function probeApplyPatch(source, patch) {
   return out.join('\n');
 }
 (async () => {
-  const [indexResponse, patchResponse, labelPatchResponse] = await Promise.all([
+  const [indexResponse, patchResponse, labelPatchResponse, emptyPatchResponse] = await Promise.all([
     fetch('./index.html', { cache: 'no-store' }),
     fetch('./design-system/ux-probe-3-24g.patch', { cache: 'no-store' }),
-    fetch('./design-system/ux-label-stability-3-24g.patch', { cache: 'no-store' })
+    fetch('./design-system/ux-label-stability-3-24g.patch', { cache: 'no-store' }),
+    fetch('./design-system/ux-help-uv-empty-3-24g.patch', { cache: 'no-store' })
   ]);
   if (!indexResponse.ok) throw new Error('Could not load index.html: HTTP ' + indexResponse.status);
   if (!patchResponse.ok) throw new Error('Could not load the UX patch: HTTP ' + patchResponse.status);
   if (!labelPatchResponse.ok) throw new Error('Could not load the label patch: HTTP ' + labelPatchResponse.status);
-  const [source, patch, labelPatch] = await Promise.all([
-    indexResponse.text(), patchResponse.text(), labelPatchResponse.text()
+  if (!emptyPatchResponse.ok) throw new Error('Could not load the Help/UV patch: HTTP ' + emptyPatchResponse.status);
+  const [source, patch, labelPatch, emptyPatch] = await Promise.all([
+    indexResponse.text(), patchResponse.text(), labelPatchResponse.text(), emptyPatchResponse.text()
   ]);
   if (!source.includes('3.24g')) throw new Error('The branch index is not Kubik 3.24g');
-  const patched = probeApplyPatch(probeApplyPatch(source, patch), labelPatch);
+  const patched = probeApplyPatch(probeApplyPatch(probeApplyPatch(source, patch), labelPatch), emptyPatch);
   document.open(); document.write(patched); document.close();
 })().catch(error => {
   const boot = document.getElementById('probeBoot');
