@@ -1,0 +1,34 @@
+--- a/index.html
++++ b/index.html
+@@ -2991,6 +2991,31 @@
+   border: 1px solid var(--hair); clip-path: var(--cut);
+   background: var(--glass-thick); color: var(--text); font-weight: 700;
+ }
++/* Optical pass: the ring and material shelf now speak at the same weight as
++   the rest of the chrome. Geometry, gestures and the hazard grammar stay put. */
++#touchToolRing .hub-item { border-color: rgb(255 255 255 / .24); }
++#touchToolRing .hub-item .tx {
++  font-size: 10px; line-height: 1.2; letter-spacing: .02em;
++}
++#touchToolRing .hub-item.door .dx { font-size: 9px; line-height: 1.2; }
++#ringStar { opacity: .68; }
++#ringLabel {
++  padding: 6px 10px; border: 1px solid var(--hair);
++  border-left: 2px solid var(--accent-mode); border-radius: 0; clip-path: var(--cut);
++}
++#matFly:not(.editing) #matTray { width: 104px; }
++.mat-card { width: 72px; gap: 5px; padding-block: 6px; }
++.mat-card span:not(.mat-edit) {
++  color: var(--text); font-size: 10px; line-height: 1.25; letter-spacing: .04em;
++}
++@media (max-width: 480px) {
++  /* An open material shelf owns the left 136px. Keep the first-run lesson in
++     the remaining column instead of letting the shelf cover its sentence. */
++  #app:has(#matFly.open) #firstHint {
++    left: calc(50% + 68px); max-width: calc(100vw - 152px);
++  }
++  #app:has(#matFly.editing) #firstHint { display: none; }
++}
+ html.uv2d-open #matFly, html.uv2d-open #symAxes, html.uv2d-open #toolChip,
+ html.uv2d-open #selMarks, html.uv2d-open #isoChip, html.uv2d-open #lightHud,
+ html.uv2d-open #softHud, html.uv2d-open #firstHint { display: none !important; }
