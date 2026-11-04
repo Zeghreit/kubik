@@ -42,7 +42,7 @@ function probeApplyPatch(source, patch) {
   return out.join('\n');
 }
 (async () => {
-  const [indexResponse, patchResponse, labelPatchResponse, emptyPatchResponse, ringPatchResponse, workflowPatchResponse, keyboardPatchResponse, drawerPatchResponse, materialsPatchResponse] = await Promise.all([
+  const [indexResponse, patchResponse, labelPatchResponse, emptyPatchResponse, ringPatchResponse, workflowPatchResponse, keyboardPatchResponse, drawerPatchResponse, materialsPatchResponse, selectionPatchResponse] = await Promise.all([
     fetch('./index.html', { cache: 'no-store' }),
     fetch('./design-system/ux-probe-3-24g.patch', { cache: 'no-store' }),
     fetch('./design-system/ux-label-stability-3-24g.patch', { cache: 'no-store' }),
@@ -51,7 +51,8 @@ function probeApplyPatch(source, patch) {
     fetch('./design-system/ux-uv-outliner-drawer-3-24g.patch', { cache: 'no-store' }),
     fetch('./design-system/ux-help-keyboard-3-24g.patch', { cache: 'no-store' }),
     fetch('./design-system/ux-drawer-keyboard-3-24g.patch', { cache: 'no-store' }),
-    fetch('./design-system/ux-materials-keyboard-3-24g.patch', { cache: 'no-store' })
+    fetch('./design-system/ux-materials-keyboard-3-24g.patch', { cache: 'no-store' }),
+    fetch('./design-system/ux-selection-overflow-3-24g.patch', { cache: 'no-store' })
   ]);
   if (!indexResponse.ok) throw new Error('Could not load index.html: HTTP ' + indexResponse.status);
   if (!patchResponse.ok) throw new Error('Could not load the UX patch: HTTP ' + patchResponse.status);
@@ -62,11 +63,12 @@ function probeApplyPatch(source, patch) {
   if (!keyboardPatchResponse.ok) throw new Error('Could not load the Help keyboard patch: HTTP ' + keyboardPatchResponse.status);
   if (!drawerPatchResponse.ok) throw new Error('Could not load the drawer keyboard patch: HTTP ' + drawerPatchResponse.status);
   if (!materialsPatchResponse.ok) throw new Error('Could not load the Materials keyboard patch: HTTP ' + materialsPatchResponse.status);
-  const [source, patch, labelPatch, emptyPatch, ringPatch, workflowPatch, keyboardPatch, drawerPatch, materialsPatch] = await Promise.all([
-    indexResponse.text(), patchResponse.text(), labelPatchResponse.text(), emptyPatchResponse.text(), ringPatchResponse.text(), workflowPatchResponse.text(), keyboardPatchResponse.text(), drawerPatchResponse.text(), materialsPatchResponse.text()
+  if (!selectionPatchResponse.ok) throw new Error('Could not load the selection overflow patch: HTTP ' + selectionPatchResponse.status);
+  const [source, patch, labelPatch, emptyPatch, ringPatch, workflowPatch, keyboardPatch, drawerPatch, materialsPatch, selectionPatch] = await Promise.all([
+    indexResponse.text(), patchResponse.text(), labelPatchResponse.text(), emptyPatchResponse.text(), ringPatchResponse.text(), workflowPatchResponse.text(), keyboardPatchResponse.text(), drawerPatchResponse.text(), materialsPatchResponse.text(), selectionPatchResponse.text()
   ]);
   if (!source.includes('3.24g')) throw new Error('The branch index is not Kubik 3.24g');
-  const patched = probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(source, patch), labelPatch), emptyPatch), ringPatch), workflowPatch), keyboardPatch), drawerPatch), materialsPatch);
+  const patched = probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(source, patch), labelPatch), emptyPatch), ringPatch), workflowPatch), keyboardPatch), drawerPatch), materialsPatch), selectionPatch);
   document.open(); document.write(patched); document.close();
 })().catch(error => {
   const boot = document.getElementById('probeBoot');
