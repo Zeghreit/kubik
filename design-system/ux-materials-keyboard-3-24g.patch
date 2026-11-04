@@ -1,0 +1,26 @@
+--- a/index.html
++++ b/index.html
+@@ -59110,6 +59110,23 @@
+      window-level scene shortcuts from seeing keys used inside the sheet. */
+   ev.stopPropagation();
+ });
++
++/* Materials keeps its closing transition, but a visually collapsed tray must
++   leave the tab order immediately. Only the tray is inert: matTab lives in
++   matFly too and must remain available to reopen the shelf. */
++const probeMatTrayEl = document.getElementById('matTray');
++const probeMatTabEl = document.getElementById('matTab');
++probeMatTrayEl.inert = !matTrayIsOpen();
++probeMatTrayEl.setAttribute('aria-hidden', String(!matTrayIsOpen()));
++const probeBaseSetMatTrayOpen = setMatTrayOpen;
++setMatTrayOpen = function (open) {
++  const returnFocus = !open && probeMatTrayEl.contains(document.activeElement);
++  const result = probeBaseSetMatTrayOpen(open);
++  probeMatTrayEl.inert = !open;
++  probeMatTrayEl.setAttribute('aria-hidden', String(!open));
++  if (returnFocus) probeMatTabEl.focus({ preventScroll: true });
++  return result;
++};
+ </script>
+ </body>
+ </html>
