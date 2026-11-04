@@ -1,0 +1,13 @@
+--- a/index.html
++++ b/index.html
+@@ -2945,6 +2945,10 @@
+ #selTag, #selCount { backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+ #selTag { padding-block: 5px; }
+ #selCount { max-width: min(280px, 72vw); overflow: hidden; text-overflow: ellipsis; }
++/* Projected selection bounds can be wider than the screen during Array and
++   other operations. Clip that invisible frame at the viewport; the labels
++   retain their existing shared clamp and remain visible inside it. */
++#viewport { overflow: hidden; }
+ #uvView { background: #101010; }
+ #uvViewSvg .uv-udim { stroke-opacity: .18; }
+ #uvViewSvg .uv-udim-axis { stroke-opacity: .46; }
