@@ -1,0 +1,38 @@
+--- a/index.html
++++ b/index.html
+@@ -58837,12 +58837,33 @@
+     const b = selCountEl.getBoundingClientRect();
+     const hasB = selCountEl.textContent && b.width;
+     return { left: Math.min(a.left, hasB ? b.left : a.left),
+-             right: Math.max(a.right, hasB ? b.right : a.right) };
++             right: Math.max(a.right, hasB ? b.right : a.right),
++             top: Math.min(a.top, hasB ? b.top : a.top),
++             bottom: Math.max(a.bottom, hasB ? b.bottom : a.bottom) };
+   };
+   const r = bounds();
++  /* Viewport clamping alone can put a wide Array readout under the left rail.
++     Keep the native side choice and shared shift, but clear any shelf whose
++     actual rectangle overlaps these labels vertically. */
++  let safeLeft = vp.left + 8;
++  if (window.innerWidth < 700) {
++    ['outFly', 'matFly'].forEach(id => {
++      const rail = document.getElementById(id);
++      if (!rail || !rail.getClientRects().length) return;
++      const rr = rail.getBoundingClientRect();
++      const cs = getComputedStyle(rail);
++      if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return;
++      if (r.bottom > rr.top && r.top < rr.bottom && rr.left <= vp.left + 1) {
++        safeLeft = Math.max(safeLeft, rr.right + 8);
++      }
++    });
++  }
+   let shift = 0;
+-  if (r.left < vp.left + 8) shift = vp.left + 8 - r.left;
++  if (r.left < safeLeft) shift = safeLeft - r.left;
+   else if (r.right > vp.right - 8) shift = vp.right - 8 - r.right;
++  /* If an open editor leaves too little room, the viewport remains the hard
++     boundary; do not trade a rail overlap for off-screen text. */
++  if (r.right + shift > vp.right - 8) shift = vp.right - 8 - r.right;
+   const tx = shift ? 'translateX(' + shift.toFixed(1) + 'px)' : '';
+   selTagEl.style.transform = tx;
+   selCountEl.style.transform = tx;
