@@ -42,7 +42,7 @@ function probeApplyPatch(source, patch) {
   return out.join('\n');
 }
 (async () => {
-  const [indexResponse, patchResponse, labelPatchResponse, emptyPatchResponse, ringPatchResponse, workflowPatchResponse, keyboardPatchResponse, drawerPatchResponse] = await Promise.all([
+  const [indexResponse, patchResponse, labelPatchResponse, emptyPatchResponse, ringPatchResponse, workflowPatchResponse, keyboardPatchResponse, drawerPatchResponse, materialsPatchResponse] = await Promise.all([
     fetch('./index.html', { cache: 'no-store' }),
     fetch('./design-system/ux-probe-3-24g.patch', { cache: 'no-store' }),
     fetch('./design-system/ux-label-stability-3-24g.patch', { cache: 'no-store' }),
@@ -50,7 +50,8 @@ function probeApplyPatch(source, patch) {
     fetch('./design-system/ux-ring-geometry-3-24g.patch', { cache: 'no-store' }),
     fetch('./design-system/ux-uv-outliner-drawer-3-24g.patch', { cache: 'no-store' }),
     fetch('./design-system/ux-help-keyboard-3-24g.patch', { cache: 'no-store' }),
-    fetch('./design-system/ux-drawer-keyboard-3-24g.patch', { cache: 'no-store' })
+    fetch('./design-system/ux-drawer-keyboard-3-24g.patch', { cache: 'no-store' }),
+    fetch('./design-system/ux-materials-keyboard-3-24g.patch', { cache: 'no-store' })
   ]);
   if (!indexResponse.ok) throw new Error('Could not load index.html: HTTP ' + indexResponse.status);
   if (!patchResponse.ok) throw new Error('Could not load the UX patch: HTTP ' + patchResponse.status);
@@ -60,11 +61,12 @@ function probeApplyPatch(source, patch) {
   if (!workflowPatchResponse.ok) throw new Error('Could not load the UV/drawer patch: HTTP ' + workflowPatchResponse.status);
   if (!keyboardPatchResponse.ok) throw new Error('Could not load the Help keyboard patch: HTTP ' + keyboardPatchResponse.status);
   if (!drawerPatchResponse.ok) throw new Error('Could not load the drawer keyboard patch: HTTP ' + drawerPatchResponse.status);
-  const [source, patch, labelPatch, emptyPatch, ringPatch, workflowPatch, keyboardPatch, drawerPatch] = await Promise.all([
-    indexResponse.text(), patchResponse.text(), labelPatchResponse.text(), emptyPatchResponse.text(), ringPatchResponse.text(), workflowPatchResponse.text(), keyboardPatchResponse.text(), drawerPatchResponse.text()
+  if (!materialsPatchResponse.ok) throw new Error('Could not load the Materials keyboard patch: HTTP ' + materialsPatchResponse.status);
+  const [source, patch, labelPatch, emptyPatch, ringPatch, workflowPatch, keyboardPatch, drawerPatch, materialsPatch] = await Promise.all([
+    indexResponse.text(), patchResponse.text(), labelPatchResponse.text(), emptyPatchResponse.text(), ringPatchResponse.text(), workflowPatchResponse.text(), keyboardPatchResponse.text(), drawerPatchResponse.text(), materialsPatchResponse.text()
   ]);
   if (!source.includes('3.24g')) throw new Error('The branch index is not Kubik 3.24g');
-  const patched = probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(source, patch), labelPatch), emptyPatch), ringPatch), workflowPatch), keyboardPatch), drawerPatch);
+  const patched = probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(source, patch), labelPatch), emptyPatch), ringPatch), workflowPatch), keyboardPatch), drawerPatch), materialsPatch);
   document.open(); document.write(patched); document.close();
 })().catch(error => {
   const boot = document.getElementById('probeBoot');
