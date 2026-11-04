@@ -42,7 +42,7 @@ function probeApplyPatch(source, patch) {
   return out.join('\n');
 }
 (async () => {
-  const [indexResponse, patchResponse, labelPatchResponse, emptyPatchResponse, ringPatchResponse, workflowPatchResponse, keyboardPatchResponse, drawerPatchResponse, materialsPatchResponse, selectionPatchResponse, opticalPatchResponse] = await Promise.all([
+  const [indexResponse, patchResponse, labelPatchResponse, emptyPatchResponse, ringPatchResponse, workflowPatchResponse, keyboardPatchResponse, drawerPatchResponse, materialsPatchResponse, selectionPatchResponse, opticalPatchResponse, selectionRailPatchResponse] = await Promise.all([
     fetch('./index.html', { cache: 'no-store' }),
     fetch('./design-system/ux-probe-3-24g.patch', { cache: 'no-store' }),
     fetch('./design-system/ux-label-stability-3-24g.patch', { cache: 'no-store' }),
@@ -53,7 +53,8 @@ function probeApplyPatch(source, patch) {
     fetch('./design-system/ux-drawer-keyboard-3-24g.patch', { cache: 'no-store' }),
     fetch('./design-system/ux-materials-keyboard-3-24g.patch', { cache: 'no-store' }),
     fetch('./design-system/ux-selection-overflow-3-24g.patch', { cache: 'no-store' }),
-    fetch('./design-system/ux-optical-pass-3-24g.patch', { cache: 'no-store' })
+    fetch('./design-system/ux-optical-pass-3-24g.patch', { cache: 'no-store' }),
+    fetch('./design-system/ux-selection-rail-clearance-3-24g.patch', { cache: 'no-store' })
   ]);
   if (!indexResponse.ok) throw new Error('Could not load index.html: HTTP ' + indexResponse.status);
   if (!patchResponse.ok) throw new Error('Could not load the UX patch: HTTP ' + patchResponse.status);
@@ -66,11 +67,12 @@ function probeApplyPatch(source, patch) {
   if (!materialsPatchResponse.ok) throw new Error('Could not load the Materials keyboard patch: HTTP ' + materialsPatchResponse.status);
   if (!selectionPatchResponse.ok) throw new Error('Could not load the selection overflow patch: HTTP ' + selectionPatchResponse.status);
   if (!opticalPatchResponse.ok) throw new Error('Could not load the optical design patch: HTTP ' + opticalPatchResponse.status);
-  const [source, patch, labelPatch, emptyPatch, ringPatch, workflowPatch, keyboardPatch, drawerPatch, materialsPatch, selectionPatch, opticalPatch] = await Promise.all([
-    indexResponse.text(), patchResponse.text(), labelPatchResponse.text(), emptyPatchResponse.text(), ringPatchResponse.text(), workflowPatchResponse.text(), keyboardPatchResponse.text(), drawerPatchResponse.text(), materialsPatchResponse.text(), selectionPatchResponse.text(), opticalPatchResponse.text()
+  if (!selectionRailPatchResponse.ok) throw new Error('Could not load the selection rail patch: HTTP ' + selectionRailPatchResponse.status);
+  const [source, patch, labelPatch, emptyPatch, ringPatch, workflowPatch, keyboardPatch, drawerPatch, materialsPatch, selectionPatch, opticalPatch, selectionRailPatch] = await Promise.all([
+    indexResponse.text(), patchResponse.text(), labelPatchResponse.text(), emptyPatchResponse.text(), ringPatchResponse.text(), workflowPatchResponse.text(), keyboardPatchResponse.text(), drawerPatchResponse.text(), materialsPatchResponse.text(), selectionPatchResponse.text(), opticalPatchResponse.text(), selectionRailPatchResponse.text()
   ]);
   if (!source.includes('3.24g')) throw new Error('The branch index is not Kubik 3.24g');
-  const patched = probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(source, patch), labelPatch), emptyPatch), ringPatch), workflowPatch), keyboardPatch), drawerPatch), materialsPatch), selectionPatch), opticalPatch);
+  const patched = probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(probeApplyPatch(source, patch), labelPatch), emptyPatch), ringPatch), workflowPatch), keyboardPatch), drawerPatch), materialsPatch), selectionPatch), opticalPatch), selectionRailPatch);
   document.open(); document.write(patched); document.close();
 })().catch(error => {
   const boot = document.getElementById('probeBoot');
